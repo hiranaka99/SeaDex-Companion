@@ -1180,6 +1180,11 @@ def hide():
 # qBittorrent: send best releases to the user's client
 # ---------------------------------------------------------------------------
 qb_state = {"session": None, "lock": threading.Lock()}
+# Brief cache of the full torrents/info response so a burst of progress
+# checks (every release row checks on page load) hits qBittorrent at most
+# once per interval instead of once per request.
+qb_cache = {"data": None, "ts": 0.0}
+QB_CACHE_TTL = 2.0
 
 
 def _qb_login(base, user, pw):
@@ -1226,6 +1231,65 @@ def qb_add_torrent(cfg, magnet, category=None):
             raise RuntimeError(f"qBittorrent rejected the torrent (HTTP {r.status_code}: {r.text[:120]})")
 
 
+def qb_get_torrents(cfg, hashes=None):
+    """Return torrent info (list) for the given info hashes (or all torrents).
+
+    The full torrents/info response is cached for a couple of seconds so many
+    near-simultaneous progress checks (e.g. every release row checking on page
+    load) only query qBittorrent once per interval.
+    """
+    base = (cfg.get("qbittorrent_url") or "").rstrip("/")
+    if not base:
+        raise RuntimeError("qBittorrent is not configured (Config tab)")
+    with qb_state["lock"]:
+        all_torrents = None
+        for attempt in (1, 2):
+            if (qb_cache["data"] is not None
+                    and time.time() - qb_cache["ts"] < QB_CACHE_TTL):
+                all_torrents = qb_cache["data"]
+                break
+            if qb_state["session"] is None:
+                qb_state["session"] = _qb_login(
+                    base, cfg.get("qbittorrent_user", ""), cfg.get("qbittorrent_pass", ""))
+            r = qb_state["session"].get(base + "/api/v2/torrents/info", timeout=30)
+            if r.status_code == 403 and attempt == 1:  # SID expired -> re-login once
+                qb_state["session"] = _qb_login(
+                    base, cfg.get("qbittorrent_user", ""), cfg.get("qbittorrent_pass", ""))
+                continue
+            if r.status_code != 200:
+                raise RuntimeError(f"qBittorrent error (HTTP {r.status_code}: {r.text[:120]})")
+            all_torrents = r.json()
+            qb_cache["data"] = all_torrents
+            qb_cache["ts"] = time.time()
+            break
+    if all_torrents is None:
+        raise RuntimeError("qBittorrent error")
+    if hashes:
+        wanted = {h.lower() for h in hashes}
+        all_torrents = [t for t in all_torrents
+                        if (t.get("hash") or "").lower() in wanted]
+    return all_torrents
+
+
+def _normalize_qb_states(states):
+    """Map a list of qBittorrent torrent states to one aggregate state."""
+    if not states:
+        return "unknown"
+    if any(s in ("error", "unknown") for s in states):
+        return "error"
+    downloading = {"downloading", "forcedDL", "metaDL", "queuedDL",
+                   "stalledDL", "checkingDL", "allocating", "checkingResumeData"}
+    uploading = {"uploading", "forcedUP", "queuedUP", "stalledUP"}
+    paused = {"pausedDL", "pausedUP"}
+    if all(s in uploading for s in states):
+        return "complete"
+    if any(s in downloading for s in states):
+        return "downloading"
+    if all(s in paused for s in states):
+        return "paused"
+    return "unknown"
+
+
 @app.route("/api/download", methods=["POST"])
 def download():
     data = request.get_json(force=True)
@@ -1260,6 +1324,62 @@ def download():
     log.info("Sent to qBittorrent: %s release %d, %d torrent(s) (category: %s)",
              key, idx, len(ihs), category or "-")
     return jsonify({"ok": True})
+
+
+@app.route("/api/download_progress", methods=["GET"])
+def download_progress():
+    """Report how much of a sent release has been downloaded by qBittorrent."""
+    key = (request.args.get("key") or "").strip()
+    try:
+        idx = int(request.args.get("release", 0))
+    except (TypeError, ValueError):
+        idx = 0
+    if not key:
+        return jsonify({"ok": False, "error": "No key provided"}), 400
+    st = _get_state()
+    results = st["results"] or (load_last_results() or {}).get("results", [])
+    r = next((x for x in results if x.get("key") == key), None)
+    if not r:
+        return jsonify({"ok": False, "error": "Result not found — run a scan first"}), 404
+    releases = r.get("releases") or []
+    if idx < 0 or idx >= len(releases):
+        return jsonify({"ok": False, "error": "Release not found"}), 404
+    rel = releases[idx]
+    ihs = [h.lower() for h in (rel.get("info_hashes") or [])
+           if re.fullmatch(r"[0-9a-f]{40}", h)]
+    if not ihs:
+        return jsonify({"ok": False, "error": "No magnet available for this release"}), 400
+    cfg = load_config()
+    try:
+        torrents = qb_get_torrents(cfg, ihs)
+    except Exception as ex:
+        log.error("Download progress check failed for %s (release %d): %s", key, idx, ex)
+        return jsonify({"ok": False, "error": str(ex)}), 502
+    total_size = 0
+    downloaded = 0
+    speed = 0
+    states = []
+    for t in torrents:
+        size = t.get("size") or t.get("total_size") or 0
+        prog = t.get("progress") or 0
+        total_size += size
+        downloaded += int(size * prog)
+        speed += t.get("dlspeed") or 0
+        states.append(t.get("state") or "unknown")
+    found = len(torrents) > 0
+    progress = (downloaded / total_size) if total_size > 0 else 0.0
+    state = _normalize_qb_states(states)
+    if found and total_size > 0 and progress >= 0.999:
+        state = "complete"
+    return jsonify({
+        "ok": True,
+        "found": found,
+        "progress": round(progress, 4),
+        "downloaded": downloaded,
+        "total_size": total_size,
+        "speed": speed,
+        "state": state,
+    })
 
 
 # ---------------------------------------------------------------------------

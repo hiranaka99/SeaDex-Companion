@@ -525,6 +525,52 @@ a.card-source:hover .arr { transform: translate(2px, -2px); }
   transform: translateY(4px) scale(0.98);
 }
 
+/* ---- Spinning border while a download is running ----
+   A bright "comet" sweeps around the card's border in the card's own status
+   color (blue / green / amber / grey). The ring is drawn with a rotating
+   conic gradient painted into the border box; the interior is kept solid with
+   a padding-box layer so only the 2px border shows the animation. Placed after
+   the .card.status-* rules so it wins the border/box-shadow override. */
+@property --border-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+.card.status-upgrade { --card-status-color: #4f8cff; }
+.card.status-best    { --card-status-color: #34d399; }
+.card.status-missing { --card-status-color: #8b97ab; }
+.card.status-partial { --card-status-color: #fbbf24; }
+.card.is-downloading {
+  border: 2px solid transparent;
+  background:
+    linear-gradient(var(--panel), var(--panel)) padding-box,
+    conic-gradient(
+      from var(--border-angle),
+      transparent 0deg,
+      transparent 75deg,
+      var(--card-status-color) 125deg,
+      #ffffff 172deg,
+      transparent 180deg,
+      transparent 255deg,
+      var(--card-status-color) 305deg,
+      #ffffff 352deg,
+      transparent 360deg
+    ) border-box;
+  box-shadow: 0 0 24px -4px var(--card-status-color);
+  animation: card-border-spin 2.6s linear infinite;
+}
+/* The .card.status-upgrade:hover / .card.status-best:hover etc. rules
+   have higher specificity than .card.is-downloading, so re-assert the
+   transparent border and glow on hover to keep the comet visible.
+   The lift transform from .card:hover still applies. */
+.card.is-downloading:hover {
+  border: 2px solid transparent;
+  box-shadow: 0 0 30px -2px var(--card-status-color);
+}
+@keyframes card-border-spin {
+  to { --border-angle: 360deg; }
+}
+
 /* Status badge on the card banner (top-right). */
 .card-status {
   position: absolute;
@@ -1043,6 +1089,63 @@ a.card-source:hover .arr { transform: translate(2px, -2px); }
   background: rgba(52, 211, 153, 0.18);
   border-color: rgba(52, 211, 153, 0.5);
   cursor: default;
+}
+
+/* ============ Download progress ============ */
+/* Wraps a release row so a live progress bar can sit directly beneath it. */
+.release-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.release-row.downloading {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft), 0 4px 14px rgba(79, 140, 255, 0.12);
+}
+.dl-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 10px 9px;
+  background: rgba(79, 140, 255, 0.07);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.dl-progress-bar {
+  height: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.dl-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), var(--green));
+  border-radius: 999px;
+  transition: width 0.5s ease;
+}
+.dl-progress-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dl-spinner {
+  display: block;
+  width: 15px;
+  height: 15px;
+  border: 2px solid rgba(79, 140, 255, 0.35);
+  border-top-color: var(--accent-2);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+.dl-btn:disabled .dl-spinner {
+  border: 2px solid rgba(231, 236, 243, 0.3);
+  border-top-color: var(--text);
 }
 
 /* ============ Empty state ============ */

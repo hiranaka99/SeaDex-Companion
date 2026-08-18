@@ -48,3 +48,19 @@ export const download = (key: string, release: number) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key, release }),
   })
+
+export interface DownloadProgress {
+  ok: boolean
+  found: boolean
+  progress: number
+  downloaded: number
+  total_size: number
+  speed: number
+  state: string
+  error?: string
+}
+
+export const getDownloadProgress = (key: string, release: number) =>
+  api<DownloadProgress>(
+    `/api/download_progress?key=${encodeURIComponent(key)}&release=${release}`,
+  )

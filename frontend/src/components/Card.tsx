@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, ReactNode } from 'react'
 import { GroupedCard, Release, ResultItem, Config } from '../types'
 import { formatBytes, sizeDelta, seasonLabel, STATUS_LABEL } from '../utils'
 import * as api from '../api'
@@ -9,6 +9,8 @@ const IconDL = () => (
     <path d="M4 19h16v2H4z" />
   </svg>
 )
+
+const IconSpinner = () => <span className="dl-spinner" aria-hidden="true" />
 
 const IconOK = () => (
   <svg
@@ -116,8 +118,18 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
   const [hiding, setHiding] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const hideTimer = useRef<number | null>(null)
+  const [activeBySeason, setActiveBySeason] = useState<Record<string, boolean>>({})
   const srcClass = group.arr === 'Sonarr' ? 'sonarr' : 'radarr'
   const st = group.status || 'upgrade'
+
+  // Each season reports whether any of its releases is currently downloading;
+  // the card spins its border while any season is active.
+  const onSeasonActive = useCallback(
+    (key: string, active: boolean) =>
+      setActiveBySeason((prev) => (prev[key] === active ? prev : { ...prev, [key]: active })),
+    []
+  )
+  const downloading = Object.values(activeBySeason).some(Boolean)
 
   const seasonCount = group.seasons.length
   // Total size change if every upgradable season were replaced by its best release.
@@ -143,7 +155,13 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
 
   return (
     <article
-      className={'card status-' + st + (hiding ? ' is-hiding' : '') + (hidden ? ' is-hidden' : '')}
+      className={
+        'card status-' +
+        st +
+        (hiding ? ' is-hiding' : '') +
+        (hidden ? ' is-hidden' : '') +
+        (downloading ? ' is-downloading' : '')
+      }
       style={{ animationDelay: Math.min(index * 40, 400) + 'ms' }}
     >
       <div
@@ -209,9 +227,7 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
             </button>
           </div>
         </div>
-        {expanded ? (
-          group.seasons.map((r) => <Season key={r.key} r={r} config={config} />)
-        ) : (
+        {!expanded && (
           <button className="card-summary" type="button" onClick={() => setExpanded(true)}>
             <span className="summary-chip">
               {seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}
@@ -224,6 +240,13 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
             <span className="summary-hint">Show details</span>
           </button>
         )}
+        {/* Seasons stay mounted while collapsed so download progress (and its
+            polling) survives; the .hidden class just hides them visually. */}
+        <div className={expanded ? undefined : 'hidden'}>
+          {group.seasons.map((r) => (
+            <Season key={r.key} r={r} config={config} onActiveChange={onSeasonActive} />
+          ))}
+        </div>
       </div>
     </article>
   )
@@ -232,11 +255,29 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
 interface SeasonProps {
   r: ResultItem
   config: Config | null
+  onActiveChange: (key: string, active: boolean) => void
 }
 
 interface DisplayRelease {
   rel: Release
   index: number
+}
+
+/** Live download state for one release row (keyed by its release index). */
+interface DlState {
+  phase: 'idle' | 'sending' | 'downloading' | 'complete'
+  progress: number // 0..1
+  downloaded: number
+  total_size: number
+  speed: number
+}
+
+const IDLE_DL: DlState = {
+  phase: 'idle',
+  progress: 0,
+  downloaded: 0,
+  total_size: 0,
+  speed: 0,
 }
 
 /**
@@ -277,22 +318,97 @@ function groupByCour(releases: DisplayRelease[]): { part: string; items: Display
   return groups
 }
 
-function Season({ r, config }: SeasonProps) {
-  const [dlState, setDlState] = useState<Record<number, 'idle' | 'busy' | 'done'>>({})
+function Season({ r, config, onActiveChange }: SeasonProps) {
+  const [dl, setDl] = useState<Record<number, DlState>>({})
+  const pollers = useRef<Record<number, number>>({})
   const st = r.status || 'upgrade'
 
+  // True while any release in this season is being sent or downloaded.
+  const active = Object.values(dl).some(
+    (d) => d.phase === 'sending' || d.phase === 'downloading',
+  )
+  useEffect(() => {
+    onActiveChange(r.key, active)
+  }, [active, onActiveChange, r.key])
+
+  const stopPolling = (release: number) => {
+    const id = pollers.current[release]
+    if (id) {
+      window.clearInterval(id)
+      delete pollers.current[release]
+    }
+  }
+
+  const startPolling = (release: number) => {
+    if (pollers.current[release]) return
+    pollers.current[release] = window.setInterval(() => pollProgress(release), 3000)
+  }
+
+  const applyProgress = (release: number, p: api.DownloadProgress) => {
+    if (!p.ok) return
+    const complete = p.state === 'complete' || (p.found && p.progress >= 0.999)
+    setDl((s) => ({
+      ...s,
+      [release]: {
+        phase: complete ? 'complete' : 'downloading',
+        progress: p.progress,
+        downloaded: p.downloaded,
+        total_size: p.total_size,
+        speed: p.speed,
+      },
+    }))
+    if (complete) stopPolling(release)
+    else startPolling(release)
+  }
+
+  const pollProgress = (release: number) => {
+    api.getDownloadProgress(r.key, release)
+      .then((p) => applyProgress(release, p))
+      .catch(() => {
+        /* transient network/backend error — keep polling */
+      })
+  }
+
+  // Re-attach to downloads that are already running in qBittorrent (e.g. after
+  // a page reload or server restart): check each downloadable release once and
+  // resume polling for any that are in progress or already complete. The
+  // backend caches the qBittorrent response, so this burst stays cheap.
+  useEffect(() => {
+    const active = pollers.current
+    const owned = (rel: Release) =>
+      r.have.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
+    for (const { rel, index } of uniqueReleases(r.releases || [])) {
+      if (!rel.downloadable || owned(rel)) continue
+      api
+        .getDownloadProgress(r.key, index)
+        .then((p) => {
+          if (!p.ok || !p.found) return
+          if (p.state === 'paused') return // don't show a stuck bar for paused
+          applyProgress(index, p)
+        })
+        .catch(() => {
+          /* ignore — nothing to re-attach to */
+        })
+    }
+    return () => {
+      for (const k of Object.keys(active)) window.clearInterval(active[Number(k)])
+    }
+    // Runs once per mount (fresh after a reload), so the first-render `r` is used.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const handleDownload = async (release: number) => {
-    setDlState((s) => ({ ...s, [release]: 'busy' }))
+    setDl((s) => ({ ...s, [release]: { ...IDLE_DL, phase: 'sending' } }))
     try {
       const res = await api.download(r.key, release)
-      if (res.ok) setDlState((s) => ({ ...s, [release]: 'done' }))
-      else throw new Error(res.error || 'Download failed')
+      if (!res.ok) throw new Error(res.error || 'Download failed')
+      pollProgress(release)
+      startPolling(release)
     } catch (e: any) {
+      stopPolling(release)
+      setDl((s) => ({ ...s, [release]: IDLE_DL }))
       alert('Download failed: ' + e.message)
     }
-    setTimeout(() => {
-      setDlState((s) => ({ ...s, [release]: 'idle' }))
-    }, 2500)
   }
 
   let middle: ReactNode
@@ -321,13 +437,17 @@ function Season({ r, config }: SeasonProps) {
                 const delta = rel.part ? '' : sizeDelta(rel.size, r.local_size)
                 const owned = r.have.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
                 const cat = (config ? String((config as any)[((r.arr || '').toLowerCase() + '_category')] || '') : '').trim()
-                const state = dlState[index] || 'idle'
-                const disabled = owned || !rel.downloadable
+                const dlState = dl[index] || IDLE_DL
+                const sending = dlState.phase === 'sending' || dlState.phase === 'downloading'
+                const disabled = owned || !rel.downloadable || sending
                 const btnTitle = owned
                   ? 'You already have this release'
+                  : sending
+                  ? 'Downloading…'
                   : rel.downloadable
                   ? 'Send this release to qBittorrent (category: ' + (cat || r.arr) + ')'
                   : 'No magnet available (private tracker)'
+                const pct = Math.min(100, Math.round(dlState.progress * 1000) / 10)
                 // releases.moe marks dual-audio releases with a separate flag
                 // (not part of the quality "tags" list), so surface it here too.
                 const tags = [
@@ -335,43 +455,71 @@ function Season({ r, config }: SeasonProps) {
                   ...(rel.tags || []),
                 ]
                 return (
-                  <div
-                    key={`${rel.part || ''}-${rel.releaseGroup}`}
-                    className={'release-row ' + (isBest ? 'best' : 'alt') + (owned ? ' owned' : '')}
-                  >
-                    <span className="rel-kind" title={rel.part || undefined}>
-                      {isBest ? 'Best' : 'Alt'}
-                    </span>
-                    <div className="rel-main">
-                      <span className={'badge ' + (isBest ? 'best' : 'alt')} title={rel.releaseGroup}>
-                        {rel.releaseGroup}
-                      </span>
-                      {tags.length > 0 && (
-                        <div className="rel-tags">
-                          {tags.map((t) => (
-                            <span key={t} className={tagClass(t)}>
-                              {t}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <span className={'size ' + (isBest ? 'best' : '')} title="Size of this release">
-                      {formatBytes(rel.size)}
-                    </span>
-                    {delta && (
-                      <span className="size-delta" title="Difference: release size minus your local size">
-                        {delta}
-                      </span>
-                    )}
-                    <button
-                      className={'dl-btn' + (disabled ? ' disabled' : '')}
-                      disabled={disabled || state === 'busy'}
-                      title={btnTitle}
-                      onClick={() => !disabled && handleDownload(index)}
+                  <div key={`${rel.part || ''}-${rel.releaseGroup}`} className="release-wrap">
+                    <div
+                      className={
+                        'release-row ' +
+                        (isBest ? 'best' : 'alt') +
+                        (owned ? ' owned' : '') +
+                        (sending ? ' downloading' : '')
+                      }
                     >
-                      {owned || state === 'done' ? <IconOK /> : state === 'busy' ? '…' : <IconDL />}
-                    </button>
+                      <span className="rel-kind" title={rel.part || undefined}>
+                        {isBest ? 'Best' : 'Alt'}
+                      </span>
+                      <div className="rel-main">
+                        <span className={'badge ' + (isBest ? 'best' : 'alt')} title={rel.releaseGroup}>
+                          {rel.releaseGroup}
+                        </span>
+                        {tags.length > 0 && (
+                          <div className="rel-tags">
+                            {tags.map((t) => (
+                              <span key={t} className={tagClass(t)}>
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <span className={'size ' + (isBest ? 'best' : '')} title="Size of this release">
+                        {formatBytes(rel.size)}
+                      </span>
+                      {delta && (
+                        <span className="size-delta" title="Difference: release size minus your local size">
+                          {delta}
+                        </span>
+                      )}
+                      <button
+                        className={'dl-btn' + (disabled ? ' disabled' : '')}
+                        disabled={disabled}
+                        title={btnTitle}
+                        onClick={() => !disabled && handleDownload(index)}
+                      >
+                        {owned || dlState.phase === 'complete' ? (
+                          <IconOK />
+                        ) : sending ? (
+                          <IconSpinner />
+                        ) : (
+                          <IconDL />
+                        )}
+                      </button>
+                    </div>
+                    {sending && (
+                      <div className="dl-progress">
+                        <div className="dl-progress-bar">
+                          <div className="dl-progress-fill" style={{ width: Math.max(pct, 2) + '%' }} />
+                        </div>
+                        <div className="dl-progress-label">
+                          {dlState.phase === 'sending'
+                            ? 'Sending to qBittorrent…'
+                            : dlState.total_size > 0
+                            ? `${pct.toFixed(1)}% · ${formatBytes(dlState.downloaded)} / ${formatBytes(
+                                dlState.total_size,
+                              )}${dlState.speed > 0 ? ' · ' + formatBytes(dlState.speed) + '/s' : ''}`
+                            : 'Waiting for torrent metadata…'}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )
               })}
