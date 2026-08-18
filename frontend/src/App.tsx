@@ -22,7 +22,6 @@ export default function App() {
   const [results, setResults] = useState<ResultItem[]>([])
   const [lastRun, setLastRun] = useState<string | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
-  const [mutedKeys, setMutedKeys] = useState<Set<string>>(new Set())
 
   const pollTimer = useRef<number | null>(null)
 
@@ -56,7 +55,6 @@ export default function App() {
     try {
       const cfg = await api.getConfig()
       setConfig(cfg)
-      setMutedKeys(new Set(cfg.muted || []))
     } catch (e) {
       console.error('Failed to load config:', e)
     }
@@ -82,15 +80,6 @@ export default function App() {
     }
   }
 
-  const handleMute = async (key: string, muted: boolean) => {
-    try {
-      const r = await api.mute(key, muted)
-      if (r.ok) setMutedKeys(new Set(r.muted))
-    } catch (e: any) {
-      alert('Failed to update lock: ' + e.message)
-    }
-  }
-
   return (
     <div className="app">
       <Sidebar tab={tab} onTabChange={setTab} status={status} />
@@ -99,11 +88,9 @@ export default function App() {
           <AnimeTab
             results={results}
             config={config}
-            mutedKeys={mutedKeys}
             status={status}
             lastRun={lastRun}
             onScan={handleScan}
-            onMute={handleMute}
           />
         )}
         {tab === 'config' && <ConfigTab config={config} onSaved={loadConfig} />}

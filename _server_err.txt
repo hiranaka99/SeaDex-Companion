@@ -1,0 +1,25 @@
+2026-08-18 16:38:14 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 16:38:57 [INFO] Scan started
+INFO:seadex:Scan started
+2026-08-18 16:39:01 [INFO] releases.moe: 2829 best-release entries loaded
+INFO:seadex:releases.moe: 2829 best-release entries loaded
+2026-08-18 16:39:01 [INFO] Local library: 101 item(s) from Sonarr/Radarr
+INFO:seadex:Local library: 101 item(s) from Sonarr/Radarr
+2026-08-18 16:39:01 [INFO] Scan finished in 3.8s — 188 upgrade(s) found
+INFO:seadex:Scan finished in 3.8s — 188 upgrade(s) found
+2026-08-18 17:11:17 [INFO] Scan started
+INFO:seadex:Scan started
+2026-08-18 17:11:23 [INFO] releases.moe: 2829 best-release entries loaded
+INFO:seadex:releases.moe: 2829 best-release entries loaded
+2026-08-18 17:11:23 [INFO] Local library: 101 item(s) from Sonarr/Radarr
+INFO:seadex:Local library: 101 item(s) from Sonarr/Radarr
+2026-08-18 17:11:23 [INFO] Scan finished in 5.8s — 188 upgrade(s) found
+INFO:seadex:Scan finished in 5.8s — 188 upgrade(s) found
+2026-08-18 17:12:42 [INFO] Scan started
+INFO:seadex:Scan started
+2026-08-18 17:12:46 [INFO] releases.moe: 2829 best-release entries loaded
+INFO:seadex:releases.moe: 2829 best-release entries loaded
+2026-08-18 17:12:46 [INFO] Local library: 101 item(s) from Sonarr/Radarr
+INFO:seadex:Local library: 101 item(s) from Sonarr/Radarr
+2026-08-18 17:12:46 [INFO] Scan finished in 3.6s — 188 upgrade(s) found
+INFO:seadex:Scan finished in 3.6s — 188 upgrade(s) found

@@ -1,4 +1,4 @@
-export type CardStatus = 'upgrade' | 'best' | 'missing'
+export type CardStatus = 'upgrade' | 'best' | 'missing' | 'partial'
 
 export type TabId = 'anime' | 'config' | 'log'
 
@@ -63,7 +63,7 @@ export interface Config {
   webhook: string
   notify_enabled: boolean
   autocheck_minutes: number
-  muted: string[]
+  hidden: string[]
 }
 
 export interface Status {

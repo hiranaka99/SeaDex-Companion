@@ -44,7 +44,7 @@ export default function ConfigTab({ config, onSaved }: Props) {
     if (config) {
       const f: Record<string, any> = {}
       for (const k of Object.keys(config)) {
-        if (k === 'muted') continue
+        if (k === 'hidden') continue
         f[k] = (config as any)[k]
       }
       setForm(f)
@@ -111,7 +111,7 @@ export default function ConfigTab({ config, onSaved }: Props) {
         <div className="config-card">
           <h3>📣 Discord</h3>
           <Field name="webhook" type="url" label="Webhook URL" placeholder="https://discord.com/api/webhooks/…" form={form} set={set} />
-          <p className="hint">Used by the “Notify Discord” button to post all found upgrades.</p>
+          <p className="hint">New upgrades found after a scan are posted here automatically.</p>
         </div>
 
         <div className="config-card">
@@ -122,8 +122,8 @@ export default function ConfigTab({ config, onSaved }: Props) {
           </label>
           <Field name="autocheck_minutes" type="number" label="Auto-check interval (minutes)" small="(0 = off)" placeholder="60" form={form} set={set} />
           <p className="hint">
-            When enabled, new upgrades found by an automatic re-scan are posted to Discord automatically.
-            Cards you lock (🔕) are never notified.
+            When enabled, new upgrades found after each scan are posted to Discord automatically.
+            Hidden cards only affect the current library view and do not change scan notifications.
           </p>
         </div>
 

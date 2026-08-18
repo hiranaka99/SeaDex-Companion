@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ResultItem, Config, Status } from '../types'
 import { groupResults, formatBytes, seasonLabel } from '../utils'
 import Card from './Card'
@@ -7,43 +7,59 @@ import * as api from '../api'
 interface Props {
   results: ResultItem[]
   config: Config | null
-  mutedKeys: Set<string>
   status: Status
   lastRun: string | null
   onScan: () => void
-  onMute: (key: string, muted: boolean) => void
 }
 
-export default function AnimeTab({ results, config, mutedKeys, status, lastRun, onScan, onMute }: Props) {
+function cardKey(group: ReturnType<typeof groupResults>[number]): string {
+  return group.anilist_id !== null ? String(group.anilist_id) : `${group.arr}:${group.title}`
+}
+
+export default function AnimeTab({ results, config, status, lastRun, onScan }: Props) {
   const [search, setSearch] = useState('')
   const [arr, setArr] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
-  const [hideLocked, setHideLocked] = useState(false)
-  const [notifyMsg, setNotifyMsg] = useState('📣 Notify Discord')
-  const [notifyBusy, setNotifyBusy] = useState(false)
+  const [showHidden, setShowHidden] = useState(false)
+  const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
+
+  // Hidden state is persisted server-side (config.json) so it survives
+  // restarts; seed the local set from config once it has loaded.
+  useEffect(() => {
+    if (config?.hidden) setHiddenKeys(new Set(config.hidden))
+  }, [config?.hidden])
+
+  const toggleHidden = (key: string) => {
+    const next = new Set(hiddenKeys)
+    const nowHidden = !next.has(key)
+    if (nowHidden) next.add(key)
+    else next.delete(key)
+    setHiddenKeys(next)
+    api.setHidden(key, nowHidden).catch((e) => console.error('Failed to persist hidden state:', e))
+  }
 
   const groups = useMemo(() => {
     const q = search.trim().toLowerCase()
     const filtered = groupResults(results).filter((g) => {
+      if (hiddenKeys.has(cardKey(g)) !== showHidden) return false
       if (arr && g.arr !== arr) return false
       if (statusFilter && g.status !== statusFilter) return false
-      if (hideLocked && g.seasons.every((r) => mutedKeys.has(r.key))) return false
       if (!q) return true
       const hay = g.seasons
         .map((r) => r.title + ' ' + (r.best_group || '') + ' ' + r.have.join(' ') + ' ' + seasonLabel(r))
         .join(' ')
       return (g.title + ' ' + hay).toLowerCase().includes(q)
     })
-    // Order: upgradable (blue) first, then missing from SeaDex (grey), then
-    // already best quality (green); alphabetical within each status.
-    const rank: Record<string, number> = { upgrade: 0, missing: 1, best: 2 }
+    // Order: upgradable first, then partially covered, missing from SeaDex,
+    // and already best quality; alphabetical within each status.
+    const rank: Record<string, number> = { upgrade: 0, partial: 1, missing: 2, best: 3 }
     filtered.sort(
       (a, b) =>
         (rank[a.status] - rank[b.status]) ||
         a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }),
     )
     return filtered
-  }, [results, search, arr, statusFilter, hideLocked, mutedKeys])
+  }, [results, search, arr, statusFilter, showHidden, hiddenKeys])
 
   // Sum of (best − local) size across every visible upgradable season.
   let total = 0
@@ -55,27 +71,6 @@ export default function AnimeTab({ results, config, mutedKeys, status, lastRun, 
   const autoCheck = status.next_check
     ? `Auto-check in ~${Math.max(0, Math.round((status.next_check - Date.now() / 1000) / 60))} min`
     : ''
-
-  const handleNotify = async () => {
-    if (!results.length) {
-      alert('No results to send. Run a scan first.')
-      return
-    }
-    setNotifyBusy(true)
-    setNotifyMsg('Sending…')
-    try {
-      const r = await api.notify()
-      if (r.ok) setNotifyMsg(`✓ Sent ${r.sent}/${r.total}`)
-      else throw new Error(r.error || 'Notify failed')
-    } catch (e: any) {
-      alert('Notify failed: ' + e.message)
-      setNotifyMsg('📣 Notify Discord')
-    }
-    setTimeout(() => {
-      setNotifyMsg('📣 Notify Discord')
-      setNotifyBusy(false)
-    }, 2500)
-  }
 
   return (
     <section className="tab">
@@ -96,14 +91,6 @@ export default function AnimeTab({ results, config, mutedKeys, status, lastRun, 
           {autoCheck && <p className="subtitle">{autoCheck}</p>}
         </div>
         <div className="actions">
-          <button
-            className="btn btn-ghost"
-            title="Send all upgrades to Discord"
-            onClick={handleNotify}
-            disabled={notifyBusy}
-          >
-            {notifyMsg}
-          </button>
           <button className="btn btn-primary" onClick={onScan} disabled={status.running}>
             {status.running && <span className="spinner" />}
             <span>{status.running ? 'Scanning…' : '▶ Scan Library'}</span>
@@ -141,11 +128,12 @@ export default function AnimeTab({ results, config, mutedKeys, status, lastRun, 
         <select className="select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
           <option value="">All statuses</option>
           <option value="upgrade">Upgradable</option>
+          <option value="partial">Partially on SeaDex</option>
           <option value="best">Already best quality</option>
           <option value="missing">Missing from SeaDex</option>
         </select>
-        <label className="check-filter" title="Hide cards where every season is locked (🔕)">
-          <input type="checkbox" checked={hideLocked} onChange={(e) => setHideLocked(e.target.checked)} /> Hide locked
+        <label className="check-filter" title="Show only cards hidden with the eye button">
+          <input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} /> Show only hidden
         </label>
         <span className="count-badge">{groups.length}</span>
       </div>
@@ -153,12 +141,12 @@ export default function AnimeTab({ results, config, mutedKeys, status, lastRun, 
       <div className="grid">
         {groups.map((g, i) => (
           <Card
-            key={String(g.anilist_id)}
+            key={cardKey(g)}
             group={g}
             index={i}
-            mutedKeys={mutedKeys}
             config={config}
-            onMute={onMute}
+            hidden={hiddenKeys.has(cardKey(g))}
+            onToggle={() => toggleHidden(cardKey(g))}
           />
         ))}
       </div>
