@@ -53,3 +53,9 @@ _server_out.txt
 Thumbs.db
 .vscode/
 .idea/
+
+# ---------------------------------------------------------------------------
+# Deployment scripts (contain registry credentials / local workflow)
+# ---------------------------------------------------------------------------
+scripts/push-dockerhub
+scripts/push-dockerhub.ps1
