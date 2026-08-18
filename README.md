@@ -15,7 +15,20 @@ A web UI that compares your **Sonarr / Radarr** anime library against the best r
 
 ## Run locally
 
-Prerequisites: Python 3.11+ and Node.js 22+.
+### Prerequisites
+
+- **Python 3.11+**
+  - Windows: `winget install Python.Python.3.11` (or download the installer from [python.org](https://www.python.org/downloads/) — tick **"Add python.exe to PATH"** during setup)
+  - macOS: `brew install python@3.11`
+  - Linux: `sudo apt install python3.11` (or your distro's equivalent)
+- **Node.js 22+** (only needed to build the frontend)
+  - Windows: `winget install OpenJS.NodeJS` (or download from [nodejs.org](https://nodejs.org/))
+  - macOS: `brew install node`
+  - Linux: `curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs`
+
+Verify with `python --version` and `node --version`.
+
+### Steps
 
 1. Install the Python dependencies:
 
