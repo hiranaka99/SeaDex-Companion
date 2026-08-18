@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import Sidebar from './components/Sidebar'
+import TopBar from './components/TopBar'
 import AnimeTab from './components/AnimeTab'
 import ConfigTab from './components/ConfigTab'
 import LogTab from './components/LogTab'
@@ -82,7 +82,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <Sidebar tab={tab} onTabChange={setTab} status={status} />
+      <TopBar tab={tab} onTabChange={setTab} status={status} />
       <main className="main">
         {tab === 'anime' && (
           <AnimeTab

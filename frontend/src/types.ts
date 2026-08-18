@@ -10,6 +10,7 @@ export interface Release {
   tracker: string
   quality: string
   tags: string[]
+  dual_audio?: boolean
   size: number
   info_hashes: string[]
   downloadable: boolean

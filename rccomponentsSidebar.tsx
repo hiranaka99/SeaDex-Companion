@@ -1,0 +1,141 @@
+[1mdiff --git a/app.py b/app.py[m
+[1mindex 3707a7d..4733e63 100644[m
+[1m--- a/app.py[m
+[1m+++ b/app.py[m
+[36m@@ -262,6 +262,7 @@[m [mdef seadex_best():[m
+                             tracker=t["tracker"],[m
+                             quality=quality,[m
+                             tags=t.get("tags", []),[m
+[32m+[m[32m                            dual_audio=bool(t.get("dualAudio")),[m
+                             size=0,[m
+                             file_count=0,[m
+                             info_hashes=[],[m
+[36m@@ -271,6 +272,7 @@[m [mdef seadex_best():[m
+                     rel["size"] += size[m
+                     rel["file_count"] += count[m
+                     rel["is_best"] = rel["is_best"] or bool(t.get("isBest"))[m
+[32m+[m[32m                    rel["dual_audio"] = rel["dual_audio"] or bool(t.get("dualAudio"))[m
+                     ih = t.get("infoHash") or ""[m
+                     if ih and ih not in rel["info_hashes"]:[m
+                         rel["info_hashes"].append(ih)[m
+[36m@@ -681,23 +683,24 @@[m [mdef _is_dl(rel):[m
+ def _pick_best(candidates, episode_count=None):[m
+     """Pick the best release from a season's candidates.[m
+ [m
+[31m-    Prefers a release whose file count matches the entry's episode count (a[m
+[32m+[m[32m    SeaDEX's isBest flag is authoritative.  Within the best-flagged releases,[m
+[32m+[m[32m    prefer one whose file count matches the entry's episode count (a[m
+     per-episode release for exactly this season — this keeps a combined[m
+     multi-entry torrent, e.g. one that spans several entries, from being[m
+[31m-    reported as the size of a single season). Then isBest-flagged, then[m
+[31m-    downloadable, then largest. Returns (best, alts).[m
+[32m+[m[32m    reported as the size of a single season). Then prefer downloadable, then[m
+[32m+[m[32m    largest. If an incomplete SeaDEX entry has no best-flagged release, use the[m
+[32m+[m[32m    same heuristics across all candidates as a fallback. Returns (best, alts).[m
+     """[m
+     if not candidates:[m
+         return None, [][m
+[31m-    pool = list(candidates)[m
+[32m+[m[32m    flagged = [a for a in candidates if a.get("is_best")][m
+[32m+[m[32m    pool = flagged or list(candidates)[m
+     if episode_count and episode_count > 0:[m
+         matching = [a for a in pool if a.get("file_count") == episode_count][m
+         if matching:[m
+             pool = matching[m
+[31m-    flagged = [a for a in pool if a.get("is_best")][m
+[31m-    pool2 = flagged or pool[m
+[31m-    dl = [a for a in pool2 if _is_dl(a)][m
+[31m-    chosen = max(dl or pool2, key=lambda a: a.get("size") or 0)[m
+[32m+[m[32m    dl = [a for a in pool if _is_dl(a)][m
+[32m+[m[32m    chosen = max(dl or pool, key=lambda a: a.get("size") or 0)[m
+     alts = [a for a in candidates if a is not chosen][m
+     return chosen, alts[m
+ [m
+[36m@@ -710,6 +713,7 @@[m [mdef _release_dict(kind, rel, part=None, url=None):[m
+         tracker=rel["tracker"],[m
+         quality=rel["quality"],[m
+         tags=rel.get("tags", []),[m
+[32m+[m[32m        dual_audio=bool(rel.get("dual_audio", False)),[m
+         size=rel.get("size") or 0,[m
+         info_hashes=ihs,[m
+         downloadable=_is_dl(rel),[m
+[36m@@ -817,6 +821,19 @@[m [mdef _common_best_release(resolved, local_group_keys):[m
+                default=None)[m
+ [m
+ [m
+[32m+[m[32mdef _part_best_groups(part):[m
+[32m+[m[32m    """Release-group names (lowercased) that count as "best" for one cour.[m
+[32m+[m
+[32m+[m[32m    Mirrors the UI: the selected best plus every candidate releases.moe flags[m
+[32m+[m[32m    with ``is_best``. Owning ANY of them means the user already has best[m
+[32m+[m[32m    quality, even when it is not the single largest release _pick_best() chose[m
+[32m+[m[32m    (e.g. a fansub and its dub can both carry the best flag).[m
+[32m+[m[32m    """[m
+[32m+[m[32m    return {rel["releaseGroup"].strip().lower()[m
+[32m+[m[32m            for kind, rel in _ordered_part_releases(part["best"], part["alts"])[m
+[32m+[m[32m            if kind == "best"}[m
+[32m+[m
+[32m+[m
+ def run_scan(cfg):[m
+     started = time.time()[m
+     try:[m
+[36m@@ -940,8 +957,16 @@[m [mdef run_scan(cfg):[m
+                 best_group = " + ".join(best_groups)[m
+                 best_size = sum(rel.get("size") or 0 for rel in best_rels)[m
+                 local_group_keys = {group.lower() for group in local_groups}[m
+[31m-                owns_all_best = all(rel["releaseGroup"].lower() in local_group_keys[m
+[31m-                                    for rel in best_rels)[m
+[32m+[m[32m                # A season is "best quality" when the user owns ANY release[m
+[32m+[m[32m                # releases.moe flags as best for each cour — not only the single[m
+[32m+[m[32m                # largest one _pick_best() selected. Several groups can share the[m
+[32m+[m[32m                # best flag (e.g. a fansub and its dub), so owning any of them[m
+[32m+[m[32m                # already means the user has best quality.[m
+[32m+[m[32m                owns_all_best = all([m
+[32m+[m[32m                    any(bg in local_group_keys[m
+[32m+[m[32m                        for bg in _part_best_groups(part))[m
+[32m+[m[32m                    for part in resolved[m
+[32m+[m[32m                )[m
+ [m
+                 # A single torrent can span every AniList cour in this Sonarr[m
+                 # season. If that exact SeaDEX-best info hash is present on all[m
+[1mdiff --git a/tests/test_season_mapping.py b/tests/test_season_mapping.py[m
+[1mindex 2971dae..802b0e9 100644[m
+[1m--- a/tests/test_season_mapping.py[m
+[1m+++ b/tests/test_season_mapping.py[m
+[36m@@ -193,6 +193,22 @@[m [mclass AniListChainTests(unittest.TestCase):[m
+ [m
+ [m
+ class CombinedCourScanTests(unittest.TestCase):[m
+[32m+[m[32m    def test_best_flag_takes_priority_over_episode_count_match(self):[m
+[32m+[m[32m        # Banished from the Hero's Party regression: TTGA is SeaDEX's Best but[m
+[32m+[m[32m        # contains an extra file, while the 13-file YURASUKA encode is an Alt.[m
+[32m+[m[32m        # Episode-count matching must not promote that explicitly non-best Alt.[m
+[32m+[m[32m        ttga = release("TTGA", 14, True, "a")[m
+[32m+[m[32m        yurasuka = release("YURASUKA", 13, False, "b")[m
+[32m+[m
+[32m+[m[32m        best, alts = app._pick_best([ttga, yurasuka], episode_count=13)[m
+[32m+[m[32m        ordered = app._ordered_part_releases(best, alts)[m
+[32m+[m
+[32m+[m[32m        self.assertEqual("TTGA", best["releaseGroup"])[m
+[32m+[m[32m        self.assertEqual([m
+[32m+[m[32m            [("best", "TTGA"), ("alt", "YURASUKA")],[m
+[32m+[m[32m            [(kind, rel["releaseGroup"]) for kind, rel in ordered],[m
+[32m+[m[32m        )[m
+[32m+[m
+     def test_ordered_releases_only_keeps_one_row_per_release_group(self):[m
+         best = release("Flugel", 12, True, "a")[m
+         best["tracker"] = "Nyaa"[m
+[36m@@ -362,6 +378,54 @@[m [mclass CombinedCourScanTests(unittest.TestCase):[m
+         self.assertEqual(158927, season_two["anilist_id"])[m
+         self.assertEqual("https://releases.moe/158927/", season_two["url"])[m
+ [m
+[32m+[m[32m    def test_owning_a_non_largest_best_flagged_release_is_best_quality(self):[m
+[32m+[m[32m        # Call of the Night S01: two releases are both flagged best by[m
+[32m+[m[32m        # releases.moe (a fansub and its dub). The user owns the smaller one[m
+[32m+[m[32m        # (Okay-Subs), not the largest (NTRX) that _pick_best() selects as the[m
+[32m+[m[32m        # primary best. Owning ANY best-flagged release means the season is[m
+[32m+[m[32m        # already best quality, so it must not be reported as "upgrade".[m
+[32m+[m[32m        ntrx = release("NTRX", 13, True, "a")[m
+[32m+[m[32m        okay = release("Okay-Subs", 13, True, "b")[m
+[32m+[m[32m        ntrx["size"] = 15300  # larger -> selected as the primary best[m
+[32m+[m[32m        okay["size"] = 14600  # sm
