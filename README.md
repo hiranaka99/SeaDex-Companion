@@ -71,7 +71,7 @@ docker compose up -d --build
 - Web UI: **http://localhost:8080**
 - Config, caches and logs persist in `./data`
 - No local frontend build needed — the image is built in two stages and compiles the React app inside the container, so it always ships the UI that matches the current `frontend/` source
-- To change the port, edit the `ports` mapping in `docker-compose.yml`
+- To change the port, edit only the host side of the `ports` mapping in `docker-compose.yml` (e.g. `"8081:8080"` to serve on port 8081) — the container always listens on 8080, so keep the right-hand side unchanged
 
 ## Deploy from Docker Hub (no build needed)
 
