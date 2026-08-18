@@ -30,8 +30,8 @@ export function sizeDelta(best: number, local: number): string {
 
 export function seasonLabel(r: ResultItem): string {
   if (r.season) return `S${String(r.season).padStart(2, '0')}`
-  // Season 0 is Sonarr's specials season (or a Radarr movie).
-  return r.arr === 'Radarr' ? 'Movie' : 'Special'
+  // Season 0 is a Radarr movie.
+  return 'Movie'
 }
 
 /**
@@ -63,9 +63,9 @@ export function groupResults(results: ResultItem[]): GroupedCard[] {
   const cards = [...map.values()]
   for (const g of cards) {
     g.seasons.sort((a, b) => (a.season || 0) - (b.season || 0))
-    // The card inherits its artwork from the first season result, but a
-    // specials season (season 0) can have no AniList banner (or cover). Prefer
-    // the first season that actually has one so the card still shows artwork.
+    // The card inherits its artwork from the first season result, but the
+    // first season can have no AniList banner (or cover). Prefer the first
+    // season that actually has one so the card still shows artwork.
     g.banner = g.seasons.find((s) => s.banner)?.banner ?? g.banner
     g.image = g.seasons.find((s) => s.image)?.image ?? g.image
     // Card status reflects the strongest useful state for the whole card.

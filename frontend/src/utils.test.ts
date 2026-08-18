@@ -40,9 +40,10 @@ expect(cardStatus('missing', 'missing'), 'missing', 'fully missing cards remain 
 expect(cardStatus('upgrade', 'missing'), 'upgrade', 'upgrades retain priority over missing seasons')
 expect(STATUS_LABEL.partial, 'Partially on SeaDex', 'partial cards have an explicit label')
 
-// A specials season (season 0) sorts first and can lack an AniList banner while
-// the numbered seasons have one. The card must fall back to the first season
-// that actually carries artwork instead of rendering without a banner.
+// The first season (e.g. a Radarr movie, season 0) sorts first and can lack
+// an AniList banner while later seasons have one. The card must fall back to
+// the first season that actually carries artwork instead of rendering without
+// a banner.
 function resultWithArt(season: number, banner: string | null, image: string | null): ResultItem {
   return { ...result(season, 'best'), banner, image }
 }

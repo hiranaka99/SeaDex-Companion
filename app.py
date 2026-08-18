@@ -292,6 +292,8 @@ def local_items(cfg):
             seasons = {}
             for season in s.get("seasons") or []:
                 num = season.get("seasonNumber", 0)
+                if num == 0:
+                    continue  # Sonarr's specials season is not tracked
                 stats = season.get("statistics") or {}
                 rgs = stats.get("releaseGroups") or []
                 if rgs:
@@ -473,7 +475,8 @@ def anilist_lookup(title, cache):
     if cache_key in cache:
         return cache[cache_key]
     # SEARCH_MATCH is useful for finding candidates, but its first result is
-    # not guaranteed to be the canonical entry when a franchise has specials.
+    # not guaranteed to be the canonical entry when a franchise has several
+    # related entries.
     q = ('query($t:String){Page(perPage:10){media(search:$t,type:ANIME,sort:SEARCH_MATCH){'
          'id format season seasonYear episodes title{romaji english native} '
          'coverImage{large extraLarge} bannerImage}}}')
@@ -492,9 +495,9 @@ def anilist_lookup(title, cache):
     return None
 
 
-# Formats that represent a TV "season". Movies / manga / specials are NOT
-# seasons and must not be counted as one (a franchise can list a movie and a
-# TV season as sequels of the same entry).
+# Formats that represent a TV "season". Movies, manga, and other non-season
+# formats are NOT seasons and must not be counted as one (a franchise can list
+# a movie and a TV season as sequels of the same entry).
 _SEASON_FORMATS = {"TV", "TV_SHORT", "ONA"}
 _SEASON_ORDER = {"WINTER": 0, "SPRING": 1, "SUMMER": 2, "FALL": 3}
 
@@ -550,9 +553,9 @@ def anilist_chain(title, cache):
     the same entry) and can interleave movies between TV seasons. Following
     only the first pointer therefore skips real seasons and counts movies as
     seasons (off-by-one). So we walk the *whole* SEQUEL graph (BFS), keep
-    only the entries that are actual TV seasons (dropping movies / manga /
-    specials), and order them chronologically. That yields the correct 1:1
-    mapping between Sonarr seasons and releases.moe entries.
+    only the entries that are actual TV seasons (dropping non-season formats
+    such as movies and manga), and order them chronologically. That yields the
+    correct 1:1 mapping between Sonarr seasons and releases.moe entries.
 
     Split cours are grouped into one item, represented by ``parts``.  For
     example SPY x FAMILY resolves to season IDs
@@ -564,7 +567,7 @@ def anilist_chain(title, cache):
     """
     base = anilist_lookup(title, cache)
     if not base:
-        return [], []
+        return []
     # v6 groups split cours into their Sonarr season.  Older cached chains
     # assigned every AniList TV entry a new season and caused this bug.
     # v8 orders TV seasons by their BFS SEQUEL-chain discovery distance so
@@ -572,8 +575,7 @@ def anilist_chain(title, cache):
     # sort before earlier seasons.
     chain_key = "chain:v8:" + str(base["id"])
     if chain_key in cache:
-        cached = cache[chain_key]
-        return cached.get("chain", []), cached.get("specials", [])
+        return cache[chain_key].get("chain", [])
 
     # NOTE: AniList's Media field for the episode total is "episodes" (not
     # "episodeCount" — that field does not exist and 400s the whole query).
@@ -614,39 +616,13 @@ def anilist_chain(title, cache):
                 _SEASON_ORDER.get(d.get("season") or "", 4),
                 mid)
 
-    # Keep only real TV seasons (drop movies / manga / specials) and order
-    # them by the SEQUEL chain (with dates as a tiebreaker). The base
-    # entry is always season 1.
+    # Keep only real TV seasons (drop movies / manga / other non-season
+    # formats) and order them by the SEQUEL chain (with dates as a
+    # tiebreaker). The base entry is always season 1.
     season_ids = [mid for mid in nodes
                   if mid != base["id"]
                   and (nodes[mid].get("format") in _SEASON_FORMATS)]
     season_ids.sort(key=_season_order)
-
-    # Specials: entries whose format is SPECIAL (e.g. a one-off special like a
-    # "Thirteenth Period" that has its own releases.moe page). These map to
-    # Sonarr's specials season (0), not to a numbered TV season. A special is
-    # usually linked from the base (or a season) via a SIDE_STORY or SEQUEL
-    # relation, so probe those relations and fetch any SPECIAL-format node that
-    # the SEQUEL walk above did not already reach.
-    special_ids = [mid for mid in nodes
-                   if mid != base["id"]
-                   and (nodes[mid].get("format") == "SPECIAL")]
-    for src in [base["id"]] + season_ids:
-        d = nodes.get(src) or {}
-        for edge in (d.get("relations") or {}).get("edges") or []:
-            if edge.get("relationType") not in ("SIDE_STORY", "SEQUEL"):
-                continue
-            nid = (edge.get("node") or {}).get("id")
-            if not nid or nid == base["id"] or nid in seen:
-                continue
-            seen.add(nid)
-            sd = _al_media(q, {"id": nid})
-            if not sd:
-                continue
-            nodes[nid] = sd
-            if sd.get("format") == "SPECIAL" and nid not in special_ids:
-                special_ids.append(nid)
-    special_ids.sort(key=_season_order)
 
     # Build logical Sonarr seasons. An explicitly named Part/Cour 2+ joins its
     # direct PREQUEL's group. Falling back to the latest group handles sparse
@@ -688,16 +664,9 @@ def anilist_chain(title, cache):
                              else None),
         })
 
-    specials = [{
-        "id": mid,
-        "cover": _media_part(mid, nodes[mid]).get("cover"),
-        "banner": nodes[mid].get("bannerImage"),
-        "episodeCount": nodes[mid].get("episodes"),
-    } for mid in special_ids]
-
-    cache[chain_key] = {"chain": chain, "specials": specials}
+    cache[chain_key] = {"chain": chain}
     save_cache(cache)
-    return chain, specials
+    return chain
 
 
 def _is_dl(rel):
@@ -711,7 +680,7 @@ def _pick_best(candidates, episode_count=None):
 
     Prefers a release whose file count matches the entry's episode count (a
     per-episode release for exactly this season — this keeps a combined
-    multi-entry torrent, e.g. one that also bundles a special, from being
+    multi-entry torrent, e.g. one that spans several entries, from being
     reported as the size of a single season). Then isBest-flagged, then
     downloadable, then largest. Returns (best, alts).
     """
@@ -765,25 +734,12 @@ def _seadex_slot(entry, season):
 
 
 def _entry_parts(entry):
-    """Return parts for new grouped chains and legacy/special single entries."""
+    """Return parts for new grouped chains and legacy single entries."""
     return entry.get("parts") or [{
         "id": entry["id"],
         "episodeCount": entry.get("episodeCount"),
         "title": None,
     }]
-
-
-def _pick_special(specials, best):
-    """Prefer a Sonarr special that has a SeaDex entry.
-
-    A franchise can have several AniList SPECIAL/OVA entries, while Sonarr
-    combines them into its single season 0. Choosing the first AniList entry
-    made the whole specials season look missing when a later special was the
-    one actually indexed by releases.moe.
-    """
-    if not specials:
-        return None
-    return next((special for special in specials if special["id"] in best), specials[0])
 
 
 def _ordered_part_releases(best_rel, alts):
@@ -875,7 +831,7 @@ def run_scan(cfg):
         for i, it in enumerate(items):
             _set_state(progress=i, message=f"Resolving: {it['title']}")
             arr_url = _arr_item_url(cfg, it)
-            chain, specials = anilist_chain(it["title"], cache)
+            chain = anilist_chain(it["title"], cache)
             if not chain:
                 log.warning("No AniList match for: %s", it["title"])
                 for season, ls in sorted(it["seasons"].items()):
@@ -899,16 +855,11 @@ def run_scan(cfg):
             # movies / untagged, or when the chain is shorter than the season).
             for season, ls in sorted(it["seasons"].items()):
                 local_groups = ls["groups"]
-                slabel = (f"S{season:02d}" if season
-                          else ("Movie" if it["arr"] == "Radarr" else "Special"))
+                slabel = f"S{season:02d}" if season else "Movie"
                 _set_state(message=f"Resolving: {it['title']} ({slabel})")
-                # Season 0 is Sonarr's specials season: map it to a SPECIAL entry
-                # (e.g. a "Thirteenth Period") when one exists, else the base entry.
-                # (Radarr's season 0 is the movie itself, so never a "special".)
-                if season == 0 and it["arr"] != "Radarr" and specials:
-                    entry = _pick_special(specials, best)
-                else:
-                    entry = chain[season - 1] if 1 <= season <= len(chain) else chain[0]
+                # Season 0 is a Radarr movie; numbered seasons map to their
+                # AniList chain entry (falling back to the base entry).
+                entry = chain[season - 1] if 1 <= season <= len(chain) else chain[0]
                 alid = entry["id"]
                 parts = _entry_parts(entry)
                 common = dict(
