@@ -12,14 +12,14 @@ interface Props {
   status: Status
 }
 
-export default function Sidebar({ tab, onTabChange, status }: Props) {
+export default function TopBar({ tab, onTabChange, status }: Props) {
   let pillClass = 'status-pill'
   if (status.running) pillClass += ' running'
   else if (status.error) pillClass += ' error'
   else if (status.last_run) pillClass += ' done'
 
   return (
-    <aside className="sidebar">
+    <header className="topbar">
       <div className="brand">
         <div className="brand-icon">
           <img
@@ -46,12 +46,12 @@ export default function Sidebar({ tab, onTabChange, status }: Props) {
         ))}
       </nav>
 
-      <div className="sidebar-footer">
+      <div className="topbar-footer">
         <div className={pillClass}>
           <span className="dot" />
           <span>{status.message || 'Idle'}</span>
         </div>
       </div>
-    </aside>
+    </header>
   )
 }

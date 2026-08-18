@@ -62,6 +62,38 @@ const IconEyeOff = () => (
   </svg>
 )
 
+const IconChevronDown = () => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={2.5}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    width="18"
+    height="18"
+    aria-hidden="true"
+  >
+    <path d="M6 9l6 6 6-6" />
+  </svg>
+)
+
+const IconChevronUp = () => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={2.5}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    width="18"
+    height="18"
+    aria-hidden="true"
+  >
+    <path d="M6 15l6-6 6 6" />
+  </svg>
+)
+
 interface CardProps {
   group: GroupedCard
   index: number
@@ -72,11 +104,26 @@ interface CardProps {
 
 const HIDE_DURATION_MS = 280
 
+/**
+ * Dual-audio releases get a light blue pill; every other release tag
+ * (quality flags, broken files, ...) gets a purple pill.
+ */
+function tagClass(t: string): string {
+  return t === 'Dual Audio' ? 'rel-tag rel-tag-blue' : 'rel-tag rel-tag-purple'
+}
+
 export default function Card({ group, index, config, hidden = false, onToggle }: CardProps) {
   const [hiding, setHiding] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const hideTimer = useRef<number | null>(null)
   const srcClass = group.arr === 'Sonarr' ? 'sonarr' : 'radarr'
   const st = group.status || 'upgrade'
+
+  const seasonCount = group.seasons.length
+  // Total size change if every upgradable season were replaced by its best release.
+  let delta = 0
+  for (const r of group.seasons)
+    if ((r.status || 'upgrade') === 'upgrade') delta += (r.best_size || 0) - (r.local_size || 0)
 
   useEffect(() => {
     return () => {
@@ -114,7 +161,19 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
             }}
           />
         )}
-        <span className={'card-source ' + srcClass}>{group.arr}</span>
+        {group.arr_url ? (
+          <a
+            className={'card-source ' + srcClass}
+            href={group.arr_url}
+            target="_blank"
+            rel="noopener"
+            title={'Open in ' + group.arr}
+          >
+            {group.arr} <span className="arr">↗</span>
+          </a>
+        ) : (
+          <span className={'card-source ' + srcClass}>{group.arr}</span>
+        )}
         <span className={'card-status ' + st}>{STATUS_LABEL[st]}</span>
       </div>
       <div className="card-body">
@@ -128,20 +187,43 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
               group.title
             )}
           </div>
-          <button
-            className={'hide-btn' + (hidden ? ' is-hidden' : '')}
-            type="button"
-            title={hidden ? 'Show this card' : 'Hide this card'}
-            aria-label={(hidden ? 'Show ' : 'Hide ') + group.title}
-            onClick={handleHide}
-            disabled={hiding}
-          >
-            {hidden ? <IconEyeOff /> : <IconEye />}
-          </button>
+          <div className="title-actions">
+            <button
+              className="expand-btn"
+              type="button"
+              title={expanded ? 'Collapse' : 'Expand'}
+              aria-label={(expanded ? 'Collapse ' : 'Expand ') + group.title}
+              onClick={() => setExpanded((e) => !e)}
+            >
+              {expanded ? <IconChevronUp /> : <IconChevronDown />}
+            </button>
+            <button
+              className={'hide-btn' + (hidden ? ' is-hidden' : '')}
+              type="button"
+              title={hidden ? 'Show this card' : 'Hide this card'}
+              aria-label={(hidden ? 'Show ' : 'Hide ') + group.title}
+              onClick={handleHide}
+              disabled={hiding}
+            >
+              {hidden ? <IconEyeOff /> : <IconEye />}
+            </button>
+          </div>
         </div>
-        {group.seasons.map((r) => (
-          <Season key={r.key} r={r} config={config} />
-        ))}
+        {expanded ? (
+          group.seasons.map((r) => <Season key={r.key} r={r} config={config} />)
+        ) : (
+          <button className="card-summary" type="button" onClick={() => setExpanded(true)}>
+            <span className="summary-chip">
+              {seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}
+            </span>
+            {delta !== 0 && (
+              <span className={'summary-delta' + (delta > 0 ? ' up' : ' down')}>
+                {(delta > 0 ? '+' : '') + formatBytes(delta)}
+              </span>
+            )}
+            <span className="summary-hint">Show details</span>
+          </button>
+        )}
       </div>
     </article>
   )
@@ -246,6 +328,12 @@ function Season({ r, config }: SeasonProps) {
                   : rel.downloadable
                   ? 'Send this release to qBittorrent (category: ' + (cat || r.arr) + ')'
                   : 'No magnet available (private tracker)'
+                // releases.moe marks dual-audio releases with a separate flag
+                // (not part of the quality "tags" list), so surface it here too.
+                const tags = [
+                  ...(rel.dual_audio ? ['Dual Audio'] : []),
+                  ...(rel.tags || []),
+                ]
                 return (
                   <div
                     key={`${rel.part || ''}-${rel.releaseGroup}`}
@@ -254,9 +342,20 @@ function Season({ r, config }: SeasonProps) {
                     <span className="rel-kind" title={rel.part || undefined}>
                       {isBest ? 'Best' : 'Alt'}
                     </span>
-                    <span className={'badge ' + (isBest ? 'best' : '')} title={rel.releaseGroup}>
-                      {rel.releaseGroup}
-                    </span>
+                    <div className="rel-main">
+                      <span className={'badge ' + (isBest ? 'best' : 'alt')} title={rel.releaseGroup}>
+                        {rel.releaseGroup}
+                      </span>
+                      {tags.length > 0 && (
+                        <div className="rel-tags">
+                          {tags.map((t) => (
+                            <span key={t} className={tagClass(t)}>
+                              {t}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <span className={'size ' + (isBest ? 'best' : '')} title="Size of this release">
                       {formatBytes(rel.size)}
                     </span>
@@ -304,7 +403,6 @@ function Season({ r, config }: SeasonProps) {
     <div className="season">
       <div className="season-head">
         <span className="season-num">{seasonLabel(r)}</span>
-        <span className="current-lbl">Current</span>
         <div className="have-wrap" title="Release groups you already have">
           {have}
         </div>
@@ -313,37 +411,22 @@ function Season({ r, config }: SeasonProps) {
             {formatBytes(r.local_size)}
           </span>
         ) : null}
-      </div>
-      {middle}
-      <div className="season-foot">
-        <div className="season-links">
-          {r.arr_url ? (
+        {(r.urls?.length ? r.urls : r.url ? [{ label: 'releases.moe', url: r.url }] : []).map(
+          (source, i) => (
             <a
-              className={'card-link arr-link ' + (r.arr === 'Sonarr' ? 'sonarr' : 'radarr')}
-              href={r.arr_url}
+              className="card-link"
+              href={source.url}
               target="_blank"
               rel="noopener"
-              title={'Open in ' + r.arr}
+              key={`${source.url}-${i}`}
             >
-              {r.arr} <span className="arr">↗</span>
+              {source.label === 'releases.moe' ? source.label : `SeaDEX ${source.label}`}{' '}
+              <span className="arr">↗</span>
             </a>
-          ) : null}
-          {(r.urls?.length ? r.urls : r.url ? [{ label: 'releases.moe', url: r.url }] : []).map(
-            (source, i) => (
-              <a
-                className="card-link"
-                href={source.url}
-                target="_blank"
-                rel="noopener"
-                key={`${source.url}-${i}`}
-              >
-                {source.label === 'releases.moe' ? source.label : `SeaDEX ${source.label}`}{' '}
-                <span className="arr">↗</span>
-              </a>
-            ),
-          )}
-        </div>
+          ),
+        )}
       </div>
+      {middle}
     </div>
   )
 }

@@ -262,6 +262,7 @@ def seadex_best():
                             tracker=t["tracker"],
                             quality=quality,
                             tags=t.get("tags", []),
+                            dual_audio=bool(t.get("dualAudio")),
                             size=0,
                             file_count=0,
                             info_hashes=[],
@@ -271,6 +272,7 @@ def seadex_best():
                     rel["size"] += size
                     rel["file_count"] += count
                     rel["is_best"] = rel["is_best"] or bool(t.get("isBest"))
+                    rel["dual_audio"] = rel["dual_audio"] or bool(t.get("dualAudio"))
                     ih = t.get("infoHash") or ""
                     if ih and ih not in rel["info_hashes"]:
                         rel["info_hashes"].append(ih)
@@ -681,23 +683,24 @@ def _is_dl(rel):
 def _pick_best(candidates, episode_count=None):
     """Pick the best release from a season's candidates.
 
-    Prefers a release whose file count matches the entry's episode count (a
+    SeaDEX's isBest flag is authoritative.  Within the best-flagged releases,
+    prefer one whose file count matches the entry's episode count (a
     per-episode release for exactly this season — this keeps a combined
     multi-entry torrent, e.g. one that spans several entries, from being
-    reported as the size of a single season). Then isBest-flagged, then
-    downloadable, then largest. Returns (best, alts).
+    reported as the size of a single season). Then prefer downloadable, then
+    largest. If an incomplete SeaDEX entry has no best-flagged release, use the
+    same heuristics across all candidates as a fallback. Returns (best, alts).
     """
     if not candidates:
         return None, []
-    pool = list(candidates)
+    flagged = [a for a in candidates if a.get("is_best")]
+    pool = flagged or list(candidates)
     if episode_count and episode_count > 0:
         matching = [a for a in pool if a.get("file_count") == episode_count]
         if matching:
             pool = matching
-    flagged = [a for a in pool if a.get("is_best")]
-    pool2 = flagged or pool
-    dl = [a for a in pool2 if _is_dl(a)]
-    chosen = max(dl or pool2, key=lambda a: a.get("size") or 0)
+    dl = [a for a in pool if _is_dl(a)]
+    chosen = max(dl or pool, key=lambda a: a.get("size") or 0)
     alts = [a for a in candidates if a is not chosen]
     return chosen, alts
 
@@ -710,6 +713,7 @@ def _release_dict(kind, rel, part=None, url=None):
         tracker=rel["tracker"],
         quality=rel["quality"],
         tags=rel.get("tags", []),
+        dual_audio=bool(rel.get("dual_audio", False)),
         size=rel.get("size") or 0,
         info_hashes=ihs,
         downloadable=_is_dl(rel),
@@ -815,6 +819,19 @@ def _common_best_release(resolved, local_group_keys):
     return max((releases_by_key[key] for key in common_keys),
                key=lambda rel: rel.get("size") or 0,
                default=None)
+
+
+def _part_best_groups(part):
+    """Release-group names (lowercased) that count as "best" for one cour.
+
+    Mirrors the UI: the selected best plus every candidate releases.moe flags
+    with ``is_best``. Owning ANY of them means the user already has best
+    quality, even when it is not the single largest release _pick_best() chose
+    (e.g. a fansub and its dub can both carry the best flag).
+    """
+    return {rel["releaseGroup"].strip().lower()
+            for kind, rel in _ordered_part_releases(part["best"], part["alts"])
+            if kind == "best"}
 
 
 def run_scan(cfg):
@@ -940,8 +957,16 @@ def run_scan(cfg):
                 best_group = " + ".join(best_groups)
                 best_size = sum(rel.get("size") or 0 for rel in best_rels)
                 local_group_keys = {group.lower() for group in local_groups}
-                owns_all_best = all(rel["releaseGroup"].lower() in local_group_keys
-                                    for rel in best_rels)
+                # A season is "best quality" when the user owns ANY release
+                # releases.moe flags as best for each cour — not only the single
+                # largest one _pick_best() selected. Several groups can share the
+                # best flag (e.g. a fansub and its dub), so owning any of them
+                # already means the user has best quality.
+                owns_all_best = all(
+                    any(bg in local_group_keys
+                        for bg in _part_best_groups(part))
+                    for part in resolved
+                )
 
                 # A single torrent can span every AniList cour in this Sonarr
                 # season. If that exact SeaDEX-best info hash is present on all

@@ -193,6 +193,22 @@ class AniListChainTests(unittest.TestCase):
 
 
 class CombinedCourScanTests(unittest.TestCase):
+    def test_best_flag_takes_priority_over_episode_count_match(self):
+        # Banished from the Hero's Party regression: TTGA is SeaDEX's Best but
+        # contains an extra file, while the 13-file YURASUKA encode is an Alt.
+        # Episode-count matching must not promote that explicitly non-best Alt.
+        ttga = release("TTGA", 14, True, "a")
+        yurasuka = release("YURASUKA", 13, False, "b")
+
+        best, alts = app._pick_best([ttga, yurasuka], episode_count=13)
+        ordered = app._ordered_part_releases(best, alts)
+
+        self.assertEqual("TTGA", best["releaseGroup"])
+        self.assertEqual(
+            [("best", "TTGA"), ("alt", "YURASUKA")],
+            [(kind, rel["releaseGroup"]) for kind, rel in ordered],
+        )
+
     def test_ordered_releases_only_keeps_one_row_per_release_group(self):
         best = release("Flugel", 12, True, "a")
         best["tracker"] = "Nyaa"
@@ -361,6 +377,54 @@ class CombinedCourScanTests(unittest.TestCase):
                          [rel["part"] for rel in season_one["releases"]])
         self.assertEqual(158927, season_two["anilist_id"])
         self.assertEqual("https://releases.moe/158927/", season_two["url"])
+
+    def test_owning_a_non_largest_best_flagged_release_is_best_quality(self):
+        # Call of the Night S01: two releases are both flagged best by
+        # releases.moe (a fansub and its dub). The user owns the smaller one
+        # (Okay-Subs), not the largest (NTRX) that _pick_best() selects as the
+        # primary best. Owning ANY best-flagged release means the season is
+        # already best quality, so it must not be reported as "upgrade".
+        ntrx = release("NTRX", 13, True, "a")
+        okay = release("Okay-Subs", 13, True, "b")
+        ntrx["size"] = 15300  # larger -> selected as the primary best
+        okay["size"] = 14600  # smaller -> owned by the user
+        best = {
+            100: {
+                "url": "https://releases.moe/100/",
+                "notes": "-",
+                "seasons": {1: {"candidates": [ntrx, okay]}},
+            },
+        }
+        chain = [{
+            "season": 1,
+            "id": 100,
+            "ids": [100],
+            "parts": [{"id": 100, "episodeCount": 13}],
+            "cover": "cover-100",
+            "banner": "banner-100",
+        }]
+        items = [{
+            "arr": "Sonarr",
+            "id": 10,
+            "title": "Call of the Night",
+            "slug": "call-of-the-night",
+            "seasons": {1: {"groups": ["Okay-Subs"], "size": 14600}},
+        }]
+
+        with patch.object(app, "seadex_best", return_value=best), \
+                patch.object(app, "local_items", return_value=items), \
+                patch.object(app, "anilist_chain", return_value=chain), \
+                patch.object(app, "load_cache", return_value={}), \
+                patch.object(app, "save_last_results"):
+            app.run_scan({"sonarr_url": "http://sonarr/api/v3"})
+
+        result = app._get_state()["results"][0]
+        self.assertEqual("best", result["status"])
+        # Both best-flagged releases are still shown (NTRX + Okay-Subs).
+        self.assertEqual(["NTRX", "Okay-Subs"],
+                         [rel["releaseGroup"] for rel in result["releases"]])
+        self.assertEqual(["best", "best"],
+                         [rel["kind"] for rel in result["releases"]])
 
 
 if __name__ == "__main__":

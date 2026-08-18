@@ -78,7 +78,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan }: P
         <div>
           <h2>
             My Anime Library{' '}
-            {total && results.length > 0 && (
+            {total !== 0 && results.length > 0 && (
               <span
                 className="total-delta"
                 title="Total size change if you replace all current files with the best releases"
