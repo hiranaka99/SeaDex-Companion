@@ -177,6 +177,24 @@ function uniqueReleases(releases: Release[]): DisplayRelease[] {
   return [...selected.values()].sort((a, b) => a.index - b.index)
 }
 
+/**
+ * Group consecutive display releases by their cour part label so each cour
+ * can be rendered with its own header and a divider separates the cours.
+ */
+function groupByCour(releases: DisplayRelease[]): { part: string; items: DisplayRelease[] }[] {
+  const groups: { part: string; items: DisplayRelease[] }[] = []
+  for (const dr of releases) {
+    const part = dr.rel.part || ''
+    const last = groups[groups.length - 1]
+    if (last && last.part === part) {
+      last.items.push(dr)
+    } else {
+      groups.push({ part, items: [dr] })
+    }
+  }
+  return groups
+}
+
 function Season({ r, config }: SeasonProps) {
   const [dlState, setDlState] = useState<Record<number, 'idle' | 'busy' | 'done'>>({})
   const st = r.status || 'upgrade'
@@ -202,54 +220,65 @@ function Season({ r, config }: SeasonProps) {
     middle = <div className="season-note">This season is not covered on releases.moe</div>
   } else {
     const displayReleases = uniqueReleases(r.releases || [])
+    const courGroups = groupByCour(displayReleases)
     middle = (
       <>
-        <div className="releases">
-          {displayReleases.map(({ rel, index }) => {
-            const isBest = rel.kind === 'best'
-            // Sonarr's size covers both cours, while a split-cour row only
-            // covers one. Comparing those values would produce a bogus delta.
-            const delta = rel.part ? '' : sizeDelta(rel.size, r.local_size)
-            const owned = r.have.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
-            const cat = (config ? String((config as any)[((r.arr || '').toLowerCase() + '_category')] || '') : '').trim()
-            const state = dlState[index] || 'idle'
-            const disabled = owned || !rel.downloadable
-            const btnTitle = owned
-              ? 'You already have this release'
-              : rel.downloadable
-              ? 'Send this release to qBittorrent (category: ' + (cat || r.arr) + ')'
-              : 'No magnet available (private tracker)'
-            return (
-              <div
-                key={`${rel.part || ''}-${rel.releaseGroup}`}
-                className={'release-row ' + (isBest ? 'best' : 'alt') + (owned ? ' owned' : '')}
-              >
-                <span className="rel-kind" title={rel.part || undefined}>
-                  {isBest ? 'Best' : 'Alt'}{rel.part ? ` · ${rel.part}` : ''}
-                </span>
-                <span className={'badge ' + (isBest ? 'best' : '')} title={rel.releaseGroup}>
-                  {rel.releaseGroup}
-                </span>
-                <span className={'size ' + (isBest ? 'best' : '')} title="Size of this release">
-                  {formatBytes(rel.size)}
-                </span>
-                {delta && (
-                  <span className="size-delta" title="Difference: release size minus your local size">
-                    {delta}
-                  </span>
-                )}
-                <button
-                  className={'dl-btn' + (disabled ? ' disabled' : '')}
-                  disabled={disabled || state === 'busy'}
-                  title={btnTitle}
-                  onClick={() => !disabled && handleDownload(index)}
-                >
-                  {owned || state === 'done' ? <IconOK /> : state === 'busy' ? '…' : <IconDL />}
-                </button>
+        {courGroups.map((group, gi) => (
+          <div key={group.part || 'all'} className="cour-block">
+            {gi > 0 && <div className="cour-divider" role="separator" />}
+            {group.part && (
+              <div className="cour-header">
+                <span className="cour-header-label">{group.part}</span>
               </div>
-            )
-          })}
-        </div>
+            )}
+            <div className="releases">
+              {group.items.map(({ rel, index }) => {
+                const isBest = rel.kind === 'best'
+                // Sonarr's size covers both cours, while a split-cour row only
+                // covers one. Comparing those values would produce a bogus delta.
+                const delta = rel.part ? '' : sizeDelta(rel.size, r.local_size)
+                const owned = r.have.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
+                const cat = (config ? String((config as any)[((r.arr || '').toLowerCase() + '_category')] || '') : '').trim()
+                const state = dlState[index] || 'idle'
+                const disabled = owned || !rel.downloadable
+                const btnTitle = owned
+                  ? 'You already have this release'
+                  : rel.downloadable
+                  ? 'Send this release to qBittorrent (category: ' + (cat || r.arr) + ')'
+                  : 'No magnet available (private tracker)'
+                return (
+                  <div
+                    key={`${rel.part || ''}-${rel.releaseGroup}`}
+                    className={'release-row ' + (isBest ? 'best' : 'alt') + (owned ? ' owned' : '')}
+                  >
+                    <span className="rel-kind" title={rel.part || undefined}>
+                      {isBest ? 'Best' : 'Alt'}
+                    </span>
+                    <span className={'badge ' + (isBest ? 'best' : '')} title={rel.releaseGroup}>
+                      {rel.releaseGroup}
+                    </span>
+                    <span className={'size ' + (isBest ? 'best' : '')} title="Size of this release">
+                      {formatBytes(rel.size)}
+                    </span>
+                    {delta && (
+                      <span className="size-delta" title="Difference: release size minus your local size">
+                        {delta}
+                      </span>
+                    )}
+                    <button
+                      className={'dl-btn' + (disabled ? ' disabled' : '')}
+                      disabled={disabled || state === 'busy'}
+                      title={btnTitle}
+                      onClick={() => !disabled && handleDownload(index)}
+                    >
+                      {owned || state === 'done' ? <IconOK /> : state === 'busy' ? '…' : <IconDL />}
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        ))}
         {r.notes && r.notes !== '-' && (
           <div className="card-notes" title={r.notes}>
             {r.notes}

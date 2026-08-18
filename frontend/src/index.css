@@ -701,6 +701,34 @@ code {
   margin-left: auto;
 }
 
+.cour-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cour-divider {
+  height: 1px;
+  background: var(--border-2);
+  margin: 4px 0;
+}
+.cour-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.cour-header-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
 .releases {
   display: flex;
   flex-direction: column;
