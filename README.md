@@ -75,7 +75,7 @@ docker compose up -d --build
 
 ## Deploy from Docker Hub (no build needed)
 
-The app is published on [Docker Hub](https://hub.docker.com/). Pull the pre-built image and run it — no Node.js, no frontend build, no local Dockerfile required.
+The app is published on [Docker Hub](https://hub.docker.com/r/hiranaka/seadex-companion). Pull the pre-built image and run it — no Node.js, no frontend build, no local Dockerfile required.
 
 ### One-liner
 
@@ -93,7 +93,7 @@ docker run -d \
   -e QBITTORRENT_USER=<qbittorrent-username> \
   -e QBITTORRENT_PASS=<qbittorrent-password> \
   -e DISCORD_WEBHOOK= \
-  <your-dockerhub-username>/seadex-companion:latest
+  hiranaka/seadex-companion:latest
 ```
 
 Then open **http://\<your-server\>:8080**. All settings can also be configured later in the Config tab.
@@ -103,7 +103,7 @@ Then open **http://\<your-server\>:8080**. All settings can also be configured l
 ```yaml
 services:
   seadex-companion:
-    image: <your-dockerhub-username>/seadex-companion:latest
+    image: hiranaka/seadex-companion:latest
     container_name: seadex-companion
     ports:
       - "8080:8080"
@@ -140,10 +140,10 @@ docker compose pull && docker compose up -d
 
 From the repository root (after `docker login`):
 
-- **Windows:** `.\scripts\push-dockerhub.ps1 -User <your-dockerhub-username>`
-- **Linux / macOS:** `./scripts/push-dockerhub.sh <your-dockerhub-username>`
+- **Windows:** `.\scripts\push-dockerhub.ps1 -User hiranaka`
+- **Linux / macOS:** `./scripts/push-dockerhub.sh hiranaka`
 
-Both scripts build the image, tag it as `latest` plus the current git short SHA, and push it to `docker.io/<your-dockerhub-username>/seadex-companion`.
+Both scripts build the image, tag it as `latest` plus the current git short SHA, and push it to `docker.io/hiranaka/seadex-companion`.
 
 ## Configuration
 
