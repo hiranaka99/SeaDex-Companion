@@ -63,6 +63,11 @@ export function groupResults(results: ResultItem[]): GroupedCard[] {
   const cards = [...map.values()]
   for (const g of cards) {
     g.seasons.sort((a, b) => (a.season || 0) - (b.season || 0))
+    // The card inherits its artwork from the first season result, but a
+    // specials season (season 0) can have no AniList banner (or cover). Prefer
+    // the first season that actually has one so the card still shows artwork.
+    g.banner = g.seasons.find((s) => s.banner)?.banner ?? g.banner
+    g.image = g.seasons.find((s) => s.image)?.image ?? g.image
     // Card status reflects the strongest useful state for the whole card.
     // A missing season must not make an otherwise resolved anime appear to be
     // absent from SeaDex: that was especially confusing because the resolved
