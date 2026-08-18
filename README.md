@@ -137,15 +137,6 @@ docker compose up -d
 docker compose pull && docker compose up -d
 ```
 
-### Publishing a new image to Docker Hub
-
-From the repository root (after `docker login`):
-
-- **Windows:** `.\scripts\push-dockerhub.ps1 -User hiranaka`
-- **Linux / macOS:** `./scripts/push-dockerhub.sh hiranaka`
-
-Both scripts build the image, tag it as `latest` plus the current git short SHA, and push it to `docker.io/hiranaka/seadex-companion`.
-
 ## Configuration
 
 All settings (Sonarr/Radarr, qBittorrent, Discord webhook, auto-check interval) are editable in the Config tab and persisted to `config.json` in the data directory (`DATA_DIR` env var; defaults to the app folder, `./data` in Docker).
