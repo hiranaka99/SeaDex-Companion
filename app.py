@@ -48,16 +48,19 @@ if not log.handlers:
     log.addHandler(_sh)
 
 DEFAULT_CONFIG = {
-    "sonarr_url": "https://sonarr-anime.hiranet.de/api/v3",
-    "sonarr_key": "REDACTED_SONARR_KEY",
-    "radarr_url": "https://radarr-anime.hiranet.de/api/v3",
-    "radarr_key": "REDACTED_RADARR_KEY",
+    # Secrets are read from the environment (set them in your shell or in a
+    # local .env file consumed by docker-compose). They are intentionally NOT
+    # hardcoded here so they never end up in the repository.
+    "sonarr_url": os.environ.get("SONARR_URL", ""),
+    "sonarr_key": os.environ.get("SONARR_KEY", ""),
+    "radarr_url": os.environ.get("RADARR_URL", ""),
+    "radarr_key": os.environ.get("RADARR_KEY", ""),
     "sonarr_category": "sonarr-anime",
     "radarr_category": "radarr-anime",
-    "qbittorrent_url":  "",
-    "qbittorrent_user": "",
-    "qbittorrent_pass": "",
-    "webhook":    "https://discord.com/api/webhooks/1538889176194228225/REDACTED_DISCORD_WEBHOOK_TOKEN",
+    "qbittorrent_url":  os.environ.get("QBITTORRENT_URL", ""),
+    "qbittorrent_user": os.environ.get("QBITTORRENT_USER", ""),
+    "qbittorrent_pass": os.environ.get("QBITTORRENT_PASS", ""),
+    "webhook":    os.environ.get("DISCORD_WEBHOOK", ""),
     "notify_enabled": True,
     "autocheck_minutes": 60,
     "hidden": [],
