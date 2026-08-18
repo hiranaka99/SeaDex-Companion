@@ -57,7 +57,7 @@ class AniListChainTests(unittest.TestCase):
                 patch.object(app, "_al_media",
                              side_effect=lambda _q, variables: nodes.get(variables["id"], {})), \
                 patch.object(app, "save_cache"):
-            return app.anilist_chain("Test Series", cache)[0]
+            return app.anilist_chain("Test Series", cache)
 
     def test_spy_family_cour_two_stays_in_season_one(self):
         nodes = {
@@ -133,10 +133,9 @@ class AniListChainTests(unittest.TestCase):
                 patch.object(app, "_al_media",
                              side_effect=lambda _q, variables: nodes.get(variables["id"], {})), \
                 patch.object(app, "save_cache"):
-            chain, specials = app.anilist_chain("Frieren: Beyond Journey's End", cache)
+            chain = app.anilist_chain("Frieren: Beyond Journey's End", cache)
 
         self.assertEqual([[154587], [182255]], [entry["ids"] for entry in chain])
-        self.assertEqual([], specials)
 
     def test_undated_future_season_does_not_sort_before_earlier_seasons(self):
         # KonoSuba regression: Season 4 (187924) has no seasonYear/season on
@@ -160,7 +159,7 @@ class AniListChainTests(unittest.TestCase):
                 patch.object(app, "_al_media",
                              side_effect=lambda _q, variables: nodes.get(variables["id"], {})), \
                 patch.object(app, "save_cache"):
-            chain, specials = app.anilist_chain("KONOSUBA", cache)
+            chain = app.anilist_chain("KONOSUBA", cache)
 
         self.assertEqual([[21202], [21699], [136804], [187924]],
                          [entry["ids"] for entry in chain])
@@ -187,11 +186,10 @@ class AniListChainTests(unittest.TestCase):
                 patch.object(app, "_al_media",
                              side_effect=lambda _q, variables: nodes.get(variables["id"], {})), \
                 patch.object(app, "save_cache"):
-            chain, specials = app.anilist_chain("Fate/kaleid liner PRISMA ILLYA", cache)
+            chain = app.anilist_chain("Fate/kaleid liner PRISMA ILLYA", cache)
 
         self.assertEqual([[14829], [20467], [20845], [21379]],
                          [entry["ids"] for entry in chain])
-        self.assertEqual([87488], [entry["id"] for entry in specials])
 
 
 class CombinedCourScanTests(unittest.TestCase):
@@ -289,7 +287,7 @@ class CombinedCourScanTests(unittest.TestCase):
 
         with patch.object(app, "seadex_best", return_value=best), \
                 patch.object(app, "local_items", return_value=items), \
-                patch.object(app, "anilist_chain", return_value=(chain, [])), \
+                patch.object(app, "anilist_chain", return_value=chain), \
                 patch.object(app, "load_cache", return_value={}), \
                 patch.object(app, "save_last_results"):
             app.run_scan({"sonarr_url": "http://sonarr/api/v3"})
@@ -349,7 +347,7 @@ class CombinedCourScanTests(unittest.TestCase):
 
         with patch.object(app, "seadex_best", return_value=best), \
                 patch.object(app, "local_items", return_value=items), \
-                patch.object(app, "anilist_chain", return_value=(chain, [])), \
+                patch.object(app, "anilist_chain", return_value=chain), \
                 patch.object(app, "load_cache", return_value={}), \
                 patch.object(app, "save_last_results"):
             app.run_scan({"sonarr_url": "http://sonarr/api/v3"})
