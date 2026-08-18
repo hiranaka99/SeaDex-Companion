@@ -39,3 +39,25 @@ expect(cardStatus('best', 'uncovered'), 'partial', 'resolved + uncovered seasons
 expect(cardStatus('missing', 'missing'), 'missing', 'fully missing cards remain missing')
 expect(cardStatus('upgrade', 'missing'), 'upgrade', 'upgrades retain priority over missing seasons')
 expect(STATUS_LABEL.partial, 'Partially on SeaDex', 'partial cards have an explicit label')
+
+// A specials season (season 0) sorts first and can lack an AniList banner while
+// the numbered seasons have one. The card must fall back to the first season
+// that actually carries artwork instead of rendering without a banner.
+function resultWithArt(season: number, banner: string | null, image: string | null): ResultItem {
+  return { ...result(season, 'best'), banner, image }
+}
+const artCard = groupResults([
+  resultWithArt(0, null, 'cover-0'),
+  resultWithArt(1, 'banner-1', 'cover-1'),
+  resultWithArt(2, 'banner-2', 'cover-2'),
+])[0]
+expect(artCard.banner, 'banner-1', 'card banner falls back to the first season that has one')
+expect(artCard.image, 'cover-0', 'card image keeps the first season cover when it exists')
+const artlessCard = groupResults([
+  resultWithArt(0, null, null),
+  resultWithArt(1, 'banner-1', 'cover-1'),
+])[0]
+expect(artlessCard.image, 'cover-1', 'card image also falls back when the first season has none')
+const noArtCard = groupResults([resultWithArt(0, null, null), resultWithArt(1, null, null)])[0]
+expect(noArtCard.banner, null, 'cards without any banner stay bannerless')
+expect(noArtCard.image, null, 'cards without any cover stay coverless')
