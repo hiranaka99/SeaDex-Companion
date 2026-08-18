@@ -35,16 +35,11 @@ export const getLogs = (lines = 500) =>
 export const startScan = () =>
   api<{ ok: boolean; error?: string }>('/api/scan', { method: 'POST' })
 
-export const notify = () =>
-  api<{ ok: boolean; sent?: number; total?: number; error?: string }>('/api/notify', {
-    method: 'POST',
-  })
-
-export const mute = (key: string, muted: boolean) =>
-  api<{ ok: boolean; muted: string[] }>('/api/mute', {
+export const setHidden = (key: string, hidden: boolean) =>
+  api<{ ok: boolean; hidden: string[] }>('/api/hidden', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, muted }),
+    body: JSON.stringify({ key, hidden }),
   })
 
 export const download = (key: string, release: number) =>

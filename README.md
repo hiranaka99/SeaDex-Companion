@@ -10,11 +10,11 @@ which upgrades you're still missing - with anime artwork.
 - **Three card statuses** - **Upgradable** (blue, you don't own the best group), **Already best quality** (green, you own the best group), **Not on SeaDex** (grey, the anime/season isn't listed on releases.moe). Cards sort upgradable first, then missing, then best.
 - **Total size delta** - the header shows the net size change if you replaced every current file with the best release.
 - **Live scan progress** bar and status pill (with an auto-check countdown).
-- **Search + filter** by title / release group, by source (Sonarr/Radarr), by status, plus a "hide locked" toggle.
+- **Search + filter** by title / release group, by source (Sonarr/Radarr), by status, plus a "show hidden" toggle.
 - **Download to qBittorrent** - the ⬇ button on a season sends the best release's magnet to your qBittorrent client under the matching Sonarr/Radarr category. Public releases only (Nyaa / AnimeTosho); private-tracker releases (AnimeBytes) have no magnet and show a disabled button.
-- **Notify Discord** - post every found upgrade to your webhook in one click.
-- **Auto-check** - re-scans on a configurable interval and automatically posts *new* upgrades to Discord (once per upgrade, unless re-appearing after being resolved).
-- **Per-item lock** - mute the notification for a single card with the 🔔/🔕 button; locked items are never posted.
+- **Discord notifications** - after each scan, automatically post *new* upgrades to your webhook (once per upgrade, unless re-appearing after being resolved).
+- **Auto-check** - re-scans on a configurable interval.
+- **Hide cards** - hide a card from the library view with the 👁/👁‍🗨 button (hidden items are still scanned and notified).
 - **Global notification toggle** - switch all Discord notifications on/off in the Config tab.
 - **Log tab** - live view of the backend log (scans, API errors, notifications) with All / Warnings+ / Errors-only filters.
 - **Docker-ready** for easy deployment.
@@ -25,7 +25,7 @@ which upgrades you're still missing - with anime artwork.
 2. Fetches your library (Sonarr `/series`, Radarr `/movie`) and collects the release groups and on-disk size per season.
 3. Resolves each title to an AniList entry (cached to disk), following the **SEQUEL relation chain** so each season maps to its own AniList entry.
 4. Each season is classified as **Best quality**, **Upgradable**, or **Not on SeaDex** (anime or season not listed). Seasons are grouped into one card per anime.
-5. The scheduler re-runs the scan every *auto-check interval* (minutes, 0 = off) and posts only upgrades it has not notified about before (tracked in `notified.json`), skipping locked items.
+5. Each scan posts only upgrades it has not notified about before (tracked in `notified.json`). The scheduler re-runs the scan every *auto-check interval* (minutes, 0 = off).
 
 > Scans are rate-limited against AniList (~30 calls/min) and cached, so repeated scans are fast.
 
@@ -72,7 +72,7 @@ docker compose up -d --build
 - `requirements.txt` - Python dependencies
 - `Dockerfile` - Multi-stage container image (Node build stage + Python runtime)
 - `docker-compose.yml` - One-command deployment
-- `config.json` *(generated)* - your saved config (Sonarr/Radarr + qBittorrent + webhook, notification settings + locked items)
+- `config.json` *(generated)* - your saved config (Sonarr/Radarr + qBittorrent + webhook, notification settings + hidden items)
 - `anilist_cache.json` *(generated)* - AniList title/season to ID cache
 - `last_results.json` *(generated)* - last scan results
 - `notified.json` *(generated)* - upgrades already posted to Discord (prevents duplicate notifications)

@@ -5,6 +5,7 @@ export const STATUS_LABEL: Record<CardStatus, string> = {
   upgrade: 'Upgradable',
   best: 'Best quality',
   missing: 'Not on SeaDex',
+  partial: 'Partially on SeaDex',
 }
 
 export function formatBytes(n: number): string {
@@ -62,11 +63,15 @@ export function groupResults(results: ResultItem[]): GroupedCard[] {
   const cards = [...map.values()]
   for (const g of cards) {
     g.seasons.sort((a, b) => (a.season || 0) - (b.season || 0))
-    // Card status: blue if any season is upgradable, grey if any season is
-    // missing from SeaDex, green only when every season is already best.
+    // Card status reflects the strongest useful state for the whole card.
+    // A missing season must not make an otherwise resolved anime appear to be
+    // absent from SeaDex: that was especially confusing because the resolved
+    // season still displayed its URL, groups, and sizes below the banner.
     const st = g.seasons.map((r) => r.status || 'upgrade')
     if (st.includes('upgrade')) g.status = 'upgrade'
-    else if (st.includes('missing') || st.includes('uncovered')) g.status = 'missing'
+    else if (st.includes('missing') || st.includes('uncovered')) {
+      g.status = st.some((status) => status === 'best') ? 'partial' : 'missing'
+    }
     else g.status = 'best'
   }
   return cards

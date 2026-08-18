@@ -60,7 +60,7 @@ DEFAULT_CONFIG = {
     "webhook":    "https://discord.com/api/webhooks/1538889176194228225/REDACTED_DISCORD_WEBHOOK_TOKEN",
     "notify_enabled": True,
     "autocheck_minutes": 60,
-    "muted": [],
+    "hidden": [],
 }
 
 app = Flask(__name__, static_folder="static", static_url_path="")
@@ -360,6 +360,34 @@ def _al_media(query, variables):
     return data
 
 
+def _al_search(query, variables):
+    """Paced AniList search query. Returns a list of Media candidates."""
+    data = {}
+    for _ in range(6):
+        wait = 2.05 - (time.time() - _last_anilist[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_anilist[0] = time.time()
+        try:
+            r = requests.post(ANILIST, json={"query": query, "variables": variables}, timeout=30)
+        except requests.exceptions.RequestException as ex:
+            log.warning("AniList search network error, retrying: %s", ex)
+            time.sleep(3)
+            continue
+        if r.status_code == 429:
+            log.warning("AniList search rate limit (HTTP 429), backing off")
+            time.sleep(int(r.headers.get("Retry-After", "60")) + 1)
+            continue
+        try:
+            payload = r.json()
+        except ValueError:
+            payload = None
+        page = ((payload or {}).get("data") or {}).get("Page") or {}
+        data = page.get("media") or []
+        break
+    return data
+
+
 def normalize_title(t):
     """Clean a Sonarr/Radarr title so AniList's character-sensitive search can match it.
 
@@ -400,15 +428,57 @@ def _search_candidates(title):
     return out
 
 
+def _title_key(title):
+    """Normalize a title for comparing AniList search candidates."""
+    if not title:
+        return ""
+    # AniList uses typographic apostrophes and ☆ in some titles while Sonarr
+    # commonly sends ASCII punctuation. Comparing alphanumeric characters
+    # avoids letting those presentation differences choose a sequel or side
+    # story over the canonical entry.
+    return re.sub(r"[^a-z0-9]+", "", title.lower().replace("\u2019", "'"))
+
+
+def _pick_anilist_search_result(candidates, title):
+    """Choose the canonical media result rather than AniList's first hit.
+
+    SEARCH_MATCH often ranks a sequel, ONA, or special above the franchise's
+    base entry when the query omits a subtitle. An exact normalized title is a
+    much stronger signal; chronological season order is only a tie breaker.
+    """
+    wanted = _title_key(title)
+
+    def score(media):
+        titles = media.get("title") or {}
+        keys = {_title_key(titles.get(k)) for k in ("english", "romaji", "native")}
+        exact = wanted and wanted in keys
+        # Prefer actual season formats when no title is exact, but retain ONA
+        # because AniList uses it for some legitimate main series.
+        season_format = media.get("format") in {"TV", "TV_SHORT", "ONA"}
+        return (
+            3 if exact else 0,
+            1 if season_format else 0,
+            -(media.get("seasonYear") or 9999),
+            -(media.get("id") or 0),
+        )
+
+    return max(candidates or [], key=score, default=None)
+
+
 def anilist_lookup(title, cache):
-    if title in cache:
-        return cache[title]
-    # SEARCH_MATCH ranks by title relevance (POPULARITY_DESC returns the
-    # wrong entry for some titles, e.g. Kiss x Sis).
-    q = ('query($t:String){Media(search:$t,type:ANIME,sort:SEARCH_MATCH){'
-         'id title{romaji english} coverImage{large extraLarge} bannerImage}}')
+    # v2 deliberately bypasses the old title cache. The previous resolver
+    # accepted AniList's first SEARCH_MATCH result, which cached side stories
+    # and later seasons as the franchise base (notably Frieren and Fate/kaleid).
+    cache_key = "lookup:v2:" + title
+    if cache_key in cache:
+        return cache[cache_key]
+    # SEARCH_MATCH is useful for finding candidates, but its first result is
+    # not guaranteed to be the canonical entry when a franchise has specials.
+    q = ('query($t:String){Page(perPage:10){media(search:$t,type:ANIME,sort:SEARCH_MATCH){'
+         'id format season seasonYear episodes title{romaji english native} '
+         'coverImage{large extraLarge} bannerImage}}}')
     for cand in _search_candidates(title):
-        data = _al_media(q, {"t": cand})
+        data = _pick_anilist_search_result(_al_search(q, {"t": cand}), cand)
         if data:
             cover = data.get("coverImage") or {}
             entry = {
@@ -416,7 +486,7 @@ def anilist_lookup(title, cache):
                 "cover": cover.get("extraLarge") or cover.get("large"),
                 "banner": data.get("bannerImage"),
             }
-            cache[title] = entry
+            cache[cache_key] = entry
             save_cache(cache)
             return entry
     return None
@@ -497,7 +567,10 @@ def anilist_chain(title, cache):
         return [], []
     # v6 groups split cours into their Sonarr season.  Older cached chains
     # assigned every AniList TV entry a new season and caused this bug.
-    chain_key = "chain:v6:" + str(base["id"])
+    # v8 orders TV seasons by their BFS SEQUEL-chain discovery distance so
+    # future seasons that lack a release date (e.g. KonoSuba S4) no longer
+    # sort before earlier seasons.
+    chain_key = "chain:v8:" + str(base["id"])
     if chain_key in cache:
         cached = cache[chain_key]
         return cached.get("chain", []), cached.get("specials", [])
@@ -526,17 +599,28 @@ def anilist_chain(title, cache):
                 seen.add(nid)
                 queue.append(nid)
 
-    # Keep only real TV seasons (drop movies / manga / specials) and order
-    # them chronologically. The base entry is always season 1.
-    def _order(mid):
-        d = nodes.get(mid) or {}
-        return (d.get("seasonYear") or 0,
-                _SEASON_ORDER.get(d.get("season") or "", 4), mid)
+    # BFS discovery order follows the SEQUEL graph (base -> S2 -> ...) and
+    # therefore encodes the correct release order even when AniList lacks a
+    # date for a future season (seasonYear/season are None -> previously
+    # sorted to the front). Keep it as the primary key so those entries land
+    # in their true chronological position; dates still break ties between
+    # parallel branches discovered at the same BFS level.
+    discovery_index = {mid: i for i, mid in enumerate(nodes)}
 
+    def _season_order(mid):
+        d = nodes.get(mid) or {}
+        return (discovery_index.get(mid, 0),
+                d.get("seasonYear") or 0,
+                _SEASON_ORDER.get(d.get("season") or "", 4),
+                mid)
+
+    # Keep only real TV seasons (drop movies / manga / specials) and order
+    # them by the SEQUEL chain (with dates as a tiebreaker). The base
+    # entry is always season 1.
     season_ids = [mid for mid in nodes
                   if mid != base["id"]
                   and (nodes[mid].get("format") in _SEASON_FORMATS)]
-    season_ids.sort(key=_order)
+    season_ids.sort(key=_season_order)
 
     # Specials: entries whose format is SPECIAL (e.g. a one-off special like a
     # "Thirteenth Period" that has its own releases.moe page). These map to
@@ -562,7 +646,7 @@ def anilist_chain(title, cache):
             nodes[nid] = sd
             if sd.get("format") == "SPECIAL" and nid not in special_ids:
                 special_ids.append(nid)
-    special_ids.sort(key=_order)
+    special_ids.sort(key=_season_order)
 
     # Build logical Sonarr seasons. An explicitly named Part/Cour 2+ joins its
     # direct PREQUEL's group. Falling back to the latest group handles sparse
@@ -689,6 +773,19 @@ def _entry_parts(entry):
     }]
 
 
+def _pick_special(specials, best):
+    """Prefer a Sonarr special that has a SeaDex entry.
+
+    A franchise can have several AniList SPECIAL/OVA entries, while Sonarr
+    combines them into its single season 0. Choosing the first AniList entry
+    made the whole specials season look missing when a later special was the
+    one actually indexed by releases.moe.
+    """
+    if not specials:
+        return None
+    return next((special for special in specials if special["id"] in best), specials[0])
+
+
 def _ordered_part_releases(best_rel, alts):
     """Deduplicate one cour's releases while preserving its best first.
 
@@ -697,19 +794,68 @@ def _ordered_part_releases(best_rel, alts):
     the same release was available on both Nyaa and AB.  Prefer the
     downloadable copy when one exists; otherwise keep the first (best-first)
     candidate.
+
+    A release is labelled "best" when releases.moe flags it as such
+    (``is_best``) — several groups can share that flag, e.g. a fansub and its
+    dub — or when it is this cour's selected primary best.  Everything else
+    is an "alt".
     """
     by_group = {}
-    for kind, rel in [("best", best_rel)] + [("alt", alt) for alt in alts]:
+    for rel in [best_rel] + list(alts):
         key = rel["releaseGroup"].strip().lower()
         current = by_group.get(key)
-        if current is None or (_is_dl(rel) and not _is_dl(current[1])):
-            by_group[key] = (kind, rel)
+        if current is None or (_is_dl(rel) and not _is_dl(current)):
+            # Tracker deduplication may replace the selected private copy with
+            # a downloadable public copy of the same release group. It is
+            # still the selected best release; only its download source changed.
+            by_group[key] = rel
     best_key = best_rel["releaseGroup"].strip().lower()
-    ordered = []
-    if best_key in by_group:
-        ordered.append(by_group.pop(best_key))
-    ordered.extend(by_group.values())
-    return ordered
+    ordered = [best_key] + [key for key in by_group if key != best_key]
+    return [
+        ("best" if (key == best_key or by_group[key].get("is_best")) else "alt",
+         by_group[key])
+        for key in ordered
+    ]
+
+
+def _common_best_release(resolved, local_group_keys):
+    """Return one owned SeaDEX-best torrent shared by every cour.
+
+    Split cours can be separate AniList/SeaDEX entries while a single torrent
+    contains both of them. In that case each entry exposes the same info hash.
+    Matching that stable torrent identity avoids incorrectly requiring a
+    different per-cour group selected by episode-count heuristics.
+    """
+    if len(resolved) < 2:
+        return None
+
+    common_keys = None
+    releases_by_key = {}
+    for part in resolved:
+        part_keys = set()
+        for rel in [part["best"], *part["alts"]]:
+            if (not rel.get("is_best") or not _is_dl(rel)
+                    or rel["releaseGroup"].strip().lower() not in local_group_keys):
+                continue
+            hashes = frozenset(
+                info_hash.lower() for info_hash in rel.get("info_hashes") or []
+                if re.fullmatch(r"[0-9a-fA-F]{40}", info_hash)
+            )
+            if not hashes:
+                continue
+            key = (rel["releaseGroup"].strip().lower(), hashes)
+            part_keys.add(key)
+            releases_by_key.setdefault(key, rel)
+        common_keys = (part_keys if common_keys is None
+                       else common_keys & part_keys)
+        if not common_keys:
+            return None
+
+    # Deterministic when malformed data associates several common hashes with
+    # one group: prefer the largest complete torrent, like _pick_best().
+    return max((releases_by_key[key] for key in common_keys),
+               key=lambda rel: rel.get("size") or 0,
+               default=None)
 
 
 def run_scan(cfg):
@@ -760,7 +906,7 @@ def run_scan(cfg):
                 # (e.g. a "Thirteenth Period") when one exists, else the base entry.
                 # (Radarr's season 0 is the movie itself, so never a "special".)
                 if season == 0 and it["arr"] != "Radarr" and specials:
-                    entry = specials[0]
+                    entry = _pick_special(specials, best)
                 else:
                     entry = chain[season - 1] if 1 <= season <= len(chain) else chain[0]
                 alid = entry["id"]
@@ -843,12 +989,35 @@ def run_scan(cfg):
                 owns_all_best = all(rel["releaseGroup"].lower() in local_group_keys
                                     for rel in best_rels)
 
+                # A single torrent can span every AniList cour in this Sonarr
+                # season. If that exact SeaDEX-best info hash is present on all
+                # cour pages and its group is owned, it satisfies the season as
+                # one release instead of requiring one independently selected
+                # group per cour (and its size must only be counted once).
+                common_best = _common_best_release(resolved, local_group_keys)
+                if common_best:
+                    best_rels = [common_best]
+                    best_group = common_best["releaseGroup"]
+                    best_size = common_best.get("size") or 0
+                    owns_all_best = True
+
                 # Already own the *best* release -> "best" (green).
                 # For a split cour, every cour's best must be owned.
                 if owns_all_best:
-                    releases = [_release_dict(
-                        "best", part["best"], part["label"], part["source"]["url"])
-                        for part in resolved]
+                    # Show every releases.moe "best" release for each cour, not
+                    # just the single owned torrent: several groups can share
+                    # the best flag (e.g. a fansub and its dub) and the user
+                    # should still see those alternatives.
+                    releases = []
+                    for part in resolved:
+                        primary = common_best or part["best"]
+                        for kind, rel in _ordered_part_releases(
+                                primary, part["alts"]):
+                            if kind != "best":
+                                continue
+                            releases.append(_release_dict(
+                                kind, rel, part["label"],
+                                part["source"]["url"]))
                     results.append(dict(common,
                         key=f"{it['arr']}:{alid}:{season}:{best_group}",
                         status="best",
@@ -876,6 +1045,7 @@ def run_scan(cfg):
         last_run = time.strftime("%Y-%m-%d %H:%M:%S")
         _set_state(progress=len(items), message="Done", results=results, last_run=last_run)
         save_last_results(results, last_run)
+        auto_notify_new(cfg)
         log.info("Scan finished in %.1fs — %d upgrade(s) found",
                  time.time() - started, len(results))
     except Exception as ex:
@@ -993,15 +1163,14 @@ def send_to_discord(webhook, results):
 
 
 def auto_notify_new(cfg):
-    """Discord-alert upgrades that have not been notified before and are not locked."""
+    """Discord-alert upgrades that have not been notified before."""
     if not cfg.get("notify_enabled", True) or not cfg.get("webhook"):
         return 0
     results = _get_state().get("results") or []
-    muted = set(cfg.get("muted") or [])
     notified = load_notified()
     new = [r for r in results
            if r.get("status") == "upgrade" and r.get("key")
-           and r["key"] not in notified and r["key"] not in muted]
+           and r["key"] not in notified]
     if not new:
         return 0
     sent = send_to_discord(cfg["webhook"], new)
@@ -1010,42 +1179,22 @@ def auto_notify_new(cfg):
     return sent
 
 
-@app.route("/api/notify", methods=["POST"])
-def notify():
-    cfg = load_config()
-    if not cfg.get("notify_enabled", True):
-        return jsonify({"ok": False, "error": "Notifications are disabled in Config"}), 400
-    webhook = cfg.get("webhook")
-    if not webhook:
-        return jsonify({"ok": False, "error": "No webhook configured"}), 400
-    st = _get_state()
-    results = st["results"] or (load_last_results() or {}).get("results", [])
-    muted = set(cfg.get("muted") or [])
-    to_send = [r for r in results if r.get("status") == "upgrade" and r.get("key") not in muted]
-    if not to_send:
-        return jsonify({"ok": False, "error": "No results to send"}), 400
-    sent = send_to_discord(webhook, to_send)
-    notified = load_notified()
-    notified.update(r["key"] for r in to_send if r.get("key"))
-    save_notified(notified)
-    return jsonify({"ok": True, "sent": sent, "total": len(to_send)})
-
-
-@app.route("/api/mute", methods=["POST"])
-def mute():
+@app.route("/api/hidden", methods=["POST"])
+def hide():
+    """Persist which cards are hidden in the library view (survives restarts)."""
     data = request.get_json(force=True)
     key = (data.get("key") or "").strip()
     if not key:
         return jsonify({"ok": False, "error": "No key provided"}), 400
     cfg = load_config()
-    muted = set(cfg.get("muted") or [])
-    if data.get("muted"):
-        muted.add(key)
+    hidden = set(cfg.get("hidden") or [])
+    if data.get("hidden"):
+        hidden.add(key)
     else:
-        muted.discard(key)
-    cfg["muted"] = sorted(muted)
+        hidden.discard(key)
+    cfg["hidden"] = sorted(hidden)
     save_config(cfg)
-    return jsonify({"ok": True, "muted": cfg["muted"]})
+    return jsonify({"ok": True, "hidden": cfg["hidden"]})
 
 
 # ---------------------------------------------------------------------------
@@ -1158,7 +1307,6 @@ def scheduler_loop():
                     continue
                 log.info("Auto-check triggered (interval %d min)", minutes)
                 run_scan(cfg)
-                auto_notify_new(load_config())
         except Exception as ex:
             log.error("Scheduler error: %s", ex)
 

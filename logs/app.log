@@ -163,3 +163,118 @@
 2026-08-18 11:17:04 [INFO] Local library: 1 item(s) from Sonarr/Radarr
 2026-08-18 11:17:04 [INFO] Scan finished in 0.0s — 2 upgrade(s) found
 2026-08-18 11:17:46 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 11:42:04 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 11:42:13 [INFO] Scan started
+2026-08-18 11:42:16 [INFO] releases.moe: 2829 best-release entries loaded
+2026-08-18 11:42:17 [INFO] Local library: 102 item(s) from Sonarr/Radarr
+2026-08-18 11:42:17 [INFO] Scan finished in 3.6s — 189 upgrade(s) found
+2026-08-18 11:44:43 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 12:06:24 [INFO] Scan started
+2026-08-18 12:06:24 [INFO] releases.moe: 3 best-release entries loaded
+2026-08-18 12:06:24 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 12:06:24 [INFO] Scan finished in 0.0s — 2 upgrade(s) found
+2026-08-18 12:11:28 [INFO] Scan started
+2026-08-18 12:11:28 [INFO] releases.moe: 3 best-release entries loaded
+2026-08-18 12:11:28 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 12:11:28 [INFO] Scan finished in 0.0s — 2 upgrade(s) found
+2026-08-18 12:14:06 [INFO] Scan started
+2026-08-18 12:14:06 [INFO] releases.moe: 3 best-release entries loaded
+2026-08-18 12:14:06 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 12:14:06 [INFO] Scan finished in 0.0s — 2 upgrade(s) found
+2026-08-18 12:14:45 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 12:14:52 [INFO] Scan started
+2026-08-18 12:14:56 [INFO] releases.moe: 2829 best-release entries loaded
+2026-08-18 12:14:56 [INFO] Local library: 101 item(s) from Sonarr/Radarr
+2026-08-18 12:15:56 [WARNING] AniList rate limit (HTTP 429), backing off
+2026-08-18 12:17:55 [WARNING] AniList search rate limit (HTTP 429), backing off
+2026-08-18 12:18:17 [INFO] Sent to qBittorrent: Sonarr:132405:1:MTBB release 0, 1 torrent(s) (category: sonarr-anime)
+2026-08-18 12:20:54 [WARNING] AniList rate limit (HTTP 429), backing off
+2026-08-18 12:29:53 [INFO] Scan finished in 900.9s — 188 upgrade(s) found
+2026-08-18 12:32:21 [INFO] Sent to qBittorrent: Sonarr:182896:8:Pico release 0, 1 torrent(s) (category: sonarr-anime)
+2026-08-18 12:44:43 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 12:47:01 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 12:51:02 [INFO] Scan started
+2026-08-18 12:51:02 [INFO] releases.moe: 3 best-release entries loaded
+2026-08-18 12:51:02 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 12:51:02 [INFO] Scan finished in 0.0s — 2 upgrade(s) found
+2026-08-18 12:52:09 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 12:58:57 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 13:00:16 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 13:07:11 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 13:20:43 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 13:33:12 [INFO] Scan started
+2026-08-18 13:33:12 [INFO] releases.moe: 3 best-release entries loaded
+2026-08-18 13:33:12 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 13:33:12 [INFO] Scan finished in 0.0s — 2 upgrade(s) found
+2026-08-18 13:34:23 [INFO] Scan started
+2026-08-18 13:34:23 [INFO] releases.moe: 3 best-release entries loaded
+2026-08-18 13:34:23 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 13:34:23 [INFO] Scan finished in 0.0s — 2 upgrade(s) found
+2026-08-18 13:35:23 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 13:35:35 [INFO] Scan started
+2026-08-18 13:35:39 [INFO] releases.moe: 2829 best-release entries loaded
+2026-08-18 13:35:39 [INFO] Local library: 101 item(s) from Sonarr/Radarr
+2026-08-18 13:40:40 [WARNING] AniList rate limit (HTTP 429), backing off
+2026-08-18 13:41:28 [INFO] Sent to qBittorrent: Sonarr:171457:1:Anna release 0, 1 torrent(s) (category: sonarr-anime)
+2026-08-18 13:43:17 [INFO] Sent to qBittorrent: Sonarr:163139:7:SubsPlease release 0, 21 torrent(s) (category: sonarr-anime)
+2026-08-18 13:49:03 [INFO] Discord: sent 14/14 notification(s)
+2026-08-18 13:49:03 [INFO] Scan finished in 808.9s — 188 upgrade(s) found
+2026-08-18 13:51:37 [INFO] Scan started
+2026-08-18 13:51:37 [INFO] releases.moe: 3 best-release entries loaded
+2026-08-18 13:51:37 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 13:51:37 [INFO] Scan finished in 0.0s — 2 upgrade(s) found
+2026-08-18 16:31:42 [INFO] Scan started
+2026-08-18 16:31:42 [INFO] releases.moe: 2 best-release entries loaded
+2026-08-18 16:31:42 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 16:31:42 [INFO] Scan finished in 0.0s — 1 upgrade(s) found
+2026-08-18 16:31:42 [INFO] Scan started
+2026-08-18 16:31:42 [INFO] releases.moe: 3 best-release entries loaded
+2026-08-18 16:31:42 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 16:31:42 [INFO] Scan finished in 0.0s — 2 upgrade(s) found
+2026-08-18 16:32:24 [INFO] Scan started
+2026-08-18 16:32:24 [INFO] releases.moe: 2 best-release entries loaded
+2026-08-18 16:32:24 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 16:32:24 [INFO] Scan finished in 0.0s — 1 upgrade(s) found
+2026-08-18 16:32:24 [INFO] Scan started
+2026-08-18 16:32:24 [INFO] releases.moe: 3 best-release entries loaded
+2026-08-18 16:32:24 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 16:32:24 [INFO] Scan finished in 0.0s — 2 upgrade(s) found
+2026-08-18 16:33:14 [INFO] Scan started
+2026-08-18 16:33:14 [INFO] releases.moe: 2 best-release entries loaded
+2026-08-18 16:33:14 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 16:33:14 [INFO] Scan finished in 0.0s — 1 upgrade(s) found
+2026-08-18 16:33:14 [INFO] Scan started
+2026-08-18 16:33:14 [INFO] releases.moe: 3 best-release entries loaded
+2026-08-18 16:33:14 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 16:33:14 [INFO] Scan finished in 0.0s — 2 upgrade(s) found
+2026-08-18 16:34:03 [INFO] Scan started
+2026-08-18 16:34:03 [INFO] releases.moe: 2 best-release entries loaded
+2026-08-18 16:34:03 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 16:34:03 [INFO] Scan finished in 0.0s — 1 upgrade(s) found
+2026-08-18 16:34:03 [INFO] Scan started
+2026-08-18 16:34:03 [INFO] releases.moe: 3 best-release entries loaded
+2026-08-18 16:34:03 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 16:34:03 [INFO] Scan finished in 0.0s — 2 upgrade(s) found
+2026-08-18 16:38:14 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 16:38:57 [INFO] Scan started
+2026-08-18 16:39:01 [INFO] releases.moe: 2829 best-release entries loaded
+2026-08-18 16:39:01 [INFO] Local library: 101 item(s) from Sonarr/Radarr
+2026-08-18 16:39:01 [INFO] Scan finished in 3.8s — 188 upgrade(s) found
+2026-08-18 17:09:20 [INFO] Scan started
+2026-08-18 17:09:20 [INFO] releases.moe: 2 best-release entries loaded
+2026-08-18 17:09:20 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 17:09:20 [INFO] Scan finished in 0.0s — 1 upgrade(s) found
+2026-08-18 17:09:20 [INFO] Scan started
+2026-08-18 17:09:20 [INFO] releases.moe: 3 best-release entries loaded
+2026-08-18 17:09:20 [INFO] Local library: 1 item(s) from Sonarr/Radarr
+2026-08-18 17:09:20 [INFO] Scan finished in 0.0s — 2 upgrade(s) found
+2026-08-18 17:11:01 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 17:11:17 [INFO] Scan started
+2026-08-18 17:11:23 [INFO] releases.moe: 2829 best-release entries loaded
+2026-08-18 17:11:23 [INFO] Local library: 101 item(s) from Sonarr/Radarr
+2026-08-18 17:11:23 [INFO] Scan finished in 5.8s — 188 upgrade(s) found
+2026-08-18 17:12:29 [INFO] Server starting on 0.0.0.0:8080 (data dir: C:\Coding\SeaDex Companion)
+2026-08-18 17:12:42 [INFO] Scan started
+2026-08-18 17:12:46 [INFO] releases.moe: 2829 best-release entries loaded
+2026-08-18 17:12:46 [INFO] Local library: 101 item(s) from Sonarr/Radarr
+2026-08-18 17:12:46 [INFO] Scan finished in 3.6s — 188 upgrade(s) found

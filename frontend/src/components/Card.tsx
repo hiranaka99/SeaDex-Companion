@@ -1,4 +1,4 @@
-import { useState, ReactNode } from 'react'
+import { useEffect, useRef, useState, ReactNode } from 'react'
 import { GroupedCard, Release, ResultItem, Config } from '../types'
 import { formatBytes, sizeDelta, seasonLabel, STATUS_LABEL } from '../utils'
 import * as api from '../api'
@@ -26,21 +26,77 @@ const IconOK = () => (
   </svg>
 )
 
+const IconEye = () => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={2}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    width="18"
+    height="18"
+    aria-hidden="true"
+  >
+    <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z" />
+    <circle cx="12" cy="12" r="2.5" />
+  </svg>
+)
+
+const IconEyeOff = () => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={2}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    width="18"
+    height="18"
+    aria-hidden="true"
+  >
+    <path d="M3 3l18 18" />
+    <path d="M10.6 5.1A10.9 10.9 0 0 1 12 5c6 0 9.5 7 9.5 7a17.4 17.4 0 0 1-2.9 3.9" />
+    <path d="M6.6 6.6A16.8 16.8 0 0 0 2.5 12s3.5 7 9.5 7a9.7 9.7 0 0 0 4.4-1" />
+    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+  </svg>
+)
+
 interface CardProps {
   group: GroupedCard
   index: number
-  mutedKeys: Set<string>
   config: Config | null
-  onMute: (key: string, muted: boolean) => void
+  hidden?: boolean
+  onToggle: () => void
 }
 
-export default function Card({ group, index, mutedKeys, config, onMute }: CardProps) {
+const HIDE_DURATION_MS = 280
+
+export default function Card({ group, index, config, hidden = false, onToggle }: CardProps) {
+  const [hiding, setHiding] = useState(false)
+  const hideTimer = useRef<number | null>(null)
   const srcClass = group.arr === 'Sonarr' ? 'sonarr' : 'radarr'
   const st = group.status || 'upgrade'
 
+  useEffect(() => {
+    return () => {
+      if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
+    }
+  }, [])
+
+  const handleHide = () => {
+    if (hiding) return
+    if (hidden) {
+      onToggle()
+      return
+    }
+    setHiding(true)
+    hideTimer.current = window.setTimeout(onToggle, HIDE_DURATION_MS)
+  }
+
   return (
     <article
-      className={'card status-' + st}
+      className={'card status-' + st + (hiding ? ' is-hiding' : '') + (hidden ? ' is-hidden' : '')}
       style={{ animationDelay: Math.min(index * 40, 400) + 'ms' }}
     >
       <div
@@ -62,17 +118,29 @@ export default function Card({ group, index, mutedKeys, config, onMute }: CardPr
         <span className={'card-status ' + st}>{STATUS_LABEL[st]}</span>
       </div>
       <div className="card-body">
-        <div className="card-title">
-          {group.anilist_id ? (
-            <a href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">
-              {group.title}
-            </a>
-          ) : (
-            group.title
-          )}
+        <div className="card-title-row">
+          <div className="card-title">
+            {group.anilist_id ? (
+              <a href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">
+                {group.title}
+              </a>
+            ) : (
+              group.title
+            )}
+          </div>
+          <button
+            className={'hide-btn' + (hidden ? ' is-hidden' : '')}
+            type="button"
+            title={hidden ? 'Show this card' : 'Hide this card'}
+            aria-label={(hidden ? 'Show ' : 'Hide ') + group.title}
+            onClick={handleHide}
+            disabled={hiding}
+          >
+            {hidden ? <IconEyeOff /> : <IconEye />}
+          </button>
         </div>
         {group.seasons.map((r) => (
-          <Season key={r.key} r={r} mutedKeys={mutedKeys} config={config} onMute={onMute} />
+          <Season key={r.key} r={r} config={config} />
         ))}
       </div>
     </article>
@@ -81,9 +149,7 @@ export default function Card({ group, index, mutedKeys, config, onMute }: CardPr
 
 interface SeasonProps {
   r: ResultItem
-  mutedKeys: Set<string>
   config: Config | null
-  onMute: (key: string, muted: boolean) => void
 }
 
 interface DisplayRelease {
@@ -111,9 +177,8 @@ function uniqueReleases(releases: Release[]): DisplayRelease[] {
   return [...selected.values()].sort((a, b) => a.index - b.index)
 }
 
-function Season({ r, mutedKeys, config, onMute }: SeasonProps) {
+function Season({ r, config }: SeasonProps) {
   const [dlState, setDlState] = useState<Record<number, 'idle' | 'busy' | 'done'>>({})
-  const muted = mutedKeys.has(r.key)
   const st = r.status || 'upgrade'
 
   const handleDownload = async (release: number) => {
@@ -248,15 +313,6 @@ function Season({ r, mutedKeys, config, onMute }: SeasonProps) {
               </a>
             ),
           )}
-        </div>
-        <div className="season-actions">
-          <button
-            className={'lock-btn' + (muted ? ' locked' : '')}
-            title={muted ? 'Unlock notifications' : 'Lock (mute) notifications for ' + seasonLabel(r)}
-            onClick={() => onMute(r.key, !muted)}
-          >
-            {muted ? '🔕' : '🔔'}
-          </button>
         </div>
       </div>
     </div>
