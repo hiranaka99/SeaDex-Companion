@@ -1,0 +1,12 @@
+services:
+  seadex-compare:
+    build: .
+    container_name: seadex-compare
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=8080
+      - DATA_DIR=/app/data
+    restart: unless-stopped
