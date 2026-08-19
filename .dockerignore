@@ -17,4 +17,6 @@ Dockerfile
 logs/
 notified.json
 frontend/node_modules/
+node_modules/
+dist/
 static/

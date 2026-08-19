@@ -17,50 +17,46 @@ A web UI that compares your **Sonarr / Radarr** anime library against the best r
 
 ### Prerequisites
 
-- **Python 3.11+**
-  - Windows: `winget install Python.Python.3.11` (or download the installer from [python.org](https://www.python.org/downloads/) — tick **"Add python.exe to PATH"** during setup)
-  - macOS: `brew install python@3.11`
-  - Linux: `sudo apt install python3.11` (or your distro's equivalent)
-- **Node.js 22+** (only needed to build the frontend)
+- **Node.js 22+**
   - Windows: `winget install OpenJS.NodeJS` (or download from [nodejs.org](https://nodejs.org/))
   - macOS: `brew install node`
   - Linux: `curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs`
 
-Verify with `python --version` and `node --version`.
+Verify with `node --version` and `npm --version`.
 
 ### Steps
 
-1. Install the Python dependencies:
+1. Install the backend and frontend development dependencies:
 
    ```bash
-   pip install -r requirements.txt
-   ```
-
-2. Build the frontend (required — the compiled bundle in `static/` is not committed):
-
-   ```bash
-   cd frontend
    npm install
-   npm run build   # outputs the bundle into ../static
-   cd ..
+   npm --prefix frontend install
    ```
 
-3. Start the app:
+2. Start the app (the TypeScript backend and frontend are built automatically):
 
    ```bash
-   python app.py
+   npm start
    ```
+
+To build without starting the server, run:
+
+```bash
+npm run build
+```
 
 Open **http://localhost:8080**, set your Sonarr/Radarr URLs and API keys in the Config tab, then hit **Scan Library**.
 
-### Frontend development
+### Development
 
 ```bash
-cd frontend
-npm run dev   # Vite dev server, proxies /api to http://localhost:8080
+npm run dev                    # TypeScript backend with live reload
+npm --prefix frontend run dev  # Vite UI, proxies /api to localhost:8080
 ```
 
-Run the backend as above in a second terminal and use the dev server URL instead.
+Run those commands in separate terminals and use the Vite dev-server URL.
+
+Run the backend regression suite with `npm test`.
 
 ## Run with Docker
 
@@ -70,7 +66,7 @@ docker compose up -d --build
 
 - Web UI: **http://localhost:8080**
 - Config, caches and logs persist in `./data`
-- No local frontend build needed — the image is built in two stages and compiles the React app inside the container, so it always ships the UI that matches the current `frontend/` source
+- No local build needed — the image compiles both TypeScript applications inside the container
 - To change the port, edit the `ports` mapping in `docker-compose.yml` (e.g. `"8878:8878"`) and set `PORT` to match the container side (right of the colon) — see the comments in `docker-compose.yml`
 
 ## Deploy from Docker Hub (no build needed)

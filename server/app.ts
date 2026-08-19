@@ -1,0 +1,757 @@
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import type { ChainEntry, ChainPart, Config, JsonObject, ReleaseCandidate, ScanState } from './types.js'
+
+export const SEADEX = 'https://releases.moe/api'
+export const ANILIST = 'https://graphql.anilist.co'
+
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
+const BASE_DIR = MODULE_DIR.endsWith(join('dist', 'server')) ? resolve(MODULE_DIR, '../..') : resolve(MODULE_DIR, '..')
+export const DATA_DIR = process.env.DATA_DIR || BASE_DIR
+export const STATIC_DIR = process.env.STATIC_DIR || join(BASE_DIR, 'static')
+export const CONFIG_FILE = join(DATA_DIR, 'config.json')
+export const CACHE_FILE = join(DATA_DIR, 'anilist_cache.json')
+export const RESULTS_FILE = join(DATA_DIR, 'last_results.json')
+export const NOTIFIED_FILE = join(DATA_DIR, 'notified.json')
+export const LOG_DIR = join(DATA_DIR, 'logs')
+export const LOG_FILE = join(LOG_DIR, 'app.log')
+
+mkdirSync(LOG_DIR, { recursive: true })
+
+export const DEFAULT_CONFIG: Config = {
+  sonarr_url: process.env.SONARR_URL || '',
+  sonarr_key: process.env.SONARR_KEY || '',
+  radarr_url: process.env.RADARR_URL || '',
+  radarr_key: process.env.RADARR_KEY || '',
+  sonarr_category: 'sonarr-anime',
+  radarr_category: 'radarr-anime',
+  qbittorrent_url: process.env.QBITTORRENT_URL || '',
+  qbittorrent_user: process.env.QBITTORRENT_USER || '',
+  qbittorrent_pass: process.env.QBITTORRENT_PASS || '',
+  webhook: process.env.DISCORD_WEBHOOK || '',
+  notify_enabled: true,
+  autocheck_minutes: 60,
+  hidden: [],
+}
+
+export const scanState: ScanState = {
+  running: false,
+  progress: 0,
+  total: 0,
+  message: 'Idle',
+  results: [],
+  error: null,
+  last_run: null,
+}
+
+export const autocheckState: { last: number; next: number | null } = {
+  last: Date.now() / 1000,
+  next: null,
+}
+
+export function setState(values: Partial<ScanState>): void {
+  Object.assign(scanState, values)
+}
+
+export function getState(): ScanState {
+  return { ...scanState, results: scanState.results }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function timestamp(date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+function rotateLog(): void {
+  try {
+    if (!existsSync(LOG_FILE) || statSync(LOG_FILE).size < 5 * 1024 * 1024) return
+    for (let index = 3; index >= 1; index -= 1) {
+      const source = index === 1 ? LOG_FILE : `${LOG_FILE}.${index - 1}`
+      const target = `${LOG_FILE}.${index}`
+      if (existsSync(source)) renameSync(source, target)
+    }
+  } catch {
+    // Logging must never stop the application.
+  }
+}
+
+export function log(level: 'INFO' | 'WARNING' | 'ERROR', message: string): void {
+  const line = `${timestamp()} [${level}] ${message}`
+  rotateLog()
+  try { appendFileSync(LOG_FILE, `${line}\n`, 'utf8') } catch { /* stdout is still available */ }
+  if (level === 'ERROR') console.error(line)
+  else if (level === 'WARNING') console.warn(line)
+  else console.log(line)
+}
+
+function readJson<T>(file: string, fallback: T, warning?: string): T {
+  if (!existsSync(file)) return fallback
+  try {
+    return JSON.parse(readFileSync(file, 'utf8')) as T
+  } catch (error) {
+    if (warning) log('WARNING', `${warning} (${errorMessage(error)}), using defaults`)
+    return fallback
+  }
+}
+
+function writeJsonAtomic(file: string, value: unknown, pretty = false): void {
+  mkdirSync(dirname(file), { recursive: true })
+  const temporary = `${file}.tmp`
+  writeFileSync(temporary, JSON.stringify(value, null, pretty ? 2 : undefined), 'utf8')
+  renameSync(temporary, file)
+}
+
+export function loadConfig(): Config {
+  const stored = readJson<Partial<Config>>(CONFIG_FILE, {}, 'Could not read config')
+  return { ...DEFAULT_CONFIG, ...stored }
+}
+
+export function saveConfig(config: Config): void { writeJsonAtomic(CONFIG_FILE, config, true) }
+export function loadCache(): JsonObject { return readJson<JsonObject>(CACHE_FILE, {}) }
+export function saveCache(cache: JsonObject): void { writeJsonAtomic(CACHE_FILE, cache, true) }
+export function saveLastResults(results: JsonObject[], lastRun: string): void {
+  writeJsonAtomic(RESULTS_FILE, { results, last_run: lastRun })
+}
+export function loadLastResults(): JsonObject | null { return readJson<JsonObject | null>(RESULTS_FILE, null) }
+export function loadNotified(): Set<string> { return new Set(readJson<string[]>(NOTIFIED_FILE, [])) }
+export function saveNotified(keys: Set<string>): void { writeJsonAtomic(NOTIFIED_FILE, [...keys].sort()) }
+
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeout = 60_000): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(timeout) })
+}
+
+export async function api(url: string, key?: string, init: RequestInit = {}): Promise<any> {
+  try {
+    const headers = new Headers(init.headers)
+    if (key) headers.set('X-Api-Key', key)
+    const response = await fetchWithTimeout(url, { ...init, headers })
+    if (!response.ok) {
+      log('ERROR', `API ${url} → HTTP ${response.status}`)
+      throw new Error(`HTTP ${response.status}`)
+    }
+    return await response.json()
+  } catch (error) {
+    log('ERROR', `API request to ${url} failed: ${errorMessage(error)}`)
+    throw error
+  }
+}
+
+export function guessQuality(filename: string): string {
+  const resolution = filename.match(/(2160p|1080p|720p)/i)?.[1] || '?'
+  const source = filename.match(/(Blu-ray|Web-DL|WebRip|BD-Remux)/i)?.[1] || ''
+  return `${resolution} ${source}`.trim()
+}
+
+export function seasonsFromFiles(files: JsonObject[] = []): Set<number> {
+  const seasons = new Set<number>()
+  for (const file of files) {
+    for (const match of String(file.name || '').matchAll(/S(\d{1,3})E(\d{1,3})/gi)) seasons.add(Number(match[1]))
+  }
+  return seasons
+}
+
+export async function seadexBest(): Promise<Map<number, JsonObject>> {
+  const best = new Map<number, JsonObject>()
+  let page = 1
+  while (true) {
+    const data = await api(`${SEADEX}/collections/entries/records?page=${page}&perPage=500&expand=trs`)
+    for (const item of data.items as JsonObject[]) {
+      const alid = Number(item.alID)
+      const torrents = item.expand?.trs || []
+      if (!torrents.length) continue
+      if (!best.has(alid)) best.set(alid, { url: `https://releases.moe/${alid}/`, notes: item.notes || '-', seasons: {} })
+      const entry = best.get(alid)!
+      const torrentInfos: Array<[JsonObject, JsonObject[], Set<number>]> = []
+      const entrySeasons = new Set<number>()
+      for (const torrent of torrents) {
+        const files = torrent.files || []
+        const seasons = seasonsFromFiles(files)
+        for (const season of seasons) entrySeasons.add(season)
+        torrentInfos.push([torrent, files, seasons])
+      }
+      for (const [torrent, files, detectedSeasons] of torrentInfos) {
+        const seasons = detectedSeasons.size ? detectedSeasons : (entrySeasons.size ? entrySeasons : new Set([0]))
+        const quality = guessQuality(files.map((file) => file.name || '').join(' '))
+        const sizes = new Map<number, number>()
+        const counts = new Map<number, number>()
+        for (const file of files) {
+          const season = Number(String(file.name || '').match(/S(\d{1,3})E/i)?.[1] || 0)
+          sizes.set(season, (sizes.get(season) || 0) + (file.length || 0))
+          counts.set(season, (counts.get(season) || 0) + 1)
+        }
+        for (const season of seasons) {
+          entry.seasons[season] ||= { candidates: [] }
+          const candidates = entry.seasons[season].candidates as ReleaseCandidate[]
+          let size = sizes.get(season) || 0
+          let count = counts.get(season) || 0
+          if (!size && season !== 0) size = sizes.get(0) || 0
+          if (!count && season !== 0) count = counts.get(0) || 0
+          const groupKey = `${String(torrent.releaseGroup).toLowerCase()}\0${String(torrent.tracker || '').toLowerCase()}`
+          let release = candidates.find((candidate) => `${candidate.releaseGroup.toLowerCase()}\0${String(candidate.tracker || '').toLowerCase()}` === groupKey)
+          if (!release) {
+            release = {
+              releaseGroup: torrent.releaseGroup,
+              tracker: torrent.tracker,
+              quality,
+              tags: torrent.tags || [],
+              dual_audio: Boolean(torrent.dualAudio),
+              size: 0,
+              file_count: 0,
+              info_hashes: [],
+              is_best: false,
+            }
+            candidates.push(release)
+          }
+          release.size += size
+          release.file_count += count
+          release.is_best ||= Boolean(torrent.isBest)
+          release.dual_audio ||= Boolean(torrent.dualAudio)
+          const hash = torrent.infoHash || ''
+          if (hash && !release.info_hashes.includes(hash)) release.info_hashes.push(hash)
+        }
+      }
+    }
+    if (page >= data.totalPages) break
+    page += 1
+  }
+  return best
+}
+
+export async function localItems(config: Config): Promise<JsonObject[]> {
+  const items: JsonObject[] = []
+  if (config.sonarr_url && config.sonarr_key) {
+    let series: JsonObject[] = []
+    try { series = await api(`${config.sonarr_url}/series`, config.sonarr_key) } catch { /* preserve partial scans */ }
+    for (const show of series) {
+      const seasons: JsonObject = {}
+      for (const season of show.seasons || []) {
+        const number = season.seasonNumber || 0
+        if (number === 0) continue
+        const stats = season.statistics || {}
+        const groups = stats.releaseGroups || []
+        if (groups.length) seasons[number] = { groups, size: stats.sizeOnDisk || 0 }
+      }
+      if (Object.keys(seasons).length) items.push({ arr: 'Sonarr', id: show.id, title: show.title, slug: show.titleSlug, seasons })
+    }
+  }
+  if (config.radarr_url && config.radarr_key) {
+    let movies: JsonObject[] = []
+    try { movies = await api(`${config.radarr_url}/movie`, config.radarr_key) } catch { /* preserve partial scans */ }
+    for (const movie of movies) {
+      const stats = movie.statistics || {}
+      const groups = stats.releaseGroups || []
+      if (groups.length) items.push({
+        arr: 'Radarr', id: movie.id, title: movie.title, slug: movie.titleSlug,
+        seasons: { 0: { groups, size: stats.sizeOnDisk || 0 } },
+      })
+    }
+  }
+  return items
+}
+
+export function arrItemUrl(config: Config | JsonObject, item: JsonObject): string | null {
+  let base = String(config[`${String(item.arr).toLowerCase()}_url`] || '').replace(/\/+$/, '')
+  base = base.replace(/\/api\/v\d+$/, '')
+  if (!base) return null
+  const path = item.arr === 'Sonarr' ? 'series' : 'movie'
+  return `${base}/${path}/${item.slug || item.id}`
+}
+
+let lastAnilist = 0
+const sleep = (milliseconds: number) => new Promise((done) => setTimeout(done, milliseconds))
+
+async function pacedAniList(payload: JsonObject, search: boolean): Promise<any> {
+  let result: any = search ? [] : {}
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const wait = 2050 - (Date.now() - lastAnilist)
+    if (wait > 0) await sleep(wait)
+    lastAnilist = Date.now()
+    let response: Response
+    try {
+      response = await fetchWithTimeout(ANILIST, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      }, 30_000)
+    } catch (error) {
+      log('WARNING', `AniList ${search ? 'search ' : ''}network error, retrying: ${errorMessage(error)}`)
+      await sleep(3000)
+      continue
+    }
+    if (response.status === 429) {
+      log('WARNING', `AniList ${search ? 'search ' : ''}rate limit (HTTP 429), backing off`)
+      await sleep((Number(response.headers.get('Retry-After') || 60) + 1) * 1000)
+      continue
+    }
+    let body: any = null
+    try { body = await response.json() } catch { /* transient non-JSON response */ }
+    result = search ? (body?.data?.Page?.media || []) : (body?.data?.Media || {})
+    break
+  }
+  return result
+}
+
+export async function alMedia(query: string, variables: JsonObject): Promise<JsonObject> {
+  return pacedAniList({ query, variables }, false)
+}
+export async function alSearch(query: string, variables: JsonObject): Promise<JsonObject[]> {
+  return pacedAniList({ query, variables }, true)
+}
+
+export function normalizeTitle(title: string): string {
+  if (!title) return ''
+  return title.replace(/×/g, 'x').replace(/[‘’]/g, "'").replace(/[–—]/g, '-').replace(/…/g, '...')
+    .replace(/[«»]/g, '').replace(/\s*[:-]\s*(The\s+Movie|Movie|Theatrical)\b.*$/i, '')
+    .replace(/\s+/g, ' ').trim()
+}
+
+export function searchCandidates(title: string): string[] {
+  const normalized = normalizeTitle(title)
+  const spaced = normalized.replace(/([a-z])\s*([Xx])\s*([A-Z])/g, '$1 $2 $3')
+  const seen = new Set<string>()
+  return [title, normalized, spaced].filter((candidate) => {
+    const key = candidate?.toLowerCase()
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+export function titleKey(title?: string | null): string {
+  return (title || '').toLowerCase().replace(/’/g, "'").replace(/[^a-z0-9]+/g, '')
+}
+
+export function pickAniListSearchResult(candidates: JsonObject[], title: string): JsonObject | null {
+  const wanted = titleKey(title)
+  const score = (media: JsonObject): number[] => {
+    const titles = media.title || {}
+    const exact = Boolean(wanted && ['english', 'romaji', 'native'].some((key) => titleKey(titles[key]) === wanted))
+    const seasonFormat = ['TV', 'TV_SHORT', 'ONA'].includes(media.format)
+    return [exact ? 3 : 0, seasonFormat ? 1 : 0, -(media.seasonYear || 9999), -(media.id || 0)]
+  }
+  const compare = (left: number[], right: number[]) => {
+    for (let i = 0; i < left.length; i += 1) if (left[i] !== right[i]) return left[i] - right[i]
+    return 0
+  }
+  return candidates.reduce<JsonObject | null>((best, candidate) => !best || compare(score(candidate), score(best)) > 0 ? candidate : best, null)
+}
+
+export async function anilistLookup(title: string, cache: JsonObject, search = alSearch, persist = saveCache): Promise<JsonObject | null> {
+  const cacheKey = `lookup:v2:${title}`
+  if (cache[cacheKey]) return cache[cacheKey]
+  const query = 'query($t:String){Page(perPage:10){media(search:$t,type:ANIME,sort:SEARCH_MATCH){id format season seasonYear episodes title{romaji english native} coverImage{large extraLarge} bannerImage}}}'
+  for (const candidate of searchCandidates(title)) {
+    const data = pickAniListSearchResult(await search(query, { t: candidate }), candidate)
+    if (data) {
+      const cover = data.coverImage || {}
+      const entry = { id: data.id, cover: cover.extraLarge || cover.large, banner: data.bannerImage }
+      cache[cacheKey] = entry
+      persist(cache)
+      return entry
+    }
+  }
+  return null
+}
+
+const SEASON_FORMATS = new Set(['TV', 'TV_SHORT', 'ONA'])
+const SEASON_ORDER: JsonObject = { WINTER: 0, SPRING: 1, SUMMER: 2, FALL: 3 }
+const COUR_PART_RE = /\b(?:part|cour)\s*(?:[-:]\s*)?(\d+|first|second|third|fourth|1st|2nd|3rd|4th)\b/i
+const COUR_ORDINALS: JsonObject = { first: 1, '1st': 1, second: 2, '2nd': 2, third: 3, '3rd': 3, fourth: 4, '4th': 4 }
+
+export function courPartNumber(media: JsonObject): number | null {
+  const titles = media.title || {}
+  for (const title of [titles.english, titles.romaji, titles.native]) {
+    const value = String(title || '').match(COUR_PART_RE)?.[1]?.toLowerCase()
+    if (value) return /^\d+$/.test(value) ? Number(value) : COUR_ORDINALS[value]
+  }
+  return null
+}
+
+function mediaPart(id: number, data: JsonObject, fallback: JsonObject = {}): ChainPart & JsonObject {
+  const cover = data.coverImage || {}
+  const titles = data.title || {}
+  return {
+    id, cover: cover.extraLarge || cover.large || fallback.cover,
+    banner: data.bannerImage || fallback.banner,
+    episodeCount: data.episodes ?? null,
+    title: titles.english || titles.romaji,
+  }
+}
+
+export interface AniListDependencies {
+  lookup?: typeof anilistLookup
+  media?: typeof alMedia
+  persist?: typeof saveCache
+}
+
+export async function anilistChain(title: string, cache: JsonObject, dependencies: AniListDependencies = {}): Promise<ChainEntry[]> {
+  const lookup = dependencies.lookup || anilistLookup
+  const media = dependencies.media || alMedia
+  const persist = dependencies.persist || saveCache
+  const base = await lookup(title, cache)
+  if (!base) return []
+  const chainKey = `chain:v8:${base.id}`
+  if (cache[chainKey]) return cache[chainKey].chain || []
+  const query = 'query($id:Int){Media(id:$id,type:ANIME){id format season seasonYear episodes title{romaji english native} coverImage{large extraLarge} bannerImage relations{edges{relationType node{id}}}}}'
+  const nodes = new Map<number, JsonObject>()
+  const seen = new Set<number>([base.id])
+  const queue = [base.id as number]
+  while (queue.length && nodes.size < 50) {
+    const id = queue.shift()!
+    const data = await media(query, { id })
+    if (!Object.keys(data).length) continue
+    nodes.set(id, data)
+    for (const edge of data.relations?.edges || []) {
+      const nextId = edge.node?.id
+      if (edge.relationType === 'SEQUEL' && nextId && !seen.has(nextId)) {
+        seen.add(nextId)
+        queue.push(nextId)
+      }
+    }
+  }
+  const discovery = new Map([...nodes.keys()].map((id, index) => [id, index]))
+  const seasonIds = [...nodes.keys()].filter((id) => id !== base.id && SEASON_FORMATS.has(nodes.get(id)?.format))
+  seasonIds.sort((left, right) => {
+    const a = nodes.get(left) || {}; const b = nodes.get(right) || {}
+    const aa = [discovery.get(left) || 0, a.seasonYear || 0, SEASON_ORDER[a.season] ?? 4, left]
+    const bb = [discovery.get(right) || 0, b.seasonYear || 0, SEASON_ORDER[b.season] ?? 4, right]
+    for (let index = 0; index < aa.length; index += 1) if (aa[index] !== bb[index]) return aa[index] - bb[index]
+    return 0
+  })
+  const groups: number[][] = [[base.id]]
+  const groupById = new Map<number, number[]>([[base.id, groups[0]]])
+  for (const id of seasonIds) {
+    const data = nodes.get(id)!
+    let group: number[] | undefined
+    if ((courPartNumber(data) || 0) >= 2) {
+      const prequels = (data.relations?.edges || []).filter((edge: JsonObject) => edge.relationType === 'PREQUEL').map((edge: JsonObject) => edge.node?.id)
+      group = prequels.map((prequel: number) => groupById.get(prequel)).find(Boolean) || groups.at(-1)
+    }
+    if (!group) { group = []; groups.push(group) }
+    group.push(id); groupById.set(id, group)
+  }
+  const chain = groups.map((ids, index) => {
+    const parts = ids.map((id) => mediaPart(id, nodes.get(id) || {}, id === base.id ? base : {}))
+    const first = parts[0]
+    const counts = parts.map((part) => part.episodeCount)
+    return {
+      season: index + 1, id: first.id, ids: parts.map((part) => part.id), parts,
+      cover: first.cover, banner: first.banner,
+      episodeCount: counts.every((count) => count !== null) ? counts.reduce((sum, count) => sum + count, 0) : null,
+    } as unknown as ChainEntry
+  })
+  cache[chainKey] = { chain }
+  persist(cache)
+  return chain
+}
+
+export function isDownloadable(release: JsonObject): boolean {
+  return (release.info_hashes || []).some((hash: string) => /^[0-9a-f]{40}$/i.test(hash))
+}
+
+export function pickBest(candidates: ReleaseCandidate[], episodeCount?: number | null): [ReleaseCandidate | null, ReleaseCandidate[]] {
+  if (!candidates.length) return [null, []]
+  const flagged = candidates.filter((candidate) => candidate.is_best)
+  let pool = flagged.length ? flagged : [...candidates]
+  if (episodeCount && episodeCount > 0) {
+    const matching = pool.filter((candidate) => candidate.file_count === episodeCount)
+    if (matching.length) pool = matching
+  }
+  const downloadable = pool.filter(isDownloadable)
+  const selectedPool = downloadable.length ? downloadable : pool
+  const chosen = selectedPool.reduce((best, candidate) => (candidate.size || 0) > (best.size || 0) ? candidate : best)
+  return [chosen, candidates.filter((candidate) => candidate !== chosen)]
+}
+
+export function releaseDict(kind: string, release: JsonObject, part?: string | null, url?: string): JsonObject {
+  const result: JsonObject = {
+    kind, releaseGroup: release.releaseGroup, tracker: release.tracker, quality: release.quality,
+    tags: release.tags || [], dual_audio: Boolean(release.dual_audio), size: release.size || 0,
+    info_hashes: [...(release.info_hashes || [])], downloadable: isDownloadable(release),
+  }
+  if (part) result.part = part
+  if (url) result.url = url
+  return result
+}
+
+export function seadexSlot(entry: JsonObject, season: number): JsonObject | null {
+  const direct = entry.seasons?.[season]
+  if (direct?.candidates?.length) return direct
+  const buckets = Object.entries(entry.seasons || {}).filter(([, value]: [string, any]) => value.candidates?.length)
+  if (!buckets.length) return null
+  buckets.sort(([left], [right]) => Math.abs(Number(left) - season) - Math.abs(Number(right) - season) || Number(left) - Number(right))
+  return buckets[0][1] as JsonObject
+}
+
+export function entryParts(entry: JsonObject): JsonObject[] {
+  return entry.parts || [{ id: entry.id, episodeCount: entry.episodeCount, title: null }]
+}
+
+export function orderedPartReleases(best: ReleaseCandidate, alternatives: ReleaseCandidate[]): Array<['best' | 'alt', ReleaseCandidate]> {
+  const byGroup = new Map<string, ReleaseCandidate>()
+  for (const release of [best, ...alternatives]) {
+    const key = release.releaseGroup.trim().toLowerCase()
+    const current = byGroup.get(key)
+    if (!current || (isDownloadable(release) && !isDownloadable(current))) byGroup.set(key, release)
+  }
+  const bestKey = best.releaseGroup.trim().toLowerCase()
+  const ordered = [bestKey, ...[...byGroup.keys()].filter((key) => key !== bestKey)]
+  return ordered.map((key) => [key === bestKey || byGroup.get(key)!.is_best ? 'best' : 'alt', byGroup.get(key)!])
+}
+
+export function commonBestRelease(resolved: JsonObject[], localGroups: Set<string>): ReleaseCandidate | null {
+  if (resolved.length < 2) return null
+  let common: Set<string> | null = null
+  const releases = new Map<string, ReleaseCandidate>()
+  for (const part of resolved) {
+    const keys = new Set<string>()
+    for (const release of [part.best, ...part.alts] as ReleaseCandidate[]) {
+      if (!release.is_best || !isDownloadable(release) || !localGroups.has(release.releaseGroup.trim().toLowerCase())) continue
+      const hashes = release.info_hashes.filter((hash) => /^[0-9a-f]{40}$/i.test(hash)).map((hash) => hash.toLowerCase()).sort()
+      if (!hashes.length) continue
+      const key = `${release.releaseGroup.trim().toLowerCase()}\0${hashes.join('\0')}`
+      keys.add(key); if (!releases.has(key)) releases.set(key, release)
+    }
+    if (common === null) common = keys
+    else {
+      const intersection = new Set<string>()
+      for (const key of common as Set<string>) if (keys.has(key)) intersection.add(key)
+      common = intersection
+    }
+    if (!common.size) return null
+  }
+  const commonKeys = common as Set<string>
+  return [...commonKeys].map((key) => releases.get(key)!).reduce<ReleaseCandidate | null>((best, release) => !best || release.size > best.size ? release : best, null)
+}
+
+export function partBestGroups(part: JsonObject): Set<string> {
+  return new Set(orderedPartReleases(part.best, part.alts).filter(([kind]) => kind === 'best').map(([, release]) => release.releaseGroup.trim().toLowerCase()))
+}
+
+export interface ScanDependencies {
+  seadexBest?: typeof seadexBest
+  localItems?: typeof localItems
+  anilistChain?: typeof anilistChain
+  loadCache?: typeof loadCache
+  saveLastResults?: typeof saveLastResults
+  autoNotifyNew?: typeof autoNotifyNew
+}
+
+export async function runScan(config: Config | JsonObject, dependencies: ScanDependencies = {}): Promise<void> {
+  const started = Date.now()
+  try {
+    log('INFO', 'Scan started')
+    setState({ running: true, error: null, progress: 0, total: 0, message: 'Loading SeaDEX best releases…', results: [], last_run: null })
+    const best = await (dependencies.seadexBest || seadexBest)()
+    log('INFO', `releases.moe: ${best.size} best-release entries loaded`)
+    setState({ message: 'Loading local library…' })
+    const items = await (dependencies.localItems || localItems)(config as Config)
+    log('INFO', `Local library: ${items.length} item(s) from Sonarr/Radarr`)
+    setState({ total: items.length })
+    const cache = (dependencies.loadCache || loadCache)()
+    const results: JsonObject[] = []
+    for (const [itemIndex, item] of items.entries()) {
+      setState({ progress: itemIndex, message: `Resolving: ${item.title}` })
+      const arrUrl = arrItemUrl(config, item)
+      const chain = await (dependencies.anilistChain || anilistChain)(item.title, cache)
+      const seasonEntries = Object.entries(item.seasons).map(([season, local]) => [Number(season), local as JsonObject] as const).sort(([a], [b]) => a - b)
+      if (!chain.length) {
+        log('WARNING', `No AniList match for: ${item.title}`)
+        for (const [season, local] of seasonEntries) results.push({
+          key: `${item.arr}:item${item.id}:${season}:missing`, group_id: null, arr: item.arr, title: item.title,
+          season, status: 'missing', have: [...local.groups].sort(), local_size: local.size || 0,
+          best_group: null, best_size: 0, releases: [], url: null, notes: null, image: null,
+          banner: null, anilist_id: null, arr_url: arrUrl,
+        })
+        setState({ progress: itemIndex + 1, results: [...results] })
+        continue
+      }
+      for (const [season, local] of seasonEntries) {
+        const localGroups: string[] = local.groups
+        setState({ message: `Resolving: ${item.title} (${season ? `S${String(season).padStart(2, '0')}` : 'Movie'})` })
+        const entry = season >= 1 && season <= chain.length ? chain[season - 1] : chain[0]
+        const alid = entry.id
+        const parts = entryParts(entry)
+        const common: JsonObject = {
+          group_id: chain[0].id, arr: item.arr, title: item.title, season, have: [...localGroups].sort(),
+          local_size: local.size || 0, url: null, notes: null, image: entry.cover || null,
+          banner: entry.banner || null, anilist_id: alid, arr_url: arrUrl,
+        }
+        const resolved: JsonObject[] = []
+        const sources: JsonObject[] = []
+        let missingPart = false; let uncoveredPart = false
+        for (const [partIndex, part] of parts.entries()) {
+          const source = best.get(part.id)
+          if (!source) { missingPart = true; continue }
+          const label = parts.length > 1 ? `Cour ${partIndex + 1}` : null
+          sources.push({ label: label || 'releases.moe', url: source.url })
+          const slot = seadexSlot(source, season)
+          if (!slot) { uncoveredPart = true; continue }
+          const [selected, alternatives] = pickBest(slot.candidates, part.episodeCount)
+          if (!selected) { uncoveredPart = true; continue }
+          resolved.push({ label, source, best: selected, alts: alternatives })
+        }
+        common.urls = sources
+        common.anilist_ids = parts.map((part) => part.id)
+        if (sources.length) {
+          common.url = sources[0].url
+          const notes = [...new Set(resolved.map((part) => part.source.notes || '-').filter((note) => note !== '-'))]
+          common.notes = notes.length ? notes.join('\n') : '-'
+        }
+        if (missingPart) {
+          results.push({ ...common, key: `${item.arr}:${alid}:${season}:missing`, status: 'missing', best_group: null, best_size: 0, releases: [] })
+          continue
+        }
+        if (uncoveredPart || resolved.length !== parts.length) {
+          results.push({ ...common, key: `${item.arr}:${alid}:${season}:uncovered`, status: 'uncovered', best_group: null, best_size: 0, releases: [] })
+          continue
+        }
+        const bestGroups = [...new Set(resolved.map((part) => part.best.releaseGroup))]
+        let bestGroup = bestGroups.join(' + ')
+        let bestSize = resolved.reduce((sum, part) => sum + (part.best.size || 0), 0)
+        const localGroupKeys = new Set(localGroups.map((group) => group.toLowerCase()))
+        let ownsAllBest = resolved.every((part) => [...partBestGroups(part)].some((group) => localGroupKeys.has(group)))
+        const commonBest = commonBestRelease(resolved, localGroupKeys)
+        if (commonBest) { bestGroup = commonBest.releaseGroup; bestSize = commonBest.size || 0; ownsAllBest = true }
+        const releases: JsonObject[] = []
+        if (ownsAllBest) {
+          for (const part of resolved) {
+            for (const [kind, release] of orderedPartReleases(commonBest || part.best, part.alts)) {
+              if (kind === 'best') releases.push(releaseDict(kind, release, part.label, part.source.url))
+            }
+          }
+          results.push({ ...common, key: `${item.arr}:${alid}:${season}:${bestGroup}`, status: 'best', best_group: bestGroup, best_size: bestSize, releases })
+        } else {
+          for (const part of resolved) for (const [kind, release] of orderedPartReleases(part.best, part.alts)) releases.push(releaseDict(kind, release, part.label, part.source.url))
+          results.push({ ...common, key: `${item.arr}:${alid}:${season}:${bestGroup}`, status: 'upgrade', best_group: bestGroup, best_size: bestSize, releases })
+        }
+      }
+      setState({ progress: itemIndex + 1, results: [...results] })
+    }
+    const lastRun = timestamp()
+    setState({ progress: items.length, message: 'Done', results, last_run: lastRun })
+    ;(dependencies.saveLastResults || saveLastResults)(results, lastRun)
+    await (dependencies.autoNotifyNew || autoNotifyNew)(config as Config)
+    log('INFO', `Scan finished in ${((Date.now() - started) / 1000).toFixed(1)}s — ${results.length} upgrade(s) found`)
+  } catch (error) {
+    log('ERROR', `Scan failed: ${errorMessage(error)}`)
+    setState({ error: errorMessage(error) })
+  } finally {
+    setState({ running: false })
+  }
+}
+
+export async function sendToDiscord(webhook: string, results: JsonObject[]): Promise<number> {
+  let sent = 0
+  for (const result of results) {
+    const title = result.title + (result.season ? `  (S${String(result.season).padStart(2, '0')})` : '')
+    const release = result.releases?.[0] || {}
+    const message = `${result.arr} · ${title}\n  have : ${(result.have || []).join(', ')}\n  best : ${result.best_group}  (${release.quality || ''}, ${release.tracker || ''})\n  notes: ${result.notes}\n  tags : ${(release.tags || []).join(', ') || '-'}\n  ${result.url}`
+    try {
+      await fetchWithTimeout(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: message.slice(0, 1900) }) }, 30_000)
+      sent += 1; await sleep(500)
+    } catch (error) { log('ERROR', `Discord webhook failed for ${title}: ${errorMessage(error)}`) }
+  }
+  if (sent) log('INFO', `Discord: sent ${sent}/${results.length} notification(s)`)
+  return sent
+}
+
+export async function autoNotifyNew(config: Config): Promise<number> {
+  if (!config.notify_enabled || !config.webhook) return 0
+  const notified = loadNotified()
+  const fresh = scanState.results.filter((result) => result.status === 'upgrade' && result.key && !notified.has(result.key))
+  if (!fresh.length) return 0
+  const sent = await sendToDiscord(config.webhook, fresh)
+  for (const result of fresh) notified.add(result.key)
+  saveNotified(notified)
+  return sent
+}
+
+interface QbSession { cookie: string }
+let qbSession: QbSession | null = null
+let qbCache: { data: JsonObject[] | null; timestamp: number } = { data: null, timestamp: 0 }
+let qbQueue: Promise<void> = Promise.resolve()
+
+async function withQbLock<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = qbQueue
+  let release!: () => void
+  qbQueue = new Promise<void>((done) => { release = done })
+  await previous
+  try { return await operation() } finally { release() }
+}
+
+async function qbLogin(base: string, user: string, password: string): Promise<QbSession> {
+  const response = await fetchWithTimeout(`${base}/api/v2/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ username: user, password }),
+  }, 30_000)
+  const text = await response.text()
+  if (response.status === 204 || (response.status === 200 && text.includes('Ok'))) {
+    return { cookie: (response.headers.get('set-cookie') || '').split(';', 1)[0] }
+  }
+  throw new Error(`qBittorrent login failed (HTTP ${response.status})`)
+}
+
+async function qbRequest(config: Config, path: string, init: RequestInit = {}, retry = true): Promise<Response> {
+  const base = config.qbittorrent_url.replace(/\/$/, '')
+  if (!base) throw new Error('qBittorrent is not configured (Config tab)')
+  qbSession ||= await qbLogin(base, config.qbittorrent_user, config.qbittorrent_pass)
+  const headers = new Headers(init.headers); if (qbSession.cookie) headers.set('Cookie', qbSession.cookie)
+  const response = await fetchWithTimeout(`${base}${path}`, { ...init, headers }, 30_000)
+  if (response.status === 403 && retry) { qbSession = await qbLogin(base, config.qbittorrent_user, config.qbittorrent_pass); return qbRequest(config, path, init, false) }
+  return response
+}
+
+export async function qbAddTorrent(config: Config, magnet: string, category?: string): Promise<void> {
+  return withQbLock(async () => {
+    const body = new URLSearchParams({ urls: magnet }); if (category) body.set('category', category)
+    const response = await qbRequest(config, '/api/v2/torrents/add', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body })
+    const text = await response.text()
+    if (response.status === 200) {
+      if (text.includes('Ok')) return
+      try { const data = JSON.parse(text); if (data.success_count > 0 || data.added_torrent_ids?.length) return } catch { /* handled below */ }
+    }
+    throw new Error(`qBittorrent rejected the torrent (HTTP ${response.status}: ${text.slice(0, 120)})`)
+  })
+}
+
+export async function qbGetTorrents(config: Config, hashes?: string[]): Promise<JsonObject[]> {
+  return withQbLock(async () => {
+    let torrents = qbCache.data
+    if (!torrents || Date.now() - qbCache.timestamp >= 2000) {
+      const response = await qbRequest(config, '/api/v2/torrents/info')
+      const text = await response.text()
+      if (response.status !== 200) throw new Error(`qBittorrent error (HTTP ${response.status}: ${text.slice(0, 120)})`)
+      const parsed = JSON.parse(text) as JsonObject[]
+      torrents = parsed; qbCache = { data: parsed, timestamp: Date.now() }
+    }
+    const available = torrents || []
+    if (!hashes) return available
+    const wanted = new Set(hashes.map((hash) => hash.toLowerCase()))
+    return available.filter((torrent) => wanted.has(String(torrent.hash || '').toLowerCase()))
+  })
+}
+
+export function normalizeQbStates(states: string[]): string {
+  if (!states.length) return 'unknown'
+  if (states.some((state) => ['error', 'unknown'].includes(state))) return 'error'
+  const downloading = new Set(['downloading', 'forcedDL', 'metaDL', 'queuedDL', 'stalledDL', 'checkingDL', 'allocating', 'checkingResumeData'])
+  const uploading = new Set(['uploading', 'forcedUP', 'queuedUP', 'stalledUP'])
+  const paused = new Set(['pausedDL', 'pausedUP'])
+  if (states.every((state) => uploading.has(state))) return 'complete'
+  if (states.some((state) => downloading.has(state))) return 'downloading'
+  if (states.every((state) => paused.has(state))) return 'paused'
+  return 'unknown'
+}
+
+export function resultsForRequest(): JsonObject[] {
+  return scanState.results.length ? scanState.results : (loadLastResults()?.results || [])
+}
+
+export function resetRuntimeForTests(): void {
+  Object.assign(scanState, { running: false, progress: 0, total: 0, message: 'Idle', results: [], error: null, last_run: null })
+  qbSession = null; qbCache = { data: null, timestamp: 0 }; qbQueue = Promise.resolve()
+}
