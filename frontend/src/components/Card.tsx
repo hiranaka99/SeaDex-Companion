@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useId, useRef, useState, ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { GroupedCard, Release, ResultItem, Config } from '../types'
-import { formatBytes, sizeDelta, seasonLabel, STATUS_LABEL } from '../utils'
+import { formatBytes, formatEta, sizeDelta, seasonLabel, STATUS_LABEL } from '../utils'
 import * as api from '../api'
 import { cx } from '../styles'
 import Icon from './Icons'
 import { useToast } from './Toast'
+import { useDownloads, DownloadEntry } from './DownloadsProvider'
 
 const IconSpinner = () => <span className="block size-[15px] animate-spin rounded-full border-2 border-accent/35 border-t-accent-bright group-disabled/dl:border-ink/30 group-disabled/dl:border-t-ink" aria-hidden="true" />
 
@@ -105,18 +106,146 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
   const hideTimer = useRef<number | null>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
   const titleId = useId()
-  const [activeBySeason, setActiveBySeason] = useState<Record<string, boolean>>({})
+  const toast = useToast()
   const srcClass = group.arr === 'Sonarr' ? 'sonarr' : 'radarr'
   const st = group.status || 'upgrade'
+  // Same key AnimeTab uses for React's `key`, so it's stable and unique per card.
+  const cardKey = group.anilist_id !== null ? String(group.anilist_id) : `${group.arr}:${group.title}`
+  const { report, unregister } = useDownloads()
 
-  // Each season reports whether any of its releases is currently downloading;
-  // the card spins its border while any season is active.
-  const onSeasonActive = useCallback(
-    (key: string, active: boolean) =>
-      setActiveBySeason((prev) => (prev[key] === active ? prev : { ...prev, [key]: active })),
-    []
+  // Live download state for every release in this card, keyed by season key
+  // then release index. Tracking lives here (not inside the details panel) so
+  // the animated border keeps spinning even while the details are closed.
+  const [dlBySeason, setDlBySeason] = useState<Record<string, Record<number, DlState>>>({})
+  const pollers = useRef<Record<string, number>>({})
+
+  const stopPolling = (seasonKey: string, release: number) => {
+    const idKey = `${seasonKey}\u0000${release}`
+    const id = pollers.current[idKey]
+    if (id) {
+      window.clearInterval(id)
+      delete pollers.current[idKey]
+    }
+  }
+
+  const startPolling = (seasonKey: string, release: number) => {
+    const idKey = `${seasonKey}\u0000${release}`
+    if (pollers.current[idKey]) return
+    pollers.current[idKey] = window.setInterval(() => pollProgress(seasonKey, release), 3000)
+  }
+
+  const applyProgress = (seasonKey: string, release: number, p: api.DownloadProgress) => {
+    if (!p.ok) return
+    const complete = p.state === 'complete' || (p.found && p.progress >= 0.999)
+    setDlBySeason((s) => ({
+      ...s,
+      [seasonKey]: {
+        ...(s[seasonKey] || {}),
+        [release]: {
+          phase: complete ? 'complete' : 'downloading',
+          progress: p.progress,
+          downloaded: p.downloaded,
+          total_size: p.total_size,
+          speed: p.speed,
+        },
+      },
+    }))
+    if (complete) stopPolling(seasonKey, release)
+    else startPolling(seasonKey, release)
+  }
+
+  const pollProgress = (seasonKey: string, release: number) => {
+    api.getDownloadProgress(seasonKey, release)
+      .then((p) => applyProgress(seasonKey, release, p))
+      .catch(() => {
+        /* transient network/backend error — keep polling */
+      })
+  }
+
+  // Re-attach to downloads that are already running in qBittorrent (e.g. after
+  // a page reload or server restart): check each downloadable release once and
+  // resume polling for any that are in progress or already complete. The
+  // backend caches the qBittorrent response, so this burst stays cheap.
+  useEffect(() => {
+    const activePollers = pollers.current
+    for (const season of group.seasons) {
+      const owned = (rel: Release) =>
+        season.have.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
+      for (const { rel, index } of uniqueReleases(season.releases || [])) {
+        if (!rel.downloadable || owned(rel)) continue
+        api
+          .getDownloadProgress(season.key, index)
+          .then((p) => {
+            if (!p.ok || !p.found) return
+            if (p.state === 'paused') return // don't show a stuck bar for paused
+            applyProgress(season.key, index, p)
+          })
+          .catch(() => {
+            /* ignore — nothing to re-attach to */
+          })
+      }
+    }
+    return () => {
+      for (const k of Object.keys(activePollers)) window.clearInterval(activePollers[Number(k)])
+    }
+    // Runs once per mount (fresh after a reload), so the first-render seasons are used.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const handleDownload = async (seasonKey: string, release: number) => {
+    setDlBySeason((s) => ({
+      ...s,
+      [seasonKey]: { ...(s[seasonKey] || {}), [release]: { ...IDLE_DL, phase: 'sending' } },
+    }))
+    try {
+      const res = await api.download(seasonKey, release)
+      if (!res.ok) throw new Error(res.error || 'Download failed')
+      pollProgress(seasonKey, release)
+      startPolling(seasonKey, release)
+    } catch (e: any) {
+      stopPolling(seasonKey, release)
+      setDlBySeason((s) => ({
+        ...s,
+        [seasonKey]: { ...(s[seasonKey] || {}), [release]: IDLE_DL },
+      }))
+      toast.show('Download failed: ' + e.message, 'error')
+    }
+  }
+
+  // The card spins its border while any release in any season is downloading.
+  const downloading = Object.values(dlBySeason).some((seasonDl) =>
+    Object.values(seasonDl).some((d) => d.phase === 'sending' || d.phase === 'downloading'),
   )
-  const downloading = Object.values(activeBySeason).some(Boolean)
+
+  // Report this card's active downloads to the shared registry so the sidebar
+  // can show them (with progress and ETA) even while the details are closed.
+  useEffect(() => {
+    const entries: DownloadEntry[] = []
+    for (const season of group.seasons) {
+      const seasonDl = dlBySeason[season.key]
+      if (!seasonDl) continue
+      const byIndex = new Map(uniqueReleases(season.releases || []).map((x) => [x.index, x.rel]))
+      for (const [releaseIndex, state] of Object.entries(seasonDl)) {
+        if (state.phase !== 'sending' && state.phase !== 'downloading') continue
+        const rel = byIndex.get(Number(releaseIndex))
+        entries.push({
+          id: `${season.key}\u0000${releaseIndex}`,
+          title: group.title,
+          season: seasonLabel(season),
+          releaseGroup: rel?.releaseGroup || 'Unknown release',
+          phase: state.phase,
+          progress: state.progress,
+          downloaded: state.downloaded,
+          total_size: state.total_size,
+          speed: state.speed,
+        })
+      }
+    }
+    report(cardKey, entries)
+  }, [dlBySeason, group, cardKey, report])
+
+  // Drop this card's downloads from the registry when it unmounts.
+  useEffect(() => () => unregister(cardKey), [cardKey, unregister])
 
   const seasonCount = group.seasons.length
   // Total size change if every upgradable season were replaced by its best release.
@@ -208,7 +337,7 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
           <div className="relative h-48 overflow-hidden border-b border-line bg-panel bg-cover bg-center" style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}><div className="absolute inset-0 bg-linear-to-t from-canvas via-canvas/55 to-black/15"/><button ref={closeRef} type="button" className="absolute top-4 right-4 z-2 grid size-10 cursor-pointer place-items-center rounded-xl border border-white/15 bg-black/40 text-white backdrop-blur-md hover:bg-black/60" onClick={() => setDetailsOpen(false)} aria-label="Close details"><Icon name="close"/></button><div className="absolute inset-x-5 bottom-5 z-1 flex items-end gap-4">{group.image && <img src={group.image} alt="" className="h-24 w-16 rounded-lg border border-white/15 object-cover shadow-xl"/>}<div className="min-w-0"><span className={cx('mb-2 inline-block rounded-full border px-2.5 py-1 text-[11px] font-extrabold', STATUS_BADGE[st])}>{STATUS_LABEL[st]}</span><h2 id={titleId} className="m-0 text-2xl leading-tight font-extrabold text-white">{group.title}</h2></div></div></div>
           <div className="space-y-4 p-5 max-[600px]:p-4">
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted">{group.arr_url && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{group.anilist_id && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList ↗</a>}<span className="ml-auto">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span></div>
-            {group.seasons.map((season) => <Season key={season.key} r={season} config={config} tone={st} onActiveChange={onSeasonActive}/>)}
+            {group.seasons.map((season) => <Season key={season.key} r={season} config={config} tone={st} dl={dlBySeason[season.key] || {}} onDownload={(release) => void handleDownload(season.key, release)}/>)}
           </div>
         </aside>
       </div>, document.body,
@@ -220,7 +349,8 @@ interface SeasonProps {
   r: ResultItem
   config: Config | null
   tone: string
-  onActiveChange: (key: string, active: boolean) => void
+  dl: Record<number, DlState>
+  onDownload: (release: number) => void
 }
 
 interface DisplayRelease {
@@ -283,100 +413,8 @@ function groupByCour(releases: DisplayRelease[]): { part: string; items: Display
   return groups
 }
 
-function Season({ r, config, tone, onActiveChange }: SeasonProps) {
-  const [dl, setDl] = useState<Record<number, DlState>>({})
-  const pollers = useRef<Record<number, number>>({})
-  const toast = useToast()
+function Season({ r, config, tone, dl, onDownload }: SeasonProps) {
   const st = r.status || 'upgrade'
-
-  // True while any release in this season is being sent or downloaded.
-  const active = Object.values(dl).some(
-    (d) => d.phase === 'sending' || d.phase === 'downloading',
-  )
-  useEffect(() => {
-    onActiveChange(r.key, active)
-  }, [active, onActiveChange, r.key])
-  useEffect(() => () => onActiveChange(r.key, false), [onActiveChange, r.key])
-
-  const stopPolling = (release: number) => {
-    const id = pollers.current[release]
-    if (id) {
-      window.clearInterval(id)
-      delete pollers.current[release]
-    }
-  }
-
-  const startPolling = (release: number) => {
-    if (pollers.current[release]) return
-    pollers.current[release] = window.setInterval(() => pollProgress(release), 3000)
-  }
-
-  const applyProgress = (release: number, p: api.DownloadProgress) => {
-    if (!p.ok) return
-    const complete = p.state === 'complete' || (p.found && p.progress >= 0.999)
-    setDl((s) => ({
-      ...s,
-      [release]: {
-        phase: complete ? 'complete' : 'downloading',
-        progress: p.progress,
-        downloaded: p.downloaded,
-        total_size: p.total_size,
-        speed: p.speed,
-      },
-    }))
-    if (complete) stopPolling(release)
-    else startPolling(release)
-  }
-
-  const pollProgress = (release: number) => {
-    api.getDownloadProgress(r.key, release)
-      .then((p) => applyProgress(release, p))
-      .catch(() => {
-        /* transient network/backend error — keep polling */
-      })
-  }
-
-  // Re-attach to downloads that are already running in qBittorrent (e.g. after
-  // a page reload or server restart): check each downloadable release once and
-  // resume polling for any that are in progress or already complete. The
-  // backend caches the qBittorrent response, so this burst stays cheap.
-  useEffect(() => {
-    const active = pollers.current
-    const owned = (rel: Release) =>
-      r.have.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
-    for (const { rel, index } of uniqueReleases(r.releases || [])) {
-      if (!rel.downloadable || owned(rel)) continue
-      api
-        .getDownloadProgress(r.key, index)
-        .then((p) => {
-          if (!p.ok || !p.found) return
-          if (p.state === 'paused') return // don't show a stuck bar for paused
-          applyProgress(index, p)
-        })
-        .catch(() => {
-          /* ignore — nothing to re-attach to */
-        })
-    }
-    return () => {
-      for (const k of Object.keys(active)) window.clearInterval(active[Number(k)])
-    }
-    // Runs once per mount (fresh after a reload), so the first-render `r` is used.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  const handleDownload = async (release: number) => {
-    setDl((s) => ({ ...s, [release]: { ...IDLE_DL, phase: 'sending' } }))
-    try {
-      const res = await api.download(r.key, release)
-      if (!res.ok) throw new Error(res.error || 'Download failed')
-      pollProgress(release)
-      startPolling(release)
-    } catch (e: any) {
-      stopPolling(release)
-      setDl((s) => ({ ...s, [release]: IDLE_DL }))
-      toast.show('Download failed: ' + e.message, 'error')
-    }
-  }
 
   let middle: ReactNode
   if (st === 'missing') {
@@ -467,7 +505,7 @@ function Season({ r, config, tone, onActiveChange }: SeasonProps) {
                         )}
                         disabled={disabled}
                         title={btnTitle}
-                        onClick={() => !disabled && handleDownload(index)}
+                        onClick={() => !disabled && onDownload(index)}
                       >
                         {owned || dlState.phase === 'complete' ? (
                           <Icon name="check" size={18} />
@@ -487,9 +525,11 @@ function Season({ r, config, tone, onActiveChange }: SeasonProps) {
                           {dlState.phase === 'sending'
                             ? 'Sending to qBittorrent…'
                             : dlState.total_size > 0
-                            ? `${pct.toFixed(1)}% · ${formatBytes(dlState.downloaded)} / ${formatBytes(
-                                dlState.total_size,
-                              )}${dlState.speed > 0 ? ' · ' + formatBytes(dlState.speed) + '/s' : ''}`
+                            ? [
+                                `${pct.toFixed(1)}% · ${formatBytes(dlState.downloaded)} / ${formatBytes(dlState.total_size)}`,
+                                dlState.speed > 0 ? formatBytes(dlState.speed) + '/s' : '',
+                                formatEta(Math.max(0, dlState.total_size - dlState.downloaded), dlState.speed),
+                              ].filter(Boolean).join(' · ')
                             : 'Waiting for torrent metadata…'}
                         </div>
                       </div>
