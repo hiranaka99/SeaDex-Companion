@@ -40,6 +40,7 @@ export default function App() {
       const st = await api.getStatus()
       setStatus(st)
       if (st.running) {
+        await loadResults()
         pollTimer.current = window.setTimeout(pollStatus, 1500)
       } else {
         pollTimer.current = null

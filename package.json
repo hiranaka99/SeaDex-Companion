@@ -1,0 +1,20 @@
+{
+  "name": "seadex-companion",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "npm run build:server && npm --prefix frontend run build",
+    "build:server": "tsc -p tsconfig.json",
+    "dev": "tsx watch server/index.ts",
+    "prestart": "npm run build",
+    "start": "node dist/server/index.js",
+    "test": "npm run build:server && node --test --experimental-test-isolation=none dist/tests/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit && npm --prefix frontend run build -- --emptyOutDir=false"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

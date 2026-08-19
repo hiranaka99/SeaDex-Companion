@@ -52,6 +52,8 @@ export default function ConfigTab({ config, onSaved }: Props) {
   }, [config])
 
   const set = (name: string, value: any) => setForm((f) => ({ ...f, [name]: value }))
+  const sonarrConfigured = Boolean(String(form.sonarr_url || '').trim() || String(form.sonarr_key || '').trim())
+  const radarrConfigured = Boolean(String(form.radarr_url || '').trim() || String(form.radarr_key || '').trim())
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -85,15 +87,15 @@ export default function ConfigTab({ config, onSaved }: Props) {
       <form className="config-form" onSubmit={submit}>
         <div className="config-card">
           <h3>📺 Sonarr</h3>
-          <Field name="sonarr_url" type="url" label="Base URL" small="(with /api/v3)" placeholder="https://sonarr.example.com/api/v3" required form={form} set={set} />
-          <Field name="sonarr_key" type="password" label="API Key" placeholder="Sonarr API key" required form={form} set={set} />
+          <Field name="sonarr_url" type="url" label="Base URL" small="(with /api/v3, optional)" placeholder="https://sonarr.example.com/api/v3" required={sonarrConfigured} form={form} set={set} />
+          <Field name="sonarr_key" type="password" label="API Key" placeholder="Sonarr API key" required={sonarrConfigured} form={form} set={set} />
           <Field name="sonarr_category" type="text" label="qBittorrent category" small="(must match Sonarr's download-client category)" placeholder="sonarr-anime" form={form} set={set} />
         </div>
 
         <div className="config-card">
           <h3>🎬 Radarr</h3>
-          <Field name="radarr_url" type="url" label="Base URL" small="(with /api/v3)" placeholder="https://radarr.example.com/api/v3" required form={form} set={set} />
-          <Field name="radarr_key" type="password" label="API Key" placeholder="Radarr API key" required form={form} set={set} />
+          <Field name="radarr_url" type="url" label="Base URL" small="(with /api/v3, optional)" placeholder="https://radarr.example.com/api/v3" required={radarrConfigured} form={form} set={set} />
+          <Field name="radarr_key" type="password" label="API Key" placeholder="Radarr API key" required={radarrConfigured} form={form} set={set} />
           <Field name="radarr_category" type="text" label="qBittorrent category" small="(must match Radarr's download-client category)" placeholder="radarr-anime" form={form} set={set} />
         </div>
 

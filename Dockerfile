@@ -1,7 +1,20 @@
 # syntax=docker/dockerfile:1
 
 # ---------------------------------------------------------------------------
-# Stage 1: Build the React + TypeScript frontend (Vite)
+# Stage 1: Build the TypeScript backend
+# ---------------------------------------------------------------------------
+FROM node:22-alpine AS backend
+
+WORKDIR /app
+
+COPY package.json package-lock.json tsconfig.json ./
+RUN npm ci
+
+COPY server/ ./server/
+RUN npm run build:server
+
+# ---------------------------------------------------------------------------
+# Stage 2: Build the React + TypeScript frontend (Vite)
 # ---------------------------------------------------------------------------
 FROM node:22-alpine AS frontend
 
@@ -20,20 +33,14 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---------------------------------------------------------------------------
-# Stage 2: Runtime — Flask backend + the compiled frontend
+# Stage 3: Runtime — Node.js backend + the compiled frontend
 # ---------------------------------------------------------------------------
-FROM python:3.11-slim
+FROM node:22-alpine
 
 WORKDIR /app
 
-# Install Python dependencies first for better layer caching
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the application code
-COPY app.py .
-
-# Bring in the frontend bundle produced by stage 1
+COPY package.json ./
+COPY --from=backend /app/dist ./dist
 COPY --from=frontend /app/static ./static
 
 # Config + cache live in /app/data (mount a volume here to persist)
@@ -42,4 +49,4 @@ RUN mkdir -p /app/data
 
 EXPOSE 8080
 
-CMD ["python", "app.py"]
+CMD ["node", "dist/server/index.js"]
