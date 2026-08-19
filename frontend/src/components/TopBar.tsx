@@ -1,81 +1,79 @@
 import { TabId, Status } from '../types'
 import { cx } from '../styles'
+import Icon, { IconName } from './Icons'
 
-const NAV: { id: TabId; icon: string; label: string }[] = [
-  { id: 'anime', icon: '🔍', label: 'Anime' },
-  { id: 'config', icon: '⚙️', label: 'Config' },
-  { id: 'log', icon: '📄', label: 'Log' },
+const NAV: { id: TabId; icon: IconName; label: string }[] = [
+  { id: 'anime', icon: 'library', label: 'Library' },
+  { id: 'config', icon: 'settings', label: 'Configuration' },
+  { id: 'log', icon: 'logs', label: 'Server log' },
 ]
 
 interface Props {
   tab: TabId
-  onTabChange: (t: TabId) => void
+  onTabChange: (tab: TabId) => void
   status: Status
   username: string
   onLogout: () => void
 }
 
-export default function TopBar({ tab, onTabChange, status, username, onLogout }: Props) {
-  const statusTone = status.running
-    ? 'border-line-strong text-ink'
-    : status.error
-      ? 'border-bad/40 text-bad'
-      : status.last_run
-        ? 'border-line text-good'
-        : 'border-line text-muted'
-  const dotTone = status.running
-    ? 'animate-pulse-ring bg-accent'
-    : status.error
-      ? 'bg-bad'
-      : status.last_run
-        ? 'bg-good'
-        : 'bg-muted-dim'
-
+function StatusPill({ status, compact = false }: { status: Status; compact?: boolean }) {
+  const tone = status.running ? 'text-accent-bright' : status.error ? 'text-bad' : status.last_run ? 'text-good' : 'text-muted'
+  const dot = status.running ? 'animate-pulse-ring bg-accent' : status.error ? 'bg-bad' : status.last_run ? 'bg-good' : 'bg-muted-dim'
   return (
-    <header className="sticky top-0 z-50 flex items-center gap-5 border-b border-line bg-linear-to-b from-canvas-soft to-canvas px-6 py-3 shadow-[0_6px_18px_rgba(0,0,0,0.25)] max-[820px]:flex-wrap max-[820px]:gap-x-4 max-[820px]:gap-y-2.5 max-[820px]:px-4 max-[820px]:py-2.5">
-      <div className="flex shrink-0 items-center gap-3">
-        <div className="grid size-10 place-items-center rounded-xl border border-line-strong bg-accent/15 text-2xl shadow-[inset_0_0_20px_rgba(79,140,255,0.15)]">
-          <img
-            src="/favicon.png"
-            alt="Zero Two"
-            className="size-full rounded-xl object-cover"
-          />
-        </div>
-        <div>
-          <h1 className="m-0 text-[19px] leading-[1.1] font-extrabold tracking-[0.3px]">SeaDex</h1>
-          <p className="m-0 text-[10.5px] tracking-[2px] text-muted uppercase max-[820px]:hidden">Companion</p>
-        </div>
-      </div>
+    <div className={cx('flex min-w-0 items-center gap-2 text-xs font-semibold', tone)} title={status.message || 'Idle'}>
+      <span className={cx('size-2 shrink-0 rounded-full', dot)} />
+      <span className={cx('truncate', compact ? 'max-w-28' : 'max-w-40')}>{status.running ? status.message || 'Scanning' : status.error ? 'Needs attention' : status.last_run ? 'System ready' : 'Ready to scan'}</span>
+    </div>
+  )
+}
 
-      <nav className="flex flex-row gap-2 max-[820px]:flex-1">
-        {NAV.map((n) => (
-          <button
-            key={n.id}
-            className={cx(
-              'flex cursor-pointer items-center gap-[9px] whitespace-nowrap rounded-control border px-4 py-[9px] text-left text-[14.5px] font-semibold text-muted transition-all duration-150 hover:bg-panel hover:text-ink max-[820px]:px-3 max-[820px]:py-2 max-[820px]:text-[13.5px]',
-              tab === n.id ? 'border-line-strong bg-accent/15 text-ink' : 'border-transparent bg-transparent',
-            )}
-            onClick={() => onTabChange(n.id)}
-          >
-            <span className="text-base">{n.icon}</span> {n.label}
-          </button>
+function Brand({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className="flex items-center gap-3">
+      <img src="/favicon.png" alt="" className={cx('rounded-xl border border-line-strong object-cover shadow-[0_8px_24px_rgba(79,140,255,0.16)]', compact ? 'size-9' : 'size-11')} />
+      <div><div className={cx('font-extrabold tracking-tight text-ink', compact ? 'text-base' : 'text-lg')}>SeaDex</div><div className="text-[10px] font-semibold tracking-[0.18em] text-muted-dim uppercase">Companion</div></div>
+    </div>
+  )
+}
+
+export default function TopBar({ tab, onTabChange, status, username, onLogout }: Props) {
+  return (
+    <>
+      <aside className="flex h-dvh w-[248px] flex-col border-r border-line bg-canvas-soft px-4 py-5 max-[900px]:hidden">
+        <div className="px-2"><Brand /></div>
+        <nav className="mt-9 flex flex-col gap-1.5" aria-label="Primary navigation">
+          {NAV.map((item) => (
+            <button key={item.id} type="button" className={cx(
+              'group flex cursor-pointer items-center gap-3 rounded-xl px-3.5 py-3 text-left text-sm font-semibold transition-colors',
+              tab === item.id ? 'bg-accent/12 text-accent-bright' : 'text-muted hover:bg-panel hover:text-ink',
+            )} aria-current={tab === item.id ? 'page' : undefined} onClick={() => onTabChange(item.id)}>
+              <Icon name={item.icon} size={19} className={cx('transition-colors', tab === item.id ? 'text-accent-bright' : 'text-muted-dim group-hover:text-ink')} />
+              {item.label}
+              {tab === item.id && <span className="ml-auto size-1.5 rounded-full bg-accent" />}
+            </button>
+          ))}
+        </nav>
+
+        <div className="mt-auto space-y-3">
+          <div className="rounded-xl border border-line bg-panel/70 p-3.5"><StatusPill status={status} /><p className="mt-2 mb-0 line-clamp-2 text-[11px] text-muted-dim">{status.message || 'No active tasks'}</p></div>
+          <div className="flex items-center gap-2.5 border-t border-line pt-4">
+            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-panel-raised text-muted"><Icon name="user" size={17} /></span>
+            <div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold text-ink" title={username}>{username}</div><div className="text-[11px] text-muted-dim">Administrator</div></div>
+            <button type="button" className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-bad/10 hover:text-bad" onClick={onLogout} aria-label="Log out" title="Log out"><Icon name="log-out" size={18} /></button>
+          </div>
+        </div>
+      </aside>
+
+      <header className="fixed inset-x-0 top-0 z-50 hidden h-16 items-center justify-between border-b border-line bg-canvas-soft/95 px-4 backdrop-blur-xl max-[900px]:flex">
+        <Brand compact />
+        <div className="flex items-center gap-3"><StatusPill status={status} compact /><button type="button" className="grid size-9 cursor-pointer place-items-center rounded-lg border border-line bg-panel text-muted" onClick={onLogout} aria-label="Log out"><Icon name="log-out" size={17} /></button></div>
+      </header>
+
+      <nav className="fixed inset-x-3 bottom-3 z-50 hidden h-16 items-center justify-around rounded-2xl border border-line-strong bg-panel-raised/95 px-2 shadow-card backdrop-blur-xl max-[900px]:flex" aria-label="Mobile navigation">
+        {NAV.map((item) => (
+          <button key={item.id} type="button" className={cx('flex min-w-20 cursor-pointer flex-col items-center gap-1 rounded-xl px-3 py-2 text-[10px] font-bold transition-colors', tab === item.id ? 'bg-accent/12 text-accent-bright' : 'text-muted')} aria-current={tab === item.id ? 'page' : undefined} onClick={() => onTabChange(item.id)}><Icon name={item.icon} size={19} />{item.label.replace('Configuration', 'Config').replace('Server log', 'Log')}</button>
         ))}
       </nav>
-
-      <div className="ml-auto flex shrink-0 items-center gap-2">
-        <div className={cx('flex items-center gap-[9px] rounded-control border bg-panel px-3 py-2.5 text-[13px] max-[820px]:px-2.5 max-[820px]:py-2 max-[820px]:text-xs', statusTone)}>
-          <span className={cx('size-[9px] shrink-0 rounded-full', dotTone)} />
-          <span>{status.message || 'Idle'}</span>
-        </div>
-        <span className="max-w-32 truncate px-1 text-xs text-muted max-[620px]:hidden" title={username}>{username}</span>
-        <button
-          className="cursor-pointer rounded-control border border-line bg-panel px-3 py-2.5 text-xs font-semibold text-muted transition-colors hover:border-line-strong hover:text-ink max-[820px]:py-2"
-          type="button"
-          onClick={onLogout}
-        >
-          Log out
-        </button>
-      </div>
-    </header>
+    </>
   )
 }

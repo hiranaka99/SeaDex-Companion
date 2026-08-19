@@ -4,7 +4,7 @@ import { beforeEach, describe, test } from 'node:test'
 import {
   anilistChain, arrApiUrl, arrBaseUrl, arrItemUrl, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, encryptSecretValues,
   getState, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
-  resetRuntimeForTests, runScan,
+  resetRuntimeForTests, runScan, testIntegration,
 } from '../server/app.js'
 import type { JsonObject, ReleaseCandidate } from '../server/types.js'
 
@@ -89,6 +89,22 @@ describe('Sonarr and Radarr URL normalization', () => {
       arrItemUrl({ sonarr_url: 'https://host.example/sonarr/api/v3' }, { arr: 'Sonarr', slug: 'example' }),
       'https://host.example/sonarr/series/example',
     )
+  })
+
+  test('tests Sonarr using the normalized API endpoint', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      assert.equal(String(input), 'https://sonarr.example.com/api/v3/system/status')
+      assert.equal(new Headers(init?.headers).get('X-Api-Key'), 'test-key')
+      return new Response(JSON.stringify({ appName: 'Sonarr', version: '4.0.0' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+    try {
+      assert.equal(await testIntegration({ ...DEFAULT_CONFIG, sonarr_url: 'https://sonarr.example.com', sonarr_key: 'test-key' }, 'sonarr'), 'Connected to Sonarr 4.0.0')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })
 
