@@ -104,7 +104,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
       </header>
 
       <div className="mb-5 grid grid-cols-4 gap-3 max-[1100px]:grid-cols-2 max-[520px]:grid-cols-1">
-        {metrics.map((metric) => <div key={metric.label} className="flex items-center gap-3 rounded-xl border border-line bg-panel px-4 py-3.5"><span className={cx('grid size-10 place-items-center rounded-xl bg-canvas-soft', metric.tone)}><Icon name={metric.icon} size={19}/></span><div><div className={cx('text-xl font-extrabold tabular-nums', metric.tone)}>{metric.value}</div><div className="text-xs text-muted">{metric.label}</div></div></div>)}
+        {metrics.map((metric) => <div key={metric.label} className="flex items-center gap-2.5 rounded-xl border border-line bg-panel px-3.5 py-2"><span className={cx('grid size-8 shrink-0 place-items-center rounded-lg bg-canvas-soft', metric.tone)}><Icon name={metric.icon} size={17}/></span><span className={cx('text-lg font-extrabold tabular-nums', metric.tone)}>{metric.value}</span><span className="truncate text-xs font-medium text-muted">{metric.label}</span></div>)}
       </div>
 
       {status.running && <div className="mb-5 rounded-xl border border-accent/25 bg-accent/6 p-4" aria-live="polite"><div className="mb-2 flex items-center justify-between gap-3 text-xs"><span className="truncate font-semibold text-accent-bright">{status.message || 'Scanning…'}</span><span className="shrink-0 tabular-nums text-muted">{status.total ? `${status.progress}/${status.total}` : ''} · {progress}%</span></div><div className="h-2 overflow-hidden rounded-full bg-canvas"><div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${progress}%` }}/></div></div>}
