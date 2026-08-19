@@ -2,6 +2,12 @@ export type CardStatus = 'upgrade' | 'best' | 'missing' | 'partial'
 
 export type TabId = 'anime' | 'config' | 'log'
 
+export interface AuthState {
+  setup_required: boolean
+  authenticated: boolean
+  username: string | null
+}
+
 export interface Release {
   kind: 'best' | 'alt'
   part?: string
@@ -54,14 +60,18 @@ export interface GroupedCard {
 export interface Config {
   sonarr_url: string
   sonarr_key: string
+  sonarr_key_configured: boolean
   radarr_url: string
   radarr_key: string
+  radarr_key_configured: boolean
   sonarr_category: string
   radarr_category: string
   qbittorrent_url: string
   qbittorrent_user: string
   qbittorrent_pass: string
+  qbittorrent_pass_configured: boolean
   webhook: string
+  webhook_configured: boolean
   notify_enabled: boolean
   autocheck_minutes: number
   hidden: string[]

@@ -68,15 +68,16 @@ export function groupResults(results: ResultItem[]): GroupedCard[] {
     // season that actually has one so the card still shows artwork.
     g.banner = g.seasons.find((s) => s.banner)?.banner ?? g.banner
     g.image = g.seasons.find((s) => s.image)?.image ?? g.image
-    // Card status reflects the strongest useful state for the whole card.
-    // A missing season must not make an otherwise resolved anime appear to be
-    // absent from SeaDex: that was especially confusing because the resolved
-    // season still displayed its URL, groups, and sizes below the banner.
+    // A card is partial whenever SeaDex has usable releases for some seasons
+    // but not all of them. This includes filler entries that exist on the site
+    // without any release candidates: the backend reports those seasons as
+    // missing/uncovered, while resolved seasons remain upgrade/best.
     const st = g.seasons.map((r) => r.status || 'upgrade')
-    if (st.includes('upgrade')) g.status = 'upgrade'
-    else if (st.includes('missing') || st.includes('uncovered')) {
-      g.status = st.some((status) => status === 'best') ? 'partial' : 'missing'
-    }
+    const hasUnresolved = st.some((status) => status === 'missing' || status === 'uncovered')
+    const hasResolved = st.some((status) => status === 'upgrade' || status === 'best')
+    if (hasUnresolved && hasResolved) g.status = 'partial'
+    else if (hasUnresolved) g.status = 'missing'
+    else if (st.includes('upgrade')) g.status = 'upgrade'
     else g.status = 'best'
   }
   return cards

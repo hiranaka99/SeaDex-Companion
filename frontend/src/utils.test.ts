@@ -37,7 +37,8 @@ function expect(actual: unknown, expected: unknown, message: string): void {
 expect(cardStatus('best', 'missing'), 'partial', 'resolved + missing seasons stay visible as SeaDex data')
 expect(cardStatus('best', 'uncovered'), 'partial', 'resolved + uncovered seasons stay visible as SeaDex data')
 expect(cardStatus('missing', 'missing'), 'missing', 'fully missing cards remain missing')
-expect(cardStatus('upgrade', 'missing'), 'upgrade', 'upgrades retain priority over missing seasons')
+expect(cardStatus('upgrade', 'missing'), 'partial', 'upgrade + missing seasons are partially covered')
+expect(cardStatus('upgrade', 'uncovered'), 'partial', 'upgrade + uncovered seasons are partially covered')
 expect(STATUS_LABEL.partial, 'Partially on SeaDex', 'partial cards have an explicit label')
 
 // The first season (e.g. a Radarr movie, season 0) sorts first and can lack

@@ -1,8 +1,13 @@
-import { Config, ResultItem, Status } from './types'
+import { AuthState, Config, ResultItem, Status } from './types'
+
+export const AUTH_REQUIRED_EVENT = 'seadex:authentication-required'
 
 async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const r = await fetch(path, opts)
   if (!r.ok) {
+    if (r.status === 401 && !path.startsWith('/api/auth/')) {
+      window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT))
+    }
     let msg = `Request failed (${r.status})`
     try {
       const j = await r.json()
@@ -14,6 +19,24 @@ async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   }
   return r.json()
 }
+
+export const getAuthStatus = () => api<AuthState>('/api/auth/status')
+
+export const setupAuth = (username: string, password: string) =>
+  api<AuthState>('/api/auth/setup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+
+export const login = (username: string, password: string) =>
+  api<AuthState>('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+
+export const logout = () => api<{ ok: boolean }>('/api/auth/logout', { method: 'POST' })
 
 export const getConfig = () => api<Config>('/api/config')
 

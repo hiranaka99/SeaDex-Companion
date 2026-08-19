@@ -12,20 +12,11 @@ services:
       - "8080:8080"
     volumes:
       - ./data:/app/data
-    # Secrets are supplied from a local, git-ignored .env file (see .env.example).
-    # Docker Compose reads ./.env automatically and substitutes the ${VAR} values
-    # below at startup. Never put real secrets in this file.
+    # The app automatically creates its credential encryption key in /app/data.
+    # Application settings are deliberately not accepted through environment variables.
     environment:
       # Internal (container) port the app listens on. Must match the right-hand
       # side of the ports mapping above. Default 8080.
       - PORT=8080
       - DATA_DIR=/app/data
-      - SONARR_URL=${SONARR_URL}
-      - SONARR_KEY=${SONARR_KEY}
-      - RADARR_URL=${RADARR_URL}
-      - RADARR_KEY=${RADARR_KEY}
-      - QBITTORRENT_URL=${QBITTORRENT_URL}
-      - QBITTORRENT_USER=${QBITTORRENT_USER}
-      - QBITTORRENT_PASS=${QBITTORRENT_PASS}
-      - DISCORD_WEBHOOK=${DISCORD_WEBHOOK}
     restart: unless-stopped

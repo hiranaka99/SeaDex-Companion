@@ -11,9 +11,11 @@ interface Props {
   tab: TabId
   onTabChange: (t: TabId) => void
   status: Status
+  username: string
+  onLogout: () => void
 }
 
-export default function TopBar({ tab, onTabChange, status }: Props) {
+export default function TopBar({ tab, onTabChange, status, username, onLogout }: Props) {
   const statusTone = status.running
     ? 'border-line-strong text-ink'
     : status.error
@@ -60,11 +62,19 @@ export default function TopBar({ tab, onTabChange, status }: Props) {
         ))}
       </nav>
 
-      <div className="ml-auto shrink-0">
+      <div className="ml-auto flex shrink-0 items-center gap-2">
         <div className={cx('flex items-center gap-[9px] rounded-control border bg-panel px-3 py-2.5 text-[13px] max-[820px]:px-2.5 max-[820px]:py-2 max-[820px]:text-xs', statusTone)}>
           <span className={cx('size-[9px] shrink-0 rounded-full', dotTone)} />
           <span>{status.message || 'Idle'}</span>
         </div>
+        <span className="max-w-32 truncate px-1 text-xs text-muted max-[620px]:hidden" title={username}>{username}</span>
+        <button
+          className="cursor-pointer rounded-control border border-line bg-panel px-3 py-2.5 text-xs font-semibold text-muted transition-colors hover:border-line-strong hover:text-ink max-[820px]:py-2"
+          type="button"
+          onClick={onLogout}
+        >
+          Log out
+        </button>
       </div>
     </header>
   )

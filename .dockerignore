@@ -5,8 +5,11 @@ __pycache__/
 .gitignore
 .env
 .env.*
+.seadex-key
 data/
 config.json
+secrets.enc.json
+auth.json
 anilist_cache.json
 last_results.json
 *.md
