@@ -825,6 +825,34 @@ async function qbLogin(base: string, user: string, password: string): Promise<Qb
   throw new Error(`qBittorrent login failed (HTTP ${response.status})`)
 }
 
+export async function testIntegration(config: Config, service: string): Promise<string> {
+  if (service === 'sonarr' || service === 'radarr') {
+    const base = arrApiUrl(config[`${service}_url`])
+    const key = String(config[`${service}_key`] || '')
+    if (!base || !key) throw new Error(`${service === 'sonarr' ? 'Sonarr' : 'Radarr'} URL and API key are required`)
+    const status = await api(`${base}/system/status`, key)
+    const name = String(status.appName || status.instanceName || (service === 'sonarr' ? 'Sonarr' : 'Radarr'))
+    const version = status.version ? ` ${status.version}` : ''
+    return `Connected to ${name}${version}`
+  }
+  if (service === 'qbittorrent') {
+    const base = String(config.qbittorrent_url || '').replace(/\/+$/, '')
+    if (!base || !config.qbittorrent_user || !config.qbittorrent_pass) throw new Error('qBittorrent URL, username and password are required')
+    await qbLogin(base, config.qbittorrent_user, config.qbittorrent_pass)
+    return 'Connected to qBittorrent'
+  }
+  if (service === 'discord') {
+    if (!config.webhook) throw new Error('Discord webhook URL is required')
+    const response = await fetchWithTimeout(config.webhook, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '✅ SeaDex Companion connection test successful.' }),
+    }, 30_000)
+    if (!response.ok) throw new Error(`Discord rejected the test message (HTTP ${response.status})`)
+    return 'Test message sent to Discord'
+  }
+  throw new Error('Unknown integration')
+}
+
 async function qbRequest(config: Config, path: string, init: RequestInit = {}, retry = true): Promise<Response> {
   const base = config.qbittorrent_url.replace(/\/$/, '')
   if (!base) throw new Error('qBittorrent is not configured (Config tab)')

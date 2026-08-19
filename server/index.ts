@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import {
   DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, getState, loadConfig, loadLastResults,
   log, normalizeQbStates, publicConfig, qbAddTorrent, qbGetTorrents, resultsForRequest, runScan,
-  saveConfig, SECRET_CONFIG_KEYS, setState,
+  saveConfig, SECRET_CONFIG_KEYS, setState, testIntegration,
 } from './app.js'
 import {
   AuthError, authState, expiredSessionCookie, isAuthenticated, login, logout, sessionCookie,
@@ -133,6 +133,33 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     saveConfig(config)
     log('INFO', `Config saved (autocheck=${config.autocheck_minutes}m, notify=${config.notify_enabled})`)
     return sendJson(response, 200, publicConfig(config))
+  }
+
+  if (method === 'POST' && path === '/api/config/test') {
+    const data = await readJson(request)
+    const service = String(data.service || '').toLowerCase()
+    const submitted = data.config && typeof data.config === 'object' ? data.config as JsonObject : {}
+    const config = loadConfig()
+    const serviceFields: Record<string, string[]> = {
+      sonarr: ['sonarr_url', 'sonarr_key'],
+      radarr: ['radarr_url', 'radarr_key'],
+      qbittorrent: ['qbittorrent_url', 'qbittorrent_user', 'qbittorrent_pass'],
+      discord: ['webhook'],
+    }
+    const fields = serviceFields[service]
+    if (!fields) return sendJson(response, 400, { error: 'Unknown integration' })
+    for (const key of fields) {
+      if (!(key in submitted)) continue
+      const value = submitted[key] == null ? '' : String(submitted[key]).trim()
+      if (SECRET_CONFIG_KEYS.includes(key as any) && !value) continue
+      config[key] = key === 'sonarr_url' || key === 'radarr_url' ? arrBaseUrl(value) : value
+    }
+    try {
+      const message = await testIntegration(config, service)
+      return sendJson(response, 200, { ok: true, message })
+    } catch (error) {
+      return sendJson(response, 502, { ok: false, error: error instanceof Error ? error.message : String(error) })
+    }
   }
 
   if (method === 'GET' && path === '/api/status') {

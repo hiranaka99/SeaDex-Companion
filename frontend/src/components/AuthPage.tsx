@@ -2,6 +2,7 @@ import { FormEvent, useState } from 'react'
 import * as api from '../api'
 import type { AuthState } from '../types'
 import { buttonPrimary, control } from '../styles'
+import Icon from './Icons'
 
 interface Props {
   setupRequired: boolean
@@ -37,10 +38,12 @@ export default function AuthPage({ setupRequired, onAuthenticated }: Props) {
 
   return (
     <main className="grid min-h-screen place-items-center px-4 py-10">
-      <section className="w-full max-w-[430px] animate-rise rounded-card border border-line bg-panel px-7 py-8 shadow-card max-[480px]:px-5">
+      <section className="grid w-full max-w-[900px] animate-rise grid-cols-[1fr_430px] overflow-hidden rounded-[22px] border border-line bg-panel shadow-card max-[780px]:max-w-[430px] max-[780px]:grid-cols-1">
+        <div className="relative flex flex-col justify-between overflow-hidden border-r border-line bg-canvas-soft p-9 max-[780px]:hidden"><div className="absolute -top-32 -left-28 size-80 rounded-full bg-accent/10 blur-3xl"/><div className="relative"><div className="mb-10 flex items-center gap-3"><img src="/favicon.png" alt="" className="size-11 rounded-xl border border-line-strong object-cover"/><div><div className="text-lg font-extrabold">SeaDex</div><div className="text-[10px] tracking-[.18em] text-muted uppercase">Companion</div></div></div><h1 className="max-w-sm text-3xl leading-tight font-extrabold tracking-tight">Your anime library,<br/><span className="text-accent-bright">beautifully organized.</span></h1><p className="mt-4 max-w-sm text-sm leading-relaxed text-muted">Compare local releases, discover upgrades, and send the best version straight to your download client.</p></div><div className="relative grid grid-cols-2 gap-3 text-xs text-muted"><span className="flex items-center gap-2"><Icon name="check" size={15} className="text-good"/>Encrypted credentials</span><span className="flex items-center gap-2"><Icon name="check" size={15} className="text-good"/>Private local account</span></div></div>
+        <div className="px-7 py-9 max-[480px]:px-5">
         <header className="mb-7 text-center">
-          <img src="/favicon.png" alt="SeaDex Companion" className="mx-auto mb-4 size-16 rounded-2xl border border-line-strong object-cover shadow-[0_8px_30px_rgba(79,140,255,0.25)]" />
-          <h1 className="m-0 text-2xl font-extrabold tracking-[0.3px]">SeaDex Companion</h1>
+          <img src="/favicon.png" alt="SeaDex Companion" className="mx-auto mb-4 hidden size-14 rounded-2xl border border-line-strong object-cover max-[780px]:block" />
+          <h1 className="m-0 text-2xl font-extrabold tracking-tight">{setupRequired ? 'Create your account' : 'Welcome back'}</h1>
           <p className="mt-2 mb-0 text-sm text-muted">
             {setupRequired ? 'Create the administrator account' : 'Sign in to continue'}
           </p>
@@ -100,8 +103,8 @@ export default function AuthPage({ setupRequired, onAuthenticated }: Props) {
             {busy ? 'Please wait…' : setupRequired ? 'Create account' : 'Sign in'}
           </button>
         </form>
+        </div>
       </section>
     </main>
   )
 }
-

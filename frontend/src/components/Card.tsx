@@ -1,110 +1,22 @@
-import { useCallback, useEffect, useRef, useState, ReactNode } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { GroupedCard, Release, ResultItem, Config } from '../types'
 import { formatBytes, sizeDelta, seasonLabel, STATUS_LABEL } from '../utils'
 import * as api from '../api'
 import { cx } from '../styles'
-
-const IconDL = () => (
-  <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18" aria-hidden="true">
-    <path d="M11 3h2v9.17l3.59-3.58L18 10l-6 6-6-6 1.41-1.41L11 12.17V3z" />
-    <path d="M4 19h16v2H4z" />
-  </svg>
-)
+import Icon from './Icons'
+import { useToast } from './Toast'
 
 const IconSpinner = () => <span className="block size-[15px] animate-spin rounded-full border-2 border-accent/35 border-t-accent-bright group-disabled/dl:border-ink/30 group-disabled/dl:border-t-ink" aria-hidden="true" />
-
-const IconOK = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={3.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    width="18"
-    height="18"
-    aria-hidden="true"
-  >
-    <path d="M4 12.5l5 5L20 6.5" />
-  </svg>
-)
-
-const IconEye = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={2}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    width="18"
-    height="18"
-    aria-hidden="true"
-  >
-    <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z" />
-    <circle cx="12" cy="12" r="2.5" />
-  </svg>
-)
-
-const IconEyeOff = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={2}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    width="18"
-    height="18"
-    aria-hidden="true"
-  >
-    <path d="M3 3l18 18" />
-    <path d="M10.6 5.1A10.9 10.9 0 0 1 12 5c6 0 9.5 7 9.5 7a17.4 17.4 0 0 1-2.9 3.9" />
-    <path d="M6.6 6.6A16.8 16.8 0 0 0 2.5 12s3.5 7 9.5 7a9.7 9.7 0 0 0 4.4-1" />
-    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
-  </svg>
-)
-
-const IconChevronDown = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={2.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    width="18"
-    height="18"
-    aria-hidden="true"
-  >
-    <path d="M6 9l6 6 6-6" />
-  </svg>
-)
-
-const IconChevronUp = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={2.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    width="18"
-    height="18"
-    aria-hidden="true"
-  >
-    <path d="M6 15l6-6 6 6" />
-  </svg>
-)
 
 function HideActionIcon({ hidden }: { hidden: boolean }) {
   return (
     <span className="relative block size-[18px]">
       <span className="absolute inset-0 transition-opacity duration-150 group-hover/hide:opacity-0">
-        {hidden ? <IconEyeOff /> : <IconEye />}
+        <Icon name={hidden ? 'eye-off' : 'eye'} size={18} />
       </span>
       <span className="absolute inset-0 opacity-0 transition-opacity duration-150 group-hover/hide:opacity-100">
-        {hidden ? <IconEye /> : <IconEyeOff />}
+        <Icon name={hidden ? 'eye' : 'eye-off'} size={18} />
       </span>
     </span>
   )
@@ -121,12 +33,12 @@ interface CardProps {
 const HIDE_DURATION_MS = 280
 
 const CARD_BASE =
-  'flex animate-rise flex-col overflow-hidden rounded-card border transition-[transform,opacity,border-color,box-shadow] duration-150 hover:-translate-y-[3px] hover:shadow-card'
+  'group/card flex animate-rise flex-col overflow-hidden rounded-card border bg-panel transition-[transform,opacity,border-color,box-shadow] duration-200 hover:-translate-y-1 hover:shadow-card'
 const CARD_TONE: Record<string, string> = {
-  upgrade: 'border-accent/55 bg-panel shadow-[0_0_0_1px_rgba(79,140,255,0.12),0_8px_24px_rgba(79,140,255,0.10)] hover:border-accent hover:shadow-[0_0_0_1px_rgba(79,140,255,0.25),0_10px_30px_rgba(0,0,0,0.35)] [--card-status-color:#4f8cff]',
-  best: 'border-good/55 bg-[#0e1e17] shadow-[0_0_0_1px_rgba(52,211,153,0.12),0_8px_24px_rgba(52,211,153,0.10)] hover:border-good hover:shadow-[0_0_0_1px_rgba(52,211,153,0.25),0_10px_30px_rgba(0,0,0,0.35)] [--card-status-color:#34d399]',
-  missing: 'border-[#3a4356] bg-[#1a1b1e] hover:border-[#4a5568] [--card-status-color:#8b97ab]',
-  partial: 'border-warn/55 bg-[#211d10] shadow-[0_0_0_1px_rgba(251,191,36,0.12),0_8px_24px_rgba(251,191,36,0.08)] hover:border-warn hover:shadow-[0_0_0_1px_rgba(251,191,36,0.25),0_10px_30px_rgba(0,0,0,0.35)] [--card-status-color:#fbbf24]',
+  upgrade: 'border-accent/35 hover:border-accent/70 [--card-status-color:#4f8cff]',
+  best: 'border-good/30 hover:border-good/60 [--card-status-color:#34d399]',
+  missing: 'border-line hover:border-muted/60 [--card-status-color:#8b97ab]',
+  partial: 'border-warn/30 hover:border-warn/60 [--card-status-color:#fbbf24]',
 }
 const SOURCE_TONE: Record<string, string> = {
   sonarr: 'border-accent/65 bg-[#0d1c42]/88 text-[#cfe0ff]',
@@ -189,8 +101,10 @@ function releaseSurface(tone: string, isBest: boolean): string {
 
 export default function Card({ group, index, config, hidden = false, onToggle }: CardProps) {
   const [hiding, setHiding] = useState(false)
-  const [expanded, setExpanded] = useState(false)
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const hideTimer = useRef<number | null>(null)
+  const closeRef = useRef<HTMLButtonElement>(null)
+  const titleId = useId()
   const [activeBySeason, setActiveBySeason] = useState<Record<string, boolean>>({})
   const srcClass = group.arr === 'Sonarr' ? 'sonarr' : 'radarr'
   const st = group.status || 'upgrade'
@@ -216,6 +130,16 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
     }
   }, [])
 
+  useEffect(() => {
+    if (!detailsOpen) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    closeRef.current?.focus()
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setDetailsOpen(false) }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => { document.body.style.overflow = previousOverflow; window.removeEventListener('keydown', closeOnEscape) }
+  }, [detailsOpen])
+
   const handleHide = () => {
     if (hiding) return
     if (hidden) {
@@ -226,7 +150,7 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
     hideTimer.current = window.setTimeout(onToggle, HIDE_DURATION_MS)
   }
 
-  return (
+  return <>
     <article
       className={cx(
         CARD_BASE,
@@ -239,23 +163,12 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
     >
       <div
         className={cx(
-          "relative h-[150px] border-b border-line bg-panel-raised bg-cover bg-[center_20%] after:absolute after:inset-0 after:bg-[linear-gradient(180deg,rgba(11,14,20,0)_30%,rgba(11,14,20,0.85)_100%)] after:content-['']",
+          "relative aspect-[16/8] min-h-[145px] border-b border-line bg-panel-raised bg-cover bg-[center_20%] after:absolute after:inset-0 after:bg-[linear-gradient(180deg,rgba(11,14,20,.08)_20%,rgba(11,14,20,.88)_100%)] after:content-['']",
           st === 'missing' && 'grayscale',
           hidden && 'grayscale-70',
         )}
         style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}
       >
-        {group.image && (
-          <img
-            className={cx('absolute right-3 bottom-[-2px] z-2 h-[110px] w-[78px] rounded-control border-2 border-white/15 object-cover shadow-[0_8px_20px_rgba(0,0,0,0.5)]', hidden && 'grayscale-70')}
-            src={group.image}
-            alt=""
-            loading="lazy"
-            onError={(e) => {
-              e.currentTarget.style.display = 'none'
-            }}
-          />
-        )}
         {group.arr_url ? (
           <a
             className={cx('group/source absolute top-3 left-3 z-2 inline-flex cursor-pointer items-center gap-1 rounded-full border px-2.5 py-[5px] text-[11.5px] font-extrabold tracking-[0.5px] no-underline backdrop-blur-[6px] transition-[transform,filter] duration-150 hover:-translate-y-px hover:brightness-118 hover:no-underline', SOURCE_TONE[srcClass])}
@@ -269,63 +182,38 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
         ) : (
           <span className={cx('absolute top-3 left-3 z-2 rounded-full border px-2.5 py-[5px] text-[11.5px] font-extrabold tracking-[0.5px] backdrop-blur-[6px]', SOURCE_TONE[srcClass])}>{group.arr}</span>
         )}
-        <span className={cx('absolute top-3 right-3 z-2 rounded-full border px-2.5 py-[5px] text-[11.5px] font-extrabold tracking-[0.5px] backdrop-blur-[6px]', STATUS_BADGE[st])}>{STATUS_LABEL[st]}</span>
-      </div>
-      <div className="flex flex-1 flex-col gap-3 px-4 pt-4 pb-[18px]">
-        <div className="flex min-h-[43px] items-start gap-2.5">
-          <div className={cx('line-clamp-2 min-w-0 flex-1 text-[16.5px] leading-[1.3] font-bold', st === 'missing' && 'text-muted')} title={group.title}>
-            {group.anilist_id ? (
-              <a className={cx('hover:text-accent-bright hover:no-underline', st === 'missing' ? 'text-muted' : 'text-ink')} href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">
-                {group.title}
-              </a>
-            ) : (
-              group.title
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-1.5">
-            <button
-              className={ICON_BUTTON}
-              type="button"
-              title={expanded ? 'Collapse' : 'Expand'}
-              aria-label={(expanded ? 'Collapse ' : 'Expand ') + group.title}
-              onClick={() => setExpanded((e) => !e)}
-            >
-              {expanded ? <IconChevronUp /> : <IconChevronDown />}
-            </button>
-            <button
-              className={cx(ICON_BUTTON, 'group/hide disabled:cursor-wait', hidden && 'border-warn bg-warn/12 text-warn hover:border-warn hover:text-warn')}
-              type="button"
-              title={hidden ? 'Show this card' : 'Hide this card'}
-              aria-label={(hidden ? 'Show ' : 'Hide ') + group.title}
-              onClick={handleHide}
-              disabled={hiding}
-            >
-              <HideActionIcon hidden={hidden} />
-            </button>
-          </div>
+        <span className={cx('absolute top-3 right-3 z-2 rounded-full border px-2.5 py-[5px] text-[11px] font-extrabold backdrop-blur-md', STATUS_BADGE[st])}>{STATUS_LABEL[st]}</span>
+        <div className="absolute inset-x-4 bottom-3 z-2 flex items-end gap-3">
+          {group.image && (
+            <img className={cx('h-[74px] w-[52px] shrink-0 rounded-lg border border-white/15 object-cover shadow-lg', hidden && 'grayscale')} src={group.image} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = 'none' }} />
+          )}
+          <div className="line-clamp-2 min-w-0 flex-1 text-[17px] leading-snug font-extrabold text-white drop-shadow-md" title={group.title}>{group.title}</div>
         </div>
-        {!expanded && (
-          <button className="group/summary flex w-full cursor-pointer items-center gap-2.5 rounded-control border border-line bg-canvas-soft px-[13px] py-[11px] text-[13px] text-muted transition-[border-color,background-color,color] duration-150 hover:border-line-strong hover:bg-panel hover:text-ink" type="button" onClick={() => setExpanded(true)}>
-            <span className="whitespace-nowrap rounded-full border border-line-strong bg-accent/15 px-2.5 py-[3px] text-[12.5px] font-extrabold text-accent-bright">
-              {seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}
-            </span>
-            {delta !== 0 && (
-              <span className={cx('whitespace-nowrap rounded-full border px-2.5 py-[3px] text-[12.5px] font-extrabold', delta > 0 ? 'border-good/35 bg-good/12 text-good' : 'border-bad/30 bg-bad/10 text-bad')}>
-                {(delta > 0 ? '+' : '') + formatBytes(delta)}
-              </span>
-            )}
-            <span className="ml-auto text-xs font-bold tracking-[0.3px] text-muted-dim group-hover/summary:text-accent-bright">Show details</span>
-          </button>
-        )}
-        {/* Seasons stay mounted while collapsed so download progress polling survives. */}
-        <div className={expanded ? undefined : 'hidden'}>
-          {group.seasons.map((r) => (
-            <Season key={r.key} r={r} config={config} tone={st} onActiveChange={onSeasonActive} />
-          ))}
+      </div>
+      <div className="flex flex-1 flex-col gap-3 p-4">
+        <div className="flex flex-wrap gap-1.5" aria-label={`${seasonCount} seasons`}>
+          {group.seasons.slice(0, 6).map((season) => <span key={season.key} className={cx('rounded-md border px-2 py-1 text-[10px] font-extrabold', SEASON_NUMBER_TONE[season.status === 'uncovered' ? 'partial' : season.status || st])}>{seasonLabel(season)}</span>)}
+          {seasonCount > 6 && <span className="rounded-md border border-line px-2 py-1 text-[10px] font-bold text-muted">+{seasonCount - 6}</span>}
+        </div>
+        <div className="mt-auto flex items-center gap-2 border-t border-line pt-3">
+          {delta !== 0 ? <span className={cx('text-xs font-extrabold tabular-nums', delta > 0 ? 'text-good' : 'text-bad')}>{delta > 0 ? '+' : ''}{formatBytes(delta)} <span className="font-medium text-muted-dim">change</span></span> : <span className="text-xs text-muted-dim">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span>}
+          <button className="ml-auto inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold text-accent-bright transition-colors hover:bg-accent/10" type="button" onClick={() => setDetailsOpen(true)}>Details <Icon name="chevron-right" size={15}/></button>
+          <button className={cx(ICON_BUTTON, 'group/hide size-8 disabled:cursor-wait', hidden && 'border-warn/35 bg-warn/10 text-warn')} type="button" title={hidden ? 'Show this card' : 'Hide this card'} aria-label={(hidden ? 'Show ' : 'Hide ') + group.title} onClick={handleHide} disabled={hiding}><HideActionIcon hidden={hidden}/></button>
         </div>
       </div>
     </article>
-  )
+    {detailsOpen && createPortal(
+      <div className="fixed inset-0 z-[80] flex justify-end bg-black/65 backdrop-blur-sm" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDetailsOpen(false) }}>
+        <aside className="app-scrollbar h-full w-full max-w-[720px] animate-slide-in overflow-y-auto border-l border-line-strong bg-canvas shadow-[-24px_0_60px_rgba(0,0,0,.45)]" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+          <div className="relative h-48 overflow-hidden border-b border-line bg-panel bg-cover bg-center" style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}><div className="absolute inset-0 bg-linear-to-t from-canvas via-canvas/55 to-black/15"/><button ref={closeRef} type="button" className="absolute top-4 right-4 z-2 grid size-10 cursor-pointer place-items-center rounded-xl border border-white/15 bg-black/40 text-white backdrop-blur-md hover:bg-black/60" onClick={() => setDetailsOpen(false)} aria-label="Close details"><Icon name="close"/></button><div className="absolute inset-x-5 bottom-5 z-1 flex items-end gap-4">{group.image && <img src={group.image} alt="" className="h-24 w-16 rounded-lg border border-white/15 object-cover shadow-xl"/>}<div className="min-w-0"><span className={cx('mb-2 inline-block rounded-full border px-2.5 py-1 text-[11px] font-extrabold', STATUS_BADGE[st])}>{STATUS_LABEL[st]}</span><h2 id={titleId} className="m-0 text-2xl leading-tight font-extrabold text-white">{group.title}</h2></div></div></div>
+          <div className="space-y-4 p-5 max-[600px]:p-4">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">{group.arr_url && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{group.anilist_id && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList ↗</a>}<span className="ml-auto">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span></div>
+            {group.seasons.map((season) => <Season key={season.key} r={season} config={config} tone={st} onActiveChange={onSeasonActive}/>)}
+          </div>
+        </aside>
+      </div>, document.body,
+    )}
+  </>
 }
 
 interface SeasonProps {
@@ -398,6 +286,7 @@ function groupByCour(releases: DisplayRelease[]): { part: string; items: Display
 function Season({ r, config, tone, onActiveChange }: SeasonProps) {
   const [dl, setDl] = useState<Record<number, DlState>>({})
   const pollers = useRef<Record<number, number>>({})
+  const toast = useToast()
   const st = r.status || 'upgrade'
 
   // True while any release in this season is being sent or downloaded.
@@ -407,6 +296,7 @@ function Season({ r, config, tone, onActiveChange }: SeasonProps) {
   useEffect(() => {
     onActiveChange(r.key, active)
   }, [active, onActiveChange, r.key])
+  useEffect(() => () => onActiveChange(r.key, false), [onActiveChange, r.key])
 
   const stopPolling = (release: number) => {
     const id = pollers.current[release]
@@ -484,7 +374,7 @@ function Season({ r, config, tone, onActiveChange }: SeasonProps) {
     } catch (e: any) {
       stopPolling(release)
       setDl((s) => ({ ...s, [release]: IDLE_DL }))
-      alert('Download failed: ' + e.message)
+      toast.show('Download failed: ' + e.message, 'error')
     }
   }
 
@@ -580,11 +470,11 @@ function Season({ r, config, tone, onActiveChange }: SeasonProps) {
                         onClick={() => !disabled && handleDownload(index)}
                       >
                         {owned || dlState.phase === 'complete' ? (
-                          <IconOK />
+                          <Icon name="check" size={18} />
                         ) : sending ? (
                           <IconSpinner />
                         ) : (
-                          <IconDL />
+                          <Icon name="download" size={18} />
                         )}
                       </button>
                     </div>

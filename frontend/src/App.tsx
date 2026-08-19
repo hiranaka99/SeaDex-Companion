@@ -4,6 +4,8 @@ import AnimeTab from './components/AnimeTab'
 import ConfigTab from './components/ConfigTab'
 import LogTab from './components/LogTab'
 import AuthPage from './components/AuthPage'
+import ConfirmDialog from './components/ConfirmDialog'
+import { useToast } from './components/Toast'
 import { TabId, Status, ResultItem, Config, AuthState } from './types'
 import * as api from './api'
 
@@ -28,6 +30,8 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
   const [results, setResults] = useState<ResultItem[]>([])
   const [lastRun, setLastRun] = useState<string | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
+  const [resultsLoading, setResultsLoading] = useState(true)
+  const toast = useToast()
 
   const pollTimer = useRef<number | null>(null)
 
@@ -38,6 +42,8 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
       if (data.last_run) setLastRun(data.last_run)
     } catch (e) {
       console.error('Failed to load results:', e)
+    } finally {
+      setResultsLoading(false)
     }
   }, [])
 
@@ -83,14 +89,14 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
       setStatus({ ...INITIAL_STATUS, running: true, message: 'Starting scan…' })
       if (!pollTimer.current) pollStatus()
     } catch (e: any) {
-      alert('Could not start scan: ' + e.message)
+      toast.show('Could not start scan: ' + e.message, 'error')
     }
   }
 
   return (
-    <div className="grid h-screen grid-rows-[auto_1fr] overflow-hidden max-[820px]:h-auto max-[820px]:min-h-screen">
+    <div className="grid h-dvh grid-cols-[248px_minmax(0,1fr)] overflow-hidden max-[900px]:grid-cols-1">
       <TopBar tab={tab} onTabChange={setTab} status={status} username={username} onLogout={onLogout} />
-      <main className="app-scrollbar overflow-y-auto px-[34px] pt-[26px] pb-[60px] max-[820px]:px-4 max-[820px]:pt-5 max-[820px]:pb-[50px]">
+      <main className="app-scrollbar overflow-y-auto px-8 pt-7 pb-14 max-[1200px]:px-6 max-[900px]:px-4 max-[900px]:pt-20 max-[900px]:pb-24">
         {tab === 'anime' && (
           <AnimeTab
             results={results}
@@ -98,6 +104,7 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
             status={status}
             lastRun={lastRun}
             onScan={handleScan}
+            loading={resultsLoading}
           />
         )}
         {tab === 'config' && <ConfigTab config={config} onSaved={loadConfig} />}
@@ -110,6 +117,8 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
 export default function App() {
   const [auth, setAuth] = useState<AuthState | null>(null)
   const [loadError, setLoadError] = useState('')
+  const [logoutOpen, setLogoutOpen] = useState(false)
+  const toast = useToast()
 
   const refreshAuth = useCallback(async () => {
     try {
@@ -132,7 +141,7 @@ export default function App() {
       await api.logout()
       setAuth({ setup_required: false, authenticated: false, username: null })
     } catch (caught: any) {
-      alert('Could not log out: ' + (caught?.message || 'Unknown error'))
+      toast.show('Could not log out: ' + (caught?.message || 'Unknown error'), 'error')
     }
   }
 
@@ -148,5 +157,8 @@ export default function App() {
   }
   if (!auth) return <main className="grid min-h-screen place-items-center text-sm text-muted">Loading…</main>
   if (!auth.authenticated) return <AuthPage setupRequired={auth.setup_required} onAuthenticated={setAuth} />
-  return <AuthenticatedApp username={auth.username || 'Administrator'} onLogout={() => void handleLogout()} />
+  return <>
+    <AuthenticatedApp username={auth.username || 'Administrator'} onLogout={() => setLogoutOpen(true)} />
+    <ConfirmDialog open={logoutOpen} title="Log out?" description="You will need your administrator password to return." confirmLabel="Log out" onConfirm={() => void handleLogout()} onClose={() => setLogoutOpen(false)} />
+  </>
 }

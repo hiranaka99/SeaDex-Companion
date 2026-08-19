@@ -47,6 +47,13 @@ export const saveConfig = (cfg: Partial<Config>) =>
     body: JSON.stringify(cfg),
   })
 
+export const testConnection = (service: 'sonarr' | 'radarr' | 'qbittorrent' | 'discord', config: Record<string, any>) =>
+  api<{ ok: boolean; message: string }>('/api/config/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ service, config }),
+  })
+
 export const getStatus = () => api<Status>('/api/status')
 
 export const getResults = () =>

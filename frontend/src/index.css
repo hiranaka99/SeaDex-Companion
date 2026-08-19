@@ -25,6 +25,7 @@
 
   --animate-rise: rise 0.4s ease both;
   --animate-pulse-ring: pulse-ring 1.4s infinite;
+  --animate-slide-in: slide-in 0.25s ease-out both;
 }
 
 @layer base {
@@ -62,6 +63,17 @@
   }
 
   button, input, select { font: inherit; }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent-bright);
+    outline-offset: 2px;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--color-panel-raised) 25%, #242e40 50%, var(--color-panel-raised) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s infinite linear;
 }
 
 @property --border-angle {
@@ -118,4 +130,23 @@
 
 @keyframes card-border-spin {
   to { --border-angle: 360deg; }
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(32px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes skeleton-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
