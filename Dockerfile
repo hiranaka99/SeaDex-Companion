@@ -43,7 +43,7 @@ COPY package.json ./
 COPY --from=backend /app/dist ./dist
 COPY --from=frontend /app/static ./static
 
-# Config + cache live in /app/data (mount a volume here to persist)
+# Config, encryption key and cache live in /app/data (mount a volume here to persist)
 ENV DATA_DIR=/app/data
 RUN mkdir -p /app/data
 

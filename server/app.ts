@@ -1,4 +1,5 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ChainEntry, ChainPart, Config, JsonObject, ReleaseCandidate, ScanState } from './types.js'
@@ -11,6 +12,8 @@ const BASE_DIR = MODULE_DIR.endsWith(join('dist', 'server')) ? resolve(MODULE_DI
 export const DATA_DIR = process.env.DATA_DIR || BASE_DIR
 export const STATIC_DIR = process.env.STATIC_DIR || join(BASE_DIR, 'static')
 export const CONFIG_FILE = join(DATA_DIR, 'config.json')
+export const ENCRYPTED_SECRETS_FILE = join(DATA_DIR, 'secrets.enc.json')
+export const SECRETS_KEY_FILE = process.env.SECRETS_KEY_FILE || join(DATA_DIR, '.seadex-key')
 export const CACHE_FILE = join(DATA_DIR, 'anilist_cache.json')
 export const RESULTS_FILE = join(DATA_DIR, 'last_results.json')
 export const NOTIFIED_FILE = join(DATA_DIR, 'notified.json')
@@ -20,20 +23,42 @@ export const LOG_FILE = join(LOG_DIR, 'app.log')
 mkdirSync(LOG_DIR, { recursive: true })
 
 export const DEFAULT_CONFIG: Config = {
-  sonarr_url: process.env.SONARR_URL || '',
-  sonarr_key: process.env.SONARR_KEY || '',
-  radarr_url: process.env.RADARR_URL || '',
-  radarr_key: process.env.RADARR_KEY || '',
+  sonarr_url: '',
+  sonarr_key: '',
+  radarr_url: '',
+  radarr_key: '',
   sonarr_category: 'sonarr-anime',
   radarr_category: 'radarr-anime',
-  qbittorrent_url: process.env.QBITTORRENT_URL || '',
-  qbittorrent_user: process.env.QBITTORRENT_USER || '',
-  qbittorrent_pass: process.env.QBITTORRENT_PASS || '',
-  webhook: process.env.DISCORD_WEBHOOK || '',
+  qbittorrent_url: '',
+  qbittorrent_user: '',
+  qbittorrent_pass: '',
+  webhook: '',
   notify_enabled: true,
   autocheck_minutes: 60,
   hidden: [],
 }
+
+export const SECRET_CONFIG_KEYS = ['sonarr_key', 'radarr_key', 'qbittorrent_pass', 'webhook'] as const
+export type SecretConfigKey = typeof SECRET_CONFIG_KEYS[number]
+
+export function arrBaseUrl(value: unknown): string {
+  return String(value || '').trim().replace(/\/+$/, '').replace(/\/api\/v\d+$/i, '').replace(/\/+$/, '')
+}
+
+export function arrApiUrl(value: unknown): string {
+  const base = arrBaseUrl(value)
+  return base ? `${base}/api/v3` : ''
+}
+
+interface EncryptedSecretsPayload {
+  version: 1
+  algorithm: 'aes-256-gcm'
+  iv: string
+  tag: string
+  ciphertext: string
+}
+
+const SECRETS_AAD = Buffer.from('seadex-companion:secrets:v1', 'utf8')
 
 export const scanState: ScanState = {
   running: false,
@@ -99,19 +124,122 @@ function readJson<T>(file: string, fallback: T, warning?: string): T {
   }
 }
 
-function writeJsonAtomic(file: string, value: unknown, pretty = false): void {
+function writeJsonAtomic(file: string, value: unknown, pretty = false, mode?: number): void {
   mkdirSync(dirname(file), { recursive: true })
   const temporary = `${file}.tmp`
-  writeFileSync(temporary, JSON.stringify(value, null, pretty ? 2 : undefined), 'utf8')
+  writeFileSync(temporary, JSON.stringify(value, null, pretty ? 2 : undefined), { encoding: 'utf8', mode })
+  if (mode !== undefined) chmodSync(temporary, mode)
   renameSync(temporary, file)
+  if (mode !== undefined) chmodSync(file, mode)
+}
+
+function loadSecretKey(createIfMissing = false): Buffer {
+  if (!existsSync(SECRETS_KEY_FILE)) {
+    if (!createIfMissing) {
+      throw new Error(`Encryption key file not found: ${SECRETS_KEY_FILE}. Restore the key used to encrypt the existing credentials.`)
+    }
+    mkdirSync(dirname(SECRETS_KEY_FILE), { recursive: true })
+    try {
+      writeFileSync(SECRETS_KEY_FILE, randomBytes(32), { flag: 'wx', mode: 0o600 })
+      log('INFO', `Generated credential encryption key: ${SECRETS_KEY_FILE}`)
+    } catch (error: any) {
+      if (error?.code !== 'EEXIST') throw error
+    }
+  }
+  const raw = readFileSync(SECRETS_KEY_FILE)
+  const text = raw.toString('utf8').trim()
+  if (/^[0-9a-f]{64}$/i.test(text)) return Buffer.from(text, 'hex')
+  if (/^[A-Za-z0-9+/]+={0,2}$/.test(text)) {
+    const decoded = Buffer.from(text, 'base64')
+    if (decoded.length === 32) return decoded
+  }
+  if (raw.length === 32) return raw
+  throw new Error(`Invalid encryption key in ${SECRETS_KEY_FILE}: expected 32 raw bytes, 64 hex characters, or base64 for 32 bytes`)
+}
+
+export function encryptSecretValues(secrets: Partial<Record<SecretConfigKey, string>>, key: Buffer): EncryptedSecretsPayload {
+  if (key.length !== 32) throw new Error('AES-256-GCM requires a 32-byte encryption key')
+  const iv = randomBytes(12)
+  const cipher = createCipheriv('aes-256-gcm', key, iv)
+  cipher.setAAD(SECRETS_AAD)
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(secrets), 'utf8'), cipher.final()])
+  return {
+    version: 1,
+    algorithm: 'aes-256-gcm',
+    iv: iv.toString('base64'),
+    tag: cipher.getAuthTag().toString('base64'),
+    ciphertext: ciphertext.toString('base64'),
+  }
+}
+
+export function decryptSecretValues(payload: EncryptedSecretsPayload, key: Buffer): Partial<Record<SecretConfigKey, string>> {
+  if (payload.version !== 1 || payload.algorithm !== 'aes-256-gcm') throw new Error('Unsupported encrypted secrets format')
+  if (key.length !== 32) throw new Error('AES-256-GCM requires a 32-byte encryption key')
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(payload.iv, 'base64'))
+    decipher.setAAD(SECRETS_AAD)
+    decipher.setAuthTag(Buffer.from(payload.tag, 'base64'))
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(payload.ciphertext, 'base64')),
+      decipher.final(),
+    ]).toString('utf8')
+    const parsed = JSON.parse(plaintext) as JsonObject
+    const secrets: Partial<Record<SecretConfigKey, string>> = {}
+    for (const keyName of SECRET_CONFIG_KEYS) if (typeof parsed[keyName] === 'string') secrets[keyName] = parsed[keyName]
+    return secrets
+  } catch {
+    throw new Error('Could not decrypt secrets: the key is incorrect or the encrypted file is damaged')
+  }
+}
+
+function loadEncryptedSecrets(): Partial<Record<SecretConfigKey, string>> {
+  if (!existsSync(ENCRYPTED_SECRETS_FILE)) return {}
+  const payload = readJson<EncryptedSecretsPayload | null>(ENCRYPTED_SECRETS_FILE, null)
+  if (!payload) throw new Error(`Could not read encrypted secrets file: ${ENCRYPTED_SECRETS_FILE}`)
+  return decryptSecretValues(payload, loadSecretKey())
 }
 
 export function loadConfig(): Config {
   const stored = readJson<Partial<Config>>(CONFIG_FILE, {}, 'Could not read config')
-  return { ...DEFAULT_CONFIG, ...stored }
+  const encryptedSecrets = loadEncryptedSecrets()
+  const plaintextSecrets: Partial<Record<SecretConfigKey, string>> = {}
+  let containsPlaintextSecretFields = false
+  for (const key of SECRET_CONFIG_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(stored, key)) containsPlaintextSecretFields = true
+    if (typeof stored[key] === 'string' && stored[key]) plaintextSecrets[key] = stored[key]
+  }
+  const config = { ...DEFAULT_CONFIG, ...stored, ...encryptedSecrets, ...plaintextSecrets }
+  config.sonarr_url = arrBaseUrl(config.sonarr_url)
+  config.radarr_url = arrBaseUrl(config.radarr_url)
+  if (containsPlaintextSecretFields) {
+    saveConfig(config)
+    log('INFO', 'Migrated plaintext configuration secrets to encrypted storage')
+  }
+  return config
 }
 
-export function saveConfig(config: Config): void { writeJsonAtomic(CONFIG_FILE, config, true) }
+export function publicConfig(config: Config): JsonObject {
+  const result: JsonObject = { ...config }
+  for (const key of SECRET_CONFIG_KEYS) {
+    result[key] = ''
+    result[`${key}_configured`] = Boolean(config[key])
+  }
+  return result
+}
+
+export function saveConfig(config: Config): void {
+  const stored: JsonObject = { ...config }
+  const secrets: Partial<Record<SecretConfigKey, string>> = {}
+  for (const key of SECRET_CONFIG_KEYS) {
+    if (config[key]) secrets[key] = config[key]
+    delete stored[key]
+  }
+  if (Object.keys(secrets).length || existsSync(ENCRYPTED_SECRETS_FILE)) {
+    const mayCreateKey = !existsSync(ENCRYPTED_SECRETS_FILE)
+    writeJsonAtomic(ENCRYPTED_SECRETS_FILE, encryptSecretValues(secrets, loadSecretKey(mayCreateKey)), true, 0o600)
+  }
+  writeJsonAtomic(CONFIG_FILE, stored, true, 0o600)
+}
 export function loadCache(): JsonObject { return readJson<JsonObject>(CACHE_FILE, {}) }
 export function saveCache(cache: JsonObject): void { writeJsonAtomic(CACHE_FILE, cache, true) }
 export function saveLastResults(results: JsonObject[], lastRun: string): void {
@@ -163,9 +291,12 @@ export async function seadexBest(): Promise<Map<number, JsonObject>> {
     for (const item of data.items as JsonObject[]) {
       const alid = Number(item.alID)
       const torrents = item.expand?.trs || []
-      if (!torrents.length) continue
       if (!best.has(alid)) best.set(alid, { url: `https://releases.moe/${alid}/`, notes: item.notes || '-', seasons: {} })
       const entry = best.get(alid)!
+      // Keep filler/placeholder pages even when SeaDex has no torrents. The
+      // scanner can then mark the mapped season as uncovered (with its page
+      // link) instead of incorrectly claiming that it is not listed at all.
+      if (!torrents.length) continue
       const torrentInfos: Array<[JsonObject, JsonObject[], Set<number>]> = []
       const entrySeasons = new Set<number>()
       for (const torrent of torrents) {
@@ -226,7 +357,7 @@ export async function localItems(config: Config): Promise<JsonObject[]> {
   const items: JsonObject[] = []
   if (config.sonarr_url && config.sonarr_key) {
     let series: JsonObject[] = []
-    try { series = await api(`${config.sonarr_url}/series`, config.sonarr_key) } catch { /* preserve partial scans */ }
+    try { series = await api(`${arrApiUrl(config.sonarr_url)}/series`, config.sonarr_key) } catch { /* preserve partial scans */ }
     for (const show of series) {
       const seasons: JsonObject = {}
       for (const season of show.seasons || []) {
@@ -241,7 +372,7 @@ export async function localItems(config: Config): Promise<JsonObject[]> {
   }
   if (config.radarr_url && config.radarr_key) {
     let movies: JsonObject[] = []
-    try { movies = await api(`${config.radarr_url}/movie`, config.radarr_key) } catch { /* preserve partial scans */ }
+    try { movies = await api(`${arrApiUrl(config.radarr_url)}/movie`, config.radarr_key) } catch { /* preserve partial scans */ }
     for (const movie of movies) {
       const stats = movie.statistics || {}
       const groups = stats.releaseGroups || []
@@ -255,8 +386,7 @@ export async function localItems(config: Config): Promise<JsonObject[]> {
 }
 
 export function arrItemUrl(config: Config | JsonObject, item: JsonObject): string | null {
-  let base = String(config[`${String(item.arr).toLowerCase()}_url`] || '').replace(/\/+$/, '')
-  base = base.replace(/\/api\/v\d+$/, '')
+  const base = arrBaseUrl(config[`${String(item.arr).toLowerCase()}_url`])
   if (!base) return null
   const path = item.arr === 'Sonarr' ? 'series' : 'movie'
   return `${base}/${path}/${item.slug || item.id}`

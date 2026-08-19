@@ -3,15 +3,24 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, isAbsolute, normalize, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, autocheckState, getState, loadConfig, loadLastResults,
-  log, normalizeQbStates, qbAddTorrent, qbGetTorrents, resultsForRequest, runScan, saveConfig,
-  setState,
+  DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, getState, loadConfig, loadLastResults,
+  log, normalizeQbStates, publicConfig, qbAddTorrent, qbGetTorrents, resultsForRequest, runScan,
+  saveConfig, SECRET_CONFIG_KEYS, setState,
 } from './app.js'
+import {
+  AuthError, authState, expiredSessionCookie, isAuthenticated, login, logout, sessionCookie,
+  setupAccount,
+} from './auth.js'
 import type { Config, JsonObject } from './types.js'
 
-function sendJson(response: ServerResponse, status: number, value: unknown): void {
+function sendJson(response: ServerResponse, status: number, value: unknown, headers: Record<string, string> = {}): void {
   const body = JSON.stringify(value)
-  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body) })
+  response.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store',
+    ...headers,
+  })
   response.end(body)
 }
 
@@ -59,12 +68,58 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   const url = new URL(request.url || '/', 'http://localhost')
   const path = url.pathname
 
-  if (method === 'GET' && path === '/api/config') return sendJson(response, 200, loadConfig())
+  if (method === 'GET' && path === '/api/auth/status') {
+    return sendJson(response, 200, authState(request), { 'Cache-Control': 'no-store' })
+  }
+
+  if (method === 'POST' && path === '/api/auth/setup') {
+    const data = await readJson(request)
+    const result = await setupAccount(data.username, data.password)
+    log('INFO', `Administrator account created: ${result.username}`)
+    return sendJson(response, 201, { setup_required: false, authenticated: true, username: result.username }, {
+      'Cache-Control': 'no-store', 'Set-Cookie': sessionCookie(request, result.token),
+    })
+  }
+
+  if (method === 'POST' && path === '/api/auth/login') {
+    const data = await readJson(request)
+    const result = await login(request, data.username, data.password)
+    log('INFO', `Login successful: ${result.username}`)
+    return sendJson(response, 200, { setup_required: false, authenticated: true, username: result.username }, {
+      'Cache-Control': 'no-store', 'Set-Cookie': sessionCookie(request, result.token),
+    })
+  }
+
+  if (method === 'POST' && path === '/api/auth/logout') {
+    logout(request)
+    return sendJson(response, 200, { ok: true }, {
+      'Cache-Control': 'no-store', 'Set-Cookie': expiredSessionCookie(request),
+    })
+  }
+
+  if (path.startsWith('/api/') && !isAuthenticated(request)) {
+    return sendJson(response, 401, { error: 'Authentication required' }, { 'Cache-Control': 'no-store' })
+  }
+
+  if (method === 'GET' && path === '/api/config') return sendJson(response, 200, publicConfig(loadConfig()))
 
   if (method === 'POST' && path === '/api/config') {
     const data = await readJson(request)
     const config = loadConfig()
+    const clearedSecrets = new Set(
+      Array.isArray(data.clear_secrets)
+        ? data.clear_secrets.filter((key: unknown) => typeof key === 'string' && SECRET_CONFIG_KEYS.includes(key as any))
+        : [],
+    )
     for (const [key, defaultValue] of Object.entries(DEFAULT_CONFIG)) {
+      if (SECRET_CONFIG_KEYS.includes(key as any)) {
+        if (clearedSecrets.has(key)) config[key] = ''
+        else if (key in data) {
+          const replacement = data[key] == null ? '' : String(data[key]).trim()
+          if (replacement) config[key] = replacement
+        }
+        continue
+      }
       if (!(key in data)) continue
       const value = data[key]
       if (typeof defaultValue === 'boolean') config[key] = Boolean(value)
@@ -72,11 +127,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         const parsed = Number.parseInt(String(value), 10)
         config[key] = Number.isFinite(parsed) ? Math.max(0, parsed) : defaultValue
       } else if (Array.isArray(defaultValue)) config[key] = Array.isArray(value) ? [...value] : []
+      else if (key === 'sonarr_url' || key === 'radarr_url') config[key] = arrBaseUrl(value)
       else config[key] = value == null ? '' : String(value).trim()
     }
     saveConfig(config)
     log('INFO', `Config saved (autocheck=${config.autocheck_minutes}m, notify=${config.notify_enabled})`)
-    return sendJson(response, 200, config)
+    return sendJson(response, 200, publicConfig(config))
   }
 
   if (method === 'GET' && path === '/api/status') {
@@ -175,6 +231,10 @@ export function makeServer() {
   return createServer((request, response) => {
     void handle(request, response).catch((error) => {
       const message = error instanceof Error ? error.message : String(error)
+      if (error instanceof AuthError) {
+        if (!response.headersSent) sendJson(response, error.status, { error: message }, { 'Cache-Control': 'no-store' }); else response.end()
+        return
+      }
       log('ERROR', `Request failed: ${message}`)
       if (!response.headersSent) sendJson(response, 400, { error: message }); else response.end()
     })

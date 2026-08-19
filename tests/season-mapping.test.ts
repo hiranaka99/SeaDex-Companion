@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
 import { beforeEach, describe, test } from 'node:test'
 import {
-  anilistChain, commonBestRelease, getState, orderedPartReleases, pickAniListSearchResult,
-  pickBest, resetRuntimeForTests, runScan,
+  anilistChain, arrApiUrl, arrBaseUrl, arrItemUrl, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, encryptSecretValues,
+  getState, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
+  resetRuntimeForTests, runScan,
 } from '../server/app.js'
 import type { JsonObject, ReleaseCandidate } from '../server/types.js'
 
@@ -39,6 +41,56 @@ async function makeChain(nodes: Map<number, JsonObject>) {
 }
 
 beforeEach(() => resetRuntimeForTests())
+
+describe('configuration secret security', () => {
+  test('encrypts and authenticates configuration secrets', () => {
+    const key = randomBytes(32)
+    const secrets = {
+      sonarr_key: 'sonarr-secret',
+      radarr_key: 'radarr-secret',
+      qbittorrent_pass: 'qb-secret',
+      webhook: 'https://discord.example/secret',
+    }
+    const encrypted = encryptSecretValues(secrets, key)
+
+    assert.equal(encrypted.algorithm, 'aes-256-gcm')
+    assert.equal(JSON.stringify(encrypted).includes('sonarr-secret'), false)
+    assert.deepEqual(decryptSecretValues(encrypted, key), secrets)
+
+    const tampered = { ...encrypted, ciphertext: `${encrypted.ciphertext.slice(0, -2)}AA` }
+    assert.throws(() => decryptSecretValues(tampered, key), /Could not decrypt secrets/)
+  })
+
+  test('redacts secrets from the public configuration response', () => {
+    const response = publicConfig({
+      ...DEFAULT_CONFIG,
+      sonarr_key: 'sonarr-secret',
+      qbittorrent_pass: 'qb-secret',
+    })
+
+    assert.equal(response.sonarr_key, '')
+    assert.equal(response.sonarr_key_configured, true)
+    assert.equal(response.radarr_key_configured, false)
+    assert.equal(response.qbittorrent_pass, '')
+    assert.equal(response.qbittorrent_pass_configured, true)
+  })
+})
+
+describe('Sonarr and Radarr URL normalization', () => {
+  test('adds the API path to plain base URLs', () => {
+    assert.equal(arrApiUrl('https://sonarr.example.com/'), 'https://sonarr.example.com/api/v3')
+    assert.equal(arrApiUrl('https://host.example/radarr'), 'https://host.example/radarr/api/v3')
+  })
+
+  test('accepts and removes legacy API paths without duplicating them', () => {
+    assert.equal(arrBaseUrl('https://sonarr.example.com/api/v3/'), 'https://sonarr.example.com')
+    assert.equal(arrApiUrl('https://sonarr.example.com/api/v3'), 'https://sonarr.example.com/api/v3')
+    assert.equal(
+      arrItemUrl({ sonarr_url: 'https://host.example/sonarr/api/v3' }, { arr: 'Sonarr', slug: 'example' }),
+      'https://host.example/sonarr/series/example',
+    )
+  })
+})
 
 describe('AniList season chains', () => {
   test('keeps SPY x FAMILY cour two in season one', async () => {
@@ -140,6 +192,31 @@ describe('release selection and combined cours', () => {
     releaseSecondItem()
     await scan
     assert.deepEqual(getState().results.map((item) => item.title), ['First', 'Second'])
+  })
+
+  test('treats a filler SeaDex page with no releases as uncovered', async () => {
+    const best = new Map([[300, {
+      url: 'https://releases.moe/300/',
+      notes: '-',
+      seasons: {},
+    }]])
+    const chain = [{
+      season: 1,
+      id: 300,
+      ids: [300],
+      parts: [{ id: 300, episodeCount: 12 }],
+      cover: 'cover-300',
+      banner: 'banner-300',
+    }]
+    await scanWith(best, chain, [{
+      arr: 'Sonarr', id: 30, title: 'Filler Page', slug: 'filler-page',
+      seasons: { 1: { groups: ['Local'], size: 1000 } },
+    }])
+
+    const result = getState().results[0]
+    assert.equal(result.status, 'uncovered')
+    assert.equal(result.url, 'https://releases.moe/300/')
+    assert.deepEqual(result.releases, [])
   })
 
   test('gives the best flag priority over episode count', () => {

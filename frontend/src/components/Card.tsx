@@ -272,8 +272,8 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
         <span className={cx('absolute top-3 right-3 z-2 rounded-full border px-2.5 py-[5px] text-[11.5px] font-extrabold tracking-[0.5px] backdrop-blur-[6px]', STATUS_BADGE[st])}>{STATUS_LABEL[st]}</span>
       </div>
       <div className="flex flex-1 flex-col gap-3 px-4 pt-4 pb-[18px]">
-        <div className="flex items-start gap-2.5">
-          <div className={cx('min-w-0 flex-1 text-[16.5px] leading-[1.3] font-bold', st === 'missing' && 'text-muted')}>
+        <div className="flex min-h-[43px] items-start gap-2.5">
+          <div className={cx('line-clamp-2 min-w-0 flex-1 text-[16.5px] leading-[1.3] font-bold', st === 'missing' && 'text-muted')} title={group.title}>
             {group.anilist_id ? (
               <a className={cx('hover:text-accent-bright hover:no-underline', st === 'missing' ? 'text-muted' : 'text-ink')} href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">
                 {group.title}
