@@ -1,6 +1,7 @@
 import { useEffect, useState, FormEvent } from 'react'
 import { Config } from '../types'
 import * as api from '../api'
+import { buttonPrimary, cx, panelCard, subtitle, tabHeader } from '../styles'
 
 interface Props {
   config: Config | null
@@ -20,11 +21,12 @@ interface FieldProps {
 
 function Field({ name, type, label, small, placeholder, required, form, set }: FieldProps) {
   return (
-    <label className="field">
-      <span>
-        {label} {small && <small>{small}</small>}
+    <label className="mb-3.5 flex flex-col gap-[7px] last:mb-0">
+      <span className="text-[13px] font-semibold text-muted">
+        {label} {small && <small className="font-medium text-muted-dim">{small}</small>}
       </span>
       <input
+        className="w-full rounded-control border border-line bg-canvas-soft px-[13px] py-[11px] text-sm text-ink outline-none transition-[border-color,box-shadow] duration-150 focus:border-accent focus:shadow-[0_0_0_3px_rgba(79,140,255,0.15)]"
         type={type}
         name={name}
         placeholder={placeholder}
@@ -74,64 +76,64 @@ export default function ConfigTab({ config, onSaved }: Props) {
   }
 
   return (
-    <section className="tab">
-      <header className="tab-header">
+    <section>
+      <header className={tabHeader}>
         <div>
           <h2>Configuration</h2>
-          <p className="subtitle">
+          <p className={subtitle}>
             Stored in <code>config.json</code> — used for every scan
           </p>
         </div>
       </header>
 
-      <form className="config-form" onSubmit={submit}>
-        <div className="config-card">
+      <form className="flex max-w-[760px] flex-col gap-[18px]" onSubmit={submit}>
+        <div className={cx(panelCard, '[&_h3]:mb-4 [&_h3]:text-base [&_h3]:font-extrabold')}>
           <h3>📺 Sonarr</h3>
           <Field name="sonarr_url" type="url" label="Base URL" small="(with /api/v3, optional)" placeholder="https://sonarr.example.com/api/v3" required={sonarrConfigured} form={form} set={set} />
           <Field name="sonarr_key" type="password" label="API Key" placeholder="Sonarr API key" required={sonarrConfigured} form={form} set={set} />
           <Field name="sonarr_category" type="text" label="qBittorrent category" small="(must match Sonarr's download-client category)" placeholder="sonarr-anime" form={form} set={set} />
         </div>
 
-        <div className="config-card">
+        <div className={cx(panelCard, '[&_h3]:mb-4 [&_h3]:text-base [&_h3]:font-extrabold')}>
           <h3>🎬 Radarr</h3>
           <Field name="radarr_url" type="url" label="Base URL" small="(with /api/v3, optional)" placeholder="https://radarr.example.com/api/v3" required={radarrConfigured} form={form} set={set} />
           <Field name="radarr_key" type="password" label="API Key" placeholder="Radarr API key" required={radarrConfigured} form={form} set={set} />
           <Field name="radarr_category" type="text" label="qBittorrent category" small="(must match Radarr's download-client category)" placeholder="radarr-anime" form={form} set={set} />
         </div>
 
-        <div className="config-card">
+        <div className={cx(panelCard, '[&_h3]:mb-4 [&_h3]:text-base [&_h3]:font-extrabold')}>
           <h3>⬇️ qBittorrent</h3>
           <Field name="qbittorrent_url" type="url" label="Web API URL" small="(e.g. http://host:8080)" placeholder="http://192.168.1.10:8080" form={form} set={set} />
           <Field name="qbittorrent_user" type="text" label="Username" placeholder="qBittorrent username" form={form} set={set} />
           <Field name="qbittorrent_pass" type="password" label="Password" placeholder="qBittorrent password" form={form} set={set} />
-          <p className="hint">
+          <p className="mt-2.5 mb-0 text-[12.5px] text-muted-dim">
             Used by the ⬇ button on each season to send the best release to qBittorrent, under the matching Sonarr/Radarr category (no tags).
             Public releases only (Nyaa / AnimeTosho) — private-tracker releases (AnimeBytes) have no magnet and show a disabled button.
           </p>
         </div>
 
-        <div className="config-card">
+        <div className={cx(panelCard, '[&_h3]:mb-4 [&_h3]:text-base [&_h3]:font-extrabold')}>
           <h3>📣 Discord</h3>
           <Field name="webhook" type="url" label="Webhook URL" placeholder="https://discord.com/api/webhooks/…" form={form} set={set} />
-          <p className="hint">New upgrades found after a scan are posted here automatically.</p>
+          <p className="mt-2.5 mb-0 text-[12.5px] text-muted-dim">New upgrades found after a scan are posted here automatically.</p>
         </div>
 
-        <div className="config-card">
+        <div className={cx(panelCard, '[&_h3]:mb-4 [&_h3]:text-base [&_h3]:font-extrabold')}>
           <h3>🔔 Notifications</h3>
-          <label className="field toggle-field">
-            <span>Enable Discord notifications</span>
-            <input type="checkbox" checked={!!form.notify_enabled} onChange={(e) => set('notify_enabled', e.target.checked)} />
+          <label className="mb-3.5 flex items-center justify-between gap-[7px]">
+            <span className="text-[13px] font-semibold text-muted">Enable Discord notifications</span>
+            <input className="size-5 shrink-0 cursor-pointer accent-accent" type="checkbox" checked={!!form.notify_enabled} onChange={(e) => set('notify_enabled', e.target.checked)} />
           </label>
           <Field name="autocheck_minutes" type="number" label="Auto-check interval (minutes)" small="(0 = off)" placeholder="60" form={form} set={set} />
-          <p className="hint">
+          <p className="mt-2.5 mb-0 text-[12.5px] text-muted-dim">
             When enabled, new upgrades found after each scan are posted to Discord automatically.
             Hidden cards only affect the current library view and do not change scan notifications.
           </p>
         </div>
 
-        <div className="form-actions">
-          <button type="submit" className="btn btn-primary">💾 Save Configuration</button>
-          {flash && <span className="save-flash">✓ Saved</span>}
+        <div className="flex items-center gap-3.5">
+          <button type="submit" className={buttonPrimary}>💾 Save Configuration</button>
+          {flash && <span className="text-sm font-bold text-good">✓ Saved</span>}
         </div>
       </form>
     </section>

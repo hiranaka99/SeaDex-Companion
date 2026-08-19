@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, ReactNode } from 'react'
 import { GroupedCard, Release, ResultItem, Config } from '../types'
 import { formatBytes, sizeDelta, seasonLabel, STATUS_LABEL } from '../utils'
 import * as api from '../api'
+import { cx } from '../styles'
 
 const IconDL = () => (
   <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18" aria-hidden="true">
@@ -10,7 +11,7 @@ const IconDL = () => (
   </svg>
 )
 
-const IconSpinner = () => <span className="dl-spinner" aria-hidden="true" />
+const IconSpinner = () => <span className="block size-[15px] animate-spin rounded-full border-2 border-accent/35 border-t-accent-bright group-disabled/dl:border-ink/30 group-disabled/dl:border-t-ink" aria-hidden="true" />
 
 const IconOK = () => (
   <svg
@@ -96,6 +97,19 @@ const IconChevronUp = () => (
   </svg>
 )
 
+function HideActionIcon({ hidden }: { hidden: boolean }) {
+  return (
+    <span className="relative block size-[18px]">
+      <span className="absolute inset-0 transition-opacity duration-150 group-hover/hide:opacity-0">
+        {hidden ? <IconEyeOff /> : <IconEye />}
+      </span>
+      <span className="absolute inset-0 opacity-0 transition-opacity duration-150 group-hover/hide:opacity-100">
+        {hidden ? <IconEye /> : <IconEyeOff />}
+      </span>
+    </span>
+  )
+}
+
 interface CardProps {
   group: GroupedCard
   index: number
@@ -106,12 +120,71 @@ interface CardProps {
 
 const HIDE_DURATION_MS = 280
 
+const CARD_BASE =
+  'flex animate-rise flex-col overflow-hidden rounded-card border transition-[transform,opacity,border-color,box-shadow] duration-150 hover:-translate-y-[3px] hover:shadow-card'
+const CARD_TONE: Record<string, string> = {
+  upgrade: 'border-accent/55 bg-panel shadow-[0_0_0_1px_rgba(79,140,255,0.12),0_8px_24px_rgba(79,140,255,0.10)] hover:border-accent hover:shadow-[0_0_0_1px_rgba(79,140,255,0.25),0_10px_30px_rgba(0,0,0,0.35)] [--card-status-color:#4f8cff]',
+  best: 'border-good/55 bg-[#0e1e17] shadow-[0_0_0_1px_rgba(52,211,153,0.12),0_8px_24px_rgba(52,211,153,0.10)] hover:border-good hover:shadow-[0_0_0_1px_rgba(52,211,153,0.25),0_10px_30px_rgba(0,0,0,0.35)] [--card-status-color:#34d399]',
+  missing: 'border-[#3a4356] bg-[#1a1b1e] hover:border-[#4a5568] [--card-status-color:#8b97ab]',
+  partial: 'border-warn/55 bg-[#211d10] shadow-[0_0_0_1px_rgba(251,191,36,0.12),0_8px_24px_rgba(251,191,36,0.08)] hover:border-warn hover:shadow-[0_0_0_1px_rgba(251,191,36,0.25),0_10px_30px_rgba(0,0,0,0.35)] [--card-status-color:#fbbf24]',
+}
+const SOURCE_TONE: Record<string, string> = {
+  sonarr: 'border-accent/65 bg-[#0d1c42]/88 text-[#cfe0ff]',
+  radarr: 'border-warn/65 bg-[#3a2806]/88 text-[#ffe6a8]',
+}
+const STATUS_BADGE: Record<string, string> = {
+  upgrade: 'border-accent/65 bg-[#0d1c42]/88 text-[#cfe0ff]',
+  best: 'border-good/65 bg-[#062e20]/88 text-[#b9f5dd]',
+  missing: 'border-muted/50 bg-[#1e232e]/88 text-[#c3cad6]',
+  partial: 'border-warn/65 bg-[#3a2806]/88 text-[#ffe6a8]',
+}
+const SEASON_TONE: Record<string, string> = {
+  upgrade: 'bg-canvas-soft',
+  best: 'bg-[#0a1712]',
+  missing: 'bg-[#141518]',
+  partial: 'bg-[#19160d]',
+}
+const SEASON_NUMBER_TONE: Record<string, string> = {
+  upgrade: 'border-line-strong bg-accent/15 text-accent-bright',
+  best: 'border-good/35 bg-good/12 text-good',
+  missing: 'border-line-strong bg-accent/15 text-accent-bright',
+  partial: 'border-warn/35 bg-warn/12 text-warn',
+}
+const NOTE_TONE: Record<string, string> = {
+  upgrade: 'border-line-strong text-muted',
+  best: 'border-good/35 text-good',
+  missing: 'border-line-strong text-[#9aa5b8]',
+  partial: 'border-warn/35 text-warn',
+}
+const NOTES_SURFACE: Record<string, string> = {
+  upgrade: 'bg-canvas-soft',
+  best: 'bg-[#0a1712]',
+  missing: 'bg-[#141518]',
+  partial: 'bg-[#19160d]',
+}
+const ICON_BUTTON =
+  'grid size-9 cursor-pointer place-items-center rounded-control border border-line bg-panel-raised text-muted transition-all duration-150 hover:-translate-y-px hover:border-line-strong hover:text-ink'
+const BADGE_BASE = 'inline-block rounded-[7px] border px-[9px] py-1 text-[12.5px] font-semibold'
+const BADGE = `${BADGE_BASE} border-line bg-panel-raised text-muted`
+const SIZE_BASE = 'shrink-0 whitespace-nowrap rounded-md border px-2 py-[3px] text-xs font-bold tabular-nums'
+const SIZE = `${SIZE_BASE} border-line bg-panel-raised text-muted`
+
 /**
  * Dual-audio releases get a light blue pill; every other release tag
  * (quality flags, broken files, ...) gets a purple pill.
  */
 function tagClass(t: string): string {
-  return t === 'Dual Audio' ? 'rel-tag rel-tag-blue' : 'rel-tag rel-tag-purple'
+  const base = 'max-w-full overflow-hidden rounded-full border px-2 py-0.5 text-[10.5px] font-bold tracking-[0.2px] text-ellipsis whitespace-nowrap'
+  return t === 'Dual Audio'
+    ? `${base} border-sky/40 bg-sky/12 text-sky`
+    : `${base} border-purple/40 bg-purple/12 text-purple`
+}
+
+function releaseSurface(tone: string, isBest: boolean): string {
+  if (tone === 'best') return isBest ? 'bg-good/14' : 'bg-[#10241b]'
+  if (tone === 'partial') return isBest ? 'bg-warn/12' : 'bg-[#282216]'
+  if (tone === 'missing') return 'bg-[#1f2024]'
+  return isBest ? 'bg-good/5' : 'bg-panel'
 }
 
 export default function Card({ group, index, config, hidden = false, onToggle }: CardProps) {
@@ -155,22 +228,26 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
 
   return (
     <article
-      className={
-        'card status-' +
-        st +
-        (hiding ? ' is-hiding' : '') +
-        (hidden ? ' is-hidden' : '') +
-        (downloading ? ' is-downloading' : '')
-      }
+      className={cx(
+        CARD_BASE,
+        CARD_TONE[st],
+        hiding && 'pointer-events-none !translate-y-1 !scale-[0.98] opacity-0',
+        hidden && 'border-dashed !border-line-strong opacity-60 hover:opacity-85',
+        downloading && 'download-border',
+      )}
       style={{ animationDelay: Math.min(index * 40, 400) + 'ms' }}
     >
       <div
-        className="card-banner"
+        className={cx(
+          "relative h-[150px] border-b border-line bg-panel-raised bg-cover bg-[center_20%] after:absolute after:inset-0 after:bg-[linear-gradient(180deg,rgba(11,14,20,0)_30%,rgba(11,14,20,0.85)_100%)] after:content-['']",
+          st === 'missing' && 'grayscale',
+          hidden && 'grayscale-70',
+        )}
         style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}
       >
         {group.image && (
           <img
-            className="card-img"
+            className={cx('absolute right-3 bottom-[-2px] z-2 h-[110px] w-[78px] rounded-control border-2 border-white/15 object-cover shadow-[0_8px_20px_rgba(0,0,0,0.5)]', hidden && 'grayscale-70')}
             src={group.image}
             alt=""
             loading="lazy"
@@ -181,33 +258,33 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
         )}
         {group.arr_url ? (
           <a
-            className={'card-source ' + srcClass}
+            className={cx('group/source absolute top-3 left-3 z-2 inline-flex cursor-pointer items-center gap-1 rounded-full border px-2.5 py-[5px] text-[11.5px] font-extrabold tracking-[0.5px] no-underline backdrop-blur-[6px] transition-[transform,filter] duration-150 hover:-translate-y-px hover:brightness-118 hover:no-underline', SOURCE_TONE[srcClass])}
             href={group.arr_url}
             target="_blank"
             rel="noopener"
             title={'Open in ' + group.arr}
           >
-            {group.arr} <span className="arr">↗</span>
+            {group.arr} <span className="text-[11px] transition-transform duration-150 group-hover/source:translate-x-0.5 group-hover/source:-translate-y-0.5">↗</span>
           </a>
         ) : (
-          <span className={'card-source ' + srcClass}>{group.arr}</span>
+          <span className={cx('absolute top-3 left-3 z-2 rounded-full border px-2.5 py-[5px] text-[11.5px] font-extrabold tracking-[0.5px] backdrop-blur-[6px]', SOURCE_TONE[srcClass])}>{group.arr}</span>
         )}
-        <span className={'card-status ' + st}>{STATUS_LABEL[st]}</span>
+        <span className={cx('absolute top-3 right-3 z-2 rounded-full border px-2.5 py-[5px] text-[11.5px] font-extrabold tracking-[0.5px] backdrop-blur-[6px]', STATUS_BADGE[st])}>{STATUS_LABEL[st]}</span>
       </div>
-      <div className="card-body">
-        <div className="card-title-row">
-          <div className="card-title">
+      <div className="flex flex-1 flex-col gap-3 px-4 pt-4 pb-[18px]">
+        <div className="flex items-start gap-2.5">
+          <div className={cx('min-w-0 flex-1 text-[16.5px] leading-[1.3] font-bold', st === 'missing' && 'text-muted')}>
             {group.anilist_id ? (
-              <a href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">
+              <a className={cx('hover:text-accent-bright hover:no-underline', st === 'missing' ? 'text-muted' : 'text-ink')} href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">
                 {group.title}
               </a>
             ) : (
               group.title
             )}
           </div>
-          <div className="title-actions">
+          <div className="flex shrink-0 items-center gap-1.5">
             <button
-              className="expand-btn"
+              className={ICON_BUTTON}
               type="button"
               title={expanded ? 'Collapse' : 'Expand'}
               aria-label={(expanded ? 'Collapse ' : 'Expand ') + group.title}
@@ -216,35 +293,34 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
               {expanded ? <IconChevronUp /> : <IconChevronDown />}
             </button>
             <button
-              className={'hide-btn' + (hidden ? ' is-hidden' : '')}
+              className={cx(ICON_BUTTON, 'group/hide disabled:cursor-wait', hidden && 'border-warn bg-warn/12 text-warn hover:border-warn hover:text-warn')}
               type="button"
               title={hidden ? 'Show this card' : 'Hide this card'}
               aria-label={(hidden ? 'Show ' : 'Hide ') + group.title}
               onClick={handleHide}
               disabled={hiding}
             >
-              {hidden ? <IconEyeOff /> : <IconEye />}
+              <HideActionIcon hidden={hidden} />
             </button>
           </div>
         </div>
         {!expanded && (
-          <button className="card-summary" type="button" onClick={() => setExpanded(true)}>
-            <span className="summary-chip">
+          <button className="group/summary flex w-full cursor-pointer items-center gap-2.5 rounded-control border border-line bg-canvas-soft px-[13px] py-[11px] text-[13px] text-muted transition-[border-color,background-color,color] duration-150 hover:border-line-strong hover:bg-panel hover:text-ink" type="button" onClick={() => setExpanded(true)}>
+            <span className="whitespace-nowrap rounded-full border border-line-strong bg-accent/15 px-2.5 py-[3px] text-[12.5px] font-extrabold text-accent-bright">
               {seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}
             </span>
             {delta !== 0 && (
-              <span className={'summary-delta' + (delta > 0 ? ' up' : ' down')}>
+              <span className={cx('whitespace-nowrap rounded-full border px-2.5 py-[3px] text-[12.5px] font-extrabold', delta > 0 ? 'border-good/35 bg-good/12 text-good' : 'border-bad/30 bg-bad/10 text-bad')}>
                 {(delta > 0 ? '+' : '') + formatBytes(delta)}
               </span>
             )}
-            <span className="summary-hint">Show details</span>
+            <span className="ml-auto text-xs font-bold tracking-[0.3px] text-muted-dim group-hover/summary:text-accent-bright">Show details</span>
           </button>
         )}
-        {/* Seasons stay mounted while collapsed so download progress (and its
-            polling) survives; the .hidden class just hides them visually. */}
+        {/* Seasons stay mounted while collapsed so download progress polling survives. */}
         <div className={expanded ? undefined : 'hidden'}>
           {group.seasons.map((r) => (
-            <Season key={r.key} r={r} config={config} onActiveChange={onSeasonActive} />
+            <Season key={r.key} r={r} config={config} tone={st} onActiveChange={onSeasonActive} />
           ))}
         </div>
       </div>
@@ -255,6 +331,7 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
 interface SeasonProps {
   r: ResultItem
   config: Config | null
+  tone: string
   onActiveChange: (key: string, active: boolean) => void
 }
 
@@ -318,7 +395,7 @@ function groupByCour(releases: DisplayRelease[]): { part: string; items: Display
   return groups
 }
 
-function Season({ r, config, onActiveChange }: SeasonProps) {
+function Season({ r, config, tone, onActiveChange }: SeasonProps) {
   const [dl, setDl] = useState<Record<number, DlState>>({})
   const pollers = useRef<Record<number, number>>({})
   const st = r.status || 'upgrade'
@@ -413,23 +490,23 @@ function Season({ r, config, onActiveChange }: SeasonProps) {
 
   let middle: ReactNode
   if (st === 'missing') {
-    middle = <div className="season-note">Not listed on releases.moe</div>
+    middle = <div className={cx('rounded-lg border border-dashed bg-panel px-3 py-2.5 text-center text-[13px]', NOTE_TONE[tone])}>Not listed on releases.moe</div>
   } else if (st === 'uncovered') {
-    middle = <div className="season-note">This season is not covered on releases.moe</div>
+    middle = <div className={cx('rounded-lg border border-dashed bg-panel px-3 py-2.5 text-center text-[13px]', NOTE_TONE[tone])}>This season is not covered on releases.moe</div>
   } else {
     const displayReleases = uniqueReleases(r.releases || [])
     const courGroups = groupByCour(displayReleases)
     middle = (
       <>
         {courGroups.map((group, gi) => (
-          <div key={group.part || 'all'} className="cour-block">
-            {gi > 0 && <div className="cour-divider" role="separator" />}
+          <div key={group.part || 'all'} className="flex flex-col gap-1.5">
+            {gi > 0 && <div className="my-1 h-px bg-line-strong" role="separator" />}
             {group.part && (
-              <div className="cour-header">
-                <span className="cour-header-label">{group.part}</span>
+              <div className="flex items-center gap-2 py-0.5">
+                <span className="rounded-full border border-line bg-panel-raised px-2.5 py-[3px] text-[11px] font-extrabold tracking-[0.8px] text-muted uppercase">{group.part}</span>
               </div>
             )}
-            <div className="releases">
+            <div className="flex flex-col gap-1.5">
               {group.items.map(({ rel, index }) => {
                 const isBest = rel.kind === 'best'
                 // Sonarr's size covers both cours, while a split-cour row only
@@ -455,24 +532,24 @@ function Season({ r, config, onActiveChange }: SeasonProps) {
                   ...(rel.tags || []),
                 ]
                 return (
-                  <div key={`${rel.part || ''}-${rel.releaseGroup}`} className="release-wrap">
+                  <div key={`${rel.part || ''}-${rel.releaseGroup}`} className="flex flex-col gap-1.5">
                     <div
-                      className={
-                        'release-row ' +
-                        (isBest ? 'best' : 'alt') +
-                        (owned ? ' owned' : '') +
-                        (sending ? ' downloading' : '')
-                      }
+                      className={cx(
+                        'flex items-center gap-2 rounded-lg border px-[9px] py-[7px]',
+                        sending ? 'border-accent' : isBest ? 'border-good/35' : 'border-bad/28',
+                        releaseSurface(tone, isBest),
+                        sending && 'shadow-[0_0_0_1px_rgba(79,140,255,0.15),0_4px_14px_rgba(79,140,255,0.12)]',
+                      )}
                     >
-                      <span className="rel-kind" title={rel.part || undefined}>
+                      <span className={cx('w-[34px] shrink-0 text-[10px] font-extrabold tracking-[0.8px] uppercase', isBest ? 'text-good' : 'text-bad')} title={rel.part || undefined}>
                         {isBest ? 'Best' : 'Alt'}
                       </span>
-                      <div className="rel-main">
-                        <span className={'badge ' + (isBest ? 'best' : 'alt')} title={rel.releaseGroup}>
+                      <div className="flex min-w-0 flex-1 flex-row items-center gap-1.5">
+                        <span className={cx(BADGE_BASE, 'w-fit max-w-full shrink-0 overflow-hidden text-ellipsis whitespace-nowrap font-extrabold', isBest ? 'border-good/40 bg-good/14 text-good' : 'border-bad/40 bg-bad/12 text-bad')} title={rel.releaseGroup}>
                           {rel.releaseGroup}
                         </span>
                         {tags.length > 0 && (
-                          <div className="rel-tags">
+                          <div className="flex min-w-0 flex-1 flex-col items-start gap-1.5">
                             {tags.map((t) => (
                               <span key={t} className={tagClass(t)}>
                                 {t}
@@ -481,16 +558,23 @@ function Season({ r, config, onActiveChange }: SeasonProps) {
                           </div>
                         )}
                       </div>
-                      <span className={'size ' + (isBest ? 'best' : '')} title="Size of this release">
+                      <span className={cx(SIZE_BASE, isBest ? 'border-good/35 bg-good/10 text-good' : 'border-line bg-panel-raised text-muted')} title="Size of this release">
                         {formatBytes(rel.size)}
                       </span>
                       {delta && (
-                        <span className="size-delta" title="Difference: release size minus your local size">
+                        <span className="whitespace-nowrap text-[11.5px] font-semibold text-muted-dim" title="Difference: release size minus your local size">
                           {delta}
                         </span>
                       )}
                       <button
-                        className={'dl-btn' + (disabled ? ' disabled' : '')}
+                        className={cx(
+                          'group/dl ml-auto grid size-8 shrink-0 cursor-pointer place-items-center rounded-control border text-sm font-extrabold transition-all duration-150 hover:-translate-y-px disabled:opacity-55',
+                          owned
+                            ? 'cursor-default border-good/50 bg-good/18 text-good hover:border-good hover:bg-good/22'
+                            : disabled
+                              ? 'cursor-not-allowed border-line bg-panel-raised text-muted-dim hover:translate-y-0 hover:border-line hover:bg-panel-raised'
+                              : 'border-good/40 bg-good/12 text-good hover:border-good hover:bg-good/22',
+                        )}
                         disabled={disabled}
                         title={btnTitle}
                         onClick={() => !disabled && handleDownload(index)}
@@ -505,11 +589,11 @@ function Season({ r, config, onActiveChange }: SeasonProps) {
                       </button>
                     </div>
                     {sending && (
-                      <div className="dl-progress">
-                        <div className="dl-progress-bar">
-                          <div className="dl-progress-fill" style={{ width: Math.max(pct, 2) + '%' }} />
+                      <div className="flex flex-col gap-[5px] rounded-lg border border-line bg-accent/7 px-2.5 pt-2 pb-[9px]">
+                        <div className="h-2 overflow-hidden rounded-full border border-line bg-panel-raised">
+                          <div className="h-full rounded-full bg-linear-to-r from-accent to-good transition-[width] duration-500" style={{ width: Math.max(pct, 2) + '%' }} />
                         </div>
-                        <div className="dl-progress-label">
+                        <div className="overflow-hidden text-xs font-semibold text-ellipsis whitespace-nowrap text-accent-bright tabular-nums">
                           {dlState.phase === 'sending'
                             ? 'Sending to qBittorrent…'
                             : dlState.total_size > 0
@@ -527,7 +611,7 @@ function Season({ r, config, onActiveChange }: SeasonProps) {
           </div>
         ))}
         {r.notes && r.notes !== '-' && (
-          <div className="card-notes" title={r.notes}>
+          <div className={cx('[overflow-wrap:anywhere] whitespace-pre-line rounded-lg border border-line px-[11px] py-[9px] text-[13px] text-muted', NOTES_SURFACE[tone])} title={r.notes}>
             {r.notes}
           </div>
         )}
@@ -537,39 +621,39 @@ function Season({ r, config, onActiveChange }: SeasonProps) {
 
   const have = r.have.length
     ? r.have.map((x, i) => (
-        <span key={i} className="badge" title={x}>
+        <span key={i} className={BADGE} title={x}>
           {x}
         </span>
       ))
     : [
-        <span key="none" className="badge">
+        <span key="none" className={BADGE}>
           none
         </span>,
       ]
 
   return (
-    <div className="season">
-      <div className="season-head">
-        <span className="season-num">{seasonLabel(r)}</span>
-        <div className="have-wrap" title="Release groups you already have">
+    <div className={cx('flex flex-col gap-[9px] rounded-control border border-line p-3', SEASON_TONE[tone])}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={cx('min-w-[46px] rounded-full border px-[9px] py-[3px] text-center text-xs font-extrabold tracking-[0.5px]', SEASON_NUMBER_TONE[tone])}>{seasonLabel(r)}</span>
+        <div className="flex flex-1 flex-wrap gap-[5px]" title="Release groups you already have">
           {have}
         </div>
         {r.local_size ? (
-          <span className="size" title="Size of your current files">
+          <span className={cx(SIZE, 'ml-auto')} title="Size of your current files">
             {formatBytes(r.local_size)}
           </span>
         ) : null}
         {(r.urls?.length ? r.urls : r.url ? [{ label: 'releases.moe', url: r.url }] : []).map(
           (source, i) => (
             <a
-              className="card-link"
+              className="group/link inline-flex items-center gap-1.5 text-[13.5px] font-bold text-accent-bright hover:no-underline"
               href={source.url}
               target="_blank"
               rel="noopener"
               key={`${source.url}-${i}`}
             >
               {source.label === 'releases.moe' ? source.label : `SeaDEX ${source.label}`}{' '}
-              <span className="arr">↗</span>
+              <span className="transition-transform duration-150 group-hover/link:translate-x-[3px] group-hover/link:-translate-y-[3px]">↗</span>
             </a>
           ),
         )}

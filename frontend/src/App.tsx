@@ -82,9 +82,9 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className="grid h-screen grid-rows-[auto_1fr] overflow-hidden max-[820px]:h-auto max-[820px]:min-h-screen">
       <TopBar tab={tab} onTabChange={setTab} status={status} />
-      <main className="main">
+      <main className="app-scrollbar overflow-y-auto px-[34px] pt-[26px] pb-[60px] max-[820px]:px-4 max-[820px]:pt-5 max-[820px]:pb-[50px]">
         {tab === 'anime' && (
           <AnimeTab
             results={results}
