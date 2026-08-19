@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { GroupedCard, Release, ResultItem, Config } from '../types'
 import { formatBytes, formatEta, sizeDelta, seasonLabel, STATUS_LABEL } from '../utils'
@@ -40,6 +40,14 @@ const CARD_TONE: Record<string, string> = {
   best: 'border-good/30 hover:border-good/60 [--card-status-color:#34d399]',
   missing: 'border-line hover:border-muted/60 [--card-status-color:#8b97ab]',
   partial: 'border-warn/30 hover:border-warn/60 [--card-status-color:#fbbf24]',
+}
+// Status colour used by the details panel's glowing download border
+// (see .details-download-border in index.css).
+const PANEL_GLOW_COLOR: Record<string, string> = {
+  upgrade: '[--card-status-color:#4f8cff]',
+  best: '[--card-status-color:#34d399]',
+  missing: '[--card-status-color:#8b97ab]',
+  partial: '[--card-status-color:#fbbf24]',
 }
 const SOURCE_TONE: Record<string, string> = {
   sonarr: 'border-accent/65 bg-[#0d1c42]/88 text-[#cfe0ff]',
@@ -103,7 +111,14 @@ function releaseSurface(tone: string, isBest: boolean): string {
 export default function Card({ group, index, config, hidden = false, onToggle }: CardProps) {
   const [hiding, setHiding] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const [cardHidden, setCardHidden] = useState(false)
   const hideTimer = useRef<number | null>(null)
+  const articleRef = useRef<HTMLElement>(null)
+  const panelRef = useRef<HTMLElement>(null)
+  const flyFrom = useRef<DOMRect | null>(null)
+  const closing = useRef(false)
+  const openTimer = useRef<number | null>(null)
+  const closeTimer = useRef<number | null>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
   const titleId = useId()
   const toast = useToast()
@@ -256,17 +271,87 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
   useEffect(() => {
     return () => {
       if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
+      if (openTimer.current !== null) window.clearTimeout(openTimer.current)
+      if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
     }
   }, [])
+
+  const resetPanelStyles = () => {
+    const panel = panelRef.current
+    if (!panel) return
+    panel.style.transform = ''
+    panel.style.transition = ''
+    panel.style.transformOrigin = ''
+  }
+
+  // FLIP close: the dialog flies back into the card, then unmounts and the
+  // card reappears in its place.
+  const requestClose = () => {
+    if (closing.current) return
+    closing.current = true
+    if (openTimer.current !== null) {
+      window.clearTimeout(openTimer.current)
+      openTimer.current = null
+    }
+    const panel = panelRef.current
+    const article = articleRef.current
+    if (!panel || !article) {
+      closing.current = false
+      setDetailsOpen(false)
+      return
+    }
+    const from = panel.getBoundingClientRect()
+    const to = article.getBoundingClientRect()
+    panel.style.transformOrigin = 'top left'
+    panel.style.transition = 'transform 420ms cubic-bezier(0.5, 0, 0.75, 0.4)'
+    panel.style.transform = `translate(${to.left - from.left}px, ${to.top - from.top}px) scale(${to.width / from.width}, ${to.height / from.height})`
+    closeTimer.current = window.setTimeout(() => {
+      closing.current = false
+      resetPanelStyles()
+      setDetailsOpen(false)
+    }, 440)
+  }
 
   useEffect(() => {
     if (!detailsOpen) return
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     closeRef.current?.focus()
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setDetailsOpen(false) }
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') requestClose() }
     window.addEventListener('keydown', closeOnEscape)
     return () => { document.body.style.overflow = previousOverflow; window.removeEventListener('keydown', closeOnEscape) }
+  }, [detailsOpen])
+
+  // FLIP: the dialog starts exactly where the card is and flies to its
+  // centered position, so it reads as the card growing into the panel.
+  useLayoutEffect(() => {
+    if (!detailsOpen) {
+      setCardHidden(false)
+      return
+    }
+    const panel = panelRef.current
+    const from = flyFrom.current
+    flyFrom.current = null
+    if (!panel || !from) return
+    const to = panel.getBoundingClientRect()
+    const dx = from.left - to.left
+    const dy = from.top - to.top
+    const sx = from.width / to.width
+    const sy = from.height / to.height
+    panel.style.transformOrigin = 'top left'
+    panel.style.transition = 'none'
+    panel.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`
+    void panel.offsetHeight // force reflow so the start position is committed
+    panel.style.transition = 'transform 480ms cubic-bezier(0.2, 0.8, 0.2, 1)'
+    panel.style.transform = 'translate(0, 0) scale(1, 1)'
+    openTimer.current = window.setTimeout(resetPanelStyles, 520)
+    return () => {
+      if (openTimer.current !== null) {
+        window.clearTimeout(openTimer.current)
+        openTimer.current = null
+      }
+      resetPanelStyles()
+    }
   }, [detailsOpen])
 
   const handleHide = () => {
@@ -279,14 +364,23 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
     hideTimer.current = window.setTimeout(onToggle, HIDE_DURATION_MS)
   }
 
+  const handleOpenDetails = () => {
+    const article = articleRef.current
+    if (article) flyFrom.current = article.getBoundingClientRect()
+    setCardHidden(true)
+    setDetailsOpen(true)
+  }
+
   return <>
     <article
+      ref={articleRef}
       className={cx(
         CARD_BASE,
         CARD_TONE[st],
         hiding && 'pointer-events-none !translate-y-1 !scale-[0.98] opacity-0',
         hidden && 'border-dashed !border-line-strong opacity-60 hover:opacity-85',
         downloading && 'download-border',
+        cardHidden && 'pointer-events-none !opacity-0',
       )}
       style={{ animationDelay: Math.min(index * 40, 400) + 'ms' }}
     >
@@ -326,20 +420,23 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
         </div>
         <div className="mt-auto flex items-center gap-2 border-t border-line pt-3">
           {delta !== 0 ? <span className={cx('text-xs font-extrabold tabular-nums', delta > 0 ? 'text-good' : 'text-bad')}>{delta > 0 ? '+' : ''}{formatBytes(delta)} <span className="font-medium text-muted-dim">change</span></span> : <span className="text-xs text-muted-dim">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span>}
-          <button className="ml-auto inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold text-accent-bright transition-colors hover:bg-accent/10" type="button" onClick={() => setDetailsOpen(true)}>Details <Icon name="chevron-right" size={15}/></button>
+          <button className="ml-auto inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold text-accent-bright transition-colors hover:bg-accent/10" type="button" onClick={handleOpenDetails}>Details <Icon name="chevron-right" size={15}/></button>
           <button className={cx(ICON_BUTTON, 'group/hide size-8 disabled:cursor-wait', hidden && 'border-warn/35 bg-warn/10 text-warn')} type="button" title={hidden ? 'Show this card' : 'Hide this card'} aria-label={(hidden ? 'Show ' : 'Hide ') + group.title} onClick={handleHide} disabled={hiding}><HideActionIcon hidden={hidden}/></button>
         </div>
       </div>
     </article>
     {detailsOpen && createPortal(
-      <div className="fixed inset-0 z-[80] flex justify-end bg-black/65 backdrop-blur-sm" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDetailsOpen(false) }}>
-        <aside className="app-scrollbar h-full w-full max-w-[720px] animate-slide-in overflow-y-auto border-l border-line-strong bg-canvas shadow-[-24px_0_60px_rgba(0,0,0,.45)]" role="dialog" aria-modal="true" aria-labelledby={titleId}>
-          <div className="relative h-48 overflow-hidden border-b border-line bg-panel bg-cover bg-center" style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}><div className="absolute inset-0 bg-linear-to-t from-canvas via-canvas/55 to-black/15"/><button ref={closeRef} type="button" className="absolute top-4 right-4 z-2 grid size-10 cursor-pointer place-items-center rounded-xl border border-white/15 bg-black/40 text-white backdrop-blur-md hover:bg-black/60" onClick={() => setDetailsOpen(false)} aria-label="Close details"><Icon name="close"/></button><div className="absolute inset-x-5 bottom-5 z-1 flex items-end gap-4">{group.image && <img src={group.image} alt="" className="h-24 w-16 rounded-lg border border-white/15 object-cover shadow-xl"/>}<div className="min-w-0"><span className={cx('mb-2 inline-block rounded-full border px-2.5 py-1 text-[11px] font-extrabold', STATUS_BADGE[st])}>{STATUS_LABEL[st]}</span><h2 id={titleId} className="m-0 text-2xl leading-tight font-extrabold text-white">{group.title}</h2></div></div></div>
+      <div className="fixed inset-0 z-[80]" role="presentation">
+        <div className="absolute inset-0 animate-fade bg-black/65 backdrop-blur-sm" />
+        <div className="absolute inset-0 flex items-center justify-center p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
+          <aside ref={panelRef} className={cx('app-scrollbar max-h-full w-full max-w-[864px] overflow-y-auto rounded-2xl border border-line-strong bg-canvas shadow-[0_24px_60px_rgba(0,0,0,.45)]', PANEL_GLOW_COLOR[st], downloading && 'details-download-border')} role="dialog" aria-modal="true" aria-labelledby={titleId}>
+          <div className="relative h-[230px] overflow-hidden border-b border-line bg-panel bg-cover bg-center" style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}><div className="absolute inset-0 bg-linear-to-t from-canvas via-canvas/55 to-black/15"/><button ref={closeRef} type="button" className="absolute top-4 right-4 z-2 grid size-10 cursor-pointer place-items-center rounded-xl border border-white/15 bg-black/40 text-white backdrop-blur-md hover:bg-black/60" onClick={() => requestClose()} aria-label="Close details"><Icon name="close"/></button><div className="absolute inset-x-5 bottom-5 z-1 flex items-end gap-4">{group.image && <img src={group.image} alt="" className="h-28 w-20 rounded-lg border border-white/15 object-cover shadow-xl"/>}<div className="min-w-0"><span className={cx('mb-2 inline-block rounded-full border px-2.5 py-1 text-[11px] font-extrabold', STATUS_BADGE[st])}>{STATUS_LABEL[st]}</span><h2 id={titleId} className="m-0 text-3xl leading-tight font-extrabold text-white">{group.title}</h2></div></div></div>
           <div className="space-y-4 p-5 max-[600px]:p-4">
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted">{group.arr_url && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{group.anilist_id && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList ↗</a>}<span className="ml-auto">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span></div>
             {group.seasons.map((season) => <Season key={season.key} r={season} config={config} tone={st} dl={dlBySeason[season.key] || {}} onDownload={(release) => void handleDownload(season.key, release)}/>)}
           </div>
-        </aside>
+          </aside>
+        </div>
       </div>, document.body,
     )}
   </>

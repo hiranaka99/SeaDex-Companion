@@ -108,6 +108,31 @@
   box-shadow: 0 0 30px -2px var(--card-status-color);
 }
 
+/* Same glowing conic border as .download-border, but kept on the details
+   panel (which has its own canvas background and scrolls). The padding-box
+   uses the canvas colour so the interior is unchanged while open and while
+   the panel flies in/out. */
+.details-download-border {
+  border: 2px solid transparent;
+  background:
+    linear-gradient(var(--color-canvas), var(--color-canvas)) padding-box,
+    conic-gradient(
+      from var(--border-angle),
+      transparent 0deg,
+      transparent 75deg,
+      var(--card-status-color) 125deg,
+      #fff 172deg,
+      transparent 180deg,
+      transparent 255deg,
+      var(--card-status-color) 305deg,
+      #fff 352deg,
+      transparent 360deg
+    ) border-box;
+  box-shadow: 0 0 26px -4px var(--card-status-color);
+  animation: card-border-spin 2.6s linear infinite;
+  will-change: transform;
+}
+
 .app-scrollbar::-webkit-scrollbar,
 .log-scrollbar::-webkit-scrollbar { width: 10px; }
 .app-scrollbar::-webkit-scrollbar-thumb,
