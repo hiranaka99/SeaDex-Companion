@@ -28,6 +28,21 @@ export function sizeDelta(best: number, local: number): string {
   return (d > 0 ? '+' : '') + formatBytes(d)
 }
 
+/**
+ * Human-readable time remaining for a download. Returns an empty string when
+ * there is no usable speed or nothing left to download.
+ */
+export function formatEta(remaining: number, speed: number): string {
+  if (remaining <= 0 || speed <= 0) return ''
+  const seconds = remaining / speed
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = Math.floor(seconds % 60)
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
+}
+
 export function seasonLabel(r: ResultItem): string {
   if (r.season) return `S${String(r.season).padStart(2, '0')}`
   // Season 0 is a Radarr movie.

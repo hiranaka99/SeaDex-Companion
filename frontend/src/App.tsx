@@ -6,6 +6,7 @@ import LogTab from './components/LogTab'
 import AuthPage from './components/AuthPage'
 import ConfirmDialog from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
+import { DownloadsProvider } from './components/DownloadsProvider'
 import { TabId, Status, ResultItem, Config, AuthState } from './types'
 import * as api from './api'
 
@@ -24,6 +25,16 @@ interface AuthenticatedAppProps {
   onLogout: () => void
 }
 
+const SIDEBAR_KEY = 'seadex-sidebar-collapsed'
+
+function readCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
   const [tab, setTab] = useState<TabId>('anime')
   const [status, setStatus] = useState<Status>(INITIAL_STATUS)
@@ -31,7 +42,20 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
   const [lastRun, setLastRun] = useState<string | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
   const [resultsLoading, setResultsLoading] = useState(true)
+  const [collapsed, setCollapsed] = useState<boolean>(readCollapsed)
   const toast = useToast()
+
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed((prev) => {
+      const next = !prev
+      try {
+        localStorage.setItem(SIDEBAR_KEY, next ? '1' : '0')
+      } catch {
+        // ignore storage errors
+      }
+      return next
+    })
+  }, [])
 
   const pollTimer = useRef<number | null>(null)
 
@@ -93,24 +117,39 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
     }
   }
 
+  const sidebarWidth = collapsed ? 76 : 248
+
   return (
-    <div className="grid h-dvh grid-cols-[248px_minmax(0,1fr)] overflow-hidden max-[900px]:grid-cols-1">
-      <TopBar tab={tab} onTabChange={setTab} status={status} username={username} onLogout={onLogout} />
-      <main className="app-scrollbar overflow-y-auto px-8 pt-7 pb-14 max-[1200px]:px-6 max-[900px]:px-4 max-[900px]:pt-20 max-[900px]:pb-24">
-        {tab === 'anime' && (
-          <AnimeTab
-            results={results}
-            config={config}
-            status={status}
-            lastRun={lastRun}
-            onScan={handleScan}
-            loading={resultsLoading}
-          />
-        )}
-        {tab === 'config' && <ConfigTab config={config} onSaved={loadConfig} />}
-        {tab === 'log' && <LogTab active={tab === 'log'} />}
-      </main>
-    </div>
+    <DownloadsProvider>
+      <div
+        className="grid h-dvh grid-cols-[var(--sidebar)_minmax(0,1fr)] overflow-hidden transition-[grid-template-columns] duration-300 ease-in-out max-[900px]:grid-cols-1"
+        style={{ ['--sidebar' as string]: `${sidebarWidth}px` }}
+      >
+        <TopBar
+          tab={tab}
+          onTabChange={setTab}
+          status={status}
+          username={username}
+          onLogout={onLogout}
+          collapsed={collapsed}
+          onToggleCollapsed={toggleCollapsed}
+        />
+        <main className="app-scrollbar overflow-y-auto px-8 pt-7 pb-14 max-[1200px]:px-6 max-[900px]:px-4 max-[900px]:pt-20 max-[900px]:pb-24">
+          {tab === 'anime' && (
+            <AnimeTab
+              results={results}
+              config={config}
+              status={status}
+              lastRun={lastRun}
+              onScan={handleScan}
+              loading={resultsLoading}
+            />
+          )}
+          {tab === 'config' && <ConfigTab config={config} onSaved={loadConfig} />}
+          {tab === 'log' && <LogTab active={tab === 'log'} />}
+        </main>
+      </div>
+    </DownloadsProvider>
   )
 }
 

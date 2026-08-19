@@ -97,7 +97,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
   ]
 
   return (
-    <section className="mx-auto max-w-[1680px]">
+    <section>
       <header className="mb-6 flex flex-wrap items-start justify-between gap-5">
         <div><p className="mb-1 text-xs font-bold tracking-[0.14em] text-accent-bright uppercase">Overview</p><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}</span>{autoCheck !== null && <span>Next check in ~{autoCheck} min</span>}</div></div>
         <button className={buttonPrimary} onClick={onScan} disabled={status.running}>{status.running ? <span className="size-4 animate-spin rounded-full border-2 border-white/35 border-t-white"/> : <Icon name="play" size={17}/>}<span>{status.running ? 'Scanning library…' : 'Scan library'}</span></button>
