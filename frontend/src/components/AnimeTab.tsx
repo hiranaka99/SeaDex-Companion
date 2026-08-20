@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { ResultItem, Config, Status, GroupedCard } from '../types'
 import { groupResults, formatBytes, seasonLabel } from '../utils'
 import Card from './Card'
-import Icon from './Icons'
+import BulkDownloadDialog from './BulkDownloadDialog'
+import ConfirmDialog from './ConfirmDialog'
+import Icon, { IconName } from './Icons'
 import { useToast } from './Toast'
 import * as api from '../api'
-import { buttonPrimary, control, cx } from '../styles'
+import { buttonBase, buttonPrimary, control, cx } from '../styles'
 
 interface Props {
   results: ResultItem[]
@@ -37,6 +39,8 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
   const [sort, setSort] = useState('recommended')
   const [showHidden, setShowHidden] = useState(false)
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
+  const [bulkConfirm, setBulkConfirm] = useState<'start' | 'cancel' | null>(null)
+  const [bulkBusy, setBulkBusy] = useState<'start' | 'cancel' | null>(null)
   const toast = useToast()
 
   useEffect(() => {
@@ -85,27 +89,51 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
   }, [allGroups, search, arr, statusFilter, sort, showHidden, hiddenKeys])
 
   const totalDelta = groups.reduce((sum, group) => sum + cardDelta(group), 0)
+  const upgradeSeasonCount = useMemo(() => new Set(
+    results
+      .filter((result) => result.status === 'upgrade')
+      .map((result) => result.key),
+  ).size, [results])
   const progress = status.total ? Math.round((status.progress / status.total) * 100) : 0
   const autoCheck = status.next_check ? Math.max(0, Math.round((status.next_check - Date.now() / 1000) / 60)) : null
   const activeFilterCount = Number(Boolean(search)) + Number(Boolean(arr)) + Number(Boolean(statusFilter)) + Number(showHidden) + Number(sort !== 'recommended')
   const clearFilters = () => { setSearch(''); setArr(''); setStatusFilter(''); setSort('recommended'); setShowHidden(false) }
-  const metrics = [
-    { label: 'Total titles', value: allGroups.length, tone: 'text-ink', icon: 'library' as const },
-    { label: 'Upgrades', value: counts.upgrade, tone: 'text-accent-bright', icon: 'sparkles' as const },
-    { label: 'Partial / missing', value: counts.partial + counts.missing, tone: 'text-warn', icon: 'alert' as const },
-    { label: 'Already best', value: counts.best, tone: 'text-good', icon: 'check' as const },
+  const statusFilters: { value: string; label: string; count: number; tone: string; icon: IconName }[] = [
+    { value: '', label: 'All', count: allGroups.length, tone: 'text-ink', icon: 'library' },
+    { value: 'upgrade', label: 'Upgradable', count: counts.upgrade, tone: 'text-accent-bright', icon: 'sparkles' },
+    { value: 'partial', label: 'Partial', count: counts.partial, tone: 'text-warn', icon: 'alert' },
+    { value: 'missing', label: 'Missing', count: counts.missing, tone: 'text-warn', icon: 'alert' },
+    { value: 'best', label: 'Best quality', count: counts.best, tone: 'text-good', icon: 'check' },
   ]
+
+  const handleBulkDownloads = async (action: 'start' | 'cancel', selections: api.BulkDownloadTarget[] = []) => {
+    setBulkBusy(action)
+    try {
+      const result = await api.bulkDownloads(action, selections)
+      if (action === 'start') {
+        toast.show(result.count ? `Sent ${result.count} torrent${result.count === 1 ? '' : 's'} to qBittorrent` : 'No downloadable upgrades found', result.count ? 'success' : 'info')
+      } else {
+        toast.show(result.count ? `Cancelled ${result.count} download${result.count === 1 ? '' : 's'}; files were kept` : 'No active bulk downloads found', result.count ? 'success' : 'info')
+      }
+      if (action === 'start') setBulkConfirm(null)
+    } catch (error: any) {
+      toast.show(`Bulk ${action === 'start' ? 'download' : 'cancel'} failed: ${error.message}`, 'error')
+    } finally {
+      setBulkBusy(null)
+    }
+  }
 
   return (
     <section>
       <header className="mb-6 flex flex-wrap items-start justify-between gap-5">
         <div><p className="mb-1 text-xs font-bold tracking-[0.14em] text-accent-bright uppercase">Overview</p><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}</span>{autoCheck !== null && <span>Next check in ~{autoCheck} min</span>}</div></div>
-        <button className={buttonPrimary} onClick={onScan} disabled={status.running}>{status.running ? <span className="size-4 animate-spin rounded-full border-2 border-white/35 border-t-white"/> : <Icon name="play" size={17}/>}<span>{status.running ? 'Scanning library…' : 'Scan library'}</span></button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/10 text-good hover:bg-good/18')} onClick={() => setBulkConfirm('start')} disabled={status.running || bulkBusy !== null || upgradeSeasonCount === 0}>{bulkBusy === 'start' ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}<span>Download all</span></button>
+          <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={() => setBulkConfirm('cancel')} disabled={status.running || bulkBusy !== null || upgradeSeasonCount === 0}>{bulkBusy === 'cancel' ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}<span>Cancel all</span></button>
+          <span className="mx-1 h-9 w-px shrink-0 bg-line-strong" aria-hidden="true" />
+          <button className={buttonPrimary} onClick={onScan} disabled={status.running || bulkBusy !== null}>{status.running ? <span className="size-4 animate-spin rounded-full border-2 border-white/35 border-t-white"/> : <Icon name="play" size={17}/>}<span>{status.running ? 'Scanning library…' : 'Scan library'}</span></button>
+        </div>
       </header>
-
-      <div className="mb-5 grid grid-cols-4 gap-3 max-[1100px]:grid-cols-2 max-[520px]:grid-cols-1">
-        {metrics.map((metric) => <div key={metric.label} className="flex items-center gap-2.5 rounded-xl border border-line bg-panel px-3.5 py-2"><span className={cx('grid size-8 shrink-0 place-items-center rounded-lg bg-canvas-soft', metric.tone)}><Icon name={metric.icon} size={17}/></span><span className={cx('text-lg font-extrabold tabular-nums', metric.tone)}>{metric.value}</span><span className="truncate text-xs font-medium text-muted">{metric.label}</span></div>)}
-      </div>
 
       {status.running && <div className="mb-5 rounded-xl border border-accent/25 bg-accent/6 p-4" aria-live="polite"><div className="mb-2 flex items-center justify-between gap-3 text-xs"><span className="truncate font-semibold text-accent-bright">{status.message || 'Scanning…'}</span><span className="shrink-0 tabular-nums text-muted">{status.total ? `${status.progress}/${status.total}` : ''} · {progress}%</span></div><div className="h-2 overflow-hidden rounded-full bg-canvas"><div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${progress}%` }}/></div></div>}
       {status.error && !status.running && <div className="mb-5 flex items-start gap-2.5 rounded-xl border border-bad/30 bg-bad/8 px-4 py-3 text-sm text-bad" role="alert"><Icon name="alert" size={18} className="mt-0.5 shrink-0"/>{status.error}</div>}
@@ -119,7 +147,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
           {activeFilterCount > 0 && <button type="button" className="cursor-pointer px-2 text-xs font-semibold text-accent-bright hover:text-ink" onClick={clearFilters}>Clear {activeFilterCount}</button>}
         </div>
         <div className="mt-3 flex items-center gap-1 overflow-x-auto pb-0.5" aria-label="Filter by status">
-          {[['', 'All', allGroups.length], ['upgrade', 'Upgradable', counts.upgrade], ['partial', 'Partial', counts.partial], ['missing', 'Missing', counts.missing], ['best', 'Best quality', counts.best]].map(([value, label, count]) => <button key={String(value)} type="button" className={cx('shrink-0 cursor-pointer rounded-lg px-3 py-2 text-xs font-bold transition-colors', statusFilter === value ? 'bg-accent/14 text-accent-bright' : 'text-muted hover:bg-panel hover:text-ink')} onClick={() => setStatusFilter(String(value))}>{label}<span className="ml-1.5 text-[10px] opacity-65">{count}</span></button>)}
+          {statusFilters.map((filter) => <button key={filter.value} type="button" className={cx('inline-flex shrink-0 cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold transition-colors', statusFilter === filter.value ? 'bg-accent/14 text-accent-bright' : 'text-muted hover:bg-panel hover:text-ink')} onClick={() => setStatusFilter(filter.value)}><Icon name={filter.icon} size={15} className={cx('shrink-0', filter.tone)}/><span>{filter.label}</span><span className={cx('text-[10px] tabular-nums', filter.tone)}>{filter.count}</span></button>)}
           <span className="ml-auto shrink-0 px-2 text-xs text-muted-dim">{groups.length} shown{totalDelta !== 0 && ` · ${(totalDelta > 0 ? '+' : '') + formatBytes(totalDelta)}`}</span>
         </div>
       </div>
@@ -128,6 +156,22 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
       {!loading && results.length > 0 && groups.length > 0 && <div className="grid items-start gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]">{groups.map((group, index) => <Card key={cardKey(group)} group={group} index={index} config={config} hidden={hiddenKeys.has(cardKey(group))} onToggle={() => void toggleHidden(cardKey(group))}/>)}</div>}
       {!loading && results.length === 0 && !status.running && <div className="rounded-2xl border border-dashed border-line-strong bg-panel/45 px-6 py-16 text-center"><span className="mx-auto mb-4 grid size-14 place-items-center rounded-2xl bg-accent/10 text-accent-bright"><Icon name="library" size={26}/></span><h2 className="mb-2 text-lg font-bold">Your library is ready to be scanned</h2><p className="mx-auto mb-5 max-w-md text-sm text-muted">Compare your Sonarr and Radarr collection with the best releases available on SeaDex.</p><button type="button" className={buttonPrimary} onClick={onScan}><Icon name="play" size={17}/>Scan library</button></div>}
       {!loading && results.length > 0 && groups.length === 0 && <div className="rounded-2xl border border-dashed border-line-strong py-14 text-center"><Icon name="filter" size={26} className="mx-auto mb-3 text-muted-dim"/><h2 className="mb-1 text-lg font-bold">No matching titles</h2><p className="mb-4 text-sm text-muted">Try changing or clearing the active filters.</p><button type="button" className="cursor-pointer text-sm font-bold text-accent-bright" onClick={clearFilters}>Clear filters</button></div>}
+      <BulkDownloadDialog
+        open={bulkConfirm === 'start'}
+        results={results}
+        busy={bulkBusy === 'start'}
+        onConfirm={(selections) => void handleBulkDownloads('start', selections)}
+        onClose={() => { if (!bulkBusy) setBulkConfirm(null) }}
+      />
+      <ConfirmDialog
+        open={bulkConfirm === 'cancel'}
+        title="Cancel all active downloads?"
+        description="Remove all incomplete best-release torrents for upgradable and partial titles from qBittorrent. Downloaded files will be kept."
+        confirmLabel="Cancel all"
+        dangerous
+        onConfirm={() => void handleBulkDownloads('cancel')}
+        onClose={() => setBulkConfirm(null)}
+      />
     </section>
   )
 }

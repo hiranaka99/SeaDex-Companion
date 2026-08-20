@@ -109,9 +109,7 @@
 }
 
 /* Same glowing conic border as .download-border, but kept on the details
-   panel (which has its own canvas background and scrolls). The padding-box
-   uses the canvas colour so the interior is unchanged while open and while
-   the panel flies in/out. */
+   panel (which has its own canvas background and scrolls). */
 .details-download-border {
   border: 2px solid transparent;
   background:
@@ -130,7 +128,20 @@
     ) border-box;
   box-shadow: 0 0 26px -4px var(--card-status-color);
   animation: card-border-spin 2.6s linear infinite;
-  will-change: transform;
+}
+
+.details-backdrop {
+  opacity: 0;
+  backdrop-filter: blur(0);
+  transition:
+    backdrop-filter 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, backdrop-filter;
+}
+
+.details-backdrop-visible {
+  opacity: 1;
+  backdrop-filter: blur(4px);
 }
 
 .app-scrollbar::-webkit-scrollbar,
@@ -142,6 +153,14 @@
 }
 .app-scrollbar::-webkit-scrollbar-track,
 .log-scrollbar::-webkit-scrollbar-track { background: transparent; }
+
+.download-scrollbar {
+  scrollbar-width: none;
+}
+
+.download-scrollbar::-webkit-scrollbar {
+  display: none;
+}
 
 @keyframes rise {
   from { opacity: 0; transform: translateY(10px); }

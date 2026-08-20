@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { beforeEach, describe, test } from 'node:test'
 import {
-  anilistChain, arrApiUrl, arrBaseUrl, arrItemUrl, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, encryptSecretValues,
-  getState, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
+  anilistChain, arrApiUrl, arrBaseUrl, arrItemUrl, bulkDownloadTargets, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, effectiveSeasonParts,
+  encryptSecretValues, getState, localItems, localPartOwnership, normalizeQbStates, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
+  qbAddTorrent, qbControlTorrents, releaseDict, scopeReleaseToPart,
   resetRuntimeForTests, runScan, testIntegration,
 } from '../server/app.js'
 import type { JsonObject, ReleaseCandidate } from '../server/types.js'
@@ -106,6 +107,148 @@ describe('Sonarr and Radarr URL normalization', () => {
       globalThis.fetch = originalFetch
     }
   })
+
+  test('keeps TVDB episode numbers even when an episode has no file', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input)
+      let data: JsonObject[] = []
+      if (url.endsWith('/series')) data = [{
+        id: 10, title: 'Example', titleSlug: 'example',
+        seasons: [{ seasonNumber: 1, statistics: { releaseGroups: ['IK'], sizeOnDisk: 100 } }],
+      }]
+      else if (url.includes('/episode?')) data = [
+        { seasonNumber: 1, episodeNumber: 2, episodeFileId: 0 },
+        { seasonNumber: 1, episodeNumber: 1, episodeFileId: 20 },
+        { seasonNumber: 0, episodeNumber: 1, episodeFileId: 0 },
+      ]
+      else if (url.includes('/episodefile?')) data = [{ id: 20, releaseGroup: 'IK', size: 100 }]
+      return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }) as typeof fetch
+
+    try {
+      const items = await localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key' })
+      assert.deepEqual(items[0].seasons[1].episode_numbers, [1, 2])
+      assert.equal(items[0].seasons[1].episode_count, 2)
+      assert.deepEqual(items[0].seasons[1].groups_by_episode, { IK: [1] })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
+
+describe('qBittorrent torrent controls', () => {
+  test('selects only downloadable best releases from upgradable seasons', () => {
+    const targets = bulkDownloadTargets([
+      {
+        key: 'upgrade-season', status: 'upgrade', arr: 'Sonarr', releases: [
+          { kind: 'best', downloadable: true, info_hashes: ['a'.repeat(40)], selected_files: ['Cour 1/episode.mkv'] },
+          { kind: 'alt', downloadable: true, info_hashes: ['b'.repeat(40)] },
+          { kind: 'best', downloadable: false, info_hashes: ['c'.repeat(40)] },
+        ],
+      },
+      { key: 'owned-season', status: 'best', arr: 'Sonarr', releases: [{ kind: 'best', downloadable: true, info_hashes: ['d'.repeat(40)] }] },
+      { key: 'missing-season', status: 'missing', arr: 'Sonarr', releases: [] },
+    ])
+    assert.deepEqual(targets, [{
+      key: 'upgrade-season', release: 0, arr: 'Sonarr', part: '', hashes: ['a'.repeat(40)],
+      selectedFiles: ['Cour 1/episode.mkv'],
+    }])
+  })
+
+  test('recognizes paused states from qBittorrent 4 and 5', () => {
+    assert.equal(normalizeQbStates(['pausedDL']), 'paused')
+    assert.equal(normalizeQbStates(['stoppedDL', 'stoppedUP']), 'paused')
+  })
+
+  test('pauses torrents and removes them with the selected file behavior', async () => {
+    const originalFetch = globalThis.fetch
+    const requests: { url: string; body: string }[] = []
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      requests.push({ url, body: String(init?.body || '') })
+      if (url.endsWith('/api/v2/auth/login')) {
+        return new Response('Ok.', { status: 200, headers: { 'Set-Cookie': 'SID=test; Path=/' } })
+      }
+      return new Response('', { status: 200 })
+    }) as typeof fetch
+    const config = { ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' }
+    try {
+      await qbControlTorrents(config, ['a'.repeat(40)], 'pause')
+      await qbControlTorrents(config, ['a'.repeat(40)], 'remove', true)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    assert.equal(requests[1].url, 'http://qb.example/api/v2/torrents/stop')
+    assert.equal(new URLSearchParams(requests[1].body).get('hashes'), 'a'.repeat(40))
+    assert.equal(requests[2].url, 'http://qb.example/api/v2/torrents/delete')
+    assert.equal(new URLSearchParams(requests[2].body).get('deleteFiles'), 'true')
+  })
+
+  test('falls back to the legacy pause endpoint', async () => {
+    const originalFetch = globalThis.fetch
+    const paths: string[] = []
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input)
+      paths.push(url)
+      if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.', { status: 200 })
+      if (url.endsWith('/api/v2/torrents/stop')) return new Response('Not Found', { status: 404 })
+      return new Response('', { status: 200 })
+    }) as typeof fetch
+    try {
+      await qbControlTorrents(
+        { ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' },
+        ['b'.repeat(40)],
+        'pause',
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    assert.equal(paths.at(-1), 'http://qb.example/api/v2/torrents/pause')
+  })
+
+  test('downloads only selected cour files after magnet metadata arrives', async () => {
+    const originalFetch = globalThis.fetch
+    const requests: { url: string; body: string }[] = []
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      requests.push({ url, body: String(init?.body || '') })
+      if (url.endsWith('/api/v2/auth/login')) {
+        return new Response('Ok.', { status: 200, headers: { 'Set-Cookie': 'SID=test; Path=/' } })
+      }
+      if (url.endsWith('/api/v2/torrents/add')) return new Response('Ok.', { status: 200 })
+      if (url.includes('/api/v2/torrents/files?')) return new Response(JSON.stringify([
+        { index: 4, name: 'Root/Show.S01E01.mkv' },
+        { index: 9, name: 'Root/Show.S01E02.mkv' },
+      ]), { status: 200 })
+      return new Response('', { status: 200 })
+    }) as typeof fetch
+
+    try {
+      await qbAddTorrent(
+        { ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' },
+        `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
+        'sonarr-anime',
+        ['Show.S01E02.mkv'],
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    const add = requests.find((request) => request.url.endsWith('/api/v2/torrents/add'))!
+    assert.equal(new URLSearchParams(add.body).get('paused'), 'true')
+    assert.equal(new URLSearchParams(add.body).get('stopped'), 'true')
+    const metadataRequest = requests.findIndex((request) => request.url.includes('/api/v2/torrents/files?'))
+    const initialStart = requests.findIndex((request) => request.url.endsWith('/api/v2/torrents/start'))
+    assert.ok(initialStart > 0 && initialStart < metadataRequest, 'torrent must be started before requesting magnet metadata')
+    const priorities = requests.filter((request) => request.url.endsWith('/api/v2/torrents/filePrio'))
+    assert.deepEqual(priorities.map((request) => Object.fromEntries(new URLSearchParams(request.body))), [
+      { hash: 'a'.repeat(40), id: '4|9', priority: '0' },
+      { hash: 'a'.repeat(40), id: '9', priority: '1' },
+    ])
+    assert.equal(requests.at(-1)?.url, 'http://qb.example/api/v2/torrents/start')
+  })
 })
 
 describe('AniList season chains', () => {
@@ -178,6 +321,107 @@ describe('AniList season chains', () => {
 })
 
 describe('release selection and combined cours', () => {
+  test('uses TVDB totals for a single-part season instead of AniList totals', async () => {
+    const best = new Map([[400, seadexEntry(400, release('IK', 12, true, 'a'))]])
+    const chain = [{
+      season: 1, id: 400, ids: [400], parts: [{ id: 400, episodeCount: 13 }],
+      cover: 'cover-400', banner: 'banner-400',
+    }]
+    const episodeNumbers = Array.from({ length: 12 }, (_, index) => index + 1)
+    await scanWith(best, chain, [{
+      arr: 'Sonarr', id: 40, title: 'High School D×D Hero', slug: 'high-school-dxd-hero',
+      seasons: { 1: { groups: ['IK'], size: 1200, episode_numbers: episodeNumbers, groups_by_episode: { IK: episodeNumbers } } },
+    }])
+
+    const result = getState().results[0]
+    assert.equal(result.status, 'best')
+    assert.deepEqual(result.owned_by_part, { '': ['IK'] })
+  })
+
+  test('keeps AniList cour boundaries but gives the final cour the remaining TVDB episodes', () => {
+    const tvdbEpisodes = Array.from({ length: 24 }, (_, index) => 24 - index)
+    const parts = effectiveSeasonParts(
+      { episode_numbers: [...tvdbEpisodes, 12] },
+      [{ id: 1, episodeCount: 12 }, { id: 2, episodeCount: 13 }],
+    )
+
+    assert.deepEqual(parts.map((part) => part.episodeCount), [12, 12])
+    assert.deepEqual(parts[0].episodeNumbers, Array.from({ length: 12 }, (_, index) => index + 1))
+    assert.deepEqual(parts[1].episodeNumbers, Array.from({ length: 12 }, (_, index) => index + 13))
+  })
+
+  test('maps owned release groups to their actual cours', () => {
+    const ownership = localPartOwnership({
+      groups: ['ABdex', 'LostYears', 'NAN0'],
+      groups_by_episode: {
+        ABdex: Array.from({ length: 12 }, (_, index) => index + 1),
+        LostYears: Array.from({ length: 13 }, (_, index) => index + 13),
+        NAN0: [13, 14, 15],
+      },
+      sizes_by_episode: Object.fromEntries(Array.from({ length: 25 }, (_, index) => [index + 1, 10])),
+    }, [{ episodeCount: 12 }, { episodeCount: 13 }])
+
+    assert.equal(ownership.precise, true)
+    assert.deepEqual(ownership.have, { 'Cour 1': ['ABdex'], 'Cour 2': ['LostYears', 'NAN0'] })
+    assert.deepEqual(ownership.owned, { 'Cour 1': ['ABdex'], 'Cour 2': ['LostYears'] })
+    assert.deepEqual(ownership.sizes, { 'Cour 1': 120, 'Cour 2': 130 })
+  })
+
+  test('estimates cour sizes from the season total when episode-file sizes are unavailable', () => {
+    const ownership = localPartOwnership({ groups: ['Group'], size: 2500 }, [{ episodeCount: 12 }, { episodeCount: 13 }])
+    assert.deepEqual(ownership.sizes, { 'Cour 1': 1200, 'Cour 2': 1300 })
+  })
+
+  test('drops extras and specials from normal season downloads', () => {
+    const sourceFiles = [
+      { name: 'Show.S01E01.mkv', length: 10 },
+      { name: 'Show.S01E02.mkv', length: 10 },
+      { name: 'Show.S00E01.Special.mkv', length: 20 },
+      { name: 'Show.NCOP.mkv', length: 3 },
+      { name: 'Scans/Booklet.png', length: 2 },
+    ]
+    const candidate = { ...release('Group', 5, true), size: 45, source_files: sourceFiles }
+    const season = scopeReleaseToPart(candidate, 2, 0, 1)
+
+    assert.equal(season.size, 20)
+    assert.equal(season.file_count, 2)
+    assert.deepEqual(season.selected_files, ['Show.S01E01.mkv', 'Show.S01E02.mkv'])
+  })
+
+  test('does not filter a normal season when all expected episodes cannot be identified', () => {
+    const candidate = {
+      ...release('Group', 2, true),
+      source_files: [{ name: 'Show.S01E01.mkv', length: 10 }, { name: 'Unrecognized episode.mkv', length: 10 }],
+    }
+    assert.equal(scopeReleaseToPart(candidate, 2, 0, 1), candidate)
+  })
+
+  test('scopes whole-season torrents to the current cour size', () => {
+    const sourceFiles = [
+      ...Array.from({ length: 24 }, (_, index) => ({ name: `Show.S02E${String(index + 1).padStart(2, '0')}.mkv`, length: 10 })),
+      { name: 'Show.S00E07.Special.mkv', length: 100 },
+      { name: 'Show.S02P01.NCOP.mkv', length: 3 },
+      { name: 'Show.S02P02.NCOP.mkv', length: 5 },
+    ]
+    const candidate = { ...release('Group', 24, true), size: 348, source_files: sourceFiles }
+    const courTwo = scopeReleaseToPart(candidate, 12, 1, 2)
+    assert.equal(courTwo.size, 125)
+    assert.equal(courTwo.file_count, 12)
+    assert.deepEqual(courTwo.info_hashes, candidate.info_hashes)
+    assert.deepEqual(courTwo.selected_files, sourceFiles.slice(12, 24).map((file) => file.name))
+    assert.deepEqual(releaseDict('best', courTwo).selected_files, courTwo.selected_files)
+  })
+
+  test('scopes torrents that use absolute episode numbers without SxxExx names', () => {
+    const sourceFiles = [
+      ...Array.from({ length: 24 }, (_, index) => ({ name: `[Group] Show 2nd Season ${index + 25} [1080p].mkv`, length: 10 })),
+      { name: '[Group] Show 2nd Season NCOP 01.mkv', length: 3 },
+      { name: '[Group] Show 2nd Season NCOP 02.mkv', length: 5 },
+    ]
+    const candidate = { ...release('Group', 24, true), size: 248, source_files: sourceFiles }
+    assert.equal(scopeReleaseToPart(candidate, 12, 1, 2).size, 125)
+  })
+
   test('publishes completed anime while the scan is still running', async () => {
     let releaseSecondItem!: () => void
     let secondItemStarted!: () => void
@@ -288,15 +532,18 @@ describe('release selection and combined cours', () => {
       { season: 1, id: 140960, ids: [140960, 142838], parts: [{ id: 140960, episodeCount: 12 }, { id: 142838, episodeCount: 13 }], cover: 'cover-1', banner: 'banner-1' },
       { season: 2, id: 158927, ids: [158927], parts: [{ id: 158927, episodeCount: 12 }], cover: 'cover-2', banner: 'banner-2' },
     ]
+    const courOne = seadexEntry(140960, release('ABdex', 12, true, 'a')); courOne.notes = 'Cour one note'
+    const courTwo = seadexEntry(142838, release('NAN0', 13, true, 'b')); courTwo.notes = 'Cour two note'
     const best = new Map([
-      [140960, seadexEntry(140960, release('ABdex', 12, true, 'a'))],
-      [142838, seadexEntry(142838, release('NAN0', 13, true, 'b'))],
+      [140960, courOne],
+      [142838, courTwo],
       [158927, seadexEntry(158927, release('NAN0', 12, true, 'c'))],
     ])
     await scanWith(best, chain, [{ arr: 'Sonarr', id: 10, title: 'SPY x FAMILY', slug: 'spy-x-family', seasons: { 1: { groups: ['ABdex'], size: 2500 }, 2: { groups: ['scoot'], size: 1200 } } }])
     const [seasonOne, seasonTwo] = getState().results
     assert.deepEqual(seasonOne.anilist_ids, [140960, 142838]); assert.equal(seasonOne.status, 'upgrade')
     assert.equal(seasonOne.best_group, 'ABdex + NAN0'); assert.deepEqual(seasonOne.releases.map((item: JsonObject) => item.part), ['Cour 1', 'Cour 2'])
+    assert.deepEqual(seasonOne.notes_by_part, { 'Cour 1': 'Cour one note', 'Cour 2': 'Cour two note' })
     assert.equal(seasonTwo.anilist_id, 158927); assert.equal(seasonTwo.url, 'https://releases.moe/158927/')
   })
 

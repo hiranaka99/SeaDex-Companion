@@ -1,8 +1,6 @@
 import { TabId, Status } from '../types'
 import { cx } from '../styles'
 import Icon, { IconName } from './Icons'
-import DownloadsPanel from './DownloadsPanel'
-import { useDownloads } from './DownloadsProvider'
 
 const NAV: { id: TabId; icon: IconName; label: string }[] = [
   { id: 'anime', icon: 'library', label: 'Library' },
@@ -45,8 +43,6 @@ function statusDotClass(status: Status): string {
 }
 
 export default function TopBar({ tab, onTabChange, status, username, onLogout, collapsed, onToggleCollapsed }: Props) {
-  const { downloads } = useDownloads()
-
   return (
     <>
       <aside className={cx('flex h-dvh flex-col border-r border-line bg-canvas-soft py-5 max-[900px]:hidden', collapsed ? 'items-center px-3' : 'px-4')}>
@@ -79,12 +75,6 @@ export default function TopBar({ tab, onTabChange, status, username, onLogout, c
         <div className={cx('mt-auto', collapsed && 'flex w-full flex-col items-center')}>
           {collapsed ? (
             <div className="flex w-full flex-col items-center gap-3 animate-fade">
-              <div className="relative grid size-9 place-items-center rounded-lg text-muted" title={`Downloads${downloads.length ? ` (${downloads.length})` : ''}`}>
-                <Icon name="download" size={19} />
-                {downloads.length > 0 && (
-                  <span className="absolute -right-1 -top-1 grid min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-extrabold text-white">{downloads.length}</span>
-                )}
-              </div>
               <div className="grid size-9 place-items-center rounded-lg" title={status.message || 'Idle'}>
                 <span className={cx('size-2.5 rounded-full', statusDotClass(status))} />
               </div>
@@ -95,7 +85,6 @@ export default function TopBar({ tab, onTabChange, status, username, onLogout, c
             </div>
           ) : (
             <div className="flex w-full flex-col gap-3 animate-fade">
-              <DownloadsPanel />
               <div className="rounded-xl border border-line bg-panel/70 p-3.5"><StatusPill status={status} /><p className="mt-2 mb-0 line-clamp-2 text-[11px] text-muted-dim">{status.message || 'No active tasks'}</p></div>
               <div className="flex items-center gap-2.5 border-t border-line pt-4">
                 <span className="grid size-9 shrink-0 place-items-center rounded-full bg-panel-raised text-muted"><Icon name="user" size={17} /></span>

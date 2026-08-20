@@ -20,6 +20,7 @@ export interface Release {
   size: number
   info_hashes: string[]
   downloadable: boolean
+  selected_files?: string[]
 }
 
 export interface ResultItem {
@@ -30,6 +31,10 @@ export interface ResultItem {
   season: number | null
   status: string
   have: string[]
+  have_by_part?: Record<string, string[]>
+  owned_by_part?: Record<string, string[]>
+  local_size_by_part?: Record<string, number>
+  precise_part_ownership?: boolean
   local_size: number
   best_group: string | null
   best_size: number
@@ -37,6 +42,7 @@ export interface ResultItem {
   url: string | null
   urls?: { label: string; url: string }[]
   notes: string | null
+  notes_by_part?: Record<string, string>
   image: string | null
   banner: string | null
   anilist_id: number | null

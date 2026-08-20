@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { GroupedCard, Release, ResultItem, Config } from '../types'
 import { formatBytes, formatEta, sizeDelta, seasonLabel, STATUS_LABEL } from '../utils'
@@ -6,7 +6,8 @@ import * as api from '../api'
 import { cx } from '../styles'
 import Icon from './Icons'
 import { useToast } from './Toast'
-import { useDownloads, DownloadEntry } from './DownloadsProvider'
+import DownloadsPanel, { DownloadActions, DownloadEntry } from './DownloadsPanel'
+import ConfirmDialog from './ConfirmDialog'
 
 const IconSpinner = () => <span className="block size-[15px] animate-spin rounded-full border-2 border-accent/35 border-t-accent-bright group-disabled/dl:border-ink/30 group-disabled/dl:border-t-ink" aria-hidden="true" />
 
@@ -111,23 +112,21 @@ function releaseSurface(tone: string, isBest: boolean): string {
 export default function Card({ group, index, config, hidden = false, onToggle }: CardProps) {
   const [hiding, setHiding] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
-  const [cardHidden, setCardHidden] = useState(false)
+  const [detailsVisible, setDetailsVisible] = useState(false)
+  const [busyDownload, setBusyDownload] = useState<string | null>(null)
+  const [removeTarget, setRemoveTarget] = useState<DownloadEntry | null>(null)
+  const [deleteFiles, setDeleteFiles] = useState(false)
+  const removeTargetRef = useRef<DownloadEntry | null>(null)
+  removeTargetRef.current = removeTarget
   const hideTimer = useRef<number | null>(null)
-  const articleRef = useRef<HTMLElement>(null)
-  const panelRef = useRef<HTMLElement>(null)
-  const flyFrom = useRef<DOMRect | null>(null)
   const closing = useRef(false)
-  const openTimer = useRef<number | null>(null)
+  const openFrame = useRef<number | null>(null)
   const closeTimer = useRef<number | null>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
   const titleId = useId()
   const toast = useToast()
   const srcClass = group.arr === 'Sonarr' ? 'sonarr' : 'radarr'
   const st = group.status || 'upgrade'
-  // Same key AnimeTab uses for React's `key`, so it's stable and unique per card.
-  const cardKey = group.anilist_id !== null ? String(group.anilist_id) : `${group.arr}:${group.title}`
-  const { report, unregister } = useDownloads()
-
   // Live download state for every release in this card, keyed by season key
   // then release index. Tracking lives here (not inside the details panel) so
   // the animated border keeps spinning even while the details are closed.
@@ -152,12 +151,13 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
   const applyProgress = (seasonKey: string, release: number, p: api.DownloadProgress) => {
     if (!p.ok) return
     const complete = p.state === 'complete' || (p.found && p.progress >= 0.999)
+    const phase = complete ? 'complete' : p.state === 'paused' ? 'paused' : 'downloading'
     setDlBySeason((s) => ({
       ...s,
       [seasonKey]: {
         ...(s[seasonKey] || {}),
         [release]: {
-          phase: complete ? 'complete' : 'downloading',
+          phase,
           progress: p.progress,
           downloaded: p.downloaded,
           total_size: p.total_size,
@@ -192,7 +192,6 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
           .getDownloadProgress(season.key, index)
           .then((p) => {
             if (!p.ok || !p.found) return
-            if (p.state === 'paused') return // don't show a stuck bar for paused
             applyProgress(season.key, index, p)
           })
           .catch(() => {
@@ -201,11 +200,49 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
       }
     }
     return () => {
-      for (const k of Object.keys(activePollers)) window.clearInterval(activePollers[Number(k)])
+      for (const k of Object.keys(activePollers)) window.clearInterval(activePollers[k])
     }
     // Runs once per mount (fresh after a reload), so the first-render seasons are used.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    const handleBulkChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ action: 'start' | 'cancel'; targets: api.BulkDownloadTarget[] }>).detail
+      if (!detail?.targets?.length) return
+      const seasonKeys = new Set(group.seasons.map((season) => season.key))
+      const relevant = detail.targets.filter((target) => seasonKeys.has(target.key))
+      if (!relevant.length) return
+
+      if (detail.action === 'cancel') {
+        for (const target of relevant) stopPolling(target.key, target.release)
+        setDlBySeason((current) => {
+          const next = { ...current }
+          for (const target of relevant) {
+            next[target.key] = { ...(next[target.key] || {}), [target.release]: IDLE_DL }
+          }
+          return next
+        })
+        return
+      }
+
+      setDlBySeason((current) => {
+        const next = { ...current }
+        for (const target of relevant) {
+          next[target.key] = { ...(next[target.key] || {}), [target.release]: { ...IDLE_DL, phase: 'sending' } }
+        }
+        return next
+      })
+      for (const target of relevant) {
+        pollProgress(target.key, target.release)
+        startPolling(target.key, target.release)
+      }
+    }
+    window.addEventListener(api.DOWNLOADS_CHANGED_EVENT, handleBulkChange)
+    return () => window.removeEventListener(api.DOWNLOADS_CHANGED_EVENT, handleBulkChange)
+    // Card groups are stable for the life of a scan result.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [group.seasons])
 
   const handleDownload = async (seasonKey: string, release: number) => {
     setDlBySeason((s) => ({
@@ -227,40 +264,66 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
     }
   }
 
+  const handleDownloadAction = async (entry: DownloadEntry, action: api.DownloadAction, removeFiles = false) => {
+    setBusyDownload(entry.id)
+    try {
+      await api.controlDownload(entry.seasonKey, entry.release, action, removeFiles)
+      if (action === 'remove') {
+        stopPolling(entry.seasonKey, entry.release)
+        setDlBySeason((current) => ({
+          ...current,
+          [entry.seasonKey]: { ...(current[entry.seasonKey] || {}), [entry.release]: IDLE_DL },
+        }))
+        toast.show(removeFiles ? 'Torrent and files removed from qBittorrent' : 'Torrent removed; downloaded files were kept', 'success')
+      } else {
+        setDlBySeason((current) => ({
+          ...current,
+          [entry.seasonKey]: {
+            ...(current[entry.seasonKey] || {}),
+            [entry.release]: {
+              ...(current[entry.seasonKey]?.[entry.release] || IDLE_DL),
+              phase: action === 'pause' ? 'paused' : 'downloading',
+              speed: action === 'pause' ? 0 : current[entry.seasonKey]?.[entry.release]?.speed || 0,
+            },
+          },
+        }))
+        startPolling(entry.seasonKey, entry.release)
+        pollProgress(entry.seasonKey, entry.release)
+      }
+    } catch (error: any) {
+      toast.show(`Could not ${action} torrent: ${error.message}`, 'error')
+    } finally {
+      setBusyDownload(null)
+    }
+  }
+
   // The card spins its border while any release in any season is downloading.
   const downloading = Object.values(dlBySeason).some((seasonDl) =>
     Object.values(seasonDl).some((d) => d.phase === 'sending' || d.phase === 'downloading'),
   )
 
-  // Report this card's active downloads to the shared registry so the sidebar
-  // can show them (with progress and ETA) even while the details are closed.
-  useEffect(() => {
-    const entries: DownloadEntry[] = []
-    for (const season of group.seasons) {
-      const seasonDl = dlBySeason[season.key]
-      if (!seasonDl) continue
-      const byIndex = new Map(uniqueReleases(season.releases || []).map((x) => [x.index, x.rel]))
-      for (const [releaseIndex, state] of Object.entries(seasonDl)) {
-        if (state.phase !== 'sending' && state.phase !== 'downloading') continue
-        const rel = byIndex.get(Number(releaseIndex))
-        entries.push({
-          id: `${season.key}\u0000${releaseIndex}`,
-          title: group.title,
-          season: seasonLabel(season),
-          releaseGroup: rel?.releaseGroup || 'Unknown release',
-          phase: state.phase,
-          progress: state.progress,
-          downloaded: state.downloaded,
-          total_size: state.total_size,
-          speed: state.speed,
-        })
-      }
+  const activeDownloads: DownloadEntry[] = []
+  for (const season of group.seasons) {
+    const seasonDl = dlBySeason[season.key]
+    if (!seasonDl) continue
+    const byIndex = new Map(uniqueReleases(season.releases || []).map((x) => [x.index, x.rel]))
+    for (const [releaseIndex, state] of Object.entries(seasonDl)) {
+      if (state.phase !== 'sending' && state.phase !== 'downloading' && state.phase !== 'paused') continue
+      const rel = byIndex.get(Number(releaseIndex))
+      activeDownloads.push({
+        id: `${season.key}\u0000${releaseIndex}`,
+        season: seasonLabel(season),
+        releaseGroup: rel?.releaseGroup || 'Unknown release',
+        seasonKey: season.key,
+        release: Number(releaseIndex),
+        phase: state.phase,
+        progress: state.progress,
+        downloaded: state.downloaded,
+        total_size: state.total_size,
+        speed: state.speed,
+      })
     }
-    report(cardKey, entries)
-  }, [dlBySeason, group, cardKey, report])
-
-  // Drop this card's downloads from the registry when it unmounts.
-  useEffect(() => () => unregister(cardKey), [cardKey, unregister])
+  }
 
   const seasonCount = group.seasons.length
   // Total size change if every upgradable season were replaced by its best release.
@@ -271,87 +334,37 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
   useEffect(() => {
     return () => {
       if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
-      if (openTimer.current !== null) window.clearTimeout(openTimer.current)
+      if (openFrame.current !== null) window.cancelAnimationFrame(openFrame.current)
       if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
     }
   }, [])
 
-  const resetPanelStyles = () => {
-    const panel = panelRef.current
-    if (!panel) return
-    panel.style.transform = ''
-    panel.style.transition = ''
-    panel.style.transformOrigin = ''
-  }
-
-  // FLIP close: the dialog flies back into the card, then unmounts and the
-  // card reappears in its place.
   const requestClose = () => {
     if (closing.current) return
     closing.current = true
-    if (openTimer.current !== null) {
-      window.clearTimeout(openTimer.current)
-      openTimer.current = null
+    if (openFrame.current !== null) {
+      window.cancelAnimationFrame(openFrame.current)
+      openFrame.current = null
     }
-    const panel = panelRef.current
-    const article = articleRef.current
-    if (!panel || !article) {
-      closing.current = false
-      setDetailsOpen(false)
-      return
-    }
-    const from = panel.getBoundingClientRect()
-    const to = article.getBoundingClientRect()
-    panel.style.transformOrigin = 'top left'
-    panel.style.transition = 'transform 420ms cubic-bezier(0.5, 0, 0.75, 0.4)'
-    panel.style.transform = `translate(${to.left - from.left}px, ${to.top - from.top}px) scale(${to.width / from.width}, ${to.height / from.height})`
+    setDetailsVisible(false)
     closeTimer.current = window.setTimeout(() => {
       closing.current = false
-      resetPanelStyles()
       setDetailsOpen(false)
-    }, 440)
+    }, 220)
   }
 
   useEffect(() => {
     if (!detailsOpen) return
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
+    openFrame.current = window.requestAnimationFrame(() => {
+      setDetailsVisible(true)
+      openFrame.current = null
+    })
     closeRef.current?.focus()
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') requestClose() }
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !removeTargetRef.current) requestClose() }
     window.addEventListener('keydown', closeOnEscape)
     return () => { document.body.style.overflow = previousOverflow; window.removeEventListener('keydown', closeOnEscape) }
-  }, [detailsOpen])
-
-  // FLIP: the dialog starts exactly where the card is and flies to its
-  // centered position, so it reads as the card growing into the panel.
-  useLayoutEffect(() => {
-    if (!detailsOpen) {
-      setCardHidden(false)
-      return
-    }
-    const panel = panelRef.current
-    const from = flyFrom.current
-    flyFrom.current = null
-    if (!panel || !from) return
-    const to = panel.getBoundingClientRect()
-    const dx = from.left - to.left
-    const dy = from.top - to.top
-    const sx = from.width / to.width
-    const sy = from.height / to.height
-    panel.style.transformOrigin = 'top left'
-    panel.style.transition = 'none'
-    panel.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`
-    void panel.offsetHeight // force reflow so the start position is committed
-    panel.style.transition = 'transform 480ms cubic-bezier(0.2, 0.8, 0.2, 1)'
-    panel.style.transform = 'translate(0, 0) scale(1, 1)'
-    openTimer.current = window.setTimeout(resetPanelStyles, 520)
-    return () => {
-      if (openTimer.current !== null) {
-        window.clearTimeout(openTimer.current)
-        openTimer.current = null
-      }
-      resetPanelStyles()
-    }
   }, [detailsOpen])
 
   const handleHide = () => {
@@ -365,22 +378,18 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
   }
 
   const handleOpenDetails = () => {
-    const article = articleRef.current
-    if (article) flyFrom.current = article.getBoundingClientRect()
-    setCardHidden(true)
+    setDetailsVisible(false)
     setDetailsOpen(true)
   }
 
   return <>
     <article
-      ref={articleRef}
       className={cx(
         CARD_BASE,
         CARD_TONE[st],
         hiding && 'pointer-events-none !translate-y-1 !scale-[0.98] opacity-0',
         hidden && 'border-dashed !border-line-strong opacity-60 hover:opacity-85',
         downloading && 'download-border',
-        cardHidden && 'pointer-events-none !opacity-0',
       )}
       style={{ animationDelay: Math.min(index * 40, 400) + 'ms' }}
     >
@@ -413,12 +422,24 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
           <div className="line-clamp-2 min-w-0 flex-1 text-[17px] leading-snug font-extrabold text-white drop-shadow-md" title={group.title}>{group.title}</div>
         </div>
       </div>
-      <div className="flex flex-1 flex-col gap-3 p-4">
-        <div className="flex flex-wrap gap-1.5" aria-label={`${seasonCount} seasons`}>
-          {group.seasons.slice(0, 6).map((season) => <span key={season.key} className={cx('rounded-md border px-2 py-1 text-[10px] font-extrabold', SEASON_NUMBER_TONE[season.status === 'uncovered' ? 'partial' : season.status || st])}>{seasonLabel(season)}</span>)}
-          {seasonCount > 6 && <span className="rounded-md border border-line px-2 py-1 text-[10px] font-bold text-muted">+{seasonCount - 6}</span>}
+      <div className="flex h-[156px] shrink-0 flex-col gap-3 p-4">
+        <div className="min-h-0 flex-1 overflow-hidden">
+          {activeDownloads.length > 0 ? (
+            <DownloadsPanel
+              downloads={activeDownloads}
+              busyId={busyDownload}
+              onPause={(entry) => void handleDownloadAction(entry, 'pause')}
+              onResume={(entry) => void handleDownloadAction(entry, 'resume')}
+              onRemove={(entry) => { setDeleteFiles(false); setRemoveTarget(entry) }}
+            />
+          ) : (
+            <div className="flex flex-wrap gap-1.5" aria-label={`${seasonCount} seasons`}>
+              {group.seasons.slice(0, 6).map((season) => <span key={season.key} className={cx('rounded-md border px-2 py-1 text-[10px] font-extrabold', SEASON_NUMBER_TONE[season.status === 'uncovered' ? 'partial' : season.status || st])}>{seasonLabel(season)}</span>)}
+              {seasonCount > 6 && <span className="rounded-md border border-line px-2 py-1 text-[10px] font-bold text-muted">+{seasonCount - 6}</span>}
+            </div>
+          )}
         </div>
-        <div className="mt-auto flex items-center gap-2 border-t border-line pt-3">
+        <div className="flex shrink-0 items-center gap-2 border-t border-line pt-3">
           {delta !== 0 ? <span className={cx('text-xs font-extrabold tabular-nums', delta > 0 ? 'text-good' : 'text-bad')}>{delta > 0 ? '+' : ''}{formatBytes(delta)} <span className="font-medium text-muted-dim">change</span></span> : <span className="text-xs text-muted-dim">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span>}
           <button className="ml-auto inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold text-accent-bright transition-colors hover:bg-accent/10" type="button" onClick={handleOpenDetails}>Details <Icon name="chevron-right" size={15}/></button>
           <button className={cx(ICON_BUTTON, 'group/hide size-8 disabled:cursor-wait', hidden && 'border-warn/35 bg-warn/10 text-warn')} type="button" title={hidden ? 'Show this card' : 'Hide this card'} aria-label={(hidden ? 'Show ' : 'Hide ') + group.title} onClick={handleHide} disabled={hiding}><HideActionIcon hidden={hidden}/></button>
@@ -426,19 +447,44 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
       </div>
     </article>
     {detailsOpen && createPortal(
-      <div className="fixed inset-0 z-[80]" role="presentation">
-        <div className="absolute inset-0 animate-fade bg-black/65 backdrop-blur-sm" />
-        <div className="absolute inset-0 flex items-center justify-center p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
-          <aside ref={panelRef} className={cx('app-scrollbar max-h-full w-full max-w-[864px] overflow-y-auto rounded-2xl border border-line-strong bg-canvas shadow-[0_24px_60px_rgba(0,0,0,.45)]', PANEL_GLOW_COLOR[st], downloading && 'details-download-border')} role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <div className={cx('fixed inset-0 z-[80]', !detailsVisible && 'pointer-events-none')} role="presentation">
+        <div className={cx('details-backdrop absolute inset-0 bg-black/65', detailsVisible && 'details-backdrop-visible')} />
+        <div className={cx('absolute inset-0 flex items-center justify-center p-4 transition-opacity duration-200 ease-out', detailsVisible ? 'opacity-100' : 'opacity-0')} onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
+          <aside className={cx('app-scrollbar max-h-full w-full max-w-[864px] overflow-y-auto rounded-2xl border border-line-strong bg-canvas shadow-[0_24px_60px_rgba(0,0,0,.45)]', PANEL_GLOW_COLOR[st], downloading && 'details-download-border')} role="dialog" aria-modal="true" aria-labelledby={titleId}>
           <div className="relative h-[230px] overflow-hidden border-b border-line bg-panel bg-cover bg-center" style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}><div className="absolute inset-0 bg-linear-to-t from-canvas via-canvas/55 to-black/15"/><button ref={closeRef} type="button" className="absolute top-4 right-4 z-2 grid size-10 cursor-pointer place-items-center rounded-xl border border-white/15 bg-black/40 text-white backdrop-blur-md hover:bg-black/60" onClick={() => requestClose()} aria-label="Close details"><Icon name="close"/></button><div className="absolute inset-x-5 bottom-5 z-1 flex items-end gap-4">{group.image && <img src={group.image} alt="" className="h-28 w-20 rounded-lg border border-white/15 object-cover shadow-xl"/>}<div className="min-w-0"><span className={cx('mb-2 inline-block rounded-full border px-2.5 py-1 text-[11px] font-extrabold', STATUS_BADGE[st])}>{STATUS_LABEL[st]}</span><h2 id={titleId} className="m-0 text-3xl leading-tight font-extrabold text-white">{group.title}</h2></div></div></div>
           <div className="space-y-4 p-5 max-[600px]:p-4">
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted">{group.arr_url && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{group.anilist_id && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList ↗</a>}<span className="ml-auto">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span></div>
-            {group.seasons.map((season) => <Season key={season.key} r={season} config={config} tone={st} dl={dlBySeason[season.key] || {}} onDownload={(release) => void handleDownload(season.key, release)}/>)}
+            {group.seasons.map((season) => <Season
+              key={season.key}
+              r={season}
+              config={config}
+              tone={st}
+              dl={dlBySeason[season.key] || {}}
+              busyDownload={busyDownload}
+              onDownload={(release) => void handleDownload(season.key, release)}
+              onPause={(entry) => void handleDownloadAction(entry, 'pause')}
+              onResume={(entry) => void handleDownloadAction(entry, 'resume')}
+              onRemove={(entry) => { setDeleteFiles(false); setRemoveTarget(entry) }}
+            />)}
           </div>
           </aside>
         </div>
       </div>, document.body,
     )}
+    <ConfirmDialog
+      open={removeTarget !== null}
+      title="Remove torrent?"
+      description="The torrent will be removed from qBittorrent. Its downloaded files are kept unless you choose to delete them below."
+      confirmLabel="Remove torrent"
+      dangerous
+      onConfirm={() => { if (removeTarget) void handleDownloadAction(removeTarget, 'remove', deleteFiles) }}
+      onClose={() => { setRemoveTarget(null); setDeleteFiles(false) }}
+    >
+      <label className="mb-5 flex cursor-pointer items-center gap-3 rounded-xl border border-bad/25 bg-bad/7 p-3 text-sm text-ink">
+        <input type="checkbox" className="size-4 accent-red-500" checked={deleteFiles} onChange={(event) => setDeleteFiles(event.target.checked)} />
+        <span><span className="block font-bold text-bad">Also delete downloaded files</span><span className="mt-0.5 block text-xs text-muted">This cannot be undone.</span></span>
+      </label>
+    </ConfirmDialog>
   </>
 }
 
@@ -447,7 +493,11 @@ interface SeasonProps {
   config: Config | null
   tone: string
   dl: Record<number, DlState>
+  busyDownload: string | null
   onDownload: (release: number) => void
+  onPause: (entry: DownloadEntry) => void
+  onResume: (entry: DownloadEntry) => void
+  onRemove: (entry: DownloadEntry) => void
 }
 
 interface DisplayRelease {
@@ -457,7 +507,7 @@ interface DisplayRelease {
 
 /** Live download state for one release row (keyed by its release index). */
 interface DlState {
-  phase: 'idle' | 'sending' | 'downloading' | 'complete'
+  phase: 'idle' | 'sending' | 'downloading' | 'paused' | 'complete'
   progress: number // 0..1
   downloaded: number
   total_size: number
@@ -510,7 +560,7 @@ function groupByCour(releases: DisplayRelease[]): { part: string; items: Display
   return groups
 }
 
-function Season({ r, config, tone, dl, onDownload }: SeasonProps) {
+function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResume, onRemove }: SeasonProps) {
   const st = r.status || 'upgrade'
 
   let middle: ReactNode
@@ -527,25 +577,43 @@ function Season({ r, config, tone, dl, onDownload }: SeasonProps) {
           <div key={group.part || 'all'} className="flex flex-col gap-1.5">
             {gi > 0 && <div className="my-1 h-px bg-line-strong" role="separator" />}
             {group.part && (
-              <div className="flex items-center gap-2 py-0.5">
+              <div className="flex flex-wrap items-center gap-2 py-0.5">
                 <span className="rounded-full border border-line bg-panel-raised px-2.5 py-[3px] text-[11px] font-extrabold tracking-[0.8px] text-muted uppercase">{group.part}</span>
+                {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).length > 0 && <span className="text-[10px] font-bold tracking-[0.08em] text-muted-dim uppercase">Have</span>}
+                {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).map((releaseGroup) => <span key={releaseGroup} className={cx(BADGE, 'py-[3px] text-[11px]')} title={`Owned in ${group.part}`}>{releaseGroup}</span>)}
+                {r.precise_part_ownership && !(r.have_by_part?.[group.part] || []).length && <span className="text-[11px] text-muted-dim">No matching files owned</span>}
               </div>
             )}
             <div className="flex flex-col gap-1.5">
               {group.items.map(({ rel, index }) => {
                 const isBest = rel.kind === 'best'
-                // Sonarr's size covers both cours, while a split-cour row only
-                // covers one. Comparing those values would produce a bogus delta.
-                const delta = rel.part ? '' : sizeDelta(rel.size, r.local_size)
-                const owned = r.have.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
+                const localSize = rel.part ? (r.local_size_by_part?.[group.part] || 0) : r.local_size
+                const delta = sizeDelta(rel.size, localSize)
+                const ownedGroups = r.precise_part_ownership
+                  ? (r.owned_by_part?.[group.part] || [])
+                  : r.have
+                const owned = ownedGroups.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
                 const cat = (config ? String((config as any)[((r.arr || '').toLowerCase() + '_category')] || '') : '').trim()
                 const dlState = dl[index] || IDLE_DL
                 const sending = dlState.phase === 'sending' || dlState.phase === 'downloading'
-                const disabled = owned || !rel.downloadable || sending
+                const inClient = sending || dlState.phase === 'paused'
+                const activeEntry: DownloadEntry | null = inClient ? {
+                  id: `${r.key}\u0000${index}`,
+                  season: seasonLabel(r),
+                  releaseGroup: rel.releaseGroup,
+                  seasonKey: r.key,
+                  release: index,
+                  phase: dlState.phase as DownloadEntry['phase'],
+                  progress: dlState.progress,
+                  downloaded: dlState.downloaded,
+                  total_size: dlState.total_size,
+                  speed: dlState.speed,
+                } : null
+                const disabled = owned || !rel.downloadable || inClient
                 const btnTitle = owned
                   ? 'You already have this release'
-                  : sending
-                  ? 'Downloading…'
+                  : inClient
+                  ? dlState.phase === 'paused' ? 'Paused in qBittorrent' : 'Downloading…'
                   : rel.downloadable
                   ? 'Send this release to qBittorrent (category: ' + (cat || r.arr) + ')'
                   : 'No magnet available (private tracker)'
@@ -561,9 +629,9 @@ function Season({ r, config, tone, dl, onDownload }: SeasonProps) {
                     <div
                       className={cx(
                         'flex items-center gap-2 rounded-lg border px-[9px] py-[7px]',
-                        sending ? 'border-accent' : isBest ? 'border-good/35' : 'border-bad/28',
+                        inClient ? 'border-accent' : isBest ? 'border-good/35' : 'border-bad/28',
                         releaseSurface(tone, isBest),
-                        sending && 'shadow-[0_0_0_1px_rgba(79,140,255,0.15),0_4px_14px_rgba(79,140,255,0.12)]',
+                        inClient && 'shadow-[0_0_0_1px_rgba(79,140,255,0.15),0_4px_14px_rgba(79,140,255,0.12)]',
                       )}
                     >
                       <span className={cx('w-[34px] shrink-0 text-[10px] font-extrabold tracking-[0.8px] uppercase', isBest ? 'text-good' : 'text-bad')} title={rel.part || undefined}>
@@ -608,26 +676,39 @@ function Season({ r, config, tone, dl, onDownload }: SeasonProps) {
                           <Icon name="check" size={18} />
                         ) : sending ? (
                           <IconSpinner />
+                        ) : dlState.phase === 'paused' ? (
+                          <Icon name="pause" size={18} />
                         ) : (
                           <Icon name="download" size={18} />
                         )}
                       </button>
                     </div>
-                    {sending && (
+                    {inClient && (
                       <div className="flex flex-col gap-[5px] rounded-lg border border-line bg-accent/7 px-2.5 pt-2 pb-[9px]">
                         <div className="h-2 overflow-hidden rounded-full border border-line bg-panel-raised">
                           <div className="h-full rounded-full bg-linear-to-r from-accent to-good transition-[width] duration-500" style={{ width: Math.max(pct, 2) + '%' }} />
                         </div>
-                        <div className="overflow-hidden text-xs font-semibold text-ellipsis whitespace-nowrap text-accent-bright tabular-nums">
-                          {dlState.phase === 'sending'
-                            ? 'Sending to qBittorrent…'
-                            : dlState.total_size > 0
-                            ? [
-                                `${pct.toFixed(1)}% · ${formatBytes(dlState.downloaded)} / ${formatBytes(dlState.total_size)}`,
-                                dlState.speed > 0 ? formatBytes(dlState.speed) + '/s' : '',
-                                formatEta(Math.max(0, dlState.total_size - dlState.downloaded), dlState.speed),
-                              ].filter(Boolean).join(' · ')
-                            : 'Waiting for torrent metadata…'}
+                        <div className="flex items-center gap-2">
+                          <div className="min-w-0 flex-1 overflow-hidden text-xs font-semibold text-ellipsis whitespace-nowrap text-accent-bright tabular-nums">
+                            {dlState.phase === 'sending'
+                              ? 'Sending to qBittorrent…'
+                              : dlState.phase === 'paused'
+                              ? `Paused · ${pct.toFixed(1)}% · ${formatBytes(dlState.downloaded)} / ${formatBytes(dlState.total_size)}`
+                              : dlState.total_size > 0
+                              ? [
+                                  `${pct.toFixed(1)}% · ${formatBytes(dlState.downloaded)} / ${formatBytes(dlState.total_size)}`,
+                                  dlState.speed > 0 ? formatBytes(dlState.speed) + '/s' : '',
+                                  formatEta(Math.max(0, dlState.total_size - dlState.downloaded), dlState.speed),
+                                ].filter(Boolean).join(' · ')
+                              : 'Waiting for torrent metadata…'}
+                          </div>
+                          {activeEntry && <DownloadActions
+                            entry={activeEntry}
+                            busy={busyDownload === activeEntry.id}
+                            onPause={() => onPause(activeEntry)}
+                            onResume={() => onResume(activeEntry)}
+                            onRemove={() => onRemove(activeEntry)}
+                          />}
                         </div>
                       </div>
                     )}
@@ -635,9 +716,14 @@ function Season({ r, config, tone, dl, onDownload }: SeasonProps) {
                 )
               })}
             </div>
+            {group.part && r.notes_by_part?.[group.part] && r.notes_by_part[group.part] !== '-' && (
+              <div className={cx('[overflow-wrap:anywhere] whitespace-pre-line rounded-lg border border-line px-[11px] py-[9px] text-[13px] text-muted', NOTES_SURFACE[tone])} title={r.notes_by_part[group.part]}>
+                {r.notes_by_part[group.part]}
+              </div>
+            )}
           </div>
         ))}
-        {r.notes && r.notes !== '-' && (
+        {!courGroups.some((group) => group.part) && r.notes && r.notes !== '-' && (
           <div className={cx('[overflow-wrap:anywhere] whitespace-pre-line rounded-lg border border-line px-[11px] py-[9px] text-[13px] text-muted', NOTES_SURFACE[tone])} title={r.notes}>
             {r.notes}
           </div>
@@ -646,22 +732,24 @@ function Season({ r, config, tone, dl, onDownload }: SeasonProps) {
     )
   }
 
-  const have = r.have.length
+  const displaySeasonHave = !r.precise_part_ownership || !r.releases.some((release) => release.part)
+  const have = displaySeasonHave && r.have.length
     ? r.have.map((x, i) => (
         <span key={i} className={BADGE} title={x}>
           {x}
         </span>
       ))
-    : [
+    : displaySeasonHave ? [
         <span key="none" className={BADGE}>
           none
         </span>,
-      ]
+      ] : []
 
   return (
     <div className={cx('flex flex-col gap-[9px] rounded-control border border-line p-3', SEASON_TONE[tone])}>
       <div className="flex flex-wrap items-center gap-2">
         <span className={cx('min-w-[46px] rounded-full border px-[9px] py-[3px] text-center text-xs font-extrabold tracking-[0.5px]', SEASON_NUMBER_TONE[tone])}>{seasonLabel(r)}</span>
+        {displaySeasonHave && <span className="text-[10px] font-bold tracking-[0.08em] text-muted-dim uppercase">Have</span>}
         <div className="flex flex-1 flex-wrap gap-[5px]" title="Release groups you already have">
           {have}
         </div>

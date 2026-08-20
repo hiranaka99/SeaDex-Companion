@@ -6,7 +6,6 @@ import LogTab from './components/LogTab'
 import AuthPage from './components/AuthPage'
 import ConfirmDialog from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
-import { DownloadsProvider } from './components/DownloadsProvider'
 import { TabId, Status, ResultItem, Config, AuthState } from './types'
 import * as api from './api'
 
@@ -120,36 +119,34 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
   const sidebarWidth = collapsed ? 76 : 248
 
   return (
-    <DownloadsProvider>
-      <div
-        className="grid h-dvh grid-cols-[var(--sidebar)_minmax(0,1fr)] overflow-hidden transition-[grid-template-columns] duration-300 ease-in-out max-[900px]:grid-cols-1"
-        style={{ ['--sidebar' as string]: `${sidebarWidth}px` }}
-      >
-        <TopBar
-          tab={tab}
-          onTabChange={setTab}
-          status={status}
-          username={username}
-          onLogout={onLogout}
-          collapsed={collapsed}
-          onToggleCollapsed={toggleCollapsed}
-        />
-        <main className="app-scrollbar overflow-y-auto px-8 pt-7 pb-14 max-[1200px]:px-6 max-[900px]:px-4 max-[900px]:pt-20 max-[900px]:pb-24">
-          {tab === 'anime' && (
-            <AnimeTab
-              results={results}
-              config={config}
-              status={status}
-              lastRun={lastRun}
-              onScan={handleScan}
-              loading={resultsLoading}
-            />
-          )}
-          {tab === 'config' && <ConfigTab config={config} onSaved={loadConfig} />}
-          {tab === 'log' && <LogTab active={tab === 'log'} />}
-        </main>
-      </div>
-    </DownloadsProvider>
+    <div
+      className="grid h-dvh grid-cols-[var(--sidebar)_minmax(0,1fr)] overflow-hidden transition-[grid-template-columns] duration-300 ease-in-out max-[900px]:grid-cols-1"
+      style={{ ['--sidebar' as string]: `${sidebarWidth}px` }}
+    >
+      <TopBar
+        tab={tab}
+        onTabChange={setTab}
+        status={status}
+        username={username}
+        onLogout={onLogout}
+        collapsed={collapsed}
+        onToggleCollapsed={toggleCollapsed}
+      />
+      <main className="app-scrollbar overflow-y-auto px-8 pt-7 pb-14 max-[1200px]:px-6 max-[900px]:px-4 max-[900px]:pt-20 max-[900px]:pb-24">
+        {tab === 'anime' && (
+          <AnimeTab
+            results={results}
+            config={config}
+            status={status}
+            lastRun={lastRun}
+            onScan={handleScan}
+            loading={resultsLoading}
+          />
+        )}
+        {tab === 'config' && <ConfigTab config={config} onSaved={loadConfig} />}
+        {tab === 'log' && <LogTab active={tab === 'log'} />}
+      </main>
+    </div>
   )
 }
 

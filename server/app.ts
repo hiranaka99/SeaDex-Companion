@@ -335,6 +335,7 @@ export async function seadexBest(): Promise<Map<number, JsonObject>> {
               file_count: 0,
               info_hashes: [],
               is_best: false,
+              source_files: [],
             }
             candidates.push(release)
           }
@@ -342,6 +343,7 @@ export async function seadexBest(): Promise<Map<number, JsonObject>> {
           release.file_count += count
           release.is_best ||= Boolean(torrent.isBest)
           release.dual_audio ||= Boolean(torrent.dualAudio)
+          release.source_files!.push(...files.map((file) => ({ name: String(file.name || ''), length: Number(file.length || 0) })))
           const hash = torrent.infoHash || ''
           if (hash && !release.info_hashes.includes(hash)) release.info_hashes.push(hash)
         }
@@ -359,13 +361,71 @@ export async function localItems(config: Config): Promise<JsonObject[]> {
     let series: JsonObject[] = []
     try { series = await api(`${arrApiUrl(config.sonarr_url)}/series`, config.sonarr_key) } catch { /* preserve partial scans */ }
     for (const show of series) {
+      let episodes: JsonObject[] = []
+      let episodeFiles: JsonObject[] = []
+      try {
+        [episodes, episodeFiles] = await Promise.all([
+          api(`${arrApiUrl(config.sonarr_url)}/episode?seriesId=${show.id}`, config.sonarr_key),
+          api(`${arrApiUrl(config.sonarr_url)}/episodefile?seriesId=${show.id}`, config.sonarr_key),
+        ])
+      } catch { /* fall back to season-wide release groups */ }
+      const fileGroups = new Map<number, string>()
+      const fileSizes = new Map<number, number>()
+      for (const file of episodeFiles) {
+        const group = String(file.releaseGroup || '').trim()
+        if (file.id && group) fileGroups.set(Number(file.id), group)
+        if (file.id) fileSizes.set(Number(file.id), Number(file.size || 0))
+      }
+      const groupsBySeasonEpisode = new Map<number, Map<string, Set<number>>>()
+      const episodeNumbersBySeason = new Map<number, Set<number>>()
+      const fileEpisodes = new Map<number, { season: number; episode: number }[]>()
+      for (const episode of episodes) {
+        const season = Number(episode.seasonNumber || 0)
+        const number = Number(episode.episodeNumber || 0)
+        if (!Number.isInteger(season) || season <= 0 || !Number.isInteger(number) || number <= 0) continue
+        const seasonNumbers = episodeNumbersBySeason.get(season) || new Set<number>()
+        seasonNumbers.add(number); episodeNumbersBySeason.set(season, seasonNumbers)
+        const fileId = Number(episode.episodeFileId || episode.episodeFile?.id || 0)
+        const group = String(episode.episodeFile?.releaseGroup || fileGroups.get(fileId) || '').trim()
+        if (fileId && !fileSizes.has(fileId) && episode.episodeFile?.size) fileSizes.set(fileId, Number(episode.episodeFile.size))
+        if (fileId) fileEpisodes.set(fileId, [...(fileEpisodes.get(fileId) || []), { season, episode: number }])
+        if (!group) continue
+        const groups = groupsBySeasonEpisode.get(season) || new Map<string, Set<number>>()
+        const numbers = groups.get(group) || new Set<number>()
+        numbers.add(number); groups.set(group, numbers); groupsBySeasonEpisode.set(season, groups)
+      }
+      const sizesBySeasonEpisode = new Map<number, Map<number, number>>()
+      for (const [fileId, linkedEpisodes] of fileEpisodes) {
+        const size = fileSizes.get(fileId) || 0
+        if (!size || !linkedEpisodes.length) continue
+        const share = size / linkedEpisodes.length
+        for (const linked of linkedEpisodes) {
+          const sizes = sizesBySeasonEpisode.get(linked.season) || new Map<number, number>()
+          sizes.set(linked.episode, (sizes.get(linked.episode) || 0) + share)
+          sizesBySeasonEpisode.set(linked.season, sizes)
+        }
+      }
       const seasons: JsonObject = {}
       for (const season of show.seasons || []) {
         const number = season.seasonNumber || 0
         if (number === 0) continue
         const stats = season.statistics || {}
         const groups = stats.releaseGroups || []
-        if (groups.length) seasons[number] = { groups, size: stats.sizeOnDisk || 0 }
+        if (groups.length) {
+          const episodeGroups = groupsBySeasonEpisode.get(Number(number))
+          const episodeSizes = sizesBySeasonEpisode.get(Number(number))
+          const episodeNumbers = [...(episodeNumbersBySeason.get(Number(number)) || [])].sort((left, right) => left - right)
+          seasons[number] = {
+            groups,
+            size: stats.sizeOnDisk || 0,
+            episode_numbers: episodeNumbers,
+            episode_count: episodeNumbers.length || null,
+            groups_by_episode: episodeGroups
+              ? Object.fromEntries([...episodeGroups].map(([group, numbers]) => [group, [...numbers].sort((left, right) => left - right)]))
+              : {},
+            sizes_by_episode: episodeSizes ? Object.fromEntries(episodeSizes) : {},
+          }
+        }
       }
       if (Object.keys(seasons).length) items.push({ arr: 'Sonarr', id: show.id, title: show.title, slug: show.titleSlug, seasons })
     }
@@ -596,6 +656,85 @@ export function pickBest(candidates: ReleaseCandidate[], episodeCount?: number |
   return [chosen, candidates.filter((candidate) => candidate !== chosen)]
 }
 
+interface ParsedEpisode {
+  episode: number
+  season: number | null
+}
+
+function episodeFromFilename(name: string): ParsedEpisode | null {
+  const standard = name.match(/S(\d{1,3})E(\d{1,3}(?:\.\d+)?)/i)
+  if (standard) return { season: Number(standard[1]), episode: Number(standard[2]) }
+  const named = name.match(/(?:\bSeason\b|\bEpisode\b|\bEp\.?)[ ._-]*(\d{1,3}(?:\.\d+)?)(?=[ ._[\]()-]|$)/i)
+  return named ? { season: null, episode: Number(named[1]) } : null
+}
+
+function extraBelongsToPart(name: string, partNumber: number): boolean {
+  const padded = String(partNumber).padStart(2, '0')
+  return new RegExp(`(?:P(?:art)?[ ._-]*0?${partNumber}\\b.*(?:NCOP|NCED)|(?:NCOP|NCED)[ ._-]*${padded}\\b)`, 'i').test(name)
+}
+
+/**
+ * Restrict downloads to regular episodes. For split cours this also scopes a
+ * whole-season torrent to the current cour; for normal seasons it removes
+ * specials, extras, and other files when the full episode set is identifiable.
+ */
+export function scopeReleaseToPart(
+  release: ReleaseCandidate,
+  episodeCount: number | null | undefined,
+  partIndex: number,
+  partCount: number,
+  episodeOffset?: number,
+): ReleaseCandidate {
+  const files = release.source_files || []
+  if (!episodeCount || episodeCount <= 0 || !files.length) return release
+
+  const parsed = files.map((file) => ({ file, parsed: episodeFromFilename(file.name) }))
+  const seasonFrequency = new Map<number, number>()
+  for (const item of parsed) {
+    const season = item.parsed?.season
+    if (season && Number.isInteger(item.parsed?.episode)) seasonFrequency.set(season, (seasonFrequency.get(season) || 0) + 1)
+  }
+  const primarySeason = [...seasonFrequency].sort((left, right) => right[1] - left[1])[0]?.[0] ?? null
+  const episodeNumbers = [...new Set(
+    parsed
+      .filter((item) => item.parsed && Number.isInteger(item.parsed.episode) && (primarySeason === null || item.parsed.season === primarySeason))
+      .map((item) => item.parsed!.episode),
+  )].sort((left, right) => left - right)
+  const splitSeason = partCount > 1
+  if (splitSeason ? episodeNumbers.length <= episodeCount : episodeNumbers.length < episodeCount) return release
+
+  const start = splitSeason ? (episodeOffset ?? partIndex * episodeCount) : 0
+  const selectedNumbers = episodeNumbers.slice(start, start + episodeCount)
+  if (!selectedNumbers.length) return release
+  const selected = new Set(selectedNumbers)
+  const partNumber = partIndex + 1
+  const selectedEpisodeFiles = parsed.filter(({ parsed: episode }) =>
+    episode && selected.has(episode.episode) && (primarySeason === null || episode.season === primarySeason),
+  )
+  const selectedEpisodeFileSet = new Set(selectedEpisodeFiles.map(({ file }) => file))
+  if (!splitSeason) {
+    if (selectedEpisodeFiles.length === files.length) return release
+    return {
+      ...release,
+      size: selectedEpisodeFiles.reduce((total, { file }) => total + file.length, 0),
+      file_count: selectedNumbers.length,
+      selected_files: selectedEpisodeFiles.map(({ file }) => file.name),
+    }
+  }
+  const scopedFiles = parsed.filter(({ file, parsed: episode }) =>
+    selectedEpisodeFileSet.has(file) ||
+    (!episode && extraBelongsToPart(file.name, partNumber)),
+  )
+  if (!scopedFiles.length) return release
+
+  return {
+    ...release,
+    size: scopedFiles.reduce((total, { file }) => total + file.length, 0),
+    file_count: selectedNumbers.length,
+    selected_files: selectedEpisodeFiles.map(({ file }) => file.name),
+  }
+}
+
 export function releaseDict(kind: string, release: JsonObject, part?: string | null, url?: string): JsonObject {
   const result: JsonObject = {
     kind, releaseGroup: release.releaseGroup, tracker: release.tracker, quality: release.quality,
@@ -604,6 +743,7 @@ export function releaseDict(kind: string, release: JsonObject, part?: string | n
   }
   if (part) result.part = part
   if (url) result.url = url
+  if (release.selected_files?.length) result.selected_files = [...release.selected_files]
   return result
 }
 
@@ -618,6 +758,36 @@ export function seadexSlot(entry: JsonObject, season: number): JsonObject | null
 
 export function entryParts(entry: JsonObject): JsonObject[] {
   return entry.parts || [{ id: entry.id, episodeCount: entry.episodeCount, title: null }]
+}
+
+/**
+ * AniList tells us which entries form a split season, while Sonarr's episode
+ * list is sourced from TVDB and is authoritative for the episodes in it.
+ */
+export function effectiveSeasonParts(local: JsonObject, parts: JsonObject[]): JsonObject[] {
+  const episodeNumbers = [...new Set<number>(
+    (local.episode_numbers || [])
+      .map(Number)
+      .filter((episode: number) => Number.isInteger(episode) && episode > 0),
+  )].sort((left, right) => left - right)
+  if (!episodeNumbers.length || !parts.length) return parts
+
+  if (parts.length === 1) {
+    return [{ ...parts[0], episodeCount: episodeNumbers.length, episodeNumbers }]
+  }
+
+  // Earlier AniList counts define the cour boundaries. The final cour gets
+  // every TVDB episode that remains, correcting stale AniList season totals.
+  let offset = 0
+  return parts.map((part, index) => {
+    const isLast = index === parts.length - 1
+    const boundaryCount = Math.max(0, Number(part.episodeCount || 0))
+    const partEpisodes = isLast
+      ? episodeNumbers.slice(offset)
+      : episodeNumbers.slice(offset, offset + boundaryCount)
+    offset += partEpisodes.length
+    return { ...part, episodeCount: partEpisodes.length, episodeNumbers: partEpisodes }
+  })
 }
 
 export function orderedPartReleases(best: ReleaseCandidate, alternatives: ReleaseCandidate[]): Array<['best' | 'alt', ReleaseCandidate]> {
@@ -659,6 +829,63 @@ export function commonBestRelease(resolved: JsonObject[], localGroups: Set<strin
 
 export function partBestGroups(part: JsonObject): Set<string> {
   return new Set(orderedPartReleases(part.best, part.alts).filter(([kind]) => kind === 'best').map(([, release]) => release.releaseGroup.trim().toLowerCase()))
+}
+
+export interface PartOwnership {
+  have: Record<string, string[]>
+  owned: Record<string, string[]>
+  sizes: Record<string, number>
+  precise: boolean
+}
+
+export function localPartOwnership(local: JsonObject, parts: JsonObject[]): PartOwnership {
+  const groups: string[] = [...(local.groups || [])]
+  const episodeEntries = Object.entries(local.groups_by_episode || {})
+    .map(([group, episodes]) => [group, new Set((episodes as unknown[]).map(Number).filter((episode) => episode > 0))] as const)
+    .filter(([, episodes]) => episodes.size > 0)
+  const precise = episodeEntries.length > 0
+  const have: Record<string, string[]> = {}
+  const owned: Record<string, string[]> = {}
+  const sizes: Record<string, number> = {}
+  const episodeSizes = new Map(
+    Object.entries(local.sizes_by_episode || {}).map(([episode, size]) => [Number(episode), Number(size || 0)]),
+  )
+  let offset = 0
+
+  for (const [index, part] of parts.entries()) {
+    const label = parts.length > 1 ? `Cour ${index + 1}` : ''
+    const count = Number(part.episodeCount || 0)
+    const explicitEpisodes = Array.isArray(part.episodeNumbers)
+      ? part.episodeNumbers.map(Number).filter((episode: number) => Number.isInteger(episode) && episode > 0)
+      : null
+    const expected = explicitEpisodes || Array.from({ length: count }, (_, episodeIndex) => offset + episodeIndex + 1)
+    if (!precise) {
+      have[label] = [...groups].sort()
+      owned[label] = [...groups].sort()
+      sizes[label] = parts.length > 1 ? 0 : Number(local.size || 0)
+      offset += count
+      continue
+    }
+    have[label] = episodeEntries
+      .filter(([, episodes]) => expected.some((episode) => episodes.has(episode)))
+      .map(([group]) => group)
+      .sort()
+    owned[label] = episodeEntries
+      .filter(([, episodes]) => expected.length > 0 && expected.every((episode) => episodes.has(episode)))
+      .map(([group]) => group)
+      .sort()
+    sizes[label] = expected.reduce((total, episode) => total + (episodeSizes.get(episode) || 0), 0)
+    offset += count
+  }
+  const totalExpectedEpisodes = parts.reduce((total, part) => total + Number(part.episodeCount || 0), 0)
+  const localSize = Number(local.size || 0)
+  if (parts.length > 1 && localSize > 0 && totalExpectedEpisodes > 0) {
+    for (const [index, part] of parts.entries()) {
+      const label = `Cour ${index + 1}`
+      if (!sizes[label]) sizes[label] = localSize * Number(part.episodeCount || 0) / totalExpectedEpisodes
+    }
+  }
+  return { have, owned, sizes, precise }
 }
 
 export interface ScanDependencies {
@@ -704,16 +931,22 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
         setState({ message: `Resolving: ${item.title} (${season ? `S${String(season).padStart(2, '0')}` : 'Movie'})` })
         const entry = season >= 1 && season <= chain.length ? chain[season - 1] : chain[0]
         const alid = entry.id
-        const parts = entryParts(entry)
+        const parts = effectiveSeasonParts(local, entryParts(entry))
+        const partOwnership = localPartOwnership(local, parts)
         const common: JsonObject = {
           group_id: chain[0].id, arr: item.arr, title: item.title, season, have: [...localGroups].sort(),
+          have_by_part: partOwnership.have, owned_by_part: partOwnership.owned, precise_part_ownership: partOwnership.precise,
+          local_size_by_part: partOwnership.sizes,
           local_size: local.size || 0, url: null, notes: null, image: entry.cover || null,
           banner: entry.banner || null, anilist_id: alid, arr_url: arrUrl,
         }
         const resolved: JsonObject[] = []
         const sources: JsonObject[] = []
         let missingPart = false; let uncoveredPart = false
+        let episodeOffset = 0
         for (const [partIndex, part] of parts.entries()) {
+          const currentEpisodeOffset = episodeOffset
+          episodeOffset += Number(part.episodeCount || 0)
           const source = best.get(part.id)
           if (!source) { missingPart = true; continue }
           const label = parts.length > 1 ? `Cour ${partIndex + 1}` : null
@@ -722,10 +955,16 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
           if (!slot) { uncoveredPart = true; continue }
           const [selected, alternatives] = pickBest(slot.candidates, part.episodeCount)
           if (!selected) { uncoveredPart = true; continue }
-          resolved.push({ label, source, best: selected, alts: alternatives })
+          resolved.push({
+            label,
+            source,
+            best: scopeReleaseToPart(selected, part.episodeCount, partIndex, parts.length, currentEpisodeOffset),
+            alts: alternatives.map((release) => scopeReleaseToPart(release, part.episodeCount, partIndex, parts.length, currentEpisodeOffset)),
+          })
         }
         common.urls = sources
         common.anilist_ids = parts.map((part) => part.id)
+        common.notes_by_part = Object.fromEntries(resolved.map((part) => [part.label || '', part.source.notes || '-']))
         if (sources.length) {
           common.url = sources[0].url
           const notes = [...new Set(resolved.map((part) => part.source.notes || '-').filter((note) => note !== '-'))]
@@ -743,8 +982,12 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
         let bestGroup = bestGroups.join(' + ')
         let bestSize = resolved.reduce((sum, part) => sum + (part.best.size || 0), 0)
         const localGroupKeys = new Set(localGroups.map((group) => group.toLowerCase()))
-        let ownsAllBest = resolved.every((part) => [...partBestGroups(part)].some((group) => localGroupKeys.has(group)))
-        const commonBest = commonBestRelease(resolved, localGroupKeys)
+        const fullyOwnedByPart = resolved.map((part) => new Set<string>((partOwnership.owned[part.label || ''] || []).map((group) => group.toLowerCase())))
+        let ownsAllBest = resolved.every((part, index) => [...partBestGroups(part)].some((group) => fullyOwnedByPart[index].has(group)))
+        const commonOwnedGroups = fullyOwnedByPart.length
+          ? [...fullyOwnedByPart.slice(1).reduce((commonGroups, groups) => new Set([...commonGroups].filter((group) => groups.has(group))), fullyOwnedByPart[0])]
+          : [...localGroupKeys]
+        const commonBest = commonBestRelease(resolved, new Set(commonOwnedGroups))
         if (commonBest) { bestGroup = commonBest.releaseGroup; bestSize = commonBest.size || 0; ownsAllBest = true }
         const releases: JsonObject[] = []
         if (ownsAllBest) {
@@ -863,14 +1106,91 @@ async function qbRequest(config: Config, path: string, init: RequestInit = {}, r
   return response
 }
 
-export async function qbAddTorrent(config: Config, magnet: string, category?: string): Promise<void> {
+function magnetInfoHash(magnet: string): string | null {
+  const hash = magnet.match(/(?:[?&]xt=urn:btih:)([0-9a-f]{40})(?:&|$)/i)?.[1]
+  return hash ? hash.toLowerCase() : null
+}
+
+function normalizedTorrentPath(value: unknown): string {
+  return String(value || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '').toLowerCase()
+}
+
+async function qbPostWithFallback(config: Config, paths: string[], body: URLSearchParams): Promise<void> {
+  let lastError = ''
+  for (const [index, path] of paths.entries()) {
+    const response = await qbRequest(config, path, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
+    })
+    const text = await response.text()
+    if (response.status === 200) return
+    lastError = `HTTP ${response.status}${text ? `: ${text.slice(0, 120)}` : ''}`
+    if (index === paths.length - 1 || (response.status !== 404 && response.status !== 405)) break
+  }
+  throw new Error(`qBittorrent request failed (${lastError})`)
+}
+
+async function qbSelectTorrentFiles(config: Config, hash: string, selectedFiles: string[]): Promise<void> {
+  const stateBody = new URLSearchParams({ hashes: hash })
+  // Magnet metadata is exchanged only while the torrent is running. Start it
+  // long enough to obtain the file list, then stop it before changing any
+  // priorities so the final download contains only the requested cour.
+  await qbPostWithFallback(config, ['/api/v2/torrents/start', '/api/v2/torrents/resume'], stateBody)
+  let files: JsonObject[] | null = null
+  try {
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      const response = await qbRequest(config, `/api/v2/torrents/files?hash=${encodeURIComponent(hash)}`)
+      const text = await response.text()
+      if (response.status === 200) {
+        const parsed = JSON.parse(text) as JsonObject[]
+        if (parsed.length) { files = parsed; break }
+      } else if (response.status !== 404 && response.status !== 409) {
+        throw new Error(`Could not load torrent files (HTTP ${response.status}: ${text.slice(0, 120)})`)
+      }
+      await sleep(100)
+    }
+    if (!files) throw new Error('Timed out waiting for qBittorrent to load the torrent metadata')
+  } catch (error) {
+    try { await qbPostWithFallback(config, ['/api/v2/torrents/stop', '/api/v2/torrents/pause'], stateBody) } catch { /* preserve the metadata error */ }
+    throw error
+  }
+  await qbPostWithFallback(config, ['/api/v2/torrents/stop', '/api/v2/torrents/pause'], stateBody)
+
+  const wanted = new Set(selectedFiles.map(normalizedTorrentPath).filter(Boolean))
+  const indexedFiles = files.map((file, index) => ({ file, index }))
+  let selected = indexedFiles.filter(({ file }) => wanted.has(normalizedTorrentPath(file.name)))
+  if (!selected.length) {
+    selected = indexedFiles.filter(({ file }) => {
+      const path = normalizedTorrentPath(file.name)
+      return [...wanted].some((wantedPath) => path.endsWith(`/${wantedPath}`) || wantedPath.endsWith(`/${path}`))
+    })
+  }
+  if (!selected.length) throw new Error('The selected cour files could not be matched in qBittorrent; the torrent was left stopped')
+
+  const allIds = files.map((file, index) => String(file.index ?? index)).join('|')
+  const selectedIds = selected.map(({ file, index }) => String(file.index ?? index)).join('|')
+  await qbPostWithFallback(config, ['/api/v2/torrents/filePrio'], new URLSearchParams({ hash, id: allIds, priority: '0' }))
+  await qbPostWithFallback(config, ['/api/v2/torrents/filePrio'], new URLSearchParams({ hash, id: selectedIds, priority: '1' }))
+  await qbPostWithFallback(config, ['/api/v2/torrents/start', '/api/v2/torrents/resume'], stateBody)
+}
+
+export async function qbAddTorrent(config: Config, magnet: string, category?: string, selectedFiles: string[] = []): Promise<void> {
   return withQbLock(async () => {
     const body = new URLSearchParams({ urls: magnet }); if (category) body.set('category', category)
+    if (selectedFiles.length) { body.set('paused', 'true'); body.set('stopped', 'true') }
     const response = await qbRequest(config, '/api/v2/torrents/add', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body })
     const text = await response.text()
     if (response.status === 200) {
-      if (text.includes('Ok')) return
-      try { const data = JSON.parse(text); if (data.success_count > 0 || data.added_torrent_ids?.length) return } catch { /* handled below */ }
+      let accepted = text.includes('Ok')
+      if (!accepted) {
+        try { const data = JSON.parse(text); accepted = data.success_count > 0 || Boolean(data.added_torrent_ids?.length) } catch { /* handled below */ }
+      }
+      if (accepted) {
+        const hash = magnetInfoHash(magnet)
+        if (selectedFiles.length && !hash) throw new Error('Cannot select torrent files without a v1 info hash')
+        if (selectedFiles.length) await qbSelectTorrentFiles(config, hash!, selectedFiles)
+        qbCache = { data: null, timestamp: 0 }
+        return
+      }
     }
     throw new Error(`qBittorrent rejected the torrent (HTTP ${response.status}: ${text.slice(0, 120)})`)
   })
@@ -893,16 +1213,85 @@ export async function qbGetTorrents(config: Config, hashes?: string[]): Promise<
   })
 }
 
+export type QbTorrentAction = 'pause' | 'resume' | 'remove'
+
+export async function qbControlTorrents(
+  config: Config,
+  hashes: string[],
+  action: QbTorrentAction,
+  deleteFiles = false,
+): Promise<void> {
+  const validHashes = [...new Set(hashes.map((hash) => hash.toLowerCase()).filter((hash) => /^[0-9a-f]{40}$/.test(hash)))]
+  if (!validHashes.length) throw new Error('No valid torrent hashes provided')
+
+  return withQbLock(async () => {
+    const body = new URLSearchParams({ hashes: validHashes.join('|') })
+    let paths: string[]
+    if (action === 'pause') paths = ['/api/v2/torrents/stop', '/api/v2/torrents/pause']
+    else if (action === 'resume') paths = ['/api/v2/torrents/start', '/api/v2/torrents/resume']
+    else {
+      paths = ['/api/v2/torrents/delete']
+      body.set('deleteFiles', String(deleteFiles))
+    }
+
+    let lastError = ''
+    for (let index = 0; index < paths.length; index++) {
+      const response = await qbRequest(config, paths[index], {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      })
+      const text = await response.text()
+      if (response.status === 200) {
+        qbCache = { data: null, timestamp: 0 }
+        return
+      }
+      lastError = `HTTP ${response.status}${text ? `: ${text.slice(0, 120)}` : ''}`
+      if (index === paths.length - 1 || (response.status !== 404 && response.status !== 405)) break
+    }
+    throw new Error(`qBittorrent rejected the ${action} request (${lastError})`)
+  })
+}
+
 export function normalizeQbStates(states: string[]): string {
   if (!states.length) return 'unknown'
   if (states.some((state) => ['error', 'unknown'].includes(state))) return 'error'
   const downloading = new Set(['downloading', 'forcedDL', 'metaDL', 'queuedDL', 'stalledDL', 'checkingDL', 'allocating', 'checkingResumeData'])
   const uploading = new Set(['uploading', 'forcedUP', 'queuedUP', 'stalledUP'])
-  const paused = new Set(['pausedDL', 'pausedUP'])
+  const paused = new Set(['pausedDL', 'pausedUP', 'stoppedDL', 'stoppedUP'])
   if (states.every((state) => uploading.has(state))) return 'complete'
   if (states.some((state) => downloading.has(state))) return 'downloading'
   if (states.every((state) => paused.has(state))) return 'paused'
   return 'unknown'
+}
+
+export interface BulkDownloadTarget {
+  key: string
+  release: number
+  arr: string
+  part: string
+  hashes: string[]
+  selectedFiles?: string[]
+}
+
+export function bulkDownloadTargets(results: JsonObject[] = resultsForRequest()): BulkDownloadTarget[] {
+  const targets: BulkDownloadTarget[] = []
+  for (const result of results) {
+    if (result.status !== 'upgrade' || !result.key) continue
+    for (const [releaseIndex, release] of (result.releases || []).entries()) {
+      if (release.kind !== 'best' || !release.downloadable) continue
+      const hashes = [...new Set<string>(
+        (release.info_hashes || [])
+          .map((hash: unknown) => String(hash).toLowerCase())
+          .filter((hash: string) => /^[0-9a-f]{40}$/.test(hash)),
+      )]
+    if (hashes.length) targets.push({
+      key: String(result.key), release: releaseIndex, arr: String(result.arr || ''), part: String(release.part || ''), hashes,
+      ...(release.selected_files?.length ? { selectedFiles: [...release.selected_files] } : {}),
+    })
+    }
+  }
+  return targets
 }
 
 export function resultsForRequest(): JsonObject[] {
