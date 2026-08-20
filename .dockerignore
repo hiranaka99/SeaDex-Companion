@@ -19,6 +19,7 @@ Dockerfile
 .vscode/
 logs/
 notified.json
+owned_torrents.json
 frontend/node_modules/
 node_modules/
 dist/

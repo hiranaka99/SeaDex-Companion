@@ -184,8 +184,15 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
   useEffect(() => {
     const activePollers = pollers.current
     for (const season of group.seasons) {
-      const owned = (rel: Release) =>
-        season.have.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
+      // Mirror the Season download-button logic: for split seasons (cours) use
+      // the per-part ownership so a download for one cour is not skipped just
+      // because the same release group is owned for a different cour.
+      const owned = (rel: Release) => {
+        const ownedGroups = season.precise_part_ownership
+          ? (season.owned_by_part?.[rel.part || ''] || [])
+          : season.have
+        return ownedGroups.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
+      }
       for (const { rel, index } of uniqueReleases(season.releases || [])) {
         if (!rel.downloadable || owned(rel)) continue
         api

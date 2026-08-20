@@ -3,7 +3,7 @@ import { ResultItem, Config, Status, GroupedCard } from '../types'
 import { groupResults, formatBytes, seasonLabel } from '../utils'
 import Card from './Card'
 import BulkDownloadDialog from './BulkDownloadDialog'
-import ConfirmDialog from './ConfirmDialog'
+import BulkCancelDialog from './BulkCancelDialog'
 import Icon, { IconName } from './Icons'
 import { useToast } from './Toast'
 import * as api from '../api'
@@ -95,7 +95,8 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
       .map((result) => result.key),
   ).size, [results])
   const progress = status.total ? Math.round((status.progress / status.total) * 100) : 0
-  const autoCheck = status.next_check ? Math.max(0, Math.round((status.next_check - Date.now() / 1000) / 60)) : null
+  const autoCheckMinutes = status.next_check ? Math.max(0, Math.round((status.next_check - Date.now() / 1000) / 60)) : null
+  const autoCheckLabel = autoCheckMinutes == null ? null : (() => { const hours = Math.floor(autoCheckMinutes / 60); const minutes = autoCheckMinutes % 60; return hours > 0 ? (minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`) : `${minutes} min` })()
   const clearFilters = () => { setSearch(''); setArr(''); setStatusFilter(''); setSort('recommended'); setShowHidden(false) }
   const statusFilters: { value: string; label: string; count: number; tone: string; icon: IconName }[] = [
     { value: '', label: 'All', count: allGroups.length, tone: 'text-ink', icon: 'library' },
@@ -114,7 +115,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
       } else {
         toast.show(result.count ? `Cancelled ${result.count} download${result.count === 1 ? '' : 's'}; files were kept` : 'No active bulk downloads found', result.count ? 'success' : 'info')
       }
-      if (action === 'start') setBulkConfirm(null)
+      setBulkConfirm(null)
     } catch (error: any) {
       toast.show(`Bulk ${action === 'start' ? 'download' : 'cancel'} failed: ${error.message}`, 'error')
     } finally {
@@ -125,10 +126,10 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
   return (
     <section>
       <header className="mb-6 flex flex-wrap items-start justify-between gap-5">
-        <div><p className="mb-1 text-xs font-bold tracking-[0.14em] text-accent-bright uppercase">Overview</p><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}</span>{autoCheck !== null && <span>Next check in ~{autoCheck} min</span>}</div></div>
+        <div><p className="mb-1 text-xs font-bold tracking-[0.14em] text-accent-bright uppercase">Overview</p><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}</span>{autoCheckLabel !== null && <span>Next check in ~{autoCheckLabel}</span>}</div></div>
         <div className="flex flex-wrap items-center gap-2.5">
-          <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/10 text-good hover:bg-good/18')} onClick={() => setBulkConfirm('start')} disabled={status.running || bulkBusy !== null || upgradeSeasonCount === 0}>{bulkBusy === 'start' ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}<span>Download all</span></button>
-          <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={() => setBulkConfirm('cancel')} disabled={status.running || bulkBusy !== null || upgradeSeasonCount === 0}>{bulkBusy === 'cancel' ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}<span>Cancel all</span></button>
+          <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/10 text-good hover:bg-good/18')} onClick={() => setBulkConfirm('start')} disabled={status.running || bulkBusy !== null || upgradeSeasonCount === 0}>{bulkBusy === 'start' ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}<span>Bulk download</span></button>
+          <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={() => setBulkConfirm('cancel')} disabled={status.running || bulkBusy !== null || upgradeSeasonCount === 0}>{bulkBusy === 'cancel' ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}<span>Bulk cancel</span></button>
           <span className="mx-1 h-9 w-px shrink-0 bg-line-strong" aria-hidden="true" />
           <button className={buttonPrimary} onClick={onScan} disabled={status.running || bulkBusy !== null}>{status.running ? <span className="size-4 animate-spin rounded-full border-2 border-white/35 border-t-white"/> : <Icon name="play" size={17}/>}<span>{status.running ? 'Scanning library…' : 'Scan library'}</span></button>
         </div>
@@ -161,14 +162,11 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
         onConfirm={(selections) => void handleBulkDownloads('start', selections)}
         onClose={() => { if (!bulkBusy) setBulkConfirm(null) }}
       />
-      <ConfirmDialog
+      <BulkCancelDialog
         open={bulkConfirm === 'cancel'}
-        title="Cancel all active downloads?"
-        description="Remove all incomplete best-release torrents for upgradable and partial titles from qBittorrent. Downloaded files will be kept."
-        confirmLabel="Cancel all"
-        dangerous
-        onConfirm={() => void handleBulkDownloads('cancel')}
-        onClose={() => setBulkConfirm(null)}
+        busy={bulkBusy === 'cancel'}
+        onConfirm={(selections) => void handleBulkDownloads('cancel', selections)}
+        onClose={() => { if (!bulkBusy) setBulkConfirm(null) }}
       />
     </section>
   )

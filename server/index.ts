@@ -3,9 +3,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, isAbsolute, normalize, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, bulkDownloadTargets, getState, loadConfig, loadLastResults,
-  log, normalizeQbStates, publicConfig, qbAddTorrent, qbControlTorrents, qbGetTorrents, resultsForRequest, runScan,
-  saveConfig, SECRET_CONFIG_KEYS, setState, testIntegration,
+  DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, bulkDownloadTargets, forgetOwnedTorrents, getState,
+  indexResultReleases, loadConfig, loadLastResults, log, normalizeQbStates, ownedTorrentsSnapshot, publicConfig, qbAddTorrent, qbControlTorrents,
+  qbGetTorrents, recordOwnedTorrents, resultsForRequest, runScan, saveConfig, SECRET_CONFIG_KEYS, setState, testIntegration,
 } from './app.js'
 import {
   AuthError, authState, expiredSessionCookie, isAuthenticated, login, logout, sessionCookie,
@@ -220,6 +220,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       log('ERROR', `Download failed for ${key} (release ${releaseIndex}): ${message}`)
       return sendJson(response, 502, { ok: false, error: message })
     }
+    recordOwnedTorrents(hashes)
     log('INFO', `Sent to qBittorrent: ${key} release ${releaseIndex}, ${hashes.length} torrent(s) (category: ${category || '-'})`)
     return sendJson(response, 200, { ok: true })
   }
@@ -267,6 +268,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           )
         }
         const added = new Set(pending.keys())
+        recordOwnedTorrents([...added])
         log('INFO', `Bulk download sent ${added.size} torrent(s) to qBittorrent`)
         return sendJson(response, 200, {
           ok: true,
@@ -275,25 +277,99 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         })
       }
 
-      const targets = availableTargets
-      const requestedHashes = [...new Set(targets.flatMap((target) => target.hashes))]
-      const torrents = requestedHashes.length ? await qbGetTorrents(config, requestedHashes) : []
-      const incompleteHashes = torrents
-        .filter((torrent) => Number(torrent.progress || 0) < 0.999)
+      // Only ever cancel/remove torrents this app added itself (tracked in the
+      // ownership ledger), never torrents the user added manually.
+      const index = indexResultReleases()
+      const ownedSet = new Set(ownedTorrentsSnapshot())
+      const torrents = ownedSet.size ? await qbGetTorrents(config, [...ownedSet]) : []
+      const presentHashes = new Set(
+        torrents.map((torrent) => String(torrent.hash || '').toLowerCase()).filter((hash) => /^[0-9a-f]{40}$/.test(hash)),
+      )
+      const incompleteOwned = torrents
+        .filter((torrent) => {
+          const hash = String(torrent.hash || '').toLowerCase()
+          return /^[0-9a-f]{40}$/.test(hash) && ownedSet.has(hash) && Number(torrent.progress || 0) < 0.999
+        })
         .map((torrent) => String(torrent.hash || '').toLowerCase())
-        .filter((hash) => /^[0-9a-f]{40}$/.test(hash))
+      // With explicit selections only the checked releases are cancelled;
+      // without selections the legacy "cancel everything" behavior is kept.
+      const wanted = Array.isArray(data.selections)
+        ? new Set<string>(
+            (data.selections as Array<{ key?: unknown; release?: unknown }>).flatMap((selection) => {
+              const targetKey = `${String(selection?.key || '')}\0${Number.parseInt(String(selection?.release ?? -1), 10)}`
+              return [...(index.byTarget.get(targetKey) || [])]
+            }),
+          )
+        : null
+      const incompleteHashes = incompleteOwned.filter((hash) => !wanted || wanted.has(hash))
       if (incompleteHashes.length) await qbControlTorrents(config, incompleteHashes, 'remove', false)
       const cancelled = new Set(incompleteHashes)
-      const affectedTargets = targets
-        .filter((target) => target.hashes.some((hash) => cancelled.has(hash)))
-        .map(({ key, release }) => ({ key, release }))
-      log('INFO', `Bulk cancel removed ${incompleteHashes.length} incomplete torrent(s) from qBittorrent and preserved their files`)
+      const affectedTargetKeys = new Set<string>()
+      for (const hash of cancelled) {
+        const info = index.byHash.get(hash)
+        if (info) affectedTargetKeys.add(`${info.key}\0${info.release}`)
+      }
+      const affectedTargets = [...affectedTargetKeys].map((targetKey) => {
+        const [key, release] = targetKey.split('\0')
+        return { key, release: Number(release) }
+      })
+      // Keep the ledger in sync: forget the removed torrents, plus any app-added
+      // torrent the user deleted manually from qBittorrent in the meantime.
+      const staleHashes = [...ownedSet].filter((hash) => !presentHashes.has(hash) && !cancelled.has(hash))
+      forgetOwnedTorrents([...incompleteHashes, ...staleHashes])
+      log('INFO', `Bulk cancel removed ${incompleteHashes.length} incomplete torrent(s) added by the app and preserved their files`)
       return sendJson(response, 200, { ok: true, count: incompleteHashes.length, targets: affectedTargets })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       log('ERROR', `Bulk download ${action} failed: ${message}`)
       return sendJson(response, 502, { ok: false, error: message })
     }
+  }
+
+  if (method === 'GET' && path === '/api/download_bulk/cancelable') {
+    const index = indexResultReleases()
+    const ownedSet = new Set(ownedTorrentsSnapshot())
+    let torrents: JsonObject[] = []
+    if (ownedSet.size) {
+      try {
+        torrents = await qbGetTorrents(loadConfig(), [...ownedSet])
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        log('ERROR', `Cancelable bulk downloads check failed: ${message}`)
+        return sendJson(response, 502, { ok: false, error: message })
+      }
+    }
+    // One row per (result, release): every still-incomplete torrent the app
+    // added for that release, so bulk cancel can offer torrent selection just
+    // like the bulk download dialog offers release selection.
+    const byTarget = new Map<string, JsonObject>()
+    for (const torrent of torrents) {
+      const hash = String(torrent.hash || '').toLowerCase()
+      if (!/^[0-9a-f]{40}$/.test(hash) || !ownedSet.has(hash)) continue
+      if (Number(torrent.progress || 0) >= 0.999) continue
+      const info = index.byHash.get(hash)
+      if (!info) continue
+      const targetKey = `${info.key}\0${info.release}`
+      const entry = byTarget.get(targetKey) || {
+        key: info.key,
+        release: info.release,
+        title: info.title,
+        season: info.season,
+        part: info.part,
+        release_group: info.releaseGroup,
+        tracker: info.tracker,
+        size: info.size,
+        hashes: [],
+      }
+      entry.hashes.push(hash)
+      byTarget.set(targetKey, entry)
+    }
+    const downloads = [...byTarget.values()].sort((left, right) =>
+      left.title.localeCompare(right.title, undefined, { sensitivity: 'base' }) ||
+      (left.season || 0) - (right.season || 0) ||
+      left.part.localeCompare(right.part),
+    )
+    return sendJson(response, 200, { ok: true, downloads })
   }
 
   if (method === 'GET' && path === '/api/download_progress') {
@@ -344,6 +420,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       log('ERROR', `Torrent ${action} failed for ${key} (release ${releaseIndex}): ${message}`)
       return sendJson(response, 502, { ok: false, error: message })
     }
+    if (action === 'remove') forgetOwnedTorrents(hashes)
     const detail = action === 'remove' ? (deleteFiles ? ' and deleted its files' : ' and preserved its files') : ''
     log('INFO', `${action === 'pause' ? 'Paused' : action === 'resume' ? 'Resumed' : 'Removed'} qBittorrent torrent for ${key} release ${releaseIndex}${detail}`)
     return sendJson(response, 200, { ok: true })

@@ -77,6 +77,17 @@
   animation: skeleton-shimmer 1.5s infinite linear;
 }
 
+/* Remove the native increment/decrement arrows on number inputs */
+.no-spinner {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.no-spinner::-webkit-outer-spin-button,
+.no-spinner::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 @property --border-angle {
   syntax: "<angle>";
   initial-value: 0deg;

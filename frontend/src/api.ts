@@ -118,6 +118,21 @@ export interface BulkDownloadResult {
   error?: string
 }
 
+export interface CancelableDownload {
+  key: string
+  release: number
+  title: string
+  season: number | null
+  part: string
+  release_group: string
+  tracker: string
+  size: number
+  hashes: string[]
+}
+
+export const getCancelableBulkDownloads = () =>
+  api<{ ok: boolean; downloads: CancelableDownload[]; error?: string }>('/api/download_bulk/cancelable')
+
 export async function bulkDownloads(action: 'start' | 'cancel', selections: BulkDownloadTarget[] = []): Promise<BulkDownloadResult> {
   const result = await api<BulkDownloadResult>('/api/download_bulk', {
     method: 'POST',
