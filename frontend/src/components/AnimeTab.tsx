@@ -96,7 +96,6 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
   ).size, [results])
   const progress = status.total ? Math.round((status.progress / status.total) * 100) : 0
   const autoCheck = status.next_check ? Math.max(0, Math.round((status.next_check - Date.now() / 1000) / 60)) : null
-  const activeFilterCount = Number(Boolean(search)) + Number(Boolean(arr)) + Number(Boolean(statusFilter)) + Number(showHidden) + Number(sort !== 'recommended')
   const clearFilters = () => { setSearch(''); setArr(''); setStatusFilter(''); setSort('recommended'); setShowHidden(false) }
   const statusFilters: { value: string; label: string; count: number; tone: string; icon: IconName }[] = [
     { value: '', label: 'All', count: allGroups.length, tone: 'text-ink', icon: 'library' },
@@ -144,7 +143,6 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
           <select aria-label="Source" className={cx(control, 'cursor-pointer')} value={arr} onChange={(event) => setArr(event.target.value)}><option value="">All sources</option><option value="Sonarr">Sonarr</option><option value="Radarr">Radarr</option></select>
           <select aria-label="Sort library" className={cx(control, 'cursor-pointer')} value={sort} onChange={(event) => setSort(event.target.value)}><option value="recommended">Recommended order</option><option value="title">Title A–Z</option><option value="size">Largest size change</option></select>
           <button type="button" className={cx('inline-flex cursor-pointer items-center gap-2 rounded-control border px-3.5 py-2.5 text-sm font-semibold transition-colors', showHidden ? 'border-warn/35 bg-warn/10 text-warn' : 'border-line bg-panel text-muted hover:text-ink')} onClick={() => setShowHidden((value) => !value)}><Icon name={showHidden ? 'eye-off' : 'eye'} size={17}/>{showHidden ? 'Hidden only' : 'Hidden'}</button>
-          {activeFilterCount > 0 && <button type="button" className="cursor-pointer px-2 text-xs font-semibold text-accent-bright hover:text-ink" onClick={clearFilters}>Clear {activeFilterCount}</button>}
         </div>
         <div className="mt-3 flex items-center gap-1 overflow-x-auto pb-0.5" aria-label="Filter by status">
           {statusFilters.map((filter) => <button key={filter.value} type="button" className={cx('inline-flex shrink-0 cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold transition-colors', statusFilter === filter.value ? 'bg-accent/14 text-accent-bright' : 'text-muted hover:bg-panel hover:text-ink')} onClick={() => setStatusFilter(filter.value)}><Icon name={filter.icon} size={15} className={cx('shrink-0', filter.tone)}/><span>{filter.label}</span><span className={cx('text-[10px] tabular-nums', filter.tone)}>{filter.count}</span></button>)}

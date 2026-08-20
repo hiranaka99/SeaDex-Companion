@@ -67,7 +67,6 @@ export default function TopBar({ tab, onTabChange, status, username, onLogout, c
             )} aria-current={tab === item.id ? 'page' : undefined} onClick={() => onTabChange(item.id)}>
               <Icon name={item.icon} size={19} className={cx('shrink-0 transition-colors', tab === item.id ? 'text-accent-bright' : 'text-muted-dim group-hover:text-ink')} />
               {!collapsed && item.label}
-              {!collapsed && tab === item.id && <span className="ml-auto size-1.5 rounded-full bg-accent" />}
             </button>
           ))}
         </nav>

@@ -915,7 +915,7 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
   const started = Date.now()
   try {
     log('INFO', 'Scan started')
-    setState({ running: true, error: null, progress: 0, total: 0, message: 'Loading SeaDEX best releases…', results: [], last_run: null })
+    setState({ running: true, error: null, progress: 0, total: 0, message: 'Loading SeaDex best releases…', results: [], last_run: null })
     const best = await (dependencies.seadexBest || seadexBest)()
     log('INFO', `releases.moe: ${best.size} best-release entries loaded`)
     setState({ message: 'Loading local library…' })
