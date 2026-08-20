@@ -1,6 +1,6 @@
 # SeaDex Companion
 
-> ⚠️ **Disclaimer:** This project is **100% vibe coded** — i still spend alot of time making sure it is as bug free and user friendly as possible.
+> ⚠️ **Disclaimer:** This project is **100% vibe coded** — i still spend a lot of time making sure it is as bug free and user friendly as possible.
 
 SeaDex Companion is a web UI that compares your **Sonarr / Radarr** anime library against the best releases on [releases.moe](https://releases.moe/) (**SeaDex**) — and shows exactly which upgrades you're still missing, with anime artwork.
 
@@ -101,10 +101,16 @@ npm --prefix frontend run dev   # Vite UI, proxies /api to :8080
 
 ## Images
 ### Library
-<img width="100%" alt="zen_O7xSifCh4E" src="https://github.com/user-attachments/assets/60833e2d-eaea-4991-bf94-95b8ff938eda" />
+<img width="100%" alt="zen_048GFZmbcS" src="https://github.com/user-attachments/assets/126af5eb-ba68-4b51-ad45-b9d86151522a" />
+
 
 ### Details Card
-<img width="380" alt="zen_F4Ypy8e1k4" src="https://github.com/user-attachments/assets/cc25a539-4e92-4dd2-959f-358341f3c2c8" />
+<img width="60%" alt="zen_F4Ypy8e1k4" src="https://github.com/user-attachments/assets/cc25a539-4e92-4dd2-959f-358341f3c2c8" />
 
-### Bulk Download
-<img width="32%" alt="zen_Audv4T9HAB" src="https://github.com/user-attachments/assets/0f6e81b5-a185-4cbd-80ee-52670b675120" /> <img width="32%" alt="zen_pbRd7PYwSW" src="https://github.com/user-attachments/assets/5e2ce291-b445-456d-a6b0-76765f65b12b" /> <img width="32%" alt="zen_sRHn3K7fMu" src="https://github.com/user-attachments/assets/01e055d7-24ae-461b-9ec6-a4994ee44b53" />
+### Bulk Download / Cancel
+<img width="60%" alt="zen_QsCLbBpGll" src="https://github.com/user-attachments/assets/e075cd65-e51d-4914-82df-0459105acf83" />
+
+# 
+
+<img width="60%" alt="zen_hbDMnDwqHo" src="https://github.com/user-attachments/assets/ddf51c68-717d-4f4b-92a9-8da7b90c44be" />
+
