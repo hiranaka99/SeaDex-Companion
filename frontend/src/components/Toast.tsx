@@ -4,16 +4,18 @@ import { cx } from '../styles'
 
 type ToastTone = 'success' | 'error' | 'info'
 interface ToastItem { id: number; message: string; tone: ToastTone }
-interface ToastApi { show: (message: string, tone?: ToastTone) => void }
+interface ToastApi { show: (message: string, tone?: ToastTone, durationMs?: number) => void }
 
 const ToastContext = createContext<ToastApi | null>(null)
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([])
-  const show = useCallback((message: string, tone: ToastTone = 'info') => {
+  const show = useCallback((message: string, tone: ToastTone = 'info', durationMs?: number) => {
     const id = Date.now() + Math.random()
     setItems((current) => [...current, { id, message, tone }])
-    window.setTimeout(() => setItems((current) => current.filter((item) => item.id !== id)), 4200)
+    // Errors need to stay on screen long enough to be read in full.
+    const duration = durationMs ?? (tone === 'error' ? 10_000 : 4200)
+    window.setTimeout(() => setItems((current) => current.filter((item) => item.id !== id)), duration)
   }, [])
   const value = useMemo(() => ({ show }), [show])
   return (

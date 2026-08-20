@@ -4,7 +4,7 @@ import { beforeEach, describe, test } from 'node:test'
 import {
   anilistChain, arrApiUrl, arrBaseUrl, arrItemUrl, bulkDownloadTargets, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, effectiveSeasonParts,
   encryptSecretValues, getState, localItems, localPartOwnership, normalizeQbStates, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
-  qbAddTorrent, qbControlTorrents, releaseDict, scopeReleaseToPart,
+  qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart,
   resetRuntimeForTests, runScan, testIntegration,
 } from '../server/app.js'
 import type { JsonObject, ReleaseCandidate } from '../server/types.js'
@@ -248,6 +248,74 @@ describe('qBittorrent torrent controls', () => {
       { hash: 'a'.repeat(40), id: '9', priority: '1' },
     ])
     assert.equal(requests.at(-1)?.url, 'http://qb.example/api/v2/torrents/start')
+  })
+
+  test('removes the torrent and reports a metadata failure when metadata never arrives', async () => {
+    const originalFetch = globalThis.fetch
+    const requests: { url: string; body: string }[] = []
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      requests.push({ url, body: String(init?.body || '') })
+      if (url.endsWith('/api/v2/auth/login')) {
+        return new Response('Ok.', { status: 200, headers: { 'Set-Cookie': 'SID=test; Path=/' } })
+      }
+      if (url.endsWith('/api/v2/torrents/add')) return new Response('Ok.', { status: 200 })
+      if (url.includes('/api/v2/torrents/files?')) return new Response('[]', { status: 200 })
+      return new Response('', { status: 200 })
+    }) as typeof fetch
+    const config = { ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' }
+    try {
+      await assert.rejects(
+        () => qbAddTorrent(config, `magnet:?xt=urn:btih:${'a'.repeat(40)}`, 'sonarr-anime', ['Show.S01E01.mkv'], 400),
+        /metadata fetching failed/i,
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    const removal = requests.find((request) => request.url.endsWith('/api/v2/torrents/delete'))
+    assert.ok(removal, 'the torrent must be removed after the metadata timeout')
+    assert.equal(new URLSearchParams(removal!.body).get('deleteFiles'), 'false')
+  })
+
+  test('keeps adding the remaining torrents when one fails to fetch metadata', async () => {
+    const originalFetch = globalThis.fetch
+    const requests: { url: string; body: string }[] = []
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      requests.push({ url, body: String(init?.body || '') })
+      if (url.endsWith('/api/v2/auth/login')) {
+        return new Response('Ok.', { status: 200, headers: { 'Set-Cookie': 'SID=test; Path=/' } })
+      }
+      if (url.endsWith('/api/v2/torrents/add')) return new Response('Ok.', { status: 200 })
+      if (url.includes('/api/v2/torrents/files?')) {
+        const hash = new URL(url).searchParams.get('hash')
+        // The first torrent never exchanges magnet metadata; the second one does.
+        if (hash === 'a'.repeat(40)) return new Response('[]', { status: 200 })
+        return new Response(JSON.stringify([{ index: 0, name: 'Root/Show.S01E01.mkv' }]), { status: 200 })
+      }
+      return new Response('', { status: 200 })
+    }) as typeof fetch
+    const config = { ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' }
+    try {
+      const outcome = await qbBulkAddTorrents(config, [
+        { hash: 'a'.repeat(40), label: 'Broken Torrent', selectedFiles: ['Show.S01E01.mkv'], timeoutMs: 400 },
+        { hash: 'b'.repeat(40), label: 'Working Torrent', selectedFiles: ['Show.S01E01.mkv'], timeoutMs: 4_000 },
+      ])
+
+      assert.deepEqual(outcome.added, ['b'.repeat(40)])
+      assert.equal(outcome.failures.length, 1)
+      assert.equal(outcome.failures[0].hash, 'a'.repeat(40))
+      assert.equal(outcome.failures[0].label, 'Broken Torrent')
+      assert.match(outcome.failures[0].error, /metadata fetching failed/i)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    assert.ok(requests.some((request) => request.url.endsWith('/api/v2/torrents/add') && new URLSearchParams(request.body).get('urls')?.includes('b'.repeat(40))),
+      'the second torrent must still be added after the first one failed')
+    const removal = requests.find((request) => request.url.endsWith('/api/v2/torrents/delete'))
+    assert.ok(removal && new URLSearchParams(removal.body).get('hashes') === 'a'.repeat(40))
   })
 })
 

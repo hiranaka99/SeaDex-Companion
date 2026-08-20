@@ -111,12 +111,31 @@ export interface BulkDownloadTarget {
   release: number
 }
 
+export interface BulkDownloadFailure {
+  hash: string
+  label: string
+  error: string
+}
+
 export interface BulkDownloadResult {
   ok: boolean
   count: number
   targets: BulkDownloadTarget[]
+  failures?: BulkDownloadFailure[]
   error?: string
 }
+
+/** Live per-torrent state of the in-flight bulk download batch. */
+export interface BulkDownloadStatus {
+  ok: boolean
+  finished: boolean
+  pending: string[]
+  added: string[]
+  failures: BulkDownloadFailure[]
+}
+
+export const getBulkDownloadStatus = () =>
+  api<BulkDownloadStatus>('/api/download_bulk/status')
 
 export interface CancelableDownload {
   key: string
@@ -133,11 +152,11 @@ export interface CancelableDownload {
 export const getCancelableBulkDownloads = () =>
   api<{ ok: boolean; downloads: CancelableDownload[]; error?: string }>('/api/download_bulk/cancelable')
 
-export async function bulkDownloads(action: 'start' | 'cancel', selections: BulkDownloadTarget[] = []): Promise<BulkDownloadResult> {
+export async function bulkDownloads(action: 'start' | 'cancel', selections: BulkDownloadTarget[] = [], deleteFiles = false): Promise<BulkDownloadResult> {
   const result = await api<BulkDownloadResult>('/api/download_bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, selections }),
+    body: JSON.stringify({ action, selections, delete_files: deleteFiles }),
   })
   window.dispatchEvent(new CustomEvent(DOWNLOADS_CHANGED_EVENT, { detail: { action, targets: result.targets } }))
   return result

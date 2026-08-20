@@ -56,15 +56,25 @@ function buildReview(results: ResultItem[]): Review {
 
 type ViewId = 'ready' | 'unavailable'
 
+export interface BulkOutcome {
+  requested: Set<string>
+  failed: Set<string>
+  /** Hashes whose torrent has not settled yet (metadata still being fetched). */
+  pending: Set<string>
+  /** True while the bulk add request is still in flight. */
+  inflight: boolean
+}
+
 interface Props {
   open: boolean
   results: ResultItem[]
   busy: boolean
+  outcome?: BulkOutcome | null
   onConfirm: (selections: BulkDownloadTarget[]) => void
   onClose: () => void
 }
 
-export default function BulkDownloadDialog({ open, results, busy, onConfirm, onClose }: Props) {
+export default function BulkDownloadDialog({ open, results, busy, outcome, onConfirm, onClose }: Props) {
   const review = useMemo(() => buildReview(results), [results])
   const [selected, setSelected] = useState<Record<string, number>>({})
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})
@@ -113,6 +123,24 @@ export default function BulkDownloadDialog({ open, results, busy, onConfirm, onC
     a.part.localeCompare(b.part),
   )
 
+  // Per-title live outcome while the bulk add is in flight (and after it
+  // finishes): red when any of the selected release's hashes failed, green
+  // when it was sent to qBittorrent, and a "working" state while it is still
+  // waiting on metadata.
+  const groupStatus = (group: ReviewGroup): 'success' | 'failure' | 'pending' | null => {
+    if (!outcome) return null
+    const index = selected[group.id] ?? group.options[0].index
+    const release = group.options.find(({ index: optionIndex }) => optionIndex === index)?.release || group.options[0].release
+    const hashes = (release.info_hashes || []).map((hash) => String(hash).toLowerCase())
+    if (hashes.some((hash) => outcome.failed.has(hash))) return 'failure'
+    if (hashes.some((hash) => outcome.requested.has(hash))) return 'success'
+    if (outcome.pending?.size && hashes.some((hash) => outcome.pending.has(hash))) return 'pending'
+    return null
+  }
+  const inflightProgress = outcome?.inflight
+    ? { settled: outcome.requested.size + outcome.failed.size, total: outcome.requested.size + outcome.failed.size + (outcome.pending?.size || 0) }
+    : null
+
   return (
     <div className="fixed inset-0 z-[90] grid place-items-center bg-black/65 px-4 py-6 backdrop-blur-sm" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
       <section className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" role="dialog" aria-modal="true" aria-labelledby="bulk-download-title">
@@ -120,7 +148,7 @@ export default function BulkDownloadDialog({ open, results, busy, onConfirm, onC
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-good/12 text-good"><Icon name="download" size={19}/></span>
           <div className="min-w-0 flex-1">
             <h2 id="bulk-download-title" className="m-0 text-lg font-extrabold">Review bulk downloads</h2>
-            <p className="mt-1 mb-0 text-sm text-muted">Pick the best release for each title; those with several options need a choice before you can download.</p>
+            <p className="mt-1 mb-0 text-sm text-muted">{outcome?.inflight ? 'Sending torrents to qBittorrent — titles turn green when added, red when metadata fetching fails…' : outcome ? 'Green titles were added to qBittorrent; red titles failed to fetch metadata and were removed.' : 'Pick the best release for each title; those with several options need a choice before you can download.'}</p>
           </div>
           <button type="button" className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onClose} disabled={busy} aria-label="Close"><Icon name="close" size={18}/></button>
         </header>
@@ -145,10 +173,14 @@ export default function BulkDownloadDialog({ open, results, busy, onConfirm, onC
                       const release = option.release
                       const localSize = group.part ? (group.result.local_size_by_part?.[group.part] || 0) : group.result.local_size
                       const delta = release.size && localSize ? release.size - localSize : null
+                      const status = groupStatus(group)
                       return (
-                        <label key={group.id} className={cx('flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', enabled[group.id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft opacity-55')}>
+                        <label key={group.id} className={cx('flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', status === 'success' && 'border-good/50 bg-good/8', status === 'failure' && 'border-bad/50 bg-bad/8', status === 'pending' && 'border-accent/45 bg-accent/8', !status && (enabled[group.id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft opacity-55'))}>
                           <input type="checkbox" className="size-3.5 shrink-0 accent-blue-500" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} />
-                          <span className="font-semibold text-ink">{group.result.title}</span>
+                          {status === 'success' && <Icon name="check" size={13} className="text-good"/>}
+                          {status === 'failure' && <Icon name="alert" size={13} className="text-bad"/>}
+                          {status === 'pending' && <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/>}
+                          <span className={cx('font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : 'text-ink')}>{group.result.title}</span>
                           <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-muted">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
                           <span className="ml-auto flex items-center gap-1.5 tabular-nums" title={`${release.releaseGroup} · ${release.tracker}`}>
                             <span className="text-muted" title="Current local size">{formatBytes(localSize) || '—'}</span>
@@ -166,12 +198,16 @@ export default function BulkDownloadDialog({ open, results, busy, onConfirm, onC
                     const isExpanded = expanded[group.id] === true
                     const chosenOption = group.options.find(({ index }) => index === chosenIndex) || null
                     const localSize = group.part ? (group.result.local_size_by_part?.[group.part] || 0) : group.result.local_size
+                    const status = groupStatus(group)
                     return (
-                      <div key={group.id} className={cx('overflow-hidden rounded-lg border transition-colors', isPending ? 'border-warn/55 bg-warn/8' : 'border-line bg-panel')}>
+                      <div key={group.id} className={cx('overflow-hidden rounded-lg border transition-colors', status === 'success' ? 'border-good/50 bg-good/8' : status === 'failure' ? 'border-bad/50 bg-bad/8' : status === 'pending' ? 'border-accent/45 bg-accent/8' : isPending ? 'border-warn/55 bg-warn/8' : 'border-line bg-panel')}>
                         <div className="flex items-center gap-2 px-3 py-2">
                           <input type="checkbox" className="size-3.5 shrink-0 accent-blue-500" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} aria-label="Include this title" />
                           <button type="button" className="flex min-w-0 flex-1 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 text-left text-xs" onClick={() => setExpanded((current) => ({ ...current, [group.id]: !isExpanded }))} aria-expanded={isExpanded}>
-                            <span className="font-semibold text-ink">{group.result.title}</span>
+                            {status === 'success' && <Icon name="check" size={13} className="text-good"/>}
+                            {status === 'failure' && <Icon name="alert" size={13} className="text-bad"/>}
+                            {status === 'pending' && <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/>}
+                            <span className={cx('font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : 'text-ink')}>{group.result.title}</span>
                             <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-muted">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
                             {chosen ? (
                               <span className="inline-flex items-center gap-1 rounded-full border border-good/40 bg-good/10 px-2 py-0.5 text-[10px] font-extrabold text-good"><Icon name="check" size={12}/>Selected</span>
@@ -238,8 +274,16 @@ export default function BulkDownloadDialog({ open, results, busy, onConfirm, onC
             {pendingChoices > 0 && <span className="inline-flex items-center gap-1 font-bold text-warn"><Icon name="alert" size={13}/>Choose a release for {pendingChoices} title{pendingChoices === 1 ? '' : 's'} first</span>}
           </span>
           <div className="flex gap-2">
-            <button ref={cancelRef} type="button" className={cx(buttonBase, 'border-line bg-panel-raised text-muted hover:text-ink')} onClick={onClose} disabled={busy}>Cancel</button>
-            <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/12 text-good hover:bg-good/20')} onClick={() => onConfirm(selections)} disabled={busy || selections.length === 0 || pendingChoices > 0}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}Download {selections.length || ''}</button>
+            {outcome?.inflight ? (
+              <button type="button" className={cx(buttonBase, 'cursor-not-allowed border-accent/35 bg-accent/12 text-accent-bright')} disabled>
+                <span className="size-4 animate-spin rounded-full border-2 border-accent/35 border-t-accent"/>Sending… {inflightProgress ? `${inflightProgress.settled}/${inflightProgress.total}` : ''}
+              </button>
+            ) : (
+              <>
+                <button ref={cancelRef} type="button" className={cx(buttonBase, 'border-line bg-panel-raised text-muted hover:text-ink')} onClick={onClose} disabled={busy}>{outcome ? 'Close' : 'Cancel'}</button>
+                {!outcome && <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/12 text-good hover:bg-good/20')} onClick={() => onConfirm(selections)} disabled={busy || selections.length === 0 || pendingChoices > 0}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}Download {selections.length || ''}</button>}
+              </>
+            )}
           </div>
         </footer>
       </section>

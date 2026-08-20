@@ -131,6 +131,8 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
   // then release index. Tracking lives here (not inside the details panel) so
   // the animated border keeps spinning even while the details are closed.
   const [dlBySeason, setDlBySeason] = useState<Record<string, Record<number, DlState>>>({})
+  const dlBySeasonRef = useRef<Record<string, Record<number, DlState>>>({})
+  dlBySeasonRef.current = dlBySeason
   const pollers = useRef<Record<string, number>>({})
 
   const stopPolling = (seasonKey: string, release: number) => {
@@ -150,6 +152,15 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
 
   const applyProgress = (seasonKey: string, release: number, p: api.DownloadProgress) => {
     if (!p.ok) return
+    // A torrent we just sent ("sending") that is no longer in qBittorrent means
+    // the add failed and qBittorrent removed it (e.g. the magnet metadata fetch
+    // timed out). Reset to idle so the card stops animating instead of waiting
+    // forever on a torrent that will never download.
+    if (dlBySeasonRef.current[seasonKey]?.[release]?.phase === 'sending' && !p.found) {
+      stopPolling(seasonKey, release)
+      setDlBySeason((s) => ({ ...s, [seasonKey]: { ...(s[seasonKey] || {}), [release]: IDLE_DL } }))
+      return
+    }
     const complete = p.state === 'complete' || (p.found && p.progress >= 0.999)
     const phase = complete ? 'complete' : p.state === 'paused' ? 'paused' : 'downloading'
     setDlBySeason((s) => ({

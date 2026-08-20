@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ResultItem, Config, Status, GroupedCard } from '../types'
 import { groupResults, formatBytes, seasonLabel } from '../utils'
 import Card from './Card'
-import BulkDownloadDialog from './BulkDownloadDialog'
+import BulkDownloadDialog, { BulkOutcome } from './BulkDownloadDialog'
 import BulkCancelDialog from './BulkCancelDialog'
 import Icon, { IconName } from './Icons'
 import { useToast } from './Toast'
@@ -41,6 +41,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
   const [bulkConfirm, setBulkConfirm] = useState<'start' | 'cancel' | null>(null)
   const [bulkBusy, setBulkBusy] = useState<'start' | 'cancel' | null>(null)
+  const [bulkOutcome, setBulkOutcome] = useState<BulkOutcome | null>(null)
   const toast = useToast()
 
   useEffect(() => {
@@ -106,19 +107,82 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
     { value: 'best', label: 'Best quality', count: counts.best, tone: 'text-good', icon: 'check' },
   ]
 
-  const handleBulkDownloads = async (action: 'start' | 'cancel', selections: api.BulkDownloadTarget[] = []) => {
+  const describeBulkFailures = (failures: api.BulkDownloadFailure[]): string => {
+    const shown = failures.slice(0, 3).map((failure) => {
+      const suffix = /metadata fetching failed/i.test(failure.error)
+        ? ' — metadata fetching failed, torrent removed from qBittorrent'
+        : ` — ${failure.error}`
+      return `${failure.label}${suffix}`
+    })
+    return shown.join('; ') + (failures.length > 3 ? `; and ${failures.length - 3} more` : '')
+  }
+
+  const hashesForSelection = (selection: api.BulkDownloadTarget): string[] => {
+    const item = results.find((entry) => entry.key === selection.key)
+    return (item?.releases?.[selection.release]?.info_hashes || []).map((hash: string) => String(hash).toLowerCase())
+  }
+
+  const handleBulkDownloads = async (action: 'start' | 'cancel', selections: api.BulkDownloadTarget[] = [], deleteFiles = false) => {
     setBulkBusy(action)
+    let pollId: number | null = null
     try {
-      const result = await api.bulkDownloads(action, selections)
       if (action === 'start') {
-        toast.show(result.count ? `Sent ${result.count} torrent${result.count === 1 ? '' : 's'} to qBittorrent` : 'No downloadable upgrades found', result.count ? 'success' : 'info')
+        const allHashes = new Set<string>()
+        for (const selection of selections) for (const hash of hashesForSelection(selection)) allHashes.add(hash)
+        // The request settles each torrent one at a time (metadata is fetched
+        // with a 15 second budget per torrent), so poll the live batch status
+        // while it is in flight and color each title as soon as its own
+        // torrent settles instead of only after the whole batch finished.
+        setBulkOutcome({ requested: new Set(), failed: new Set(), pending: new Set(allHashes), inflight: true })
+        const request = api.bulkDownloads('start', selections)
+        pollId = window.setInterval(() => {
+          void api.getBulkDownloadStatus().then((status) => {
+            setBulkOutcome((current) => current ? {
+              requested: new Set(status.added.map((hash) => hash.toLowerCase())),
+              failed: new Set(status.failures.map((failure) => failure.hash.toLowerCase())),
+              pending: new Set(status.pending.map((hash) => hash.toLowerCase())),
+              inflight: true,
+            } : current)
+          }).catch(() => { /* transient poll failure — keep polling */ })
+        }, 700)
+        const result = await request
+        let status: api.BulkDownloadStatus | null = null
+        try { status = await api.getBulkDownloadStatus() } catch { /* fall back to the request result */ }
+        const failures = status && status.failures.length ? status.failures : (result.failures || [])
+        if (result.count > 0) {
+          toast.show(`Sent ${result.count} torrent${result.count === 1 ? '' : 's'} to qBittorrent`, 'success')
+        } else if (!failures.length) {
+          toast.show('No downloadable upgrades found', 'info')
+        }
+        if (failures.length) {
+          toast.show(`${failures.length} torrent${failures.length === 1 ? '' : 's'} could not be added: ${describeBulkFailures(failures)}`, 'error')
+        }
+        const failed = new Set(failures.map((failure) => failure.hash.toLowerCase()))
+        const pending = status ? new Set(status.pending.map((hash) => hash.toLowerCase())) : new Set<string>()
+        const requested = new Set<string>()
+        if (status) for (const hash of status.added) requested.add(hash.toLowerCase())
+        for (const hash of allHashes) if (!failed.has(hash) && !pending.has(hash) && !requested.has(hash)) requested.add(hash)
+        setBulkOutcome({ requested, failed, pending, inflight: false })
       } else {
-        toast.show(result.count ? `Cancelled ${result.count} download${result.count === 1 ? '' : 's'}; files were kept` : 'No active bulk downloads found', result.count ? 'success' : 'info')
+        const result = await api.bulkDownloads(action, selections, deleteFiles)
+        toast.show(result.count
+          ? `Cancelled ${result.count} download${result.count === 1 ? '' : 's'}; ${deleteFiles ? 'downloaded files were deleted' : 'files were kept'}`
+          : 'No active bulk downloads found', result.count ? 'success' : 'info')
+        setBulkConfirm(null)
       }
-      setBulkConfirm(null)
     } catch (error: any) {
       toast.show(`Bulk ${action === 'start' ? 'download' : 'cancel'} failed: ${error.message}`, 'error')
+      if (action === 'start') {
+        // The request itself failed (for example qBittorrent is unreachable):
+        // show every selected title in red so the user sees what was affected.
+        const failed = new Set<string>()
+        for (const selection of selections) for (const hash of hashesForSelection(selection)) failed.add(hash)
+        setBulkOutcome({ requested: new Set(), failed, pending: new Set(), inflight: false })
+      } else {
+        setBulkConfirm(null)
+      }
     } finally {
+      if (pollId !== null) window.clearInterval(pollId)
       setBulkBusy(null)
     }
   }
@@ -128,7 +192,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
       <header className="mb-6 flex flex-wrap items-start justify-between gap-5">
         <div><p className="mb-1 text-xs font-bold tracking-[0.14em] text-accent-bright uppercase">Overview</p><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}</span>{autoCheckLabel !== null && <span>Next check in ~{autoCheckLabel}</span>}</div></div>
         <div className="flex flex-wrap items-center gap-2.5">
-          <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/10 text-good hover:bg-good/18')} onClick={() => setBulkConfirm('start')} disabled={status.running || bulkBusy !== null || upgradeSeasonCount === 0}>{bulkBusy === 'start' ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}<span>Bulk download</span></button>
+          <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/10 text-good hover:bg-good/18')} onClick={() => { setBulkOutcome(null); setBulkConfirm('start') }} disabled={status.running || bulkBusy !== null || upgradeSeasonCount === 0}>{bulkBusy === 'start' ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}<span>Bulk download</span></button>
           <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={() => setBulkConfirm('cancel')} disabled={status.running || bulkBusy !== null || upgradeSeasonCount === 0}>{bulkBusy === 'cancel' ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}<span>Bulk cancel</span></button>
           <span className="mx-1 h-9 w-px shrink-0 bg-line-strong" aria-hidden="true" />
           <button className={buttonPrimary} onClick={onScan} disabled={status.running || bulkBusy !== null}>{status.running ? <span className="size-4 animate-spin rounded-full border-2 border-white/35 border-t-white"/> : <Icon name="play" size={17}/>}<span>{status.running ? 'Scanning library…' : 'Scan library'}</span></button>
@@ -159,13 +223,14 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
         open={bulkConfirm === 'start'}
         results={results}
         busy={bulkBusy === 'start'}
+        outcome={bulkConfirm === 'start' ? bulkOutcome : null}
         onConfirm={(selections) => void handleBulkDownloads('start', selections)}
-        onClose={() => { if (!bulkBusy) setBulkConfirm(null) }}
+        onClose={() => { if (!bulkBusy) { setBulkConfirm(null); setBulkOutcome(null) } }}
       />
       <BulkCancelDialog
         open={bulkConfirm === 'cancel'}
         busy={bulkBusy === 'cancel'}
-        onConfirm={(selections) => void handleBulkDownloads('cancel', selections)}
+        onConfirm={(selections, deleteFiles) => void handleBulkDownloads('cancel', selections, deleteFiles)}
         onClose={() => { if (!bulkBusy) setBulkConfirm(null) }}
       />
     </section>
