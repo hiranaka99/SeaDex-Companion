@@ -17,6 +17,7 @@ export const SECRETS_KEY_FILE = process.env.SECRETS_KEY_FILE || join(DATA_DIR, '
 export const CACHE_FILE = join(DATA_DIR, 'anilist_cache.json')
 export const RESULTS_FILE = join(DATA_DIR, 'last_results.json')
 export const NOTIFIED_FILE = join(DATA_DIR, 'notified.json')
+export const OWNED_TORRENTS_FILE = join(DATA_DIR, 'owned_torrents.json')
 export const LOG_DIR = join(DATA_DIR, 'logs')
 export const LOG_FILE = join(LOG_DIR, 'app.log')
 
@@ -34,7 +35,7 @@ export const DEFAULT_CONFIG: Config = {
   qbittorrent_pass: '',
   webhook: '',
   notify_enabled: true,
-  autocheck_minutes: 60,
+  autocheck_minutes: 1440,
   hidden: [],
 }
 
@@ -864,6 +865,7 @@ export function localPartOwnership(local: JsonObject, parts: JsonObject[]): Part
   const episodeSizes = new Map(
     Object.entries(local.sizes_by_episode || {}).map(([episode, size]) => [Number(episode), Number(size || 0)]),
   )
+  const hasEpisodeSizes = episodeSizes.size > 0
   let offset = 0
 
   for (const [index, part] of parts.entries()) {
@@ -893,7 +895,10 @@ export function localPartOwnership(local: JsonObject, parts: JsonObject[]): Part
   }
   const totalExpectedEpisodes = parts.reduce((total, part) => total + Number(part.episodeCount || 0), 0)
   const localSize = Number(local.size || 0)
-  if (parts.length > 1 && localSize > 0 && totalExpectedEpisodes > 0) {
+  // The proportional estimate is only a stand-in for when per-episode file
+  // sizes are unavailable. When episode sizes exist, a part summing to zero
+  // means it is genuinely unowned, so leave it at zero.
+  if (parts.length > 1 && localSize > 0 && totalExpectedEpisodes > 0 && !hasEpisodeSizes) {
     for (const [index, part] of parts.entries()) {
       const label = `Cour ${index + 1}`
       if (!sizes[label]) sizes[label] = localSize * Number(part.episodeCount || 0) / totalExpectedEpisodes
@@ -1267,6 +1272,49 @@ export async function qbControlTorrents(
   })
 }
 
+// ---------------------------------------------------------------------------
+// Ownership ledger
+//
+// Tracks the info hashes of torrents that SeaDex Companion itself added to
+// qBittorrent, so bulk cancellation can only ever cancel/remove torrents the
+// app created — never torrents the user added manually.
+// ---------------------------------------------------------------------------
+function normalizeInfoHash(value: unknown): string | null {
+  const hash = String(value || '').toLowerCase()
+  return /^[0-9a-f]{40}$/.test(hash) ? hash : null
+}
+
+const ownedTorrents = new Set<string>(readJson<string[]>(OWNED_TORRENTS_FILE, []))
+
+export function saveOwnedTorrents(): void {
+  writeJsonAtomic(OWNED_TORRENTS_FILE, [...ownedTorrents].sort())
+}
+
+export function recordOwnedTorrents(hashes: string[]): void {
+  let changed = false
+  for (const hash of hashes) {
+    const normalized = normalizeInfoHash(hash)
+    if (normalized && !ownedTorrents.has(normalized)) {
+      ownedTorrents.add(normalized)
+      changed = true
+    }
+  }
+  if (changed) saveOwnedTorrents()
+}
+
+export function forgetOwnedTorrents(hashes: string[]): void {
+  let changed = false
+  for (const hash of hashes) {
+    const normalized = normalizeInfoHash(hash)
+    if (normalized && ownedTorrents.delete(normalized)) changed = true
+  }
+  if (changed) saveOwnedTorrents()
+}
+
+export function ownedTorrentsSnapshot(): string[] {
+  return [...ownedTorrents].sort()
+}
+
 export function normalizeQbStates(states: string[]): string {
   if (!states.length) return 'unknown'
   if (states.some((state) => ['error', 'unknown'].includes(state))) return 'error'
@@ -1308,11 +1356,63 @@ export function bulkDownloadTargets(results: JsonObject[] = resultsForRequest())
   return targets
 }
 
+export interface BulkCancelInfo {
+  key: string
+  release: number
+  title: string
+  season: number | null
+  part: string
+  releaseGroup: string
+  tracker: string
+  size: number
+}
+
+export interface ResultReleaseIndex {
+  byHash: Map<string, BulkCancelInfo>
+  byTarget: Map<string, Set<string>>
+}
+
+/**
+ * Indexes every valid info hash in the current scan results so a qBittorrent
+ * torrent can be mapped back to the release that created it. `byTarget` also
+ * lets bulk cancellation resolve a (key, release) selection to its hashes.
+ */
+export function indexResultReleases(results: JsonObject[] = resultsForRequest()): ResultReleaseIndex {
+  const byHash = new Map<string, BulkCancelInfo>()
+  const byTarget = new Map<string, Set<string>>()
+  for (const result of results) {
+    if (!result.key) continue
+    const key = String(result.key)
+    const season = result.season == null ? null : Number(result.season)
+    for (const [releaseIndex, release] of (result.releases || []).entries()) {
+      const targetKey = `${key}\0${releaseIndex}`
+      const info: BulkCancelInfo = {
+        key,
+        release: releaseIndex,
+        title: String(result.title || ''),
+        season,
+        part: String(release.part || ''),
+        releaseGroup: String(release.releaseGroup || ''),
+        tracker: String(release.tracker || ''),
+        size: Number(release.size || 0),
+      }
+      for (const raw of (release.info_hashes || [])) {
+        const hash = String(raw).toLowerCase()
+        if (!/^[0-9a-f]{40}$/.test(hash)) continue
+        byHash.set(hash, info)
+        if (!byTarget.has(targetKey)) byTarget.set(targetKey, new Set())
+        byTarget.get(targetKey)!.add(hash)
+      }
+    }
+  }
+  return { byHash, byTarget }
+}
+
 export function resultsForRequest(): JsonObject[] {
   return scanState.results.length ? scanState.results : (loadLastResults()?.results || [])
 }
 
 export function resetRuntimeForTests(): void {
   Object.assign(scanState, { running: false, progress: 0, total: 0, message: 'Idle', results: [], error: null, last_run: null })
-  qbSession = null; qbCache = { data: null, timestamp: 0 }; qbQueue = Promise.resolve()
+  qbSession = null; qbCache = { data: null, timestamp: 0 }; qbQueue = Promise.resolve(); ownedTorrents.clear()
 }

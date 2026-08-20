@@ -126,7 +126,6 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
       <TopBar
         tab={tab}
         onTabChange={setTab}
-        status={status}
         username={username}
         onLogout={onLogout}
         collapsed={collapsed}
