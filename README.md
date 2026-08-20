@@ -99,8 +99,12 @@ npm run dev                     # backend
 npm --prefix frontend run dev   # Vite UI, proxies /api to :8080
 ```
 
-## Notes
+## Images
+### Library
+<img width="100%" alt="zen_O7xSifCh4E" src="https://github.com/user-attachments/assets/60833e2d-eaea-4991-bf94-95b8ff938eda" />
 
-- Enter only the Sonarr/Radarr base URLs (e.g. `http://192.168.1.10:8989`) — the API path is added automatically.
-- Sonarr/Radarr keys, the qBittorrent password and the Discord webhook are stored encrypted (AES-256-GCM) in the data volume; non-secret settings stay in `config.json`.
-- Back up the whole data volume — the credential encryption key lives there, and losing it makes saved credentials unrecoverable.
+### Details Card
+<img width="380" alt="zen_F4Ypy8e1k4" src="https://github.com/user-attachments/assets/cc25a539-4e92-4dd2-959f-358341f3c2c8" />
+
+### Bulk Download
+<img width="32%" alt="zen_Audv4T9HAB" src="https://github.com/user-attachments/assets/0f6e81b5-a185-4cbd-80ee-52670b675120" /> <img width="32%" alt="zen_pbRd7PYwSW" src="https://github.com/user-attachments/assets/5e2ce291-b445-456d-a6b0-76765f65b12b" /> <img width="32%" alt="zen_sRHn3K7fMu" src="https://github.com/user-attachments/assets/01e055d7-24ae-461b-9ec6-a4994ee44b53" />
