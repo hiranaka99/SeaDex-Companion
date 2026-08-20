@@ -662,10 +662,21 @@ interface ParsedEpisode {
 }
 
 function episodeFromFilename(name: string): ParsedEpisode | null {
+  // Opening/ending theme clips are extras, never episodes. Keeping them unparsed
+  // lets scopeReleaseToPart treat them as cour extras instead of mis-reading the
+  // "NCOP 01" / "NCED1" counters as absolute episode numbers.
+  if (/NCOP|NCED/i.test(name)) return null
   const standard = name.match(/S(\d{1,3})E(\d{1,3}(?:\.\d+)?)/i)
   if (standard) return { season: Number(standard[1]), episode: Number(standard[2]) }
   const named = name.match(/(?:\bSeason\b|\bEpisode\b|\bEp\.?)[ ._-]*(\d{1,3}(?:\.\d+)?)(?=[ ._[\]()-]|$)/i)
-  return named ? { season: null, episode: Number(named[1]) } : null
+  if (named) return { season: null, episode: Number(named[1]) }
+  // Absolute episode numbering with no season/episode keyword, e.g.
+  // "[Thighs] Mushoku Tensei - 05 (BD 1080p ...).mkv". This is a common whole-season
+  // encode layout: the first standalone 1-3 digit value (optional half-episode) after
+  // the title is the absolute episode number. The trailing boundary keeps resolution
+  // tags such as "1080p" (a 4-digit run) from being mistaken for an episode.
+  const absolute = name.match(/(?:^|[\s_-])(\d{1,3}(?:\.\d+)?)(?=[\s(.\]]|$)/)
+  return absolute ? { season: null, episode: Number(absolute[1]) } : null
 }
 
 function extraBelongsToPart(name: string, partNumber: number): boolean {
@@ -692,12 +703,15 @@ export function scopeReleaseToPart(
   const seasonFrequency = new Map<number, number>()
   for (const item of parsed) {
     const season = item.parsed?.season
-    if (season && Number.isInteger(item.parsed?.episode)) seasonFrequency.set(season, (seasonFrequency.get(season) || 0) + 1)
+    if (season && season > 0 && Number.isInteger(item.parsed?.episode)) seasonFrequency.set(season, (seasonFrequency.get(season) || 0) + 1)
   }
+  // A positive SxxE season wins when present; otherwise the torrent uses absolute
+  // numbering (season null) and we scope on those files, ignoring S00 specials.
   const primarySeason = [...seasonFrequency].sort((left, right) => right[1] - left[1])[0]?.[0] ?? null
+  const inScope = (season: number | null): boolean => primarySeason !== null ? season === primarySeason : season === null
   const episodeNumbers = [...new Set(
     parsed
-      .filter((item) => item.parsed && Number.isInteger(item.parsed.episode) && (primarySeason === null || item.parsed.season === primarySeason))
+      .filter((item) => item.parsed && Number.isInteger(item.parsed.episode) && inScope(item.parsed.season))
       .map((item) => item.parsed!.episode),
   )].sort((left, right) => left - right)
   const splitSeason = partCount > 1
@@ -709,7 +723,7 @@ export function scopeReleaseToPart(
   const selected = new Set(selectedNumbers)
   const partNumber = partIndex + 1
   const selectedEpisodeFiles = parsed.filter(({ parsed: episode }) =>
-    episode && selected.has(episode.episode) && (primarySeason === null || episode.season === primarySeason),
+    episode && selected.has(episode.episode) && inScope(episode.season),
   )
   const selectedEpisodeFileSet = new Set(selectedEpisodeFiles.map(({ file }) => file))
   if (!splitSeason) {
