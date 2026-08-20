@@ -94,3 +94,36 @@ export const getDownloadProgress = (key: string, release: number) =>
   api<DownloadProgress>(
     `/api/download_progress?key=${encodeURIComponent(key)}&release=${release}`,
   )
+
+export type DownloadAction = 'pause' | 'resume' | 'remove'
+
+export const controlDownload = (key: string, release: number, action: DownloadAction, deleteFiles = false) =>
+  api<{ ok: boolean; error?: string }>('/api/download_control', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, release, action, delete_files: deleteFiles }),
+  })
+
+export const DOWNLOADS_CHANGED_EVENT = 'seadex:downloads-changed'
+
+export interface BulkDownloadTarget {
+  key: string
+  release: number
+}
+
+export interface BulkDownloadResult {
+  ok: boolean
+  count: number
+  targets: BulkDownloadTarget[]
+  error?: string
+}
+
+export async function bulkDownloads(action: 'start' | 'cancel', selections: BulkDownloadTarget[] = []): Promise<BulkDownloadResult> {
+  const result = await api<BulkDownloadResult>('/api/download_bulk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, selections }),
+  })
+  window.dispatchEvent(new CustomEvent(DOWNLOADS_CHANGED_EVENT, { detail: { action, targets: result.targets } }))
+  return result
+}

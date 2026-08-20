@@ -36,6 +36,8 @@ export interface ReleaseCandidate extends JsonObject {
   file_count: number
   info_hashes: string[]
   is_best: boolean
+  source_files?: { name: string; length: number }[]
+  selected_files?: string[]
 }
 
 export interface ChainPart extends JsonObject {

@@ -3,8 +3,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, isAbsolute, normalize, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, getState, loadConfig, loadLastResults,
-  log, normalizeQbStates, publicConfig, qbAddTorrent, qbGetTorrents, resultsForRequest, runScan,
+  DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, bulkDownloadTargets, getState, loadConfig, loadLastResults,
+  log, normalizeQbStates, publicConfig, qbAddTorrent, qbControlTorrents, qbGetTorrents, resultsForRequest, runScan,
   saveConfig, SECRET_CONFIG_KEYS, setState, testIntegration,
 } from './app.js'
 import {
@@ -212,8 +212,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (!hashes.length) return sendJson(response, 400, { ok: false, error: 'No magnet available for this release (private tracker)' })
     const config = loadConfig()
     const category = String(config[`${String(found.result!.arr).toLowerCase()}_category`] || '').trim()
+    const selectedFiles = Array.isArray(found.release!.selected_files) ? found.release!.selected_files.map(String) : []
     try {
-      for (const hash of hashes) await qbAddTorrent(config, `magnet:?xt=urn:btih:${hash}`, category)
+      for (const hash of hashes) await qbAddTorrent(config, `magnet:?xt=urn:btih:${hash}`, category, selectedFiles)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       log('ERROR', `Download failed for ${key} (release ${releaseIndex}): ${message}`)
@@ -221,6 +222,78 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
     log('INFO', `Sent to qBittorrent: ${key} release ${releaseIndex}, ${hashes.length} torrent(s) (category: ${category || '-'})`)
     return sendJson(response, 200, { ok: true })
+  }
+
+  if (method === 'POST' && path === '/api/download_bulk') {
+    const data = await readJson(request)
+    const action = String(data.action || '')
+    if (action !== 'start' && action !== 'cancel') {
+      return sendJson(response, 400, { ok: false, error: 'Unknown bulk download action' })
+    }
+    const availableTargets = bulkDownloadTargets()
+    const config = loadConfig()
+    try {
+      if (action === 'start') {
+        if (!Array.isArray(data.selections)) return sendJson(response, 400, { ok: false, error: 'No bulk release selections provided' })
+        const byRelease = new Map(availableTargets.map((target) => [`${target.key}\0${target.release}`, target]))
+        const selectedParts = new Set<string>()
+        const targets = []
+        for (const selection of data.selections) {
+          const key = String(selection?.key || '')
+          const release = Number.parseInt(String(selection?.release ?? -1), 10)
+          const target = byRelease.get(`${key}\0${release}`)
+          if (!target) return sendJson(response, 400, { ok: false, error: 'A selected bulk release is unavailable' })
+          const partKey = `${target.key}\0${target.part}`
+          if (selectedParts.has(partKey)) return sendJson(response, 400, { ok: false, error: 'Choose only one best release per season or cour' })
+          selectedParts.add(partKey)
+          targets.push(target)
+        }
+        const pending = new Map<string, { category: string; selectedFiles: Set<string>; unrestricted: boolean }>()
+        for (const target of targets) {
+          const category = String(config[`${target.arr.toLowerCase()}_category`] || '').trim()
+          for (const hash of target.hashes) {
+            const current = pending.get(hash) || { category, selectedFiles: new Set<string>(), unrestricted: false }
+            if (target.selectedFiles?.length) for (const file of target.selectedFiles) current.selectedFiles.add(file)
+            else current.unrestricted = true
+            pending.set(hash, current)
+          }
+        }
+        for (const [hash, target] of pending) {
+          await qbAddTorrent(
+            config,
+            `magnet:?xt=urn:btih:${hash}`,
+            target.category,
+            target.unrestricted ? [] : [...target.selectedFiles],
+          )
+        }
+        const added = new Set(pending.keys())
+        log('INFO', `Bulk download sent ${added.size} torrent(s) to qBittorrent`)
+        return sendJson(response, 200, {
+          ok: true,
+          count: added.size,
+          targets: targets.map(({ key, release }) => ({ key, release })),
+        })
+      }
+
+      const targets = availableTargets
+      const requestedHashes = [...new Set(targets.flatMap((target) => target.hashes))]
+      const torrents = requestedHashes.length ? await qbGetTorrents(config, requestedHashes) : []
+      const incompleteHashes = torrents
+        .filter((torrent) => Number(torrent.progress || 0) < 0.999)
+        .map((torrent) => String(torrent.hash || '').toLowerCase())
+        .filter((hash) => /^[0-9a-f]{40}$/.test(hash))
+      if (incompleteHashes.length) await qbControlTorrents(config, incompleteHashes, 'remove', false)
+      const cancelled = new Set(incompleteHashes)
+      const affectedTargets = targets
+        .filter((target) => target.hashes.some((hash) => cancelled.has(hash)))
+        .map(({ key, release }) => ({ key, release }))
+      log('INFO', `Bulk cancel removed ${incompleteHashes.length} incomplete torrent(s) from qBittorrent and preserved their files`)
+      return sendJson(response, 200, { ok: true, count: incompleteHashes.length, targets: affectedTargets })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      log('ERROR', `Bulk download ${action} failed: ${message}`)
+      return sendJson(response, 502, { ok: false, error: message })
+    }
   }
 
   if (method === 'GET' && path === '/api/download_progress') {
@@ -248,6 +321,32 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const progress = totalSize > 0 ? downloaded / totalSize : 0
     let state = normalizeQbStates(states); if (foundAny && totalSize > 0 && progress >= 0.999) state = 'complete'
     return sendJson(response, 200, { ok: true, found: foundAny, progress: Math.round(progress * 10_000) / 10_000, downloaded, total_size: totalSize, speed, state })
+  }
+
+  if (method === 'POST' && path === '/api/download_control') {
+    const data = await readJson(request)
+    const key = String(data.key || '').trim()
+    const releaseIndex = Number.parseInt(String(data.release ?? 0), 10) || 0
+    const action = String(data.action || '')
+    if (!key) return sendJson(response, 400, { ok: false, error: 'No key provided' })
+    if (action !== 'pause' && action !== 'resume' && action !== 'remove') {
+      return sendJson(response, 400, { ok: false, error: 'Unknown torrent action' })
+    }
+    const found = findResult(key, releaseIndex)
+    if (found.error) return sendJson(response, found.error[0], { ok: false, error: found.error[1] })
+    const hashes = (found.release!.info_hashes || []).map((hash: string) => hash.toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash))
+    if (!hashes.length) return sendJson(response, 400, { ok: false, error: 'No torrent hashes available for this release' })
+    const deleteFiles = action === 'remove' && data.delete_files === true
+    try {
+      await qbControlTorrents(loadConfig(), hashes, action, deleteFiles)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      log('ERROR', `Torrent ${action} failed for ${key} (release ${releaseIndex}): ${message}`)
+      return sendJson(response, 502, { ok: false, error: message })
+    }
+    const detail = action === 'remove' ? (deleteFiles ? ' and deleted its files' : ' and preserved its files') : ''
+    log('INFO', `${action === 'pause' ? 'Paused' : action === 'resume' ? 'Resumed' : 'Removed'} qBittorrent torrent for ${key} release ${releaseIndex}${detail}`)
+    return sendJson(response, 200, { ok: true })
   }
 
   if (method === 'GET' && !path.startsWith('/api/') && serveStatic(path, response)) return
