@@ -2,21 +2,11 @@ services:
   seadex-compare:
     build: .
     container_name: seadex-compare
-    # Port mapping is "host:container".
-    #   - The CONTAINER side (right of the colon) must match the PORT env var
-    #     below — that is the port the app listens on inside the container.
-    #   - The HOST side (left of the colon) is the port you browse to.
-    # Example: to serve on http://<host>:8878 with the app also on 8878 inside,
-    # use "8878:8878" here and set PORT=8878 below.
     ports:
       - "8080:8080"
     volumes:
       - ./data:/app/data
-    # The app automatically creates its credential encryption key in /app/data.
-    # Application settings are deliberately not accepted through environment variables.
     environment:
-      # Internal (container) port the app listens on. Must match the right-hand
-      # side of the ports mapping above. Default 8080.
       - PORT=8080
       - DATA_DIR=/app/data
     restart: unless-stopped

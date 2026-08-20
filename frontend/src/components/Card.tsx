@@ -579,6 +579,18 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
             {group.part && (
               <div className="flex flex-wrap items-center gap-2 py-0.5">
                 <span className="rounded-full border border-line bg-panel-raised px-2.5 py-[3px] text-[11px] font-extrabold tracking-[0.8px] text-muted uppercase">{group.part}</span>
+                {(r.urls || []).filter((source) => source.label === group.part).map((source) => (
+                  <a
+                    className="group/link inline-flex items-center gap-1 text-[12px] font-bold text-accent-bright hover:no-underline"
+                    href={source.url}
+                    target="_blank"
+                    rel="noopener"
+                    title={`Open ${group.part} on SeaDex`}
+                    key={source.url}
+                  >
+                    SeaDex <span className="transition-transform duration-150 group-hover/link:translate-x-[2px] group-hover/link:-translate-y-[2px]">↗</span>
+                  </a>
+                ))}
                 {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).length > 0 && <span className="text-[10px] font-bold tracking-[0.08em] text-muted-dim uppercase">Have</span>}
                 {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).map((releaseGroup) => <span key={releaseGroup} className={cx(BADGE, 'py-[3px] text-[11px]')} title={`Owned in ${group.part}`}>{releaseGroup}</span>)}
                 {r.precise_part_ownership && !(r.have_by_part?.[group.part] || []).length && <span className="text-[11px] text-muted-dim">No matching files owned</span>}
@@ -758,8 +770,9 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
             {formatBytes(r.local_size)}
           </span>
         ) : null}
-        {(r.urls?.length ? r.urls : r.url ? [{ label: 'releases.moe', url: r.url }] : []).map(
-          (source, i) => (
+        {(r.urls?.length ? r.urls : r.url ? [{ label: 'releases.moe', url: r.url }] : [])
+          .filter((source) => source.label === 'releases.moe')
+          .map((source, i) => (
             <a
               className="group/link inline-flex items-center gap-1.5 text-[13.5px] font-bold text-accent-bright hover:no-underline"
               href={source.url}
@@ -767,7 +780,7 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
               rel="noopener"
               key={`${source.url}-${i}`}
             >
-              {source.label === 'releases.moe' ? source.label : `SeaDEX ${source.label}`}{' '}
+              {source.label}{' '}
               <span className="transition-transform duration-150 group-hover/link:translate-x-[3px] group-hover/link:-translate-y-[3px]">↗</span>
             </a>
           ),
