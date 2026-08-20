@@ -7,7 +7,7 @@ import { getCancelableBulkDownloads, BulkDownloadTarget, CancelableDownload } fr
 interface Props {
   open: boolean
   busy: boolean
-  onConfirm: (selections: BulkDownloadTarget[]) => void
+  onConfirm: (selections: BulkDownloadTarget[], deleteFiles: boolean) => void
   onClose: () => void
 }
 
@@ -15,6 +15,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
   const [downloads, setDownloads] = useState<CancelableDownload[]>([])
   const [loading, setLoading] = useState(false)
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})
+  const [deleteFiles, setDeleteFiles] = useState(false)
   const cancelRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -22,6 +23,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
     setLoading(true)
     setDownloads([])
     setEnabled({})
+    setDeleteFiles(false)
     cancelRef.current?.focus()
     getCancelableBulkDownloads()
       .then((data) => {
@@ -54,7 +56,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-bad/12 text-bad"><Icon name="trash" size={19}/></span>
           <div className="min-w-0 flex-1">
             <h2 id="bulk-cancel-title" className="m-0 text-lg font-extrabold">Cancel bulk downloads</h2>
-            <p className="mt-1 mb-0 text-sm text-muted">Remove the incomplete torrents that SeaDex Companion added to qBittorrent. Downloaded files are kept and torrents you added manually are left untouched.</p>
+            <p className="mt-1 mb-0 text-sm text-muted">Remove the incomplete torrents that SeaDex Companion added to qBittorrent. By default the downloaded files are kept, and torrents you added manually are left untouched.</p>
           </div>
           <button type="button" className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onClose} disabled={busy} aria-label="Close"><Icon name="close" size={18}/></button>
         </header>
@@ -88,15 +90,25 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
           ) : (
             <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted"><Icon name="check" size={26} className="text-good"/>No incomplete torrents added by the app are currently in qBittorrent.</div>
           )}
+
+          {downloads.length > 0 && (
+            <label className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-bad/35 bg-bad/6 px-3.5 py-3 text-xs transition-colors hover:border-bad/55">
+              <input type="checkbox" className="size-4 shrink-0 accent-red-500" checked={deleteFiles} onChange={(event) => setDeleteFiles(event.target.checked)} disabled={busy} />
+              <span className="min-w-0">
+                <span className={cx('block font-extrabold', deleteFiles ? 'text-bad' : 'text-ink')}>Also delete the downloaded files</span>
+                <span className="mt-0.5 block text-muted">The partially downloaded files of the selected torrents will be removed from disk. This cannot be undone.</span>
+              </span>
+            </label>
+          )}
         </div>
 
         <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-panel px-5 py-4">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
-            {selectedTorrents > 0 ? <span><span className="font-bold text-ink">{selectedTorrents}</span> torrent{selectedTorrents === 1 ? '' : 's'} will be removed, downloaded files are kept.</span> : <span>Nothing selected.</span>}
+            {selectedTorrents > 0 ? <span><span className="font-bold text-ink">{selectedTorrents}</span> torrent{selectedTorrents === 1 ? '' : 's'} will be removed{deleteFiles ? ' and their downloaded files will be deleted' : ', downloaded files are kept'}.</span> : <span>Nothing selected.</span>}
           </span>
           <div className="flex gap-2">
             <button ref={cancelRef} type="button" className={cx(buttonBase, 'border-line bg-panel-raised text-muted hover:text-ink')} onClick={onClose} disabled={busy}>Keep</button>
-            <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/12 text-bad hover:bg-bad/20')} onClick={() => onConfirm(selections)} disabled={busy || selections.length === 0}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}Cancel {selections.length || ''}</button>
+            <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/12 text-bad hover:bg-bad/20')} onClick={() => onConfirm(selections, deleteFiles)} disabled={busy || selections.length === 0}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}Cancel {selections.length || ''}</button>
           </div>
         </footer>
       </section>

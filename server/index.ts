@@ -3,9 +3,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, isAbsolute, normalize, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, bulkDownloadTargets, forgetOwnedTorrents, getState,
-  indexResultReleases, loadConfig, loadLastResults, log, normalizeQbStates, ownedTorrentsSnapshot, publicConfig, qbAddTorrent, qbControlTorrents,
-  qbGetTorrents, recordOwnedTorrents, resultsForRequest, runScan, saveConfig, SECRET_CONFIG_KEYS, setState, testIntegration,
+  DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, forgetOwnedTorrents,
+  finishBulkDownloadBatch, getState, indexResultReleases, loadConfig, loadLastResults, log, normalizeQbStates, ownedTorrentsSnapshot,
+  publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, qbGetTorrents, recordOwnedTorrents, resetBulkDownloadBatch,
+  resultsForRequest, runScan, saveConfig, SECRET_CONFIG_KEYS, settleBulkDownloadBatch, setState, testIntegration,
 } from './app.js'
 import {
   AuthError, authState, expiredSessionCookie, isAuthenticated, login, logout, sessionCookie,
@@ -225,6 +226,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return sendJson(response, 200, { ok: true })
   }
 
+  if (method === 'GET' && path === '/api/download_bulk/status') {
+    return sendJson(response, 200, { ok: true, ...bulkDownloadBatchStatus() })
+  }
+
   if (method === 'POST' && path === '/api/download_bulk') {
     const data = await readJson(request)
     const action = String(data.action || '')
@@ -250,31 +255,50 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           targets.push(target)
         }
         const pending = new Map<string, { category: string; selectedFiles: Set<string>; unrestricted: boolean }>()
+        const labelsByHash = new Map<string, string[]>()
         for (const target of targets) {
           const category = String(config[`${target.arr.toLowerCase()}_category`] || '').trim()
+          const item = resultsForRequest().find((entry) => entry.key === target.key)
+          const label = `${item?.title || target.key}${target.part ? ` · ${target.part}` : ''}`
           for (const hash of target.hashes) {
             const current = pending.get(hash) || { category, selectedFiles: new Set<string>(), unrestricted: false }
             if (target.selectedFiles?.length) for (const file of target.selectedFiles) current.selectedFiles.add(file)
             else current.unrestricted = true
             pending.set(hash, current)
+            const labels = labelsByHash.get(hash) || []
+            if (!labels.includes(label)) labels.push(label)
+            labelsByHash.set(hash, labels)
           }
         }
-        for (const [hash, target] of pending) {
-          await qbAddTorrent(
-            config,
-            `magnet:?xt=urn:btih:${hash}`,
-            target.category,
-            target.unrestricted ? [] : [...target.selectedFiles],
-          )
+        // Each torrent is added independently: a single failure (for example a
+        // magnet metadata timeout) must never prevent the remaining torrents
+        // from being queued. Arm the live batch status first so the UI can poll
+        // per-torrent progress (green/red) while the adds are still in flight.
+        resetBulkDownloadBatch([...pending.keys()])
+        try {
+          const outcome = await qbBulkAddTorrents(config, [...pending.entries()].map(([hash, target]) => ({
+            hash,
+            label: (labelsByHash.get(hash) || [hash]).join(' / '),
+            category: target.category,
+            selectedFiles: target.unrestricted ? [] : [...target.selectedFiles],
+          })), {
+            onSettle: (hash, error) => settleBulkDownloadBatch(hash, (labelsByHash.get(hash) || [hash]).join(' / '), error),
+          })
+          recordOwnedTorrents(outcome.added)
+          if (outcome.failures.length) {
+            log('WARNING', `Bulk download added ${outcome.added.length} of ${pending.size} torrent(s); ${outcome.failures.length} failed: ${outcome.failures.map((failure) => `${failure.label} (${failure.error})`).join('; ')}`)
+          } else {
+            log('INFO', `Bulk download sent ${outcome.added.length} torrent(s) to qBittorrent`)
+          }
+          return sendJson(response, 200, {
+            ok: outcome.added.length > 0,
+            count: outcome.added.length,
+            targets: targets.map(({ key, release }) => ({ key, release })),
+            failures: outcome.failures,
+          })
+        } finally {
+          finishBulkDownloadBatch()
         }
-        const added = new Set(pending.keys())
-        recordOwnedTorrents([...added])
-        log('INFO', `Bulk download sent ${added.size} torrent(s) to qBittorrent`)
-        return sendJson(response, 200, {
-          ok: true,
-          count: added.size,
-          targets: targets.map(({ key, release }) => ({ key, release })),
-        })
       }
 
       // Only ever cancel/remove torrents this app added itself (tracked in the
@@ -302,7 +326,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           )
         : null
       const incompleteHashes = incompleteOwned.filter((hash) => !wanted || wanted.has(hash))
-      if (incompleteHashes.length) await qbControlTorrents(config, incompleteHashes, 'remove', false)
+      const deleteFiles = data.delete_files === true
+      if (incompleteHashes.length) await qbControlTorrents(config, incompleteHashes, 'remove', deleteFiles)
       const cancelled = new Set(incompleteHashes)
       const affectedTargetKeys = new Set<string>()
       for (const hash of cancelled) {
@@ -317,7 +342,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       // torrent the user deleted manually from qBittorrent in the meantime.
       const staleHashes = [...ownedSet].filter((hash) => !presentHashes.has(hash) && !cancelled.has(hash))
       forgetOwnedTorrents([...incompleteHashes, ...staleHashes])
-      log('INFO', `Bulk cancel removed ${incompleteHashes.length} incomplete torrent(s) added by the app and preserved their files`)
+      log('INFO', `Bulk cancel removed ${incompleteHashes.length} incomplete torrent(s) added by the app${deleteFiles ? ' and deleted their downloaded files' : ' and preserved their files'}`)
       return sendJson(response, 200, { ok: true, count: incompleteHashes.length, targets: affectedTargets })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

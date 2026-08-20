@@ -1067,6 +1067,9 @@ let qbSession: QbSession | null = null
 let qbCache: { data: JsonObject[] | null; timestamp: number } = { data: null, timestamp: 0 }
 let qbQueue: Promise<void> = Promise.resolve()
 
+/** Per-torrent budget for qBittorrent to fetch magnet metadata. */
+export const QB_METADATA_TIMEOUT_MS = 15_000
+
 async function withQbLock<T>(operation: () => Promise<T>): Promise<T> {
   const previous = qbQueue
   let release!: () => void
@@ -1115,13 +1118,20 @@ export async function testIntegration(config: Config, service: string): Promise<
   throw new Error('Unknown integration')
 }
 
-async function qbRequest(config: Config, path: string, init: RequestInit = {}, retry = true): Promise<Response> {
+function isTimeoutLikeError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const name = (error as { name?: string }).name
+  if (name === 'TimeoutError' || name === 'AbortError') return true
+  return /abort|timed out|timeout/i.test(error.message)
+}
+
+async function qbRequest(config: Config, path: string, init: RequestInit = {}, retry = true, timeout = 30_000): Promise<Response> {
   const base = config.qbittorrent_url.replace(/\/$/, '')
   if (!base) throw new Error('qBittorrent is not configured (Config tab)')
   qbSession ||= await qbLogin(base, config.qbittorrent_user, config.qbittorrent_pass)
   const headers = new Headers(init.headers); if (qbSession.cookie) headers.set('Cookie', qbSession.cookie)
-  const response = await fetchWithTimeout(`${base}${path}`, { ...init, headers }, 30_000)
-  if (response.status === 403 && retry) { qbSession = await qbLogin(base, config.qbittorrent_user, config.qbittorrent_pass); return qbRequest(config, path, init, false) }
+  const response = await fetchWithTimeout(`${base}${path}`, { ...init, headers }, timeout)
+  if (response.status === 403 && retry) { qbSession = await qbLogin(base, config.qbittorrent_user, config.qbittorrent_pass); return qbRequest(config, path, init, false, timeout) }
   return response
 }
 
@@ -1148,29 +1158,49 @@ async function qbPostWithFallback(config: Config, paths: string[], body: URLSear
   throw new Error(`qBittorrent request failed (${lastError})`)
 }
 
-async function qbSelectTorrentFiles(config: Config, hash: string, selectedFiles: string[]): Promise<void> {
+async function qbSelectTorrentFiles(config: Config, hash: string, selectedFiles: string[], timeoutMs = QB_METADATA_TIMEOUT_MS): Promise<void> {
   const stateBody = new URLSearchParams({ hashes: hash })
-  // Magnet metadata is exchanged only while the torrent is running. Start it
-  // long enough to obtain the file list, then stop it before changing any
-  // priorities so the final download contains only the requested cour.
+  // Magnet metadata is exchanged only while the torrent is running. Start it,
+  // poll for the file list until the per-torrent metadata budget runs out,
+  // then stop it before changing any priorities so the final download
+  // contains only the requested cour.
   await qbPostWithFallback(config, ['/api/v2/torrents/start', '/api/v2/torrents/resume'], stateBody)
   let files: JsonObject[] | null = null
+  const metadataDeadline = Date.now() + timeoutMs
   try {
-    for (let attempt = 0; attempt < 300; attempt += 1) {
-      const response = await qbRequest(config, `/api/v2/torrents/files?hash=${encodeURIComponent(hash)}`)
-      const text = await response.text()
-      if (response.status === 200) {
-        const parsed = JSON.parse(text) as JsonObject[]
-        if (parsed.length) { files = parsed; break }
-      } else if (response.status !== 404 && response.status !== 409) {
-        throw new Error(`Could not load torrent files (HTTP ${response.status}: ${text.slice(0, 120)})`)
+    while (Date.now() < metadataDeadline) {
+      try {
+        const response = await qbRequest(config, `/api/v2/torrents/files?hash=${encodeURIComponent(hash)}`, {}, true, Math.max(1_000, Math.min(5_000, metadataDeadline - Date.now())))
+        const text = await response.text()
+        if (response.status === 200) {
+          const parsed = JSON.parse(text) as JsonObject[]
+          if (parsed.length) { files = parsed; break }
+        } else if (response.status !== 404 && response.status !== 409) {
+          throw new Error(`Could not load torrent files (HTTP ${response.status}: ${text.slice(0, 120)})`)
+        }
+      } catch (error) {
+        // A single request that blew its time slice is retried while budget
+        // remains (the loop condition stops the polling); anything else is a
+        // hard failure that aborts this torrent.
+        if (!isTimeoutLikeError(error)) throw error
       }
       await sleep(100)
     }
-    if (!files) throw new Error('Timed out waiting for qBittorrent to load the torrent metadata')
   } catch (error) {
     try { await qbPostWithFallback(config, ['/api/v2/torrents/stop', '/api/v2/torrents/pause'], stateBody) } catch { /* preserve the metadata error */ }
     throw error
+  }
+  if (!files) {
+    // The metadata never arrived within the budget. Remove the torrent from
+    // qBittorrent (preserving files, though normally none exist yet) and
+    // report that metadata fetching failed.
+    try {
+      await qbPostWithFallback(config, ['/api/v2/torrents/delete'], new URLSearchParams({ hashes: hash, deleteFiles: 'false' }))
+    } catch (removeError) {
+      log('WARNING', `Could not remove torrent ${hash} from qBittorrent after the metadata timeout: ${errorMessage(removeError)}`)
+    }
+    qbCache = { data: null, timestamp: 0 }
+    throw new Error(`Metadata fetching failed: qBittorrent did not load the torrent metadata within ${Math.ceil(timeoutMs / 1000)} seconds`)
   }
   await qbPostWithFallback(config, ['/api/v2/torrents/stop', '/api/v2/torrents/pause'], stateBody)
 
@@ -1192,7 +1222,7 @@ async function qbSelectTorrentFiles(config: Config, hash: string, selectedFiles:
   await qbPostWithFallback(config, ['/api/v2/torrents/start', '/api/v2/torrents/resume'], stateBody)
 }
 
-export async function qbAddTorrent(config: Config, magnet: string, category?: string, selectedFiles: string[] = []): Promise<void> {
+export async function qbAddTorrent(config: Config, magnet: string, category?: string, selectedFiles: string[] = [], timeoutMs = QB_METADATA_TIMEOUT_MS): Promise<void> {
   return withQbLock(async () => {
     const body = new URLSearchParams({ urls: magnet }); if (category) body.set('category', category)
     if (selectedFiles.length) { body.set('paused', 'true'); body.set('stopped', 'true') }
@@ -1206,13 +1236,119 @@ export async function qbAddTorrent(config: Config, magnet: string, category?: st
       if (accepted) {
         const hash = magnetInfoHash(magnet)
         if (selectedFiles.length && !hash) throw new Error('Cannot select torrent files without a v1 info hash')
-        if (selectedFiles.length) await qbSelectTorrentFiles(config, hash!, selectedFiles)
+        if (selectedFiles.length) await qbSelectTorrentFiles(config, hash!, selectedFiles, timeoutMs)
         qbCache = { data: null, timestamp: 0 }
         return
       }
     }
     throw new Error(`qBittorrent rejected the torrent (HTTP ${response.status}: ${text.slice(0, 120)})`)
   })
+}
+
+export interface QbBulkAddEntry {
+  hash: string
+  label: string
+  category?: string
+  selectedFiles?: string[]
+  timeoutMs?: number
+}
+
+export interface QbBulkAddFailure {
+  hash: string
+  label: string
+  error: string
+}
+
+export interface QbBulkAddOutcome {
+  added: string[]
+  failures: QbBulkAddFailure[]
+}
+
+export interface QbBulkAddOptions {
+  /**
+   * Invoked once per torrent as soon as it settles (added or failed), so the
+   * caller can surface per-torrent progress (green/red rows) in real time
+   * instead of waiting for the whole batch to finish. `error` is null when the
+   * torrent was added successfully.
+   */
+  onSettle?: (hash: string, error: string | null) => void
+}
+
+/**
+ * Adds every torrent individually and swallows per-torrent errors so a single
+ * failure (for example a metadata timeout) never prevents the remaining
+ * torrents from being added. Failures are returned so the caller can report
+ * them to the user.
+ */
+export async function qbBulkAddTorrents(config: Config, entries: QbBulkAddEntry[], options: QbBulkAddOptions = {}): Promise<QbBulkAddOutcome> {
+  const { onSettle } = options
+  const added: string[] = []
+  const failures: QbBulkAddFailure[] = []
+  for (const entry of entries) {
+    let error: string | null = null
+    try {
+      await qbAddTorrent(config, `magnet:?xt=urn:btih:${entry.hash}`, entry.category, entry.selectedFiles || [], entry.timeoutMs)
+      added.push(entry.hash)
+    } catch (caught) {
+      error = errorMessage(caught)
+      failures.push({ hash: entry.hash, label: entry.label, error })
+      log('ERROR', `Bulk download failed for ${entry.label} (${entry.hash}): ${error}`)
+    }
+    onSettle?.(entry.hash, error)
+  }
+  return { added, failures }
+}
+
+// ---------------------------------------------------------------------------
+// Bulk download batch status
+//
+// Live per-torrent state of the in-flight bulk download batch, so the UI can
+// poll it and color each title as soon as its own torrent settles instead of
+// only once every torrent in the batch has been processed.
+// ---------------------------------------------------------------------------
+export interface BulkBatchFailure {
+  hash: string
+  label: string
+  error: string
+}
+
+export interface BulkDownloadBatchStatus {
+  finished: boolean
+  pending: string[]
+  added: string[]
+  failures: BulkBatchFailure[]
+}
+
+const bulkBatch: BulkDownloadBatchStatus = { finished: true, pending: [], added: [], failures: [] }
+
+export function resetBulkDownloadBatch(hashes: string[]): BulkDownloadBatchStatus {
+  const normalized = new Set(hashes.map((hash) => hash.toLowerCase()).filter((hash) => /^[0-9a-f]{40}$/.test(hash)))
+  bulkBatch.finished = false
+  bulkBatch.pending = [...normalized]
+  bulkBatch.added = []
+  bulkBatch.failures = []
+  return bulkDownloadBatchStatus()
+}
+
+export function settleBulkDownloadBatch(hash: string, label: string, error: string | null): void {
+  const normalized = hash.toLowerCase()
+  const pendingIndex = bulkBatch.pending.indexOf(normalized)
+  if (pendingIndex !== -1) bulkBatch.pending.splice(pendingIndex, 1)
+  if (error) {
+    if (!bulkBatch.failures.some((failure) => failure.hash === normalized)) bulkBatch.failures.push({ hash: normalized, label, error })
+  } else if (!bulkBatch.added.includes(normalized)) {
+    bulkBatch.added.push(normalized)
+  }
+}
+
+export function finishBulkDownloadBatch(): BulkDownloadBatchStatus {
+  bulkBatch.finished = true
+  bulkBatch.pending = []
+  return bulkDownloadBatchStatus()
+}
+
+export function bulkDownloadBatchStatus(): BulkDownloadBatchStatus {
+  return { finished: bulkBatch.finished, pending: [...bulkBatch.pending], added: [...bulkBatch.added], failures: [...bulkBatch.failures] }
 }
 
 export async function qbGetTorrents(config: Config, hashes?: string[]): Promise<JsonObject[]> {
@@ -1415,4 +1551,5 @@ export function resultsForRequest(): JsonObject[] {
 export function resetRuntimeForTests(): void {
   Object.assign(scanState, { running: false, progress: 0, total: 0, message: 'Idle', results: [], error: null, last_run: null })
   qbSession = null; qbCache = { data: null, timestamp: 0 }; qbQueue = Promise.resolve(); ownedTorrents.clear()
+  bulkBatch.finished = true; bulkBatch.pending = []; bulkBatch.added = []; bulkBatch.failures = []
 }
