@@ -40,6 +40,9 @@ export const logout = () => api<{ ok: boolean }>('/api/auth/logout', { method: '
 
 export const getConfig = () => api<Config>('/api/config')
 
+export const clearScannedData = () =>
+  api<{ ok: boolean; cleared: { cacheEntries: number; results: number } }>('/api/scanned-data', { method: 'DELETE' })
+
 export const saveConfig = (cfg: Partial<Config>) =>
   api<Config>('/api/config', {
     method: 'POST',
@@ -94,6 +97,20 @@ export const getDownloadProgress = (key: string, release: number) =>
   api<DownloadProgress>(
     `/api/download_progress?key=${encodeURIComponent(key)}&release=${release}`,
   )
+
+export interface AllDownloadProgress {
+  ok: boolean
+  downloads: Record<string, DownloadProgress>
+}
+
+let allDownloadProgressRequest: Promise<AllDownloadProgress> | null = null
+
+/** Coalesce the initial probe from every mounted card into one qBittorrent snapshot. */
+export const getAllDownloadProgress = (): Promise<AllDownloadProgress> => {
+  allDownloadProgressRequest ||= api<AllDownloadProgress>('/api/download_progress/all')
+    .finally(() => { allDownloadProgressRequest = null })
+  return allDownloadProgressRequest
+}
 
 export type DownloadAction = 'pause' | 'resume' | 'remove'
 

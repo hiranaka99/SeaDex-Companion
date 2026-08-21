@@ -14,6 +14,7 @@ interface Props {
 export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Props) {
   const [downloads, setDownloads] = useState<CancelableDownload[]>([])
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})
   const [deleteFiles, setDeleteFiles] = useState(false)
   const cancelRef = useRef<HTMLButtonElement>(null)
@@ -22,6 +23,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
     if (!open) return
     setLoading(true)
     setDownloads([])
+    setError('')
     setEnabled({})
     setDeleteFiles(false)
     cancelRef.current?.focus()
@@ -31,7 +33,10 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
         setDownloads(list)
         setEnabled(Object.fromEntries(list.map((item) => [`${item.key}\0${item.release}`, true])))
       })
-      .catch(() => setDownloads([]))
+      .catch((caught: Error) => {
+        setDownloads([])
+        setError(caught.message || 'Could not load incomplete torrents')
+      })
       .finally(() => setLoading(false))
   }, [open])
 
@@ -64,6 +69,8 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
         <div className="app-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted"><span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/>Loading active downloads…</div>
+          ) : error ? (
+            <div className="flex items-start gap-2 rounded-lg border border-bad/35 bg-bad/8 px-4 py-3 text-sm text-bad" role="alert"><Icon name="alert" size={18} className="mt-0.5 shrink-0"/>{error}</div>
           ) : downloads.length > 0 ? (
             <>
               <div className="flex flex-wrap gap-2 text-xs font-bold">

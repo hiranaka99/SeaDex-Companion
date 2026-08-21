@@ -49,6 +49,13 @@ export function seasonLabel(r: ResultItem): string {
   return 'Movie'
 }
 
+export function resultGroupKey(r: ResultItem): number | string {
+  if (r.group_id != null) return r.group_id
+  if (r.anilist_id != null) return r.anilist_id
+  const keyParts = String(r.key || '').split(':')
+  return keyParts.length >= 2 ? `${r.arr}:${keyParts[1]}` : `${r.arr}:${r.title}`
+}
+
 /**
  * Group flat scan results into one card per anime. Grouping uses the base
  * (season 1) AniList id so all seasons of one anime land on a single card,
@@ -57,7 +64,7 @@ export function seasonLabel(r: ResultItem): string {
 export function groupResults(results: ResultItem[]): GroupedCard[] {
   const map = new Map<number | string, GroupedCard>()
   for (const r of results) {
-    const gid = r.group_id ?? r.anilist_id ?? r.title
+    const gid = resultGroupKey(r)
     if (!map.has(gid)) {
       map.set(gid, {
         title: r.title,
@@ -88,9 +95,9 @@ export function groupResults(results: ResultItem[]): GroupedCard[] {
     // without any release candidates: the backend reports those seasons as
     // missing/uncovered, while resolved seasons remain upgrade/best.
     const st = g.seasons.map((r) => r.status || 'upgrade')
-    const hasUnresolved = st.some((status) => status === 'missing' || status === 'uncovered')
+    const hasUnresolved = st.some((status) => status === 'missing' || status === 'uncovered' || status === 'partial')
     const hasResolved = st.some((status) => status === 'upgrade' || status === 'best')
-    if (hasUnresolved && hasResolved) g.status = 'partial'
+    if (st.includes('partial') || (hasUnresolved && hasResolved)) g.status = 'partial'
     else if (hasUnresolved) g.status = 'missing'
     else if (st.includes('upgrade')) g.status = 'upgrade'
     else g.status = 'best'

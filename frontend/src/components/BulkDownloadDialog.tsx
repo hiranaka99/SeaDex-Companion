@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ResultItem, Release } from '../types'
-import { formatBytes, seasonLabel } from '../utils'
+import { formatBytes, resultGroupKey, seasonLabel } from '../utils'
 import { buttonBase, cx } from '../styles'
 import Icon from './Icons'
 import { BulkDownloadTarget } from '../api'
@@ -28,7 +28,7 @@ function buildReview(results: ResultItem[]): Review {
   const blocked: ReviewGroup[] = []
 
   for (const result of results) {
-    if (result.status !== 'upgrade') continue
+    if (result.status !== 'upgrade' && !(result.status === 'partial' && result.upgrade_available)) continue
     const byPart = new Map<string, IndexedRelease[]>()
     result.releases.forEach((release, index) => {
       if (release.kind !== 'best') return
@@ -76,7 +76,7 @@ interface Props {
 }
 
 function hiddenKey(result: ResultItem): string {
-  return String(result.group_id ?? result.anilist_id ?? result.title)
+  return String(resultGroupKey(result))
 }
 
 export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, outcome, onConfirm, onClose }: Props) {
@@ -138,8 +138,8 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
     const release = group.options.find(({ index: optionIndex }) => optionIndex === index)?.release || group.options[0].release
     const hashes = (release.info_hashes || []).map((hash) => String(hash).toLowerCase())
     if (hashes.some((hash) => outcome.failed.has(hash))) return 'failure'
-    if (hashes.some((hash) => outcome.requested.has(hash))) return 'success'
-    if (outcome.pending?.size && hashes.some((hash) => outcome.pending.has(hash))) return 'pending'
+    if (hashes.some((hash) => outcome.pending.has(hash))) return 'pending'
+    if (hashes.length > 0 && hashes.every((hash) => outcome.requested.has(hash))) return 'success'
     return null
   }
   const inflightProgress = outcome?.inflight

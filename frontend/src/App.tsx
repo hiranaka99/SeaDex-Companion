@@ -62,7 +62,7 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
     try {
       const data = await api.getResults()
       setResults(data.results || [])
-      if (data.last_run) setLastRun(data.last_run)
+      setLastRun(data.last_run || null)
     } catch (e) {
       console.error('Failed to load results:', e)
     } finally {
@@ -74,13 +74,8 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
     try {
       const st = await api.getStatus()
       setStatus(st)
-      if (st.running) {
-        await loadResults()
-        pollTimer.current = window.setTimeout(pollStatus, 1500)
-      } else {
-        pollTimer.current = null
-        loadResults()
-      }
+      await loadResults()
+      pollTimer.current = window.setTimeout(pollStatus, st.running ? 1500 : 10_000)
     } catch (e) {
       console.error('Status poll failed:', e)
       pollTimer.current = window.setTimeout(pollStatus, 3000)
@@ -110,10 +105,18 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
       const r = await api.startScan()
       if (!r.ok) throw new Error(r.error || 'Could not start scan')
       setStatus({ ...INITIAL_STATUS, running: true, message: 'Starting scan…' })
-      if (!pollTimer.current) pollStatus()
+      if (pollTimer.current) window.clearTimeout(pollTimer.current)
+      pollTimer.current = null
+      void pollStatus()
     } catch (e: any) {
       toast.show('Could not start scan: ' + e.message, 'error')
     }
+  }
+
+  const handleScannedDataCleared = () => {
+    setResults([])
+    setLastRun(null)
+    setStatus({ ...INITIAL_STATUS, next_check: status.next_check })
   }
 
   const sidebarWidth = collapsed ? 76 : 248
@@ -142,7 +145,7 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
             loading={resultsLoading}
           />
         )}
-        {tab === 'config' && <ConfigTab config={config} onSaved={loadConfig} />}
+        {tab === 'config' && <ConfigTab config={config} onSaved={loadConfig} onScannedDataCleared={handleScannedDataCleared} />}
         {tab === 'log' && <LogTab active={tab === 'log'} />}
       </main>
     </div>

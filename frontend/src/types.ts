@@ -30,6 +30,7 @@ export interface ResultItem {
   title: string
   season: number | null
   status: string
+  upgrade_available?: boolean
   have: string[]
   have_by_part?: Record<string, string[]>
   owned_by_part?: Record<string, string[]>

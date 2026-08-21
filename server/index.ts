@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, isAbsolute, normalize, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  DATA_DIR, DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, forgetOwnedTorrents,
+  DATA_DIR, DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, clearScannedData, forgetOwnedTorrents,
   finishBulkDownloadBatch, getState, indexResultReleases, loadConfig, loadLastResults, log, normalizeQbStates, ownedTorrentsSnapshot,
   publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, qbGetTorrents, recordOwnedTorrents, resetBulkDownloadBatch,
   resultsForRequest, runScan, saveConfig, SECRET_CONFIG_KEYS, settleBulkDownloadBatch, setState, testIntegration,
@@ -69,6 +69,21 @@ function formatBytes(value: number): string {
 
 const downloadProgressStates = new Map<string, string>()
 const downloadProgressFailures = new Map<string, { message: string; lastLogged: number; suppressed: number }>()
+let bulkOperationActive = false
+
+function summarizeTorrentProgress(torrents: JsonObject[]): JsonObject {
+  let totalSize = 0; let downloaded = 0; let speed = 0
+  const states: string[] = []
+  for (const torrent of torrents) {
+    const size = Number(torrent.size || torrent.total_size || 0); const progress = Number(torrent.progress || 0)
+    totalSize += size; downloaded += Math.trunc(size * progress); speed += Number(torrent.dlspeed || 0); states.push(String(torrent.state || 'unknown'))
+  }
+  const found = torrents.length > 0
+  const progress = totalSize > 0 ? downloaded / totalSize : 0
+  let state = normalizeQbStates(states)
+  if (found && totalSize > 0 && progress >= 0.999) state = 'complete'
+  return { ok: true, found, progress: Math.round(progress * 10_000) / 10_000, downloaded, total_size: totalSize, speed, state }
+}
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -130,6 +145,13 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (method === 'GET' && path === '/api/config') return sendJson(response, 200, publicConfig(loadConfig()))
 
+  if (method === 'DELETE' && path === '/api/scanned-data') {
+    if (getState().running) return sendJson(response, 409, { ok: false, error: 'Wait for the current scan to finish before clearing scanned data' })
+    const cleared = clearScannedData()
+    log('INFO', `Scanned data cleared (saved results: ${cleared.results}; AniList cache entries: ${cleared.cacheEntries})`)
+    return sendJson(response, 200, { ok: true, cleared })
+  }
+
   if (method === 'POST' && path === '/api/config') {
     const data = await readJson(request)
     const config = loadConfig()
@@ -158,6 +180,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       else config[key] = value == null ? '' : String(value).trim()
     }
     saveConfig(config)
+    refreshAutocheckSchedule(config)
     const updatedSecrets = SECRET_CONFIG_KEYS.filter((key) => key in data && Boolean(String(data[key] || '').trim()))
     const integrationState = [
       `Sonarr=${config.sonarr_url && config.sonarr_key ? 'configured' : 'incomplete'}`,
@@ -229,8 +252,14 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return sendJson(response, 409, { ok: false, error: 'Scan already running' })
     }
     log('INFO', 'Manual scan requested')
+    let config: Config
+    try { config = loadConfig() } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      log('ERROR', `Manual scan could not start: ${message}`)
+      return sendJson(response, 500, { ok: false, error: message })
+    }
     setState({ running: true })
-    void runScan(loadConfig())
+    void runScan(config)
     return sendJson(response, 200, { ok: true })
   }
 
@@ -263,13 +292,15 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const details = releaseDetails(found.result!, found.release!, releaseIndex)
     log('INFO', `Download requested: ${details} (torrents: ${hashes.length}; category: ${category || '-'}; files: ${selectedFiles.length ? `${selectedFiles.length} selected` : 'all'})`)
     try {
-      for (const hash of hashes) await qbAddTorrent(config, `magnet:?xt=urn:btih:${hash}`, category, selectedFiles)
+      for (const hash of hashes) await qbAddTorrent(config, `magnet:?xt=urn:btih:${hash}`, category, selectedFiles, undefined, {
+        record: (ownedHash) => recordOwnedTorrents([ownedHash]),
+        forget: (ownedHash) => forgetOwnedTorrents([ownedHash]),
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       log('ERROR', `Download failed after ${((Date.now() - started) / 1000).toFixed(1)}s: ${details} (${message})`)
       return sendJson(response, 502, { ok: false, error: message })
     }
-    recordOwnedTorrents(hashes)
     log('INFO', `Download added in ${((Date.now() - started) / 1000).toFixed(1)}s: ${details} (torrents: ${hashes.length}; tracked torrents: ${ownedTorrentsSnapshot().length})`)
     return sendJson(response, 200, { ok: true })
   }
@@ -284,8 +315,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (action !== 'start' && action !== 'cancel') {
       return sendJson(response, 400, { ok: false, error: 'Unknown bulk download action' })
     }
+    if (bulkOperationActive) return sendJson(response, 409, { ok: false, error: 'Another bulk operation is already running' })
     const availableTargets = bulkDownloadTargets()
     const config = loadConfig()
+    bulkOperationActive = true
     try {
       if (action === 'start') {
         if (!Array.isArray(data.selections)) return sendJson(response, 400, { ok: false, error: 'No bulk release selections provided' })
@@ -335,8 +368,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
             selectedFiles: target.unrestricted ? [] : [...target.selectedFiles],
           })), {
             onSettle: (hash, error) => settleBulkDownloadBatch(hash, (labelsByHash.get(hash) || [hash]).join(' / '), error),
+            ownership: {
+              record: (hash) => recordOwnedTorrents([hash]),
+              forget: (hash) => forgetOwnedTorrents([hash]),
+            },
           })
-          recordOwnedTorrents(outcome.added)
           if (outcome.failures.length) {
             log('WARNING', `Bulk download finished in ${((Date.now() - bulkStarted) / 1000).toFixed(1)}s: added ${outcome.added.length}/${pending.size} torrent(s); ${outcome.failures.length} failed: ${outcome.failures.map((failure) => `${failure.label} (${failure.error})`).join('; ')}`)
           } else {
@@ -403,6 +439,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       const message = error instanceof Error ? error.message : String(error)
       log('ERROR', `Bulk ${action === 'start' ? 'download' : 'cancel'} failed: ${message}`)
       return sendJson(response, 502, { ok: false, error: message })
+    } finally {
+      bulkOperationActive = false
     }
   }
 
@@ -452,6 +490,25 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return sendJson(response, 200, { ok: true, downloads })
   }
 
+  if (method === 'GET' && path === '/api/download_progress/all') {
+    try {
+      const torrents = await qbGetTorrents(loadConfig())
+      const byHash = new Map(torrents.map((torrent) => [String(torrent.hash || '').toLowerCase(), torrent]))
+      const downloads: Record<string, JsonObject> = {}
+      for (const result of resultsForRequest()) {
+        if (!result.key) continue
+        for (const [releaseIndex, release] of (result.releases || []).entries()) {
+          const hashes = (release.info_hashes || []).map((hash: unknown) => String(hash).toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash))
+          const matches = hashes.map((hash: string) => byHash.get(hash)).filter(Boolean) as JsonObject[]
+          if (matches.length) downloads[`${result.key}\0${releaseIndex}`] = summarizeTorrentProgress(matches)
+        }
+      }
+      return sendJson(response, 200, { ok: true, downloads })
+    } catch (error) {
+      return sendJson(response, 502, { ok: false, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   if (method === 'GET' && path === '/api/download_progress') {
     const key = String(url.searchParams.get('key') || '').trim()
     const releaseIndex = Number.parseInt(url.searchParams.get('release') || '0', 10) || 0
@@ -482,24 +539,19 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       log('INFO', `Download status checks recovered: ${details}${previousFailure.suppressed ? ` (${previousFailure.suppressed} repeated error${previousFailure.suppressed === 1 ? '' : 's'} were suppressed)` : ''}`)
       downloadProgressFailures.delete(progressKey)
     }
-    let totalSize = 0; let downloaded = 0; let speed = 0
-    const states: string[] = []
-    for (const torrent of torrents) {
-      const size = torrent.size || torrent.total_size || 0; const progress = torrent.progress || 0
-      totalSize += size; downloaded += Math.trunc(size * progress); speed += torrent.dlspeed || 0; states.push(torrent.state || 'unknown')
-    }
-    const foundAny = torrents.length > 0
-    const progress = totalSize > 0 ? downloaded / totalSize : 0
-    let state = normalizeQbStates(states); if (foundAny && totalSize > 0 && progress >= 0.999) state = 'complete'
+    const summary = summarizeTorrentProgress(torrents)
+    const foundAny = Boolean(summary.found)
+    const progress = Number(summary.progress)
+    const state = String(summary.state)
     const previousState = downloadProgressStates.get(progressKey)
     if (foundAny && previousState !== state) {
-      log('INFO', `Download state ${previousState ? `${previousState} → ` : ''}${state}: ${details} (${(progress * 100).toFixed(1)}%; ${formatBytes(downloaded)}/${formatBytes(totalSize)}; ${formatBytes(speed)}/s)`)
+      log('INFO', `Download state ${previousState ? `${previousState} → ` : ''}${state}: ${details} (${(progress * 100).toFixed(1)}%; ${formatBytes(Number(summary.downloaded))}/${formatBytes(Number(summary.total_size))}; ${formatBytes(Number(summary.speed))}/s)`)
       downloadProgressStates.set(progressKey, state)
     } else if (!foundAny && previousState) {
       log('INFO', `Download no longer present in qBittorrent: ${details} (previous state: ${previousState})`)
       downloadProgressStates.delete(progressKey)
     }
-    return sendJson(response, 200, { ok: true, found: foundAny, progress: Math.round(progress * 10_000) / 10_000, downloaded, total_size: totalSize, speed, state })
+    return sendJson(response, 200, summary)
   }
 
   if (method === 'POST' && path === '/api/download_control') {
@@ -557,13 +609,30 @@ export function makeServer() {
   })
 }
 
+export function refreshAutocheckSchedule(config: Config, now = Date.now() / 1000): void {
+  const minutes = Number(config.autocheck_minutes || 0)
+  if (minutes <= 0) {
+    autocheckState.minutes = 0
+    autocheckState.next = null
+    return
+  }
+  if (autocheckState.minutes !== minutes || autocheckState.next === null) {
+    autocheckState.minutes = minutes
+    autocheckState.last = now
+    autocheckState.next = now + minutes * 60
+  }
+}
+
 export function startScheduler(): NodeJS.Timeout {
+  try { refreshAutocheckSchedule(loadConfig()) } catch (error) { log('ERROR', `Scheduler initialization failed: ${error instanceof Error ? error.message : String(error)}`) }
   return setInterval(() => {
     void (async () => {
       try {
         const config = loadConfig(); const minutes = config.autocheck_minutes || 0
-        if (minutes <= 0) { autocheckState.next = null; return }
-        const now = Date.now() / 1000; const interval = minutes * 60
+        const now = Date.now() / 1000
+        refreshAutocheckSchedule(config, now)
+        if (minutes <= 0) return
+        const interval = minutes * 60
         if (now - autocheckState.last >= interval) {
           autocheckState.last = now; autocheckState.next = now + interval
           if (getState().running) { log('INFO', 'Auto-check due, but a scan is already running — skipping'); return }
