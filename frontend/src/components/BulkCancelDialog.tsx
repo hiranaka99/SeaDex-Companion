@@ -3,6 +3,7 @@ import { formatBytes } from '../utils'
 import { buttonBase, cx } from '../styles'
 import Icon from './Icons'
 import { getCancelableBulkDownloads, BulkDownloadTarget, CancelableDownload } from '../api'
+import { useRestoreFocus } from './useRestoreFocus'
 
 interface Props {
   open: boolean
@@ -12,6 +13,7 @@ interface Props {
 }
 
 export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Props) {
+  useRestoreFocus(open)
   const [downloads, setDownloads] = useState<CancelableDownload[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -56,7 +58,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
 
   return (
     <div className="fixed inset-0 z-[90] grid place-items-center bg-black/65 px-4 py-6 backdrop-blur-sm" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
-      <section className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" role="dialog" aria-modal="true" aria-labelledby="bulk-cancel-title">
+      <section className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" role="dialog" aria-modal="true" aria-labelledby="bulk-cancel-title" aria-busy={busy || loading}>
         <header className="flex items-start gap-3 border-b border-line px-5 py-4">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-bad/12 text-bad"><Icon name="trash" size={19}/></span>
           <div className="min-w-0 flex-1">

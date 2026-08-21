@@ -1,4 +1,4 @@
-import { AuthState, Config, ResultItem, Status } from './types'
+import { AuthState, Config, ResultItem, ScannedDataInfo, Status } from './types'
 
 export const AUTH_REQUIRED_EVENT = 'seadex:authentication-required'
 
@@ -42,6 +42,8 @@ export const getConfig = () => api<Config>('/api/config')
 
 export const clearScannedData = () =>
   api<{ ok: boolean; cleared: { cacheEntries: number; results: number } }>('/api/scanned-data', { method: 'DELETE' })
+
+export const getScannedDataInfo = () => api<{ ok: boolean } & ScannedDataInfo>('/api/scanned-data')
 
 export const saveConfig = (cfg: Partial<Config>) =>
   api<Config>('/api/config', {
