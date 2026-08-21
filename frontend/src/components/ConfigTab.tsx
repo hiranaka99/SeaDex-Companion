@@ -7,7 +7,7 @@ import ConfirmDialog from './ConfirmDialog'
 import { useToast } from './Toast'
 import { buttonBase, buttonPrimary, control, cx } from '../styles'
 
-interface Props { config: Config | null; onSaved: () => void }
+interface Props { config: Config | null; onSaved: () => void; onScannedDataCleared: () => void }
 interface FieldProps {
   name: string; type: string; label: string; hint?: string; placeholder?: string; required?: boolean
   configured?: boolean; onClear?: () => void; form: Record<string, any>; set: (name: string, value: any) => void
@@ -28,11 +28,13 @@ function ConfigSkeleton() {
   return <div className="grid grid-cols-2 gap-4 max-[1100px]:grid-cols-1">{Array.from({ length: 4 }, (_, index) => <div key={index} className="rounded-2xl border border-line bg-panel p-5"><div className="mb-5 flex gap-3"><div className="skeleton size-10 rounded-xl"/><div className="flex-1 space-y-2"><div className="skeleton h-4 w-1/3 rounded"/><div className="skeleton h-3 w-2/3 rounded"/></div></div><div className="space-y-4"><div className="skeleton h-14 rounded-lg"/><div className="skeleton h-14 rounded-lg"/><div className="skeleton h-10 rounded-lg"/></div></div>)}</div>
 }
 
-export default function ConfigTab({ config, onSaved }: Props) {
+export default function ConfigTab({ config, onSaved, onScannedDataCleared }: Props) {
   const [form, setForm] = useState<Record<string, any>>({})
   const [saving, setSaving] = useState(false)
   const [clearedSecrets, setClearedSecrets] = useState<Set<string>>(new Set())
   const [pendingClear, setPendingClear] = useState<string | null>(null)
+  const [clearDataOpen, setClearDataOpen] = useState(false)
+  const [clearingData, setClearingData] = useState(false)
   const [connections, setConnections] = useState<Record<Service, ConnectionState>>({ sonarr: { phase: 'idle' }, radarr: { phase: 'idle' }, qbittorrent: { phase: 'idle' }, discord: { phase: 'idle' } })
   const toast = useToast()
   const secretConfiguredFields: Record<string, string> = { sonarr_key: 'sonarr_key_configured', radarr_key: 'radarr_key_configured', qbittorrent_pass: 'qbittorrent_pass_configured', webhook: 'webhook_configured' }
@@ -75,6 +77,19 @@ export default function ConfigTab({ config, onSaved }: Props) {
     finally { setSaving(false) }
   }
 
+  const clearData = async () => {
+    setClearingData(true)
+    try {
+      const result = await api.clearScannedData()
+      onScannedDataCleared()
+      toast.show(`Cleared ${result.cleared.results} saved result${result.cleared.results === 1 ? '' : 's'} and ${result.cleared.cacheEntries} cache entr${result.cleared.cacheEntries === 1 ? 'y' : 'ies'}`, 'success')
+    } catch (error: any) {
+      toast.show('Could not clear scanned data: ' + error.message, 'error')
+    } finally {
+      setClearingData(false)
+    }
+  }
+
   if (!config) return <section><header className="mb-6"><p className="mb-1 text-xs font-bold tracking-[.14em] text-accent-bright uppercase">Settings</p><h1 className="m-0 text-3xl font-extrabold tracking-tight">Configuration</h1></header><ConfigSkeleton/></section>
 
   return <section><header className="mb-6"><p className="mb-1 text-xs font-bold tracking-[.14em] text-accent-bright uppercase">Settings</p><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Configuration</h1><p className="mt-2 mb-0 text-sm text-muted">Connect your services. Credentials are encrypted locally and never returned to the browser.</p></header><form onSubmit={submit} className="space-y-4"><div className="grid grid-cols-2 gap-4 max-[1100px]:grid-cols-1">
@@ -84,6 +99,7 @@ export default function ConfigTab({ config, onSaved }: Props) {
     <IntegrationCard brand="discord" title="Discord" description="Notify a channel when new upgrades are found" configured={discordConfigured} connection={connections.discord} onTest={() => void test('discord')}><Field name="webhook" type="url" label="Webhook URL" placeholder="https://discord.com/api/webhooks/…" configured={!!form.webhook_configured} onClear={() => setPendingClear('webhook')} form={form} set={set}/><div className="rounded-xl border border-line bg-canvas-soft p-3 text-xs leading-relaxed text-muted"><Icon name="bell" size={15} className="mr-2 inline text-accent-bright"/>The test button sends one visible test message to the configured channel.</div></IntegrationCard>
   </div>
   <section className="rounded-2xl border border-line bg-panel p-5"><header className="mb-5 flex items-center gap-3"><span className="grid size-10 place-items-center rounded-xl bg-canvas-soft text-accent-bright"><Icon name="clock" size={19}/></span><div><h2 className="m-0 text-base font-extrabold">Automation</h2><p className="mt-1 mb-0 text-xs text-muted">Schedule scans and Discord notifications</p></div></header><div className="grid grid-cols-2 items-end gap-5 max-[700px]:grid-cols-1"><label className="flex items-center justify-between gap-4 rounded-xl border border-line bg-canvas-soft p-4"><span><span className="block text-sm font-bold">Discord notifications</span><span className="mt-1 block text-xs text-muted">Send newly discovered upgrades</span></span><button type="button" role="switch" aria-checked={!!form.notify_enabled} className={cx('relative h-7 w-12 shrink-0 cursor-pointer rounded-full transition-colors', form.notify_enabled ? 'bg-accent' : 'bg-line-strong')} onClick={() => set('notify_enabled', !form.notify_enabled)}><span className={cx('absolute top-1 left-1 size-5 rounded-full bg-white shadow transition-transform', form.notify_enabled && 'translate-x-5')}/></button></label><div className="rounded-xl border border-line bg-canvas-soft p-4"><span className="block text-sm font-bold">Automatic scan interval</span><div className="mt-3 flex items-center gap-2.5"><div className="flex flex-1 items-center gap-1.5"><input className={cx(control, 'no-spinner w-full bg-canvas-soft')} type="number" min="0" name="autocheck_hours" placeholder="24" aria-label="Scan interval (hours)" value={form.autocheck_hours ?? ''} onChange={(event) => set('autocheck_hours', event.target.value)}/><span className="shrink-0 text-xs font-bold text-muted-dim">h</span></div><div className="flex flex-1 items-center gap-1.5"><input className={cx(control, 'no-spinner w-full bg-canvas-soft')} type="number" min="0" max="59" name="autocheck_minutes" placeholder="0" aria-label="Scan interval (minutes)" value={form.autocheck_minutes ?? ''} onChange={(event) => set('autocheck_minutes', event.target.value)}/><span className="shrink-0 text-xs font-bold text-muted-dim">min</span></div></div><p className="mt-2 mb-0 text-xs text-muted">Set both to 0 to disable automatic scans</p></div></div></section>
+  <section className="rounded-2xl border border-line bg-panel p-5"><header className="flex flex-wrap items-center gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-bad/10 text-bad"><Icon name="trash" size={19}/></span><div className="min-w-0 flex-1"><h2 className="m-0 text-base font-extrabold">Scanned data</h2><p className="mt-1 mb-0 text-xs text-muted">Clear saved scan results and the AniList lookup cache if cached data becomes stale or corrupted. Configuration and download tracking are preserved.</p></div><button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={() => setClearDataOpen(true)} disabled={clearingData}>{clearingData ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={16}/>} {clearingData ? 'Clearing…' : 'Clear scanned data'}</button></header></section>
   <div className="sticky bottom-3 z-20 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-line-strong bg-panel-raised/95 px-4 py-3 shadow-card backdrop-blur-xl"><p className="m-0 text-xs text-muted"><Icon name="hard-drive" size={15} className="mr-1.5 inline"/>Stored in the persistent application data directory</p><button type="submit" className={buttonPrimary} disabled={saving}>{saving ? <span className="size-4 animate-spin rounded-full border-2 border-white/35 border-t-white"/> : <Icon name="check" size={17}/>} {saving ? 'Saving…' : 'Save configuration'}</button></div>
-  </form><ConfirmDialog open={pendingClear !== null} title="Clear stored credential?" description="The credential will be removed when you save the configuration. You can enter a replacement before saving." confirmLabel="Clear credential" dangerous onConfirm={() => pendingClear && clearSecret(pendingClear)} onClose={() => setPendingClear(null)}/></section>
+  </form><ConfirmDialog open={pendingClear !== null} title="Clear stored credential?" description="The credential will be removed when you save the configuration. You can enter a replacement before saving." confirmLabel="Clear credential" dangerous onConfirm={() => pendingClear && clearSecret(pendingClear)} onClose={() => setPendingClear(null)}/><ConfirmDialog open={clearDataOpen} title="Clear scanned data?" description="This removes all saved scan results and AniList cache entries. Your configuration, hidden-title list, notification history, and torrent ownership records will remain. Run a new scan to rebuild the data." confirmLabel="Clear scanned data" dangerous onConfirm={() => void clearData()} onClose={() => setClearDataOpen(false)}/></section>
 }

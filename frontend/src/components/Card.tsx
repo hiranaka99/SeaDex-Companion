@@ -156,7 +156,7 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
     // the add failed and qBittorrent removed it (e.g. the magnet metadata fetch
     // timed out). Reset to idle so the card stops animating instead of waiting
     // forever on a torrent that will never download.
-    if (dlBySeasonRef.current[seasonKey]?.[release]?.phase === 'sending' && !p.found) {
+    if (dlBySeasonRef.current[seasonKey]?.[release]?.phase !== 'idle' && !p.found) {
       stopPolling(seasonKey, release)
       setDlBySeason((s) => ({ ...s, [seasonKey]: { ...(s[seasonKey] || {}), [release]: IDLE_DL } }))
       return
@@ -194,29 +194,26 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
   // backend caches the qBittorrent response, so this burst stays cheap.
   useEffect(() => {
     const activePollers = pollers.current
-    for (const season of group.seasons) {
-      // Mirror the Season download-button logic: for split seasons (cours) use
-      // the per-part ownership so a download for one cour is not skipped just
-      // because the same release group is owned for a different cour.
-      const owned = (rel: Release) => {
-        const ownedGroups = season.precise_part_ownership
-          ? (season.owned_by_part?.[rel.part || ''] || [])
-          : season.have
-        return ownedGroups.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
+    api.getAllDownloadProgress().then(({ downloads }) => {
+      for (const season of group.seasons) {
+        // Mirror the Season download-button logic: for split seasons (cours) use
+        // the per-part ownership so a download for one cour is not skipped just
+        // because the same release group is owned for a different cour.
+        const owned = (rel: Release) => {
+          const ownedGroups = season.precise_part_ownership
+            ? (season.owned_by_part?.[rel.part || ''] || [])
+            : season.have
+          return ownedGroups.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
+        }
+        for (const { rel, index } of uniqueReleases(season.releases || [])) {
+          if (!rel.downloadable || owned(rel)) continue
+          const progress = downloads[`${season.key}\0${index}`]
+          if (progress?.found) applyProgress(season.key, index, progress)
+        }
       }
-      for (const { rel, index } of uniqueReleases(season.releases || [])) {
-        if (!rel.downloadable || owned(rel)) continue
-        api
-          .getDownloadProgress(season.key, index)
-          .then((p) => {
-            if (!p.ok || !p.found) return
-            applyProgress(season.key, index, p)
-          })
-          .catch(() => {
-            /* ignore — nothing to re-attach to */
-          })
-      }
-    }
+    }).catch(() => {
+      /* qBittorrent may be unconfigured or temporarily unavailable. */
+    })
     return () => {
       for (const k of Object.keys(activePollers)) window.clearInterval(activePollers[k])
     }
@@ -627,6 +624,7 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
                 const dlState = dl[index] || IDLE_DL
                 const sending = dlState.phase === 'sending' || dlState.phase === 'downloading'
                 const inClient = sending || dlState.phase === 'paused'
+                const complete = dlState.phase === 'complete'
                 const activeEntry: DownloadEntry | null = inClient ? {
                   id: `${r.key}\u0000${index}`,
                   season: seasonLabel(r),
@@ -639,9 +637,11 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
                   total_size: dlState.total_size,
                   speed: dlState.speed,
                 } : null
-                const disabled = owned || !rel.downloadable || inClient
+                const disabled = owned || complete || !rel.downloadable || inClient
                 const btnTitle = owned
                   ? 'You already have this release'
+                  : complete
+                  ? 'Download completed in qBittorrent'
                   : inClient
                   ? dlState.phase === 'paused' ? 'Paused in qBittorrent' : 'Downloading…'
                   : rel.downloadable
@@ -692,7 +692,7 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
                       <button
                         className={cx(
                           'group/dl ml-auto grid size-8 shrink-0 cursor-pointer place-items-center rounded-control border text-sm font-extrabold transition-all duration-150 hover:-translate-y-px disabled:opacity-55',
-                          owned
+                          owned || complete
                             ? 'cursor-default border-good/50 bg-good/18 text-good hover:border-good hover:bg-good/22'
                             : disabled
                               ? 'cursor-not-allowed border-line bg-panel-raised text-muted-dim hover:translate-y-0 hover:border-line hover:bg-panel-raised'
@@ -702,7 +702,7 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
                         title={btnTitle}
                         onClick={() => !disabled && onDownload(index)}
                       >
-                        {owned || dlState.phase === 'complete' ? (
+                        {owned || complete ? (
                           <Icon name="check" size={18} />
                         ) : sending ? (
                           <IconSpinner />

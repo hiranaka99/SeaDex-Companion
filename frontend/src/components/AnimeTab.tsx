@@ -23,7 +23,7 @@ function cardKey(group: GroupedCard): string {
 }
 
 function cardDelta(group: GroupedCard): number {
-  return group.seasons.reduce((total, season) => total + ((season.status || 'upgrade') === 'upgrade' ? (season.best_size || 0) - (season.local_size || 0) : 0), 0)
+  return group.seasons.reduce((total, season) => total + (season.status === 'upgrade' || (season.status === 'partial' && season.upgrade_available) ? (season.best_size || 0) - (season.local_size || 0) : 0), 0)
 }
 
 function SkeletonCards() {
@@ -92,7 +92,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
   const totalDelta = groups.reduce((sum, group) => sum + cardDelta(group), 0)
   const upgradeSeasonCount = useMemo(() => new Set(
     results
-      .filter((result) => result.status === 'upgrade')
+      .filter((result) => result.status === 'upgrade' || (result.status === 'partial' && result.upgrade_available))
       .map((result) => result.key),
   ).size, [results])
   const progress = status.total ? Math.round((status.progress / status.total) * 100) : 0
@@ -193,7 +193,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
         <div><p className="mb-1 text-xs font-bold tracking-[0.14em] text-accent-bright uppercase">Overview</p><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}</span>{autoCheckLabel !== null && <span>Next check in ~{autoCheckLabel}</span>}</div></div>
         <div className="flex flex-wrap items-center gap-2.5">
           <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/10 text-good hover:bg-good/18')} onClick={() => { setBulkOutcome(null); setBulkConfirm('start') }} disabled={status.running || bulkBusy !== null || upgradeSeasonCount === 0}>{bulkBusy === 'start' ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}<span>Bulk download</span></button>
-          <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={() => setBulkConfirm('cancel')} disabled={status.running || bulkBusy !== null || upgradeSeasonCount === 0}>{bulkBusy === 'cancel' ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}<span>Bulk cancel</span></button>
+          <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={() => setBulkConfirm('cancel')} disabled={status.running || bulkBusy !== null}>{bulkBusy === 'cancel' ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}<span>Bulk cancel</span></button>
           <span className="mx-1 h-9 w-px shrink-0 bg-line-strong" aria-hidden="true" />
           <button className={buttonPrimary} onClick={onScan} disabled={status.running || bulkBusy !== null}>{status.running ? <span className="size-4 animate-spin rounded-full border-2 border-white/35 border-t-white"/> : <Icon name="play" size={17}/>}<span>{status.running ? 'Scanning library…' : 'Scan library'}</span></button>
         </div>
