@@ -918,17 +918,28 @@ export interface ScanDependencies {
 
 export async function runScan(config: Config | JsonObject, dependencies: ScanDependencies = {}): Promise<void> {
   const started = Date.now()
+  let stage = 'initializing'
   try {
-    log('INFO', 'Scan started')
+    const enabledSources = [config.sonarr_url && config.sonarr_key ? 'Sonarr' : '', config.radarr_url && config.radarr_key ? 'Radarr' : ''].filter(Boolean)
+    log('INFO', `Scan started (sources: ${enabledSources.join(', ') || 'none configured'}; Discord notifications: ${config.notify_enabled && config.webhook ? 'enabled' : 'disabled'})`)
     setState({ running: true, error: null, progress: 0, total: 0, message: 'Loading SeaDex best releases…', results: [], last_run: null })
+    stage = 'loading the SeaDex catalog'
     const best = await (dependencies.seadexBest || seadexBest)()
-    log('INFO', `releases.moe: ${best.size} best-release entries loaded`)
+    log('INFO', `SeaDex catalog loaded: ${best.size} best-release entr${best.size === 1 ? 'y' : 'ies'}`)
     setState({ message: 'Loading local library…' })
+    stage = 'loading the Sonarr/Radarr library'
     const items = await (dependencies.localItems || localItems)(config as Config)
-    log('INFO', `Local library: ${items.length} item(s) from Sonarr/Radarr`)
+    const sourceCounts = items.reduce<Record<string, number>>((counts, item) => {
+      const source = String(item.arr || 'Unknown')
+      counts[source] = (counts[source] || 0) + 1
+      return counts
+    }, {})
+    const sourceDetails = Object.entries(sourceCounts).map(([source, count]) => `${source}=${count}`).join(', ')
+    log('INFO', `Local library loaded: ${items.length} item${items.length === 1 ? '' : 's'}${sourceDetails ? ` (${sourceDetails})` : ''}`)
     setState({ total: items.length })
     const cache = (dependencies.loadCache || loadCache)()
     const results: JsonObject[] = []
+    stage = 'resolving library titles'
     for (const [itemIndex, item] of items.entries()) {
       setState({ progress: itemIndex, message: `Resolving: ${item.title}` })
       const arrUrl = arrItemUrl(config, item)
@@ -1025,11 +1036,22 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
     }
     const lastRun = timestamp()
     setState({ progress: items.length, message: 'Done', results, last_run: lastRun })
+    stage = 'saving scan results'
     ;(dependencies.saveLastResults || saveLastResults)(results, lastRun)
+    stage = 'sending notifications'
     await (dependencies.autoNotifyNew || autoNotifyNew)(config as Config)
-    log('INFO', `Scan finished in ${((Date.now() - started) / 1000).toFixed(1)}s — ${results.length} upgrade(s) found`)
+    const statusCounts = results.reduce<Record<string, number>>((counts, result) => {
+      const status = String(result.status || 'unknown')
+      counts[status] = (counts[status] || 0) + 1
+      return counts
+    }, {})
+    const statusDetails = ['upgrade', 'best', 'missing', 'uncovered']
+      .filter((status) => statusCounts[status])
+      .map((status) => `${statusCounts[status]} ${status}`)
+      .join(', ')
+    log('INFO', `Scan finished in ${((Date.now() - started) / 1000).toFixed(1)}s — ${results.length} result${results.length === 1 ? '' : 's'}${statusDetails ? ` (${statusDetails})` : ''}`)
   } catch (error) {
-    log('ERROR', `Scan failed: ${errorMessage(error)}`)
+    log('ERROR', `Scan failed while ${stage} after ${((Date.now() - started) / 1000).toFixed(1)}s: ${errorMessage(error)}`)
     setState({ error: errorMessage(error) })
   } finally {
     setState({ running: false })
@@ -1037,6 +1059,8 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
 }
 
 export async function sendToDiscord(webhook: string, results: JsonObject[]): Promise<number> {
+  const started = Date.now()
+  log('INFO', `Discord notification batch started: ${results.length} upgrade${results.length === 1 ? '' : 's'}`)
   let sent = 0
   for (const result of results) {
     const title = result.title + (result.season ? `  (S${String(result.season).padStart(2, '0')})` : '')
@@ -1047,15 +1071,25 @@ export async function sendToDiscord(webhook: string, results: JsonObject[]): Pro
       sent += 1; await sleep(500)
     } catch (error) { log('ERROR', `Discord webhook failed for ${title}: ${errorMessage(error)}`) }
   }
-  if (sent) log('INFO', `Discord: sent ${sent}/${results.length} notification(s)`)
+  log(sent === results.length ? 'INFO' : 'WARNING', `Discord notification batch finished in ${((Date.now() - started) / 1000).toFixed(1)}s: sent ${sent}/${results.length}`)
   return sent
 }
 
 export async function autoNotifyNew(config: Config): Promise<number> {
-  if (!config.notify_enabled || !config.webhook) return 0
+  if (!config.notify_enabled) {
+    log('INFO', 'Discord notifications skipped: disabled in configuration')
+    return 0
+  }
+  if (!config.webhook) {
+    log('WARNING', 'Discord notifications skipped: no webhook is configured')
+    return 0
+  }
   const notified = loadNotified()
   const fresh = scanState.results.filter((result) => result.status === 'upgrade' && result.key && !notified.has(result.key))
-  if (!fresh.length) return 0
+  if (!fresh.length) {
+    log('INFO', 'Discord notifications: no new upgrades to send')
+    return 0
+  }
   const sent = await sendToDiscord(config.webhook, fresh)
   for (const result of fresh) notified.add(result.key)
   saveNotified(notified)
@@ -1285,10 +1319,12 @@ export async function qbBulkAddTorrents(config: Config, entries: QbBulkAddEntry[
   const added: string[] = []
   const failures: QbBulkAddFailure[] = []
   for (const entry of entries) {
+    const started = Date.now()
     let error: string | null = null
     try {
       await qbAddTorrent(config, `magnet:?xt=urn:btih:${entry.hash}`, entry.category, entry.selectedFiles || [], entry.timeoutMs)
       added.push(entry.hash)
+      log('INFO', `Bulk torrent added for ${entry.label} in ${((Date.now() - started) / 1000).toFixed(1)}s (hash: ${entry.hash.slice(0, 8)}…; category: ${entry.category || '-'}; files: ${entry.selectedFiles?.length ? `${entry.selectedFiles.length} selected` : 'all'})`)
     } catch (caught) {
       error = errorMessage(caught)
       failures.push({ hash: entry.hash, label: entry.label, error })

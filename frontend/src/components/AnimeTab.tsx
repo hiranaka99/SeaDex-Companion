@@ -222,6 +222,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
       <BulkDownloadDialog
         open={bulkConfirm === 'start'}
         results={results}
+        hiddenKeys={hiddenKeys}
         busy={bulkBusy === 'start'}
         outcome={bulkConfirm === 'start' ? bulkOutcome : null}
         onConfirm={(selections) => void handleBulkDownloads('start', selections)}

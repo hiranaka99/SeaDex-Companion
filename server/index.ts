@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, isAbsolute, normalize, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, forgetOwnedTorrents,
+  DATA_DIR, DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, forgetOwnedTorrents,
   finishBulkDownloadBatch, getState, indexResultReleases, loadConfig, loadLastResults, log, normalizeQbStates, ownedTorrentsSnapshot,
   publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, qbGetTorrents, recordOwnedTorrents, resetBulkDownloadBatch,
   resultsForRequest, runScan, saveConfig, SECRET_CONFIG_KEYS, settleBulkDownloadBatch, setState, testIntegration,
@@ -46,6 +46,30 @@ function findResult(key: string, releaseIndex: number): { result?: JsonObject; r
   return { result, release: releases[releaseIndex] }
 }
 
+function clientAddress(request: IncomingMessage): string {
+  return request.socket.remoteAddress || 'unknown'
+}
+
+function resultLabel(result: JsonObject): string {
+  const season = result.season ? ` S${String(result.season).padStart(2, '0')}` : ' (Movie)'
+  return `${String(result.title || result.key || 'Unknown title')}${season}`
+}
+
+function releaseDetails(result: JsonObject, release: JsonObject, releaseIndex: number): string {
+  return `${resultLabel(result)} [key: ${result.key}; release: ${releaseIndex}; group: ${release.releaseGroup || '-'}; tracker: ${release.tracker || '-'}]`
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  const unit = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
+  const amount = value / (1024 ** unit)
+  return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`
+}
+
+const downloadProgressStates = new Map<string, string>()
+const downloadProgressFailures = new Map<string, { message: string; lastLogged: number; suppressed: number }>()
+
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
@@ -76,7 +100,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (method === 'POST' && path === '/api/auth/setup') {
     const data = await readJson(request)
     const result = await setupAccount(data.username, data.password)
-    log('INFO', `Administrator account created: ${result.username}`)
+    log('INFO', `Administrator account created: ${result.username} (client: ${clientAddress(request)})`)
     return sendJson(response, 201, { setup_required: false, authenticated: true, username: result.username }, {
       'Cache-Control': 'no-store', 'Set-Cookie': sessionCookie(request, result.token),
     })
@@ -85,14 +109,16 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (method === 'POST' && path === '/api/auth/login') {
     const data = await readJson(request)
     const result = await login(request, data.username, data.password)
-    log('INFO', `Login successful: ${result.username}`)
+    log('INFO', `Login successful: ${result.username} (client: ${clientAddress(request)})`)
     return sendJson(response, 200, { setup_required: false, authenticated: true, username: result.username }, {
       'Cache-Control': 'no-store', 'Set-Cookie': sessionCookie(request, result.token),
     })
   }
 
   if (method === 'POST' && path === '/api/auth/logout') {
+    const username = authState(request).username
     logout(request)
+    log('INFO', `Logout${username ? `: ${username}` : ''} (client: ${clientAddress(request)})`)
     return sendJson(response, 200, { ok: true }, {
       'Cache-Control': 'no-store', 'Set-Cookie': expiredSessionCookie(request),
     })
@@ -132,7 +158,15 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       else config[key] = value == null ? '' : String(value).trim()
     }
     saveConfig(config)
-    log('INFO', `Config saved (autocheck=${config.autocheck_minutes}m, notify=${config.notify_enabled})`)
+    const updatedSecrets = SECRET_CONFIG_KEYS.filter((key) => key in data && Boolean(String(data[key] || '').trim()))
+    const integrationState = [
+      `Sonarr=${config.sonarr_url && config.sonarr_key ? 'configured' : 'incomplete'}`,
+      `Radarr=${config.radarr_url && config.radarr_key ? 'configured' : 'incomplete'}`,
+      `qBittorrent=${config.qbittorrent_url && config.qbittorrent_user && config.qbittorrent_pass ? 'configured' : 'incomplete'}`,
+      `Discord=${config.webhook ? 'configured' : 'incomplete'}`,
+    ].join(', ')
+    const secretChanges = [...updatedSecrets.map((key) => `${key} updated`), ...[...clearedSecrets].map((key) => `${key} cleared`)]
+    log('INFO', `Configuration saved (${integrationState}; auto-check: ${config.autocheck_minutes}m; notifications: ${config.notify_enabled ? 'enabled' : 'disabled'}; hidden titles: ${config.hidden.length}${secretChanges.length ? `; credentials: ${secretChanges.join(', ')}` : ''})`)
     return sendJson(response, 200, publicConfig(config))
   }
 
@@ -155,11 +189,16 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       if (SECRET_CONFIG_KEYS.includes(key as any) && !value) continue
       config[key] = key === 'sonarr_url' || key === 'radarr_url' ? arrBaseUrl(value) : value
     }
+    const started = Date.now()
+    log('INFO', `Integration test started: ${service}`)
     try {
       const message = await testIntegration(config, service)
+      log('INFO', `Integration test passed: ${service} in ${((Date.now() - started) / 1000).toFixed(1)}s (${message})`)
       return sendJson(response, 200, { ok: true, message })
     } catch (error) {
-      return sendJson(response, 502, { ok: false, error: error instanceof Error ? error.message : String(error) })
+      const message = error instanceof Error ? error.message : String(error)
+      log('ERROR', `Integration test failed: ${service} after ${((Date.now() - started) / 1000).toFixed(1)}s (${message})`)
+      return sendJson(response, 502, { ok: false, error: message })
     }
   }
 
@@ -185,7 +224,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (method === 'POST' && path === '/api/scan') {
-    if (getState().running) return sendJson(response, 409, { ok: false, error: 'Scan already running' })
+    if (getState().running) {
+      log('WARNING', 'Manual scan request ignored: a scan is already running')
+      return sendJson(response, 409, { ok: false, error: 'Scan already running' })
+    }
+    log('INFO', 'Manual scan requested')
     setState({ running: true })
     void runScan(loadConfig())
     return sendJson(response, 200, { ok: true })
@@ -199,6 +242,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const hidden = new Set(config.hidden || [])
     if (data.hidden) hidden.add(key); else hidden.delete(key)
     config.hidden = [...hidden].sort(); saveConfig(config)
+    const result = resultsForRequest().find((item) => String(item.group_id ?? item.anilist_id ?? item.title) === key)
+    log('INFO', `${data.hidden ? 'Hidden' : 'Restored'} library title: ${result?.title || key} (key: ${key}; hidden total: ${config.hidden.length})`)
     return sendJson(response, 200, { ok: true, hidden: config.hidden })
   }
 
@@ -214,15 +259,18 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const config = loadConfig()
     const category = String(config[`${String(found.result!.arr).toLowerCase()}_category`] || '').trim()
     const selectedFiles = Array.isArray(found.release!.selected_files) ? found.release!.selected_files.map(String) : []
+    const started = Date.now()
+    const details = releaseDetails(found.result!, found.release!, releaseIndex)
+    log('INFO', `Download requested: ${details} (torrents: ${hashes.length}; category: ${category || '-'}; files: ${selectedFiles.length ? `${selectedFiles.length} selected` : 'all'})`)
     try {
       for (const hash of hashes) await qbAddTorrent(config, `magnet:?xt=urn:btih:${hash}`, category, selectedFiles)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      log('ERROR', `Download failed for ${key} (release ${releaseIndex}): ${message}`)
+      log('ERROR', `Download failed after ${((Date.now() - started) / 1000).toFixed(1)}s: ${details} (${message})`)
       return sendJson(response, 502, { ok: false, error: message })
     }
     recordOwnedTorrents(hashes)
-    log('INFO', `Sent to qBittorrent: ${key} release ${releaseIndex}, ${hashes.length} torrent(s) (category: ${category || '-'})`)
+    log('INFO', `Download added in ${((Date.now() - started) / 1000).toFixed(1)}s: ${details} (torrents: ${hashes.length}; tracked torrents: ${ownedTorrentsSnapshot().length})`)
     return sendJson(response, 200, { ok: true })
   }
 
@@ -270,6 +318,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
             labelsByHash.set(hash, labels)
           }
         }
+        const bulkStarted = Date.now()
+        const categories = [...new Set([...pending.values()].map((target) => target.category || '-'))]
+        const scopedTorrents = [...pending.values()].filter((target) => !target.unrestricted).length
+        log('INFO', `Bulk download requested: ${targets.length} release selection${targets.length === 1 ? '' : 's'}, ${pending.size} unique torrent${pending.size === 1 ? '' : 's'} (categories: ${categories.join(', ') || '-'}; file-scoped torrents: ${scopedTorrents})`)
         // Each torrent is added independently: a single failure (for example a
         // magnet metadata timeout) must never prevent the remaining torrents
         // from being queued. Arm the live batch status first so the UI can poll
@@ -286,9 +338,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           })
           recordOwnedTorrents(outcome.added)
           if (outcome.failures.length) {
-            log('WARNING', `Bulk download added ${outcome.added.length} of ${pending.size} torrent(s); ${outcome.failures.length} failed: ${outcome.failures.map((failure) => `${failure.label} (${failure.error})`).join('; ')}`)
+            log('WARNING', `Bulk download finished in ${((Date.now() - bulkStarted) / 1000).toFixed(1)}s: added ${outcome.added.length}/${pending.size} torrent(s); ${outcome.failures.length} failed: ${outcome.failures.map((failure) => `${failure.label} (${failure.error})`).join('; ')}`)
           } else {
-            log('INFO', `Bulk download sent ${outcome.added.length} torrent(s) to qBittorrent`)
+            log('INFO', `Bulk download finished in ${((Date.now() - bulkStarted) / 1000).toFixed(1)}s: added ${outcome.added.length}/${pending.size} torrent(s) (tracked torrents: ${ownedTorrentsSnapshot().length})`)
           }
           return sendJson(response, 200, {
             ok: outcome.added.length > 0,
@@ -303,8 +355,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
       // Only ever cancel/remove torrents this app added itself (tracked in the
       // ownership ledger), never torrents the user added manually.
+      const cancelStarted = Date.now()
       const index = indexResultReleases()
       const ownedSet = new Set(ownedTorrentsSnapshot())
+      const requestedSelections = Array.isArray(data.selections) ? data.selections.length : null
+      log('INFO', `Bulk cancel requested: ${requestedSelections === null ? 'all incomplete app-added downloads' : `${requestedSelections} selected release${requestedSelections === 1 ? '' : 's'}`} (tracked torrents: ${ownedSet.size}; delete files: ${data.delete_files === true ? 'yes' : 'no'})`)
       const torrents = ownedSet.size ? await qbGetTorrents(config, [...ownedSet]) : []
       const presentHashes = new Set(
         torrents.map((torrent) => String(torrent.hash || '').toLowerCase()).filter((hash) => /^[0-9a-f]{40}$/.test(hash)),
@@ -342,11 +397,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       // torrent the user deleted manually from qBittorrent in the meantime.
       const staleHashes = [...ownedSet].filter((hash) => !presentHashes.has(hash) && !cancelled.has(hash))
       forgetOwnedTorrents([...incompleteHashes, ...staleHashes])
-      log('INFO', `Bulk cancel removed ${incompleteHashes.length} incomplete torrent(s) added by the app${deleteFiles ? ' and deleted their downloaded files' : ' and preserved their files'}`)
+      log('INFO', `Bulk cancel finished in ${((Date.now() - cancelStarted) / 1000).toFixed(1)}s: removed ${incompleteHashes.length} incomplete torrent(s) across ${affectedTargets.length} release(s), ${deleteFiles ? 'deleted downloaded files' : 'preserved downloaded files'}; pruned ${staleHashes.length} stale ledger entr${staleHashes.length === 1 ? 'y' : 'ies'}`)
       return sendJson(response, 200, { ok: true, count: incompleteHashes.length, targets: affectedTargets })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      log('ERROR', `Bulk download ${action} failed: ${message}`)
+      log('ERROR', `Bulk ${action === 'start' ? 'download' : 'cancel'} failed: ${message}`)
       return sendJson(response, 502, { ok: false, error: message })
     }
   }
@@ -403,14 +458,29 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (!key) return sendJson(response, 400, { ok: false, error: 'No key provided' })
     const found = findResult(key, releaseIndex)
     if (found.error) return sendJson(response, found.error[0], { ok: false, error: found.error[1] })
+    const progressKey = `${key}\0${releaseIndex}`
+    const details = releaseDetails(found.result!, found.release!, releaseIndex)
     const hashes = (found.release!.info_hashes || []).map((hash: string) => hash.toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash))
     if (!hashes.length) return sendJson(response, 400, { ok: false, error: 'No magnet available for this release' })
     let torrents: JsonObject[]
     try { torrents = await qbGetTorrents(loadConfig(), hashes) }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      log('ERROR', `Download progress check failed for ${key} (release ${releaseIndex}): ${message}`)
+      const now = Date.now()
+      const previous = downloadProgressFailures.get(progressKey)
+      if (!previous || previous.message !== message || now - previous.lastLogged >= 30_000) {
+        const suppressed = previous?.suppressed ? `; ${previous.suppressed} repeated error${previous.suppressed === 1 ? '' : 's'} suppressed` : ''
+        log('ERROR', `Download status check failed: ${details} (${message}${suppressed})`)
+        downloadProgressFailures.set(progressKey, { message, lastLogged: now, suppressed: 0 })
+      } else {
+        previous.suppressed += 1
+      }
       return sendJson(response, 502, { ok: false, error: message })
+    }
+    const previousFailure = downloadProgressFailures.get(progressKey)
+    if (previousFailure) {
+      log('INFO', `Download status checks recovered: ${details}${previousFailure.suppressed ? ` (${previousFailure.suppressed} repeated error${previousFailure.suppressed === 1 ? '' : 's'} were suppressed)` : ''}`)
+      downloadProgressFailures.delete(progressKey)
     }
     let totalSize = 0; let downloaded = 0; let speed = 0
     const states: string[] = []
@@ -421,6 +491,14 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const foundAny = torrents.length > 0
     const progress = totalSize > 0 ? downloaded / totalSize : 0
     let state = normalizeQbStates(states); if (foundAny && totalSize > 0 && progress >= 0.999) state = 'complete'
+    const previousState = downloadProgressStates.get(progressKey)
+    if (foundAny && previousState !== state) {
+      log('INFO', `Download state ${previousState ? `${previousState} → ` : ''}${state}: ${details} (${(progress * 100).toFixed(1)}%; ${formatBytes(downloaded)}/${formatBytes(totalSize)}; ${formatBytes(speed)}/s)`)
+      downloadProgressStates.set(progressKey, state)
+    } else if (!foundAny && previousState) {
+      log('INFO', `Download no longer present in qBittorrent: ${details} (previous state: ${previousState})`)
+      downloadProgressStates.delete(progressKey)
+    }
     return sendJson(response, 200, { ok: true, found: foundAny, progress: Math.round(progress * 10_000) / 10_000, downloaded, total_size: totalSize, speed, state })
   }
 
@@ -438,16 +516,23 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const hashes = (found.release!.info_hashes || []).map((hash: string) => hash.toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash))
     if (!hashes.length) return sendJson(response, 400, { ok: false, error: 'No torrent hashes available for this release' })
     const deleteFiles = action === 'remove' && data.delete_files === true
+    const started = Date.now()
+    const details = releaseDetails(found.result!, found.release!, releaseIndex)
+    log('INFO', `Torrent ${action} requested: ${details} (torrents: ${hashes.length}${action === 'remove' ? `; delete files: ${deleteFiles ? 'yes' : 'no'}` : ''})`)
     try {
       await qbControlTorrents(loadConfig(), hashes, action, deleteFiles)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      log('ERROR', `Torrent ${action} failed for ${key} (release ${releaseIndex}): ${message}`)
+      log('ERROR', `Torrent ${action} failed after ${((Date.now() - started) / 1000).toFixed(1)}s: ${details} (${message})`)
       return sendJson(response, 502, { ok: false, error: message })
     }
-    if (action === 'remove') forgetOwnedTorrents(hashes)
+    if (action === 'remove') {
+      forgetOwnedTorrents(hashes)
+      downloadProgressStates.delete(`${key}\0${releaseIndex}`)
+      downloadProgressFailures.delete(`${key}\0${releaseIndex}`)
+    }
     const detail = action === 'remove' ? (deleteFiles ? ' and deleted its files' : ' and preserved its files') : ''
-    log('INFO', `${action === 'pause' ? 'Paused' : action === 'resume' ? 'Resumed' : 'Removed'} qBittorrent torrent for ${key} release ${releaseIndex}${detail}`)
+    log('INFO', `Torrent ${action} finished in ${((Date.now() - started) / 1000).toFixed(1)}s: ${details}${detail}`)
     return sendJson(response, 200, { ok: true })
   }
 
@@ -459,11 +544,14 @@ export function makeServer() {
   return createServer((request, response) => {
     void handle(request, response).catch((error) => {
       const message = error instanceof Error ? error.message : String(error)
+      const requestMethod = request.method || 'GET'
+      const requestPath = new URL(request.url || '/', 'http://localhost').pathname
       if (error instanceof AuthError) {
+        log('WARNING', `Request rejected: ${requestMethod} ${requestPath} → HTTP ${error.status} (client: ${clientAddress(request)}; ${message})`)
         if (!response.headersSent) sendJson(response, error.status, { error: message }, { 'Cache-Control': 'no-store' }); else response.end()
         return
       }
-      log('ERROR', `Request failed: ${message}`)
+      log('ERROR', `Request failed: ${requestMethod} ${requestPath} (client: ${clientAddress(request)}; ${message})`)
       if (!response.headersSent) sendJson(response, 400, { error: message }); else response.end()
     })
   })
@@ -490,5 +578,15 @@ const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(imp
 if (isMain) {
   const port = Number.parseInt(process.env.PORT || '8080', 10)
   startScheduler()
-  makeServer().listen(port, '0.0.0.0', () => log('INFO', `Server starting on 0.0.0.0:${port} (data dir: ${process.env.DATA_DIR || process.cwd()})`))
+  makeServer().listen(port, '0.0.0.0', () => {
+    log('INFO', `Server listening on 0.0.0.0:${port} (Node ${process.version}; data: ${DATA_DIR}; static: ${STATIC_DIR})`)
+    try {
+      const config = loadConfig()
+      const savedResults = loadLastResults()?.results?.length || 0
+      const hiddenCount = Array.isArray(config.hidden) ? config.hidden.length : 0
+      log('INFO', `Runtime state restored (saved results: ${savedResults}; tracked torrents: ${ownedTorrentsSnapshot().length}; hidden titles: ${hiddenCount}; auto-check: ${config.autocheck_minutes > 0 ? `${config.autocheck_minutes}m` : 'disabled'})`)
+    } catch (error) {
+      log('ERROR', `Runtime configuration could not be restored: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  })
 }

@@ -68,13 +68,18 @@ export interface BulkOutcome {
 interface Props {
   open: boolean
   results: ResultItem[]
+  hiddenKeys: Set<string>
   busy: boolean
   outcome?: BulkOutcome | null
   onConfirm: (selections: BulkDownloadTarget[]) => void
   onClose: () => void
 }
 
-export default function BulkDownloadDialog({ open, results, busy, outcome, onConfirm, onClose }: Props) {
+function hiddenKey(result: ResultItem): string {
+  return String(result.group_id ?? result.anilist_id ?? result.title)
+}
+
+export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, outcome, onConfirm, onClose }: Props) {
   const review = useMemo(() => buildReview(results), [results])
   const [selected, setSelected] = useState<Record<string, number>>({})
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})
@@ -87,11 +92,11 @@ export default function BulkDownloadDialog({ open, results, busy, outcome, onCon
     // Only single-option groups get an automatic pick. Multi-option groups stay
     // pending (collapsed + highlighted) until the user actively chooses one.
     setSelected(Object.fromEntries(review.ready.filter((group) => group.options.length === 1).map((group) => [group.id, group.options[0].index])))
-    setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, true])))
+    setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, !hiddenKeys.has(hiddenKey(group.result))])))
     setExpanded({})
     setView(review.ready.length ? 'ready' : 'unavailable')
     cancelRef.current?.focus()
-  }, [open, review])
+  }, [open, review, hiddenKeys])
 
   useEffect(() => {
     if (!open) return
@@ -110,7 +115,7 @@ export default function BulkDownloadDialog({ open, results, busy, outcome, onCon
     const localSize = group.part ? (group.result.local_size_by_part?.[group.part] || 0) : group.result.local_size
     return option.release.size && localSize ? total + option.release.size - localSize : total
   }, 0)
-  const automaticCount = review.ready.length - review.choices.length
+  const automaticCount = review.ready.filter((group) => group.options.length === 1 && !hiddenKeys.has(hiddenKey(group.result))).length
   const pendingChoices = review.choices.filter((group) => enabled[group.id] !== false && selected[group.id] === undefined).length
   const blockedSorted = [...review.blocked].sort((a, b) =>
     a.result.title.localeCompare(b.result.title, undefined, { sensitivity: 'base' }) ||
@@ -167,6 +172,7 @@ export default function BulkDownloadDialog({ open, results, busy, outcome, onCon
               {readySorted.length ? (
                 <div className="space-y-1.5">
                   {readySorted.map((group) => {
+                    const isHidden = hiddenKeys.has(hiddenKey(group.result))
                     const isChoice = group.options.length > 1
                     if (!isChoice) {
                       const option = group.options.find(({ index }) => index === (selected[group.id] ?? group.options[0].index)) || group.options[0]
@@ -182,6 +188,7 @@ export default function BulkDownloadDialog({ open, results, busy, outcome, onCon
                           {status === 'pending' && <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/>}
                           <span className={cx('font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : 'text-ink')}>{group.result.title}</span>
                           <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-muted">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
+                          {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-[10px] font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                           <span className="ml-auto flex items-center gap-1.5 tabular-nums" title={`${release.releaseGroup} · ${release.tracker}`}>
                             <span className="text-muted" title="Current local size">{formatBytes(localSize) || '—'}</span>
                             <span className="text-muted-dim">→</span>
@@ -209,6 +216,7 @@ export default function BulkDownloadDialog({ open, results, busy, outcome, onCon
                             {status === 'pending' && <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/>}
                             <span className={cx('font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : 'text-ink')}>{group.result.title}</span>
                             <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-muted">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
+                            {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-[10px] font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                             {chosen ? (
                               <span className="inline-flex items-center gap-1 rounded-full border border-good/40 bg-good/10 px-2 py-0.5 text-[10px] font-extrabold text-good"><Icon name="check" size={12}/>Selected</span>
                             ) : (
@@ -256,13 +264,17 @@ export default function BulkDownloadDialog({ open, results, busy, outcome, onCon
             <section>
               <h3 className="mb-3 text-xs font-extrabold tracking-[0.12em] text-warn uppercase">Unavailable from private indexers</h3>
               <div className="space-y-1.5">
-                {blockedSorted.map((group) => (
-                  <div key={group.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warn/25 bg-warn/6 px-3 py-2 text-xs">
-                    <span className="font-semibold text-ink">{group.result.title}</span>
-                    <span className="rounded border border-warn/25 px-1.5 py-0.5 text-[10px] font-extrabold text-warn">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
-                    <span className="ml-auto min-w-0 truncate text-muted" title={group.options.map(({ release }) => release.releaseGroup).join(' · ')}>{group.options.length ? `Private: ${group.options.map(({ release }) => release.releaseGroup).join(' · ')}` : 'No public magnet available'}</span>
-                  </div>
-                ))}
+                {blockedSorted.map((group) => {
+                  const isHidden = hiddenKeys.has(hiddenKey(group.result))
+                  return (
+                    <div key={group.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warn/25 bg-warn/6 px-3 py-2 text-xs">
+                      <span className="font-semibold text-ink">{group.result.title}</span>
+                      <span className="rounded border border-warn/25 px-1.5 py-0.5 text-[10px] font-extrabold text-warn">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
+                      {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-[10px] font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
+                      <span className="ml-auto min-w-0 truncate text-muted" title={group.options.map(({ release }) => release.releaseGroup).join(' · ')}>{group.options.length ? `Private: ${group.options.map(({ release }) => release.releaseGroup).join(' · ')}` : 'No public magnet available'}</span>
+                    </div>
+                  )
+                })}
               </div>
             </section>
           )}
