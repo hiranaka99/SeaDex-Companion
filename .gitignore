@@ -40,6 +40,8 @@ anilist_cache.json
 last_results.json
 notified.json
 owned_torrents.json
+scan_history.json
+user_rules.json
 logs/
 data/
 

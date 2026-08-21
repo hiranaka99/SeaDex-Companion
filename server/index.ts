@@ -1,11 +1,11 @@
-import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { extname, isAbsolute, normalize, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  DATA_DIR, DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, applyUserRulesToResults, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, clearScannedData, exclusionRuleKey, forgetOwnedTorrents,
+  DATA_DIR, DEFAULT_CONFIG, STATIC_DIR, applyUserRulesToResults, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, clearScannedData, exclusionRuleKey, forgetOwnedTorrents,
   finishBulkDownloadBatch, getState, indexResultReleases, loadConfig, loadLastResults, loadScanHistory, loadUserRules, log, normalizeQbStates, ownedTorrentsSnapshot,
-  publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, qbGetTorrents, recordOwnedTorrents, resetBulkDownloadBatch,
+  publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, qbGetTorrents, readLogTail, recordOwnedTorrents, resetBulkDownloadBatch,
   resultsForRequest, runScan, saveConfig, saveUserRules, scannedDataInfo, searchAniListTitles, SECRET_CONFIG_KEYS, settleBulkDownloadBatch, setState, testIntegration,
 } from './app.js'
 import {
@@ -98,7 +98,12 @@ function serveStatic(pathname: string, response: ServerResponse): boolean {
   const containedPath = relative(root, target)
   if (containedPath.startsWith('..') || isAbsolute(containedPath)) return false
   if (!existsSync(target) || !statSync(target).isFile()) return false
-  response.writeHead(200, { 'Content-Type': MIME_TYPES[extname(target)] || 'application/octet-stream' })
+  const headers: Record<string, string> = { 'Content-Type': MIME_TYPES[extname(target)] || 'application/octet-stream' }
+  // Vite emits content-hashed files under /assets/ — they never change once built,
+  // so let the browser cache them indefinitely. index.html (and any non-hashed file)
+  // must stay uncached so new deploys are picked up on reload.
+  if (relativeFile.startsWith('assets/')) headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+  response.writeHead(200, headers)
   createReadStream(target).pipe(response)
   return true
 }
@@ -294,9 +299,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (method === 'GET' && path === '/api/logs') {
     const requested = Number.parseInt(url.searchParams.get('lines') || '500', 10)
     const count = Math.max(1, Math.min(Number.isFinite(requested) ? requested : 500, 2000))
-    let lines: string[] = []
-    try { if (existsSync(LOG_FILE)) lines = readFileSync(LOG_FILE, 'utf8').split(/\r?\n/).filter((line, index, all) => line || index < all.length - 1) } catch { /* empty log response */ }
-    return sendJson(response, 200, { lines: lines.slice(-count), total: lines.length })
+    // Only a bounded tail of the log file is read (see readLogTail), so polling
+    // this endpoint stays cheap as the log grows and survives log rotation.
+    const lines = readLogTail().slice(-count)
+    return sendJson(response, 200, { lines, total: lines.length })
   }
 
   if (method === 'POST' && path === '/api/scan') {
