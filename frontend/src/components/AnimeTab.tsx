@@ -8,6 +8,7 @@ import Icon, { IconName } from './Icons'
 import { useToast } from './Toast'
 import * as api from '../api'
 import { buttonBase, buttonPrimary, control, cx } from '../styles'
+import { BulkOperationState } from './OperationCenter'
 
 interface Props {
   results: ResultItem[]
@@ -16,6 +17,11 @@ interface Props {
   lastRun: string | null
   onScan: () => void
   loading: boolean
+  loadError: string
+  onReloadResults: () => void
+  onOpenConfig: () => void
+  onBulkOperationChange: (operation: BulkOperationState) => void
+  operationsVisible: boolean
 }
 
 function cardKey(group: GroupedCard): string {
@@ -32,7 +38,7 @@ function SkeletonCards() {
   </div>
 }
 
-export default function AnimeTab({ results, config, status, lastRun, onScan, loading }: Props) {
+export default function AnimeTab({ results, config, status, lastRun, onScan, loading, loadError, onReloadResults, onOpenConfig, onBulkOperationChange, operationsVisible }: Props) {
   const [search, setSearch] = useState('')
   const [arr, setArr] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -95,7 +101,10 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
       .filter((result) => result.status === 'upgrade' || (result.status === 'partial' && result.upgrade_available))
       .map((result) => result.key),
   ).size, [results])
-  const progress = status.total ? Math.round((status.progress / status.total) * 100) : 0
+  const libraryConfigured = Boolean(
+    (config?.sonarr_url && config.sonarr_key_configured) ||
+    (config?.radarr_url && config.radarr_key_configured),
+  )
   const autoCheckMinutes = status.next_check ? Math.max(0, Math.round((status.next_check - Date.now() / 1000) / 60)) : null
   const autoCheckLabel = autoCheckMinutes == null ? null : (() => { const hours = Math.floor(autoCheckMinutes / 60); const minutes = autoCheckMinutes % 60; return hours > 0 ? (minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`) : `${minutes} min` })()
   const clearFilters = () => { setSearch(''); setArr(''); setStatusFilter(''); setSort('recommended'); setShowHidden(false) }
@@ -129,6 +138,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
       if (action === 'start') {
         const allHashes = new Set<string>()
         for (const selection of selections) for (const hash of hashesForSelection(selection)) allHashes.add(hash)
+        onBulkOperationChange({ action, phase: 'running', settled: 0, total: allHashes.size, added: 0, failed: 0, message: `Preparing ${allHashes.size} torrent${allHashes.size === 1 ? '' : 's'}…` })
         // The request settles each torrent one at a time (metadata is fetched
         // with a 15 second budget per torrent), so poll the live batch status
         // while it is in flight and color each title as soon as its own
@@ -137,6 +147,8 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
         const request = api.bulkDownloads('start', selections)
         pollId = window.setInterval(() => {
           void api.getBulkDownloadStatus().then((status) => {
+            const settled = status.added.length + status.failures.length
+            onBulkOperationChange({ action, phase: 'running', settled, total: settled + status.pending.length, added: status.added.length, failed: status.failures.length, message: `${status.added.length} added · ${status.pending.length} pending${status.failures.length ? ` · ${status.failures.length} failed` : ''}` })
             setBulkOutcome((current) => current ? {
               requested: new Set(status.added.map((hash) => hash.toLowerCase())),
               failed: new Set(status.failures.map((failure) => failure.hash.toLowerCase())),
@@ -163,15 +175,27 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
         if (status) for (const hash of status.added) requested.add(hash.toLowerCase())
         for (const hash of allHashes) if (!failed.has(hash) && !pending.has(hash) && !requested.has(hash)) requested.add(hash)
         setBulkOutcome({ requested, failed, pending, inflight: false })
+        onBulkOperationChange({
+          action,
+          phase: failures.length ? 'warning' : 'success',
+          settled: requested.size + failures.length,
+          total: allHashes.size,
+          added: requested.size,
+          failed: failures.length,
+          message: failures.length ? `${requested.size} added · ${failures.length} failed` : `${requested.size} torrent${requested.size === 1 ? '' : 's'} added to qBittorrent`,
+        })
       } else {
+        onBulkOperationChange({ action, phase: 'running', settled: 0, total: selections.length, added: 0, failed: 0, message: `Removing selected incomplete downloads…` })
         const result = await api.bulkDownloads(action, selections, deleteFiles)
         toast.show(result.count
           ? `Cancelled ${result.count} download${result.count === 1 ? '' : 's'}; ${deleteFiles ? 'downloaded files were deleted' : 'files were kept'}`
           : 'No active bulk downloads found', result.count ? 'success' : 'info')
+        onBulkOperationChange({ action, phase: 'success', settled: selections.length, total: selections.length, added: 0, failed: 0, message: result.count ? `Removed ${result.count} torrent${result.count === 1 ? '' : 's'}; ${deleteFiles ? 'files deleted' : 'files preserved'}` : 'No active bulk downloads were found' })
         setBulkConfirm(null)
       }
     } catch (error: any) {
       toast.show(`Bulk ${action === 'start' ? 'download' : 'cancel'} failed: ${error.message}`, 'error')
+      onBulkOperationChange({ action, phase: 'error', settled: 0, total: selections.length, added: 0, failed: selections.length, message: error.message })
       if (action === 'start') {
         // The request itself failed (for example qBittorrent is unreachable):
         // show every selected title in red so the user sees what was affected.
@@ -199,10 +223,9 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
         </div>
       </header>
 
-      {status.running && <div className="mb-5 rounded-xl border border-accent/25 bg-accent/6 p-4" aria-live="polite"><div className="mb-2 flex items-center justify-between gap-3 text-xs"><span className="truncate font-semibold text-accent-bright">{status.message || 'Scanning…'}</span><span className="shrink-0 tabular-nums text-muted">{status.total ? `${status.progress}/${status.total}` : ''} · {progress}%</span></div><div className="h-2 overflow-hidden rounded-full bg-canvas"><div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${progress}%` }}/></div></div>}
-      {status.error && !status.running && <div className="mb-5 flex items-start gap-2.5 rounded-xl border border-bad/30 bg-bad/8 px-4 py-3 text-sm text-bad" role="alert"><Icon name="alert" size={18} className="mt-0.5 shrink-0"/>{status.error}</div>}
+      {loadError && <div className="mb-5 flex flex-wrap items-center gap-2.5 rounded-xl border border-bad/30 bg-bad/8 px-4 py-3 text-sm text-bad" role="alert"><Icon name="alert" size={18} className="shrink-0"/><span className="min-w-0 flex-1">Could not load scanned results: {loadError}</span><button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={onReloadResults}><Icon name="refresh" size={15}/>Retry</button><button type="button" className={cx(buttonBase, 'border-line bg-panel text-muted hover:text-ink')} onClick={onOpenConfig}>Open Config</button></div>}
 
-      <div className="sticky top-0 z-20 mb-5 rounded-2xl border border-line bg-canvas/92 p-3 shadow-[0_12px_28px_rgba(0,0,0,.22)] backdrop-blur-xl max-[900px]:top-16">
+      <div className={cx('z-20 mb-5 rounded-2xl border border-line bg-canvas/92 p-3 shadow-[0_12px_28px_rgba(0,0,0,.22)] backdrop-blur-xl', operationsVisible ? 'relative' : 'sticky top-0 max-[900px]:top-16')}>
         <div className="flex flex-wrap items-center gap-2.5">
           <label className="relative min-w-[220px] flex-1"><span className="sr-only">Search anime</span><Icon name="search" size={17} className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-muted-dim"/><input type="search" className={cx(control, 'w-full pl-10')} placeholder="Search titles and release groups" value={search} onChange={(event) => setSearch(event.target.value)}/></label>
           <select aria-label="Source" className={cx(control, 'cursor-pointer')} value={arr} onChange={(event) => setArr(event.target.value)}><option value="">All sources</option><option value="Sonarr">Sonarr</option><option value="Radarr">Radarr</option></select>
@@ -217,7 +240,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
 
       {(loading || (status.running && results.length === 0)) && <SkeletonCards/>}
       {!loading && results.length > 0 && groups.length > 0 && <div className="grid items-start gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]">{groups.map((group, index) => <Card key={cardKey(group)} group={group} index={index} config={config} hidden={hiddenKeys.has(cardKey(group))} onToggle={() => void toggleHidden(cardKey(group))}/>)}</div>}
-      {!loading && results.length === 0 && !status.running && <div className="rounded-2xl border border-dashed border-line-strong bg-panel/45 px-6 py-16 text-center"><span className="mx-auto mb-4 grid size-14 place-items-center rounded-2xl bg-accent/10 text-accent-bright"><Icon name="library" size={26}/></span><h2 className="mb-2 text-lg font-bold">Your library is ready to be scanned</h2><p className="mx-auto mb-5 max-w-md text-sm text-muted">Compare your Sonarr and Radarr collection with the best releases available on SeaDex.</p><button type="button" className={buttonPrimary} onClick={onScan}><Icon name="play" size={17}/>Scan library</button></div>}
+      {!loading && !loadError && results.length === 0 && !status.running && <div className="rounded-2xl border border-dashed border-line-strong bg-panel/45 px-6 py-16 text-center"><span className="mx-auto mb-4 grid size-14 place-items-center rounded-2xl bg-accent/10 text-accent-bright"><Icon name="library" size={26}/></span><h2 className="mb-2 text-lg font-bold">{libraryConfigured ? 'Your library is ready to be scanned' : 'Connect your library first'}</h2><p className="mx-auto mb-5 max-w-md text-sm text-muted">{libraryConfigured ? 'Compare your Sonarr and Radarr collection with the best releases available on SeaDex.' : 'Configure Sonarr or Radarr before running your first scan.'}</p><div className="flex flex-wrap justify-center gap-2"><button type="button" className={libraryConfigured ? buttonPrimary : cx(buttonBase, 'border-line bg-panel text-muted hover:text-ink')} onClick={onScan} disabled={!libraryConfigured}><Icon name="play" size={17}/>Scan library</button><button type="button" className={libraryConfigured ? cx(buttonBase, 'border-line bg-panel text-muted hover:text-ink') : buttonPrimary} onClick={onOpenConfig}><Icon name="settings" size={17}/>Open Config</button></div></div>}
       {!loading && results.length > 0 && groups.length === 0 && <div className="rounded-2xl border border-dashed border-line-strong py-14 text-center"><Icon name="filter" size={26} className="mx-auto mb-3 text-muted-dim"/><h2 className="mb-1 text-lg font-bold">No matching titles</h2><p className="mb-4 text-sm text-muted">Try changing or clearing the active filters.</p><button type="button" className="cursor-pointer text-sm font-bold text-accent-bright" onClick={clearFilters}>Clear filters</button></div>}
       <BulkDownloadDialog
         open={bulkConfirm === 'start'}

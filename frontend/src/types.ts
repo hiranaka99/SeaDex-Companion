@@ -42,6 +42,7 @@ export interface ResultItem {
   releases: Release[]
   url: string | null
   urls?: { label: string; url: string }[]
+  unavailable_parts?: { label: string; reason: string }[]
   notes: string | null
   notes_by_part?: Record<string, string>
   image: string | null
@@ -49,6 +50,14 @@ export interface ResultItem {
   anilist_id: number | null
   anilist_ids?: number[]
   arr_url: string | null
+}
+
+export interface ScannedDataInfo {
+  cache_entries: number
+  results: number
+  last_run: string | null
+  cache_valid: boolean
+  results_valid: boolean
 }
 
 export interface GroupedCard {

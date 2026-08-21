@@ -23,7 +23,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div className="pointer-events-none fixed top-4 right-4 z-[100] flex w-[min(380px,calc(100vw-2rem))] flex-col gap-2" aria-live="polite" aria-atomic="true">
         {items.map((item) => (
-          <div key={item.id} className={cx(
+          <div key={item.id} role={item.tone === 'error' ? 'alert' : 'status'} className={cx(
             'pointer-events-auto flex animate-rise items-start gap-3 rounded-xl border bg-panel-raised/95 px-4 py-3 text-sm shadow-card backdrop-blur-xl',
             item.tone === 'success' && 'border-good/35 text-good',
             item.tone === 'error' && 'border-bad/35 text-bad',
@@ -44,4 +44,3 @@ export function useToast(): ToastApi {
   if (!value) throw new Error('useToast must be used inside ToastProvider')
   return value
 }
-

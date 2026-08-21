@@ -5,6 +5,7 @@ import ConfigTab from './components/ConfigTab'
 import LogTab from './components/LogTab'
 import AuthPage from './components/AuthPage'
 import ConfirmDialog from './components/ConfirmDialog'
+import OperationCenter, { BulkOperationState } from './components/OperationCenter'
 import { useToast } from './components/Toast'
 import { TabId, Status, ResultItem, Config, AuthState } from './types'
 import * as api from './api'
@@ -41,6 +42,9 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
   const [lastRun, setLastRun] = useState<string | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
   const [resultsLoading, setResultsLoading] = useState(true)
+  const [resultsError, setResultsError] = useState('')
+  const [bulkOperation, setBulkOperation] = useState<BulkOperationState | null>(null)
+  const [scanCompleted, setScanCompleted] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<boolean>(readCollapsed)
   const toast = useToast()
 
@@ -57,14 +61,19 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
   }, [])
 
   const pollTimer = useRef<number | null>(null)
+  const scanWasRunning = useRef(false)
+  const statusInitialized = useRef(false)
+  const lastSeenRun = useRef<string | null>(null)
 
   const loadResults = useCallback(async () => {
     try {
       const data = await api.getResults()
       setResults(data.results || [])
       setLastRun(data.last_run || null)
-    } catch (e) {
+      setResultsError('')
+    } catch (e: any) {
       console.error('Failed to load results:', e)
+      setResultsError(e?.message || 'Could not load scanned results')
     } finally {
       setResultsLoading(false)
     }
@@ -73,6 +82,12 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
   const pollStatus = useCallback(async () => {
     try {
       const st = await api.getStatus()
+      if (st.running || st.error) setScanCompleted(null)
+      const completedSinceLastPoll = statusInitialized.current && Boolean(st.last_run) && st.last_run !== lastSeenRun.current
+      if ((scanWasRunning.current || completedSinceLastPoll) && !st.running && !st.error) setScanCompleted(st.last_run || 'just now')
+      scanWasRunning.current = st.running
+      lastSeenRun.current = st.last_run
+      statusInitialized.current = true
       setStatus(st)
       await loadResults()
       pollTimer.current = window.setTimeout(pollStatus, st.running ? 1500 : 10_000)
@@ -102,8 +117,10 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
 
   const handleScan = async () => {
     try {
+      setScanCompleted(null)
       const r = await api.startScan()
       if (!r.ok) throw new Error(r.error || 'Could not start scan')
+      scanWasRunning.current = true
       setStatus({ ...INITIAL_STATUS, running: true, message: 'Starting scan…' })
       if (pollTimer.current) window.clearTimeout(pollTimer.current)
       pollTimer.current = null
@@ -116,7 +133,9 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
   const handleScannedDataCleared = () => {
     setResults([])
     setLastRun(null)
-    setStatus({ ...INITIAL_STATUS, next_check: status.next_check })
+    setStatus((current) => ({ ...INITIAL_STATUS, next_check: current.next_check }))
+    setResultsError('')
+    setScanCompleted(null)
   }
 
   const sidebarWidth = collapsed ? 76 : 248
@@ -135,6 +154,16 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
         onToggleCollapsed={toggleCollapsed}
       />
       <main className="app-scrollbar overflow-y-auto px-8 pt-7 pb-14 max-[1200px]:px-6 max-[900px]:px-4 max-[900px]:pt-20 max-[900px]:pb-24">
+        <OperationCenter
+          status={status}
+          scanCompleted={scanCompleted}
+          bulk={bulkOperation}
+          onRetryScan={() => void handleScan()}
+          onOpenLibrary={() => setTab('anime')}
+          onOpenConfig={() => setTab('config')}
+          onDismissBulk={() => setBulkOperation(null)}
+          onDismissScan={() => setScanCompleted(null)}
+        />
         {tab === 'anime' && (
           <AnimeTab
             results={results}
@@ -143,6 +172,11 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
             lastRun={lastRun}
             onScan={handleScan}
             loading={resultsLoading}
+            loadError={resultsError}
+            onReloadResults={() => void loadResults()}
+            onOpenConfig={() => setTab('config')}
+            onBulkOperationChange={setBulkOperation}
+            operationsVisible={status.running || Boolean(status.error) || Boolean(scanCompleted) || Boolean(bulkOperation)}
           />
         )}
         {tab === 'config' && <ConfigTab config={config} onSaved={loadConfig} onScannedDataCleared={handleScannedDataCleared} />}
@@ -180,6 +214,7 @@ export default function App() {
       setAuth({ setup_required: false, authenticated: false, username: null })
     } catch (caught: any) {
       toast.show('Could not log out: ' + (caught?.message || 'Unknown error'), 'error')
+      throw caught
     }
   }
 
@@ -197,6 +232,6 @@ export default function App() {
   if (!auth.authenticated) return <AuthPage setupRequired={auth.setup_required} onAuthenticated={setAuth} />
   return <>
     <AuthenticatedApp username={auth.username || 'Administrator'} onLogout={() => setLogoutOpen(true)} />
-    <ConfirmDialog open={logoutOpen} title="Log out?" description="You will need your administrator password to return." confirmLabel="Log out" onConfirm={() => void handleLogout()} onClose={() => setLogoutOpen(false)} />
+    <ConfirmDialog open={logoutOpen} title="Log out?" description="You will need your administrator password to return." confirmLabel="Log out" onConfirm={handleLogout} onClose={() => setLogoutOpen(false)} />
   </>
 }

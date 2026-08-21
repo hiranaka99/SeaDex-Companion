@@ -8,6 +8,7 @@ import Icon from './Icons'
 import { useToast } from './Toast'
 import DownloadsPanel, { DownloadActions, DownloadEntry } from './DownloadsPanel'
 import ConfirmDialog from './ConfirmDialog'
+import { useRestoreFocus } from './useRestoreFocus'
 
 const IconSpinner = () => <span className="block size-[15px] animate-spin rounded-full border-2 border-accent/35 border-t-accent-bright group-disabled/dl:border-ink/30 group-disabled/dl:border-t-ink" aria-hidden="true" />
 
@@ -113,6 +114,7 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
   const [hiding, setHiding] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [detailsVisible, setDetailsVisible] = useState(false)
+  useRestoreFocus(detailsOpen)
   const [busyDownload, setBusyDownload] = useState<string | null>(null)
   const [removeTarget, setRemoveTarget] = useState<DownloadEntry | null>(null)
   const [deleteFiles, setDeleteFiles] = useState(false)
@@ -588,27 +590,43 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
     const courGroups = groupByCour(displayReleases)
     middle = (
       <>
+        {r.unavailable_parts && r.unavailable_parts.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-warn/35 bg-warn/8 px-3 py-2 text-xs text-warn" role="status">
+            <Icon name="alert" size={15} className="shrink-0"/>
+            <span className="font-extrabold">Unavailable:</span>
+            {r.unavailable_parts.map((part) => <span key={`${part.label}:${part.reason}`} className="rounded-full border border-warn/30 bg-warn/8 px-2 py-0.5" title={part.reason}>{part.label} · {part.reason}</span>)}
+          </div>
+        )}
         {courGroups.map((group, gi) => (
           <div key={group.part || 'all'} className="flex flex-col gap-1.5">
             {gi > 0 && <div className="my-1 h-px bg-line-strong" role="separator" />}
             {group.part && (
               <div className="flex flex-wrap items-center gap-2 py-0.5">
                 <span className="rounded-full border border-line bg-panel-raised px-2.5 py-[3px] text-[11px] font-extrabold tracking-[0.8px] text-muted uppercase">{group.part}</span>
-                {(r.urls || []).filter((source) => source.label === group.part).map((source) => (
-                  <a
-                    className="group/link inline-flex items-center gap-1 text-[12px] font-bold text-accent-bright hover:no-underline"
-                    href={source.url}
-                    target="_blank"
-                    rel="noopener"
-                    title={`Open ${group.part} on SeaDex`}
-                    key={source.url}
-                  >
-                    SeaDex <span className="transition-transform duration-150 group-hover/link:translate-x-[2px] group-hover/link:-translate-y-[2px]">↗</span>
-                  </a>
-                ))}
                 {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).length > 0 && <span className="text-[10px] font-bold tracking-[0.08em] text-muted-dim uppercase">Have</span>}
                 {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).map((releaseGroup) => <span key={releaseGroup} className={cx(BADGE, 'py-[3px] text-[11px]')} title={`Owned in ${group.part}`}>{releaseGroup}</span>)}
                 {r.precise_part_ownership && !(r.have_by_part?.[group.part] || []).length && <span className="text-[11px] text-muted-dim">No matching files owned</span>}
+                {((r.local_size_by_part?.[group.part] || 0) > 0 || (r.urls || []).some((source) => source.label === group.part)) && (
+                  <div className="ml-auto flex items-center gap-2">
+                    {(r.local_size_by_part?.[group.part] || 0) > 0 && (
+                      <span className={SIZE} title={`Size of your current files in ${group.part}`}>
+                        {formatBytes(r.local_size_by_part?.[group.part] || 0)}
+                      </span>
+                    )}
+                    {(r.urls || []).filter((source) => source.label === group.part).map((source) => (
+                      <a
+                        className="group/link inline-flex items-center gap-1 text-[12px] font-bold text-accent-bright hover:no-underline"
+                        href={source.url}
+                        target="_blank"
+                        rel="noopener"
+                        title={`Open ${group.part} on SeaDex`}
+                        key={source.url}
+                      >
+                        SeaDex <span className="transition-transform duration-150 group-hover/link:translate-x-[2px] group-hover/link:-translate-y-[2px]">↗</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
             <div className="flex flex-col gap-1.5">
@@ -798,7 +816,7 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
               rel="noopener"
               key={`${source.url}-${i}`}
             >
-              {source.label}{' '}
+              SeaDex{' '}
               <span className="transition-transform duration-150 group-hover/link:translate-x-[3px] group-hover/link:-translate-y-[3px]">↗</span>
             </a>
           ),

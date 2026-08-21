@@ -4,6 +4,7 @@ import { formatBytes, resultGroupKey, seasonLabel } from '../utils'
 import { buttonBase, cx } from '../styles'
 import Icon from './Icons'
 import { BulkDownloadTarget } from '../api'
+import { useRestoreFocus } from './useRestoreFocus'
 
 interface IndexedRelease {
   index: number
@@ -80,6 +81,7 @@ function hiddenKey(result: ResultItem): string {
 }
 
 export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, outcome, onConfirm, onClose }: Props) {
+  useRestoreFocus(open)
   const review = useMemo(() => buildReview(results), [results])
   const [selected, setSelected] = useState<Record<string, number>>({})
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})
@@ -148,7 +150,7 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
 
   return (
     <div className="fixed inset-0 z-[90] grid place-items-center bg-black/65 px-4 py-6 backdrop-blur-sm" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
-      <section className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" role="dialog" aria-modal="true" aria-labelledby="bulk-download-title">
+      <section className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" role="dialog" aria-modal="true" aria-labelledby="bulk-download-title" aria-busy={busy}>
         <header className="flex items-start gap-3 border-b border-line px-5 py-4">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-good/12 text-good"><Icon name="download" size={19}/></span>
           <div className="min-w-0 flex-1">

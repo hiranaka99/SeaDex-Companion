@@ -248,13 +248,41 @@ export function saveLastResults(results: JsonObject[], lastRun: string): void {
   writeJsonAtomic(RESULTS_FILE, { results, last_run: lastRun })
 }
 export function loadLastResults(): JsonObject | null { return readJson<JsonObject | null>(RESULTS_FILE, null) }
+
+export interface ScannedDataInfo {
+  cache_entries: number
+  results: number
+  last_run: string | null
+  cache_valid: boolean
+  results_valid: boolean
+}
+
+export function scannedDataInfo(cacheFile = CACHE_FILE, resultsFile = RESULTS_FILE): ScannedDataInfo {
+  let cache: JsonObject = {}
+  let saved: JsonObject | null = null
+  const cacheExists = existsSync(cacheFile)
+  const resultsExists = existsSync(resultsFile)
+  let cacheValid = true
+  let resultsValid = true
+  try { if (cacheExists) cache = JSON.parse(readFileSync(cacheFile, 'utf8')) as JsonObject } catch { cacheValid = false }
+  try { if (resultsExists) saved = JSON.parse(readFileSync(resultsFile, 'utf8')) as JsonObject } catch { resultsValid = false }
+  const cacheShapeValid = !cacheExists || (cache !== null && typeof cache === 'object' && !Array.isArray(cache))
+  const resultsShapeValid = !resultsExists || (saved !== null && typeof saved === 'object' && Array.isArray(saved.results) && (saved.last_run == null || typeof saved.last_run === 'string'))
+  return {
+    cache_entries: cache && typeof cache === 'object' && !Array.isArray(cache) ? Object.keys(cache).length : 0,
+    results: Array.isArray(saved?.results) ? saved.results.length : 0,
+    last_run: typeof saved?.last_run === 'string' ? saved.last_run : null,
+    cache_valid: cacheValid && cacheShapeValid,
+    results_valid: resultsValid && resultsShapeValid,
+  }
+}
+
 export function clearScannedData(cacheFile = CACHE_FILE, resultsFile = RESULTS_FILE): { cacheEntries: number; results: number } {
-  const cacheEntries = Object.keys(readJson<JsonObject>(cacheFile, {})).length
-  const results = readJson<JsonObject | null>(resultsFile, null)?.results?.length || 0
+  const info = scannedDataInfo(cacheFile, resultsFile)
   writeJsonAtomic(cacheFile, {}, true)
   writeJsonAtomic(resultsFile, { results: [], last_run: null }, true)
   setState({ progress: 0, total: 0, message: 'Idle', results: [], error: null, last_run: null })
-  return { cacheEntries, results }
+  return { cacheEntries: info.cache_entries, results: info.results }
 }
 export function loadNotified(): Set<string> { return new Set(readJson<string[]>(NOTIFIED_FILE, [])) }
 export function saveNotified(keys: Set<string>): void { writeJsonAtomic(NOTIFIED_FILE, [...keys].sort()) }
@@ -1000,19 +1028,32 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
         }
         const resolved: JsonObject[] = []
         const sources: JsonObject[] = []
+        const unavailableParts: JsonObject[] = []
         let missingPart = false; let uncoveredPart = false
         let episodeOffset = 0
         for (const [partIndex, part] of parts.entries()) {
           const currentEpisodeOffset = episodeOffset
           episodeOffset += Number(part.episodeCount || 0)
-          const source = best.get(part.id)
-          if (!source) { missingPart = true; continue }
           const label = parts.length > 1 ? `Cour ${partIndex + 1}` : null
+          const source = best.get(part.id)
+          if (!source) {
+            missingPart = true
+            unavailableParts.push({ label: label || (season ? `S${String(season).padStart(2, '0')}` : 'Movie'), reason: 'Not listed on SeaDex' })
+            continue
+          }
           sources.push({ label: label || 'releases.moe', url: source.url })
           const slot = seadexSlot(source, season)
-          if (!slot) { uncoveredPart = true; continue }
+          if (!slot) {
+            uncoveredPart = true
+            unavailableParts.push({ label: label || (season ? `S${String(season).padStart(2, '0')}` : 'Movie'), reason: 'No releases available on SeaDex' })
+            continue
+          }
           const [selected, alternatives] = pickBest(slot.candidates, part.episodeCount)
-          if (!selected) { uncoveredPart = true; continue }
+          if (!selected) {
+            uncoveredPart = true
+            unavailableParts.push({ label: label || (season ? `S${String(season).padStart(2, '0')}` : 'Movie'), reason: 'No release candidates available' })
+            continue
+          }
           resolved.push({
             label,
             source,
@@ -1022,6 +1063,7 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
         }
         common.urls = sources
         common.anilist_ids = parts.map((part) => part.id)
+        common.unavailable_parts = unavailableParts
         common.notes_by_part = Object.fromEntries(resolved.map((part) => [part.label || '', part.source.notes || '-']))
         if (sources.length) {
           common.url = sources[0].url

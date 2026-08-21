@@ -6,7 +6,7 @@ import {
   DATA_DIR, DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, clearScannedData, forgetOwnedTorrents,
   finishBulkDownloadBatch, getState, indexResultReleases, loadConfig, loadLastResults, log, normalizeQbStates, ownedTorrentsSnapshot,
   publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, qbGetTorrents, recordOwnedTorrents, resetBulkDownloadBatch,
-  resultsForRequest, runScan, saveConfig, SECRET_CONFIG_KEYS, settleBulkDownloadBatch, setState, testIntegration,
+  resultsForRequest, runScan, saveConfig, scannedDataInfo, SECRET_CONFIG_KEYS, settleBulkDownloadBatch, setState, testIntegration,
 } from './app.js'
 import {
   AuthError, authState, expiredSessionCookie, isAuthenticated, login, logout, sessionCookie,
@@ -144,6 +144,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (method === 'GET' && path === '/api/config') return sendJson(response, 200, publicConfig(loadConfig()))
+
+  if (method === 'GET' && path === '/api/scanned-data') return sendJson(response, 200, { ok: true, ...scannedDataInfo() })
 
   if (method === 'DELETE' && path === '/api/scanned-data') {
     if (getState().running) return sendJson(response, 409, { ok: false, error: 'Wait for the current scan to finish before clearing scanned data' })

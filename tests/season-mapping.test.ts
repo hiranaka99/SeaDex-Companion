@@ -8,7 +8,7 @@ import {
   anilistChain, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, bulkDownloadTargets, clearScannedData, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, effectiveSeasonParts,
   encryptSecretValues, getState, localItems, localPartOwnership, normalizeQbStates, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
   qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart,
-  resetRuntimeForTests, runScan, sendToDiscord, setState, testIntegration,
+  resetRuntimeForTests, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration,
 } from '../server/app.js'
 import { refreshAutocheckSchedule } from '../server/index.js'
 import type { JsonObject, ReleaseCandidate } from '../server/types.js'
@@ -91,11 +91,18 @@ describe('scanned data maintenance', () => {
       writeFileSync(resultsFile, JSON.stringify({ results: [{ key: 'one' }, { key: 'two' }], last_run: 'yesterday' }), 'utf8')
       setState({ results: [{ key: 'runtime' }], last_run: 'today', progress: 1, total: 1, message: 'Done', error: 'old error' })
 
+      assert.deepEqual(scannedDataInfo(cacheFile, resultsFile), {
+        cache_entries: 0, results: 2, last_run: 'yesterday', cache_valid: false, results_valid: true,
+      })
+
       const cleared = clearScannedData(cacheFile, resultsFile)
 
       assert.deepEqual(cleared, { cacheEntries: 0, results: 2 })
       assert.deepEqual(JSON.parse(readFileSync(cacheFile, 'utf8')), {})
       assert.deepEqual(JSON.parse(readFileSync(resultsFile, 'utf8')), { results: [], last_run: null })
+      assert.deepEqual(scannedDataInfo(cacheFile, resultsFile), {
+        cache_entries: 0, results: 0, last_run: null, cache_valid: true, results_valid: true,
+      })
       assert.deepEqual(getState().results, [])
       assert.equal(getState().last_run, null)
       assert.equal(getState().error, null)
@@ -700,6 +707,7 @@ describe('release selection and combined cours', () => {
     assert.equal(result.releases.length, 1)
     assert.equal(result.releases[0].part, 'Cour 1')
     assert.equal(result.releases[0].downloadable, true)
+    assert.deepEqual(result.unavailable_parts, [{ label: 'Cour 2', reason: 'Not listed on SeaDex' }])
     assert.equal(bulkDownloadTargets([result]).length, 1)
   })
 
