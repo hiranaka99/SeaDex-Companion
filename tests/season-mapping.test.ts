@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
 import {
-  anilistChain, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, bulkDownloadTargets, clearScannedData, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, effectiveSeasonParts,
+  anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, clearScannedData, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, effectiveSeasonParts,
   encryptSecretValues, getState, localItems, localPartOwnership, normalizeQbStates, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
   qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart,
   resetRuntimeForTests, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration,
@@ -109,6 +109,56 @@ describe('scanned data maintenance', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+})
+
+describe('manual rules and scan history', () => {
+  test('applies season and cour exclusions to bulk download targets', () => {
+    const results = [{
+      key: 'series:1', library_key: 'Sonarr:item10', season: 1, status: 'upgrade', arr: 'Sonarr',
+      releases: [
+        { kind: 'best', part: 'Cour 1', downloadable: true, info_hashes: ['a'.repeat(40)] },
+        { kind: 'best', part: 'Cour 2', downloadable: true, info_hashes: ['b'.repeat(40)] },
+      ],
+    }]
+    const courRules = { mappings: {}, exclusions: ['Sonarr:item10:1:Cour 1'] }
+    const decorated = applyUserRulesToResults(results, courRules)
+    assert.deepEqual(decorated[0].excluded_parts, ['Cour 1'])
+    assert.deepEqual(bulkDownloadTargets(decorated).map((target) => target.part), ['Cour 2'])
+
+    const seasonRules = { mappings: {}, exclusions: ['Sonarr:item10:1:*'] }
+    assert.equal(bulkDownloadTargets(applyUserRulesToResults(results, seasonRules)).length, 0)
+  })
+
+  test('summarizes new upgrades and resolved upgrades between scans', () => {
+    const previous = [
+      { library_key: 'Sonarr:item1', season: 1, title: 'Resolved', arr: 'Sonarr', status: 'upgrade', best_group: 'A' },
+      { library_key: 'Sonarr:item2', season: 1, title: 'Upgrade', arr: 'Sonarr', status: 'best', best_group: 'B' },
+    ]
+    const current = [
+      { library_key: 'Sonarr:item1', season: 1, title: 'Resolved', arr: 'Sonarr', status: 'best', best_group: 'A' },
+      { library_key: 'Sonarr:item2', season: 1, title: 'Upgrade', arr: 'Sonarr', status: 'upgrade', best_group: 'C' },
+    ]
+    const entry = buildScanHistoryEntry(previous, current, 'today')
+    assert.deepEqual(entry.changes.map((change) => [change.title, change.type]), [['Resolved', 'resolved'], ['Upgrade', 'upgrade']])
+    assert.deepEqual(entry.counts, { best: 1, upgrade: 1 })
+  })
+
+  test('passes a saved manual AniList ID into title resolution', async () => {
+    let receivedOverride: number | undefined
+    await runScan({ sonarr_url: 'http://sonarr/api/v3' }, {
+      seadexBest: (async () => new Map()) as any,
+      localItems: (async () => [{ arr: 'Sonarr', id: 10, title: 'Ambiguous', seasons: { 1: { groups: ['Local'], size: 100 } } }]) as any,
+      anilistChain: (async (_title: string, _cache: JsonObject, _dependencies: unknown, overrideId?: number) => {
+        receivedOverride = overrideId
+        return [{ season: 1, id: 999, ids: [999], parts: [{ id: 999, episodeCount: 1 }] }]
+      }) as any,
+      loadCache: () => ({}), loadUserRules: () => ({ mappings: { 'Sonarr:item10': 999 }, exclusions: [] }),
+      saveLastResults: () => undefined, autoNotifyNew: async () => 0,
+    })
+    assert.equal(receivedOverride, 999)
+    assert.equal(getState().results[0].library_key, 'Sonarr:item10')
+    assert.equal(getState().results[0].mapping_override, true)
   })
 })
 

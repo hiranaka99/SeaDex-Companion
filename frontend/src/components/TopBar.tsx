@@ -4,6 +4,7 @@ import Icon, { IconName } from './Icons'
 
 const NAV: { id: TabId; icon: IconName; label: string }[] = [
   { id: 'anime', icon: 'library', label: 'Library' },
+  { id: 'history', icon: 'clock', label: 'Scan history' },
   { id: 'config', icon: 'settings', label: 'Configuration' },
   { id: 'log', icon: 'logs', label: 'Server log' },
 ]

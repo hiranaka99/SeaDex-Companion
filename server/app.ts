@@ -18,6 +18,8 @@ export const CACHE_FILE = join(DATA_DIR, 'anilist_cache.json')
 export const RESULTS_FILE = join(DATA_DIR, 'last_results.json')
 export const NOTIFIED_FILE = join(DATA_DIR, 'notified.json')
 export const OWNED_TORRENTS_FILE = join(DATA_DIR, 'owned_torrents.json')
+export const USER_RULES_FILE = join(DATA_DIR, 'user_rules.json')
+export const HISTORY_FILE = join(DATA_DIR, 'scan_history.json')
 export const LOG_DIR = join(DATA_DIR, 'logs')
 export const LOG_FILE = join(LOG_DIR, 'app.log')
 
@@ -248,6 +250,115 @@ export function saveLastResults(results: JsonObject[], lastRun: string): void {
   writeJsonAtomic(RESULTS_FILE, { results, last_run: lastRun })
 }
 export function loadLastResults(): JsonObject | null { return readJson<JsonObject | null>(RESULTS_FILE, null) }
+
+export interface UserRules {
+  mappings: Record<string, number>
+  exclusions: string[]
+}
+
+const EMPTY_USER_RULES: UserRules = { mappings: {}, exclusions: [] }
+
+export function loadUserRules(file = USER_RULES_FILE): UserRules {
+  const stored = readJson<Partial<UserRules>>(file, EMPTY_USER_RULES, 'Could not read user rules')
+  const mappings = stored.mappings && typeof stored.mappings === 'object' && !Array.isArray(stored.mappings)
+    ? Object.fromEntries(Object.entries(stored.mappings).filter(([key, value]) => key && Number.isInteger(value) && Number(value) > 0).map(([key, value]) => [key, Number(value)]))
+    : {}
+  const exclusions = Array.isArray(stored.exclusions)
+    ? [...new Set(stored.exclusions.filter((value): value is string => typeof value === 'string' && Boolean(value)))].sort()
+    : []
+  return { mappings, exclusions }
+}
+
+export function saveUserRules(rules: UserRules, file = USER_RULES_FILE): void {
+  writeJsonAtomic(file, { mappings: rules.mappings, exclusions: [...new Set(rules.exclusions)].sort() }, true, 0o600)
+}
+
+export function libraryItemKey(item: JsonObject): string {
+  return `${String(item.arr || 'Unknown')}:item${String(item.id ?? '')}`
+}
+
+export function exclusionRuleKey(libraryKey: string, season: number | null, part = ''): string {
+  return `${libraryKey}:${season ?? 0}:${part || '*'}`
+}
+
+export function applyUserRulesToResults(results: JsonObject[], rules = loadUserRules()): JsonObject[] {
+  const excluded = new Set(rules.exclusions)
+  return results.map((result) => {
+    const libraryKey = String(result.library_key || '')
+    if (!libraryKey) return { ...result }
+    const season = Number(result.season || 0)
+    const seasonExcluded = excluded.has(exclusionRuleKey(libraryKey, season))
+    const parts = [...new Set<string>((result.releases || []).map((release: JsonObject) => String(release.part || '')).filter(Boolean))]
+    const excludedParts = parts.filter((part) => excluded.has(exclusionRuleKey(libraryKey, season, part)))
+    return { ...result, excluded: seasonExcluded, excluded_parts: excludedParts }
+  })
+}
+
+function resultIdentity(result: JsonObject): string {
+  const base = String(result.library_key || `${result.arr || 'Unknown'}:${result.group_id ?? result.anilist_id ?? result.title ?? 'unknown'}`)
+  return `${base}:${Number(result.season || 0)}`
+}
+
+function resultFallbackIdentity(result: JsonObject): string {
+  return `${String(result.arr || 'Unknown')}:${titleKey(String(result.title || 'unknown'))}:${Number(result.season || 0)}`
+}
+
+function automationStatus(result: JsonObject): string {
+  return result.status === 'partial' && result.upgrade_available ? 'upgrade' : String(result.status || 'unknown')
+}
+
+export interface ScanHistoryChange extends JsonObject {
+  type: 'new' | 'upgrade' | 'resolved' | 'changed' | 'removed'
+}
+
+export interface ScanHistoryEntry extends JsonObject {
+  id: string
+  run_at: string
+  counts: Record<string, number>
+  changes: ScanHistoryChange[]
+}
+
+export function buildScanHistoryEntry(previous: JsonObject[], current: JsonObject[], runAt: string): ScanHistoryEntry {
+  const before = new Map(previous.map((result) => [resultIdentity(result), result]))
+  const beforeByFallback = new Map(previous.map((result) => [resultFallbackIdentity(result), result]))
+  const after = new Map(current.map((result) => [resultIdentity(result), result]))
+  const matchedBefore = new Set<string>()
+  const counts = current.reduce<Record<string, number>>((summary, result) => {
+    const status = automationStatus(result)
+    summary[status] = (summary[status] || 0) + 1
+    return summary
+  }, {})
+  const changes: ScanHistoryChange[] = []
+  const describe = (result: JsonObject) => ({
+    key: resultIdentity(result), title: String(result.title || 'Unknown title'), arr: String(result.arr || ''),
+    season: Number(result.season || 0), best_group: result.best_group || null,
+  })
+  for (const [key, result] of after) {
+    const old = before.get(key) || beforeByFallback.get(resultFallbackIdentity(result))
+    const to = automationStatus(result)
+    if (!old) changes.push({ type: 'new', ...describe(result), from: null, to })
+    else {
+      matchedBefore.add(resultIdentity(old))
+      const from = automationStatus(old)
+      if (from !== 'upgrade' && to === 'upgrade') changes.push({ type: 'upgrade', ...describe(result), from, to })
+      else if (from === 'upgrade' && to !== 'upgrade') changes.push({ type: 'resolved', ...describe(result), from, to })
+      else if (from !== to || String(old.best_group || '') !== String(result.best_group || '')) changes.push({ type: 'changed', ...describe(result), from, to })
+    }
+  }
+  for (const [key, result] of before) if (!after.has(key) && !matchedBefore.has(key)) changes.push({ type: 'removed', ...describe(result), from: automationStatus(result), to: null })
+  return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, run_at: runAt, counts, changes: changes.slice(0, 250) }
+}
+
+export function loadScanHistory(file = HISTORY_FILE): ScanHistoryEntry[] {
+  const stored = readJson<JsonObject>(file, { version: 1, scans: [] }, 'Could not read scan history')
+  return stored && typeof stored === 'object' && Array.isArray(stored.scans) ? stored.scans.slice(0, 30) as ScanHistoryEntry[] : []
+}
+
+export function recordScanHistory(previous: JsonObject[], current: JsonObject[], runAt: string, file = HISTORY_FILE): ScanHistoryEntry {
+  const entry = buildScanHistoryEntry(previous, current, runAt)
+  writeJsonAtomic(file, { version: 1, scans: [entry, ...loadScanHistory(file)].slice(0, 30) }, true)
+  return entry
+}
 
 export interface ScannedDataInfo {
   cache_entries: number
@@ -544,6 +655,19 @@ export async function alSearch(query: string, variables: JsonObject): Promise<Js
   return pacedAniList({ query, variables }, true)
 }
 
+export async function searchAniListTitles(title: string): Promise<JsonObject[]> {
+  const query = 'query($t:String){Page(perPage:12){media(search:$t,type:ANIME,sort:SEARCH_MATCH){id format seasonYear episodes title{romaji english native} coverImage{large extraLarge}}}}'
+  const matches = await alSearch(query, { t: title.trim() })
+  return matches.map((media) => {
+    const titles = media.title || {}; const cover = media.coverImage || {}
+    return {
+      id: Number(media.id), title: titles.english || titles.romaji || titles.native || `AniList #${media.id}`,
+      romaji: titles.romaji || null, year: media.seasonYear || null, format: media.format || null,
+      episodes: media.episodes ?? null, cover: cover.extraLarge || cover.large || null,
+    }
+  })
+}
+
 export function normalizeTitle(title: string): string {
   if (!title) return ''
   return title.replace(/×/g, 'x').replace(/[‘’]/g, "'").replace(/[–—]/g, '-').replace(/…/g, '...')
@@ -630,11 +754,11 @@ export interface AniListDependencies {
   persist?: typeof saveCache
 }
 
-export async function anilistChain(title: string, cache: JsonObject, dependencies: AniListDependencies = {}): Promise<ChainEntry[]> {
+export async function anilistChain(title: string, cache: JsonObject, dependencies: AniListDependencies = {}, overrideId?: number): Promise<ChainEntry[]> {
   const lookup = dependencies.lookup || anilistLookup
   const media = dependencies.media || alMedia
   const persist = dependencies.persist || saveCache
-  const base = await lookup(title, cache)
+  const base = overrideId ? { id: overrideId } : await lookup(title, cache)
   if (!base) return []
   const chainKey = `chain:v8:${base.id}`
   if (cache[chainKey]) return cache[chainKey].chain || []
@@ -969,6 +1093,8 @@ export interface ScanDependencies {
   loadCache?: typeof loadCache
   saveLastResults?: typeof saveLastResults
   autoNotifyNew?: typeof autoNotifyNew
+  loadUserRules?: typeof loadUserRules
+  recordScanHistory?: typeof recordScanHistory
 }
 
 export async function runScan(config: Config | JsonObject, dependencies: ScanDependencies = {}): Promise<void> {
@@ -994,17 +1120,22 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
     log('INFO', `Local library loaded: ${items.length} item${items.length === 1 ? '' : 's'}${sourceDetails ? ` (${sourceDetails})` : ''}`)
     setState({ total: items.length })
     const cache = (dependencies.loadCache || loadCache)()
+    const rules = (dependencies.loadUserRules || loadUserRules)()
+    const previousResults = (loadLastResults()?.results || previousState.results || []) as JsonObject[]
     const results: JsonObject[] = []
     stage = 'resolving library titles'
     for (const [itemIndex, item] of items.entries()) {
       setState({ progress: itemIndex, message: `Resolving: ${item.title}` })
       const arrUrl = arrItemUrl(config, item)
-      const chain = await (dependencies.anilistChain || anilistChain)(item.title, cache)
+      const libraryKey = libraryItemKey(item)
+      const mappingId = rules.mappings[libraryKey]
+      const chain = await (dependencies.anilistChain || anilistChain)(item.title, cache, {}, mappingId)
       const seasonEntries = Object.entries(item.seasons).map(([season, local]) => [Number(season), local as JsonObject] as const).sort(([a], [b]) => a - b)
       if (!chain.length) {
-        log('WARNING', `No AniList match for: ${item.title}`)
+        log('WARNING', `${mappingId ? `Manual AniList override ${mappingId} produced no match for` : 'No AniList match for'}: ${item.title}`)
         for (const [season, local] of seasonEntries) results.push({
           key: `${item.arr}:item${item.id}:${season}:missing`, group_id: null, arr: item.arr, title: item.title,
+          library_key: libraryKey, mapping_override: Boolean(mappingId),
           season, status: 'missing', have: [...local.groups].sort(), local_size: local.size || 0,
           best_group: null, best_size: 0, releases: [], url: null, notes: null, image: null,
           banner: null, anilist_id: null, arr_url: arrUrl,
@@ -1021,6 +1152,7 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
         const partOwnership = localPartOwnership(local, parts)
         const common: JsonObject = {
           group_id: chain[0].id, arr: item.arr, title: item.title, season, have: [...localGroups].sort(),
+          library_key: libraryKey, mapping_override: Boolean(mappingId),
           have_by_part: partOwnership.have, owned_by_part: partOwnership.owned, precise_part_ownership: partOwnership.precise,
           local_size_by_part: partOwnership.sizes,
           local_size: local.size || 0, url: null, notes: null, image: entry.cover || null,
@@ -1109,12 +1241,19 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
       setState({ progress: itemIndex + 1, results: [...results] })
     }
     const lastRun = timestamp()
-    setState({ progress: items.length, message: 'Done', results, last_run: lastRun })
+    const finalResults = applyUserRulesToResults(results, rules)
+    setState({ progress: items.length, message: 'Done', results: finalResults, last_run: lastRun })
     stage = 'saving scan results'
-    ;(dependencies.saveLastResults || saveLastResults)(results, lastRun)
+    ;(dependencies.saveLastResults || saveLastResults)(finalResults, lastRun)
+    try {
+      if (dependencies.recordScanHistory) dependencies.recordScanHistory(previousResults, finalResults, lastRun)
+      else if (!dependencies.saveLastResults) recordScanHistory(previousResults, finalResults, lastRun)
+    } catch (error) {
+      log('WARNING', `Could not save scan history: ${errorMessage(error)}`)
+    }
     stage = 'sending notifications'
     await (dependencies.autoNotifyNew || autoNotifyNew)(config as Config)
-    const statusCounts = results.reduce<Record<string, number>>((counts, result) => {
+    const statusCounts = finalResults.reduce<Record<string, number>>((counts, result) => {
       const status = String(result.status || 'unknown')
       counts[status] = (counts[status] || 0) + 1
       return counts
@@ -1123,7 +1262,7 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
       .filter((status) => statusCounts[status])
       .map((status) => `${statusCounts[status]} ${status}`)
       .join(', ')
-    log('INFO', `Scan finished in ${((Date.now() - started) / 1000).toFixed(1)}s — ${results.length} result${results.length === 1 ? '' : 's'}${statusDetails ? ` (${statusDetails})` : ''}`)
+    log('INFO', `Scan finished in ${((Date.now() - started) / 1000).toFixed(1)}s — ${finalResults.length} result${finalResults.length === 1 ? '' : 's'}${statusDetails ? ` (${statusDetails})` : ''}`)
   } catch (error) {
     log('ERROR', `Scan failed while ${stage} after ${((Date.now() - started) / 1000).toFixed(1)}s: ${errorMessage(error)}`)
     setState({ ...previousState, running: true, error: errorMessage(error) })
@@ -1171,9 +1310,13 @@ export async function autoNotifyNew(config: Config, dependencies: NotificationDe
     return 0
   }
   const notified = (dependencies.load || loadNotified)()
-  const fresh = scanState.results.filter((result) =>
-    (result.status === 'upgrade' || (result.status === 'partial' && result.upgrade_available)) && result.key && !notified.has(result.key),
-  )
+  const fresh = applyUserRulesToResults(scanState.results).filter((result) => {
+    if (result.excluded) return false
+    const excludedParts = new Set((result.excluded_parts || []).map(String))
+    const bestParts = [...new Set((result.releases || []).filter((release: JsonObject) => release.kind === 'best').map((release: JsonObject) => String(release.part || '')))]
+    const hasIncludedPart = bestParts.length === 0 || bestParts.some((part) => !excludedParts.has(part))
+    return hasIncludedPart && (result.status === 'upgrade' || (result.status === 'partial' && result.upgrade_available)) && result.key && !notified.has(result.key)
+  })
   if (!fresh.length) {
     log('INFO', 'Discord notifications: no new upgrades to send')
     return 0
@@ -1626,12 +1769,16 @@ export interface BulkDownloadTarget {
   selectedFiles?: string[]
 }
 
-export function bulkDownloadTargets(results: JsonObject[] = resultsForRequest()): BulkDownloadTarget[] {
+export function bulkDownloadTargets(results?: JsonObject[]): BulkDownloadTarget[] {
   const targets: BulkDownloadTarget[] = []
-  for (const result of results) {
+  const candidates = results === undefined ? applyUserRulesToResults(resultsForRequest()) : results
+  for (const result of candidates) {
     if ((result.status !== 'upgrade' && !(result.status === 'partial' && result.upgrade_available)) || !result.key) continue
+    if (result.excluded) continue
+    const excludedParts = new Set((result.excluded_parts || []).map(String))
     for (const [releaseIndex, release] of (result.releases || []).entries()) {
       if (release.kind !== 'best' || !release.downloadable) continue
+      if (excludedParts.has(String(release.part || ''))) continue
       const hashes = [...new Set<string>(
         (release.info_hashes || [])
           .map((hash: unknown) => String(hash).toLowerCase())

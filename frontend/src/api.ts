@@ -1,4 +1,4 @@
-import { AuthState, Config, ResultItem, ScannedDataInfo, Status } from './types'
+import { AuthState, Config, ResultItem, ScanHistoryEntry, ScannedDataInfo, Status } from './types'
 
 export const AUTH_REQUIRED_EVENT = 'seadex:authentication-required'
 
@@ -38,6 +38,12 @@ export const login = (username: string, password: string) =>
 
 export const logout = () => api<{ ok: boolean }>('/api/auth/logout', { method: 'POST' })
 
+export const updateAccount = (username: string, currentPassword: string, newPassword: string) =>
+  api<AuthState>('/api/auth/account', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, current_password: currentPassword, new_password: newPassword }),
+  })
+
 export const getConfig = () => api<Config>('/api/config')
 
 export const clearScannedData = () =>
@@ -63,6 +69,33 @@ export const getStatus = () => api<Status>('/api/status')
 
 export const getResults = () =>
   api<{ results: ResultItem[]; last_run: string | null }>('/api/results')
+
+export const getScanHistory = () => api<{ scans: ScanHistoryEntry[] }>('/api/history')
+
+export interface AniListSearchResult {
+  id: number
+  title: string
+  romaji: string | null
+  year: number | null
+  format: string | null
+  episodes: number | null
+  cover: string | null
+}
+
+export const searchAniList = (query: string) =>
+  api<{ results: AniListSearchResult[] }>(`/api/anilist/search?q=${encodeURIComponent(query)}`)
+
+export const setMappingOverride = (libraryKey: string, anilistId: number | null) =>
+  api<{ ok: boolean; anilist_id: number | null }>('/api/mapping-overrides', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ library_key: libraryKey, anilist_id: anilistId }),
+  })
+
+export const setExclusion = (libraryKey: string, season: number | null, part: string, excluded: boolean) =>
+  api<{ ok: boolean; excluded: boolean }>('/api/exclusions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ library_key: libraryKey, season, part, excluded }),
+  })
 
 export const getLogs = (lines = 500) =>
   api<{ lines: string[]; total: number }>(`/api/logs?lines=${lines}`)

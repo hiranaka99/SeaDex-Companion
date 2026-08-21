@@ -1,6 +1,6 @@
 export type CardStatus = 'upgrade' | 'best' | 'missing' | 'partial'
 
-export type TabId = 'anime' | 'config' | 'log'
+export type TabId = 'anime' | 'history' | 'config' | 'log'
 
 export interface AuthState {
   setup_required: boolean
@@ -50,6 +50,28 @@ export interface ResultItem {
   anilist_id: number | null
   anilist_ids?: number[]
   arr_url: string | null
+  library_key?: string
+  mapping_override?: boolean
+  excluded?: boolean
+  excluded_parts?: string[]
+}
+
+export interface ScanHistoryChange {
+  type: 'new' | 'upgrade' | 'resolved' | 'changed' | 'removed'
+  key: string
+  title: string
+  arr: string
+  season: number
+  best_group: string | null
+  from: string | null
+  to: string | null
+}
+
+export interface ScanHistoryEntry {
+  id: string
+  run_at: string
+  counts: Record<string, number>
+  changes: ScanHistoryChange[]
 }
 
 export interface ScannedDataInfo {

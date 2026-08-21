@@ -30,6 +30,8 @@ function buildReview(results: ResultItem[]): Review {
 
   for (const result of results) {
     if (result.status !== 'upgrade' && !(result.status === 'partial' && result.upgrade_available)) continue
+    if (result.excluded) continue
+    const excludedParts = new Set(result.excluded_parts || [])
     const byPart = new Map<string, IndexedRelease[]>()
     result.releases.forEach((release, index) => {
       if (release.kind !== 'best') return
@@ -37,6 +39,7 @@ function buildReview(results: ResultItem[]): Review {
       byPart.set(part, [...(byPart.get(part) || []), { index, release }])
     })
     for (const [part, bestReleases] of byPart) {
+      if (excludedParts.has(part)) continue
       // Skip parts the user already owns at best quality, mirroring the card's
       // per-part "owned" check (the green "you already have this release" mark).
       // Without this, a split season that is upgradeable for one cour would also

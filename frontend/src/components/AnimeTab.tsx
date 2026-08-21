@@ -22,6 +22,7 @@ interface Props {
   onOpenConfig: () => void
   onBulkOperationChange: (operation: BulkOperationState) => void
   operationsVisible: boolean
+  onResultsChanged: () => Promise<void>
 }
 
 function cardKey(group: GroupedCard): string {
@@ -38,7 +39,7 @@ function SkeletonCards() {
   </div>
 }
 
-export default function AnimeTab({ results, config, status, lastRun, onScan, loading, loadError, onReloadResults, onOpenConfig, onBulkOperationChange, operationsVisible }: Props) {
+export default function AnimeTab({ results, config, status, lastRun, onScan, loading, loadError, onReloadResults, onOpenConfig, onBulkOperationChange, operationsVisible, onResultsChanged }: Props) {
   const [search, setSearch] = useState('')
   const [arr, setArr] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -98,7 +99,11 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
   const totalDelta = groups.reduce((sum, group) => sum + cardDelta(group), 0)
   const upgradeSeasonCount = useMemo(() => new Set(
     results
-      .filter((result) => result.status === 'upgrade' || (result.status === 'partial' && result.upgrade_available))
+      .filter((result) => {
+        if (result.excluded || (result.status !== 'upgrade' && !(result.status === 'partial' && result.upgrade_available))) return false
+        const excludedParts = new Set(result.excluded_parts || [])
+        return result.releases.some((release) => release.kind === 'best' && !excludedParts.has(release.part || ''))
+      })
       .map((result) => result.key),
   ).size, [results])
   const libraryConfigured = Boolean(
@@ -239,7 +244,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
       </div>
 
       {(loading || (status.running && results.length === 0)) && <SkeletonCards/>}
-      {!loading && results.length > 0 && groups.length > 0 && <div className="grid items-start gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]">{groups.map((group, index) => <Card key={cardKey(group)} group={group} index={index} config={config} hidden={hiddenKeys.has(cardKey(group))} onToggle={() => void toggleHidden(cardKey(group))}/>)}</div>}
+      {!loading && results.length > 0 && groups.length > 0 && <div className="grid items-start gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]">{groups.map((group, index) => <Card key={cardKey(group)} group={group} index={index} config={config} hidden={hiddenKeys.has(cardKey(group))} onToggle={() => void toggleHidden(cardKey(group))} onRulesChanged={onResultsChanged} onRescan={onScan}/>)}</div>}
       {!loading && !loadError && results.length === 0 && !status.running && <div className="rounded-2xl border border-dashed border-line-strong bg-panel/45 px-6 py-16 text-center"><span className="mx-auto mb-4 grid size-14 place-items-center rounded-2xl bg-accent/10 text-accent-bright"><Icon name="library" size={26}/></span><h2 className="mb-2 text-lg font-bold">{libraryConfigured ? 'Your library is ready to be scanned' : 'Connect your library first'}</h2><p className="mx-auto mb-5 max-w-md text-sm text-muted">{libraryConfigured ? 'Compare your Sonarr and Radarr collection with the best releases available on SeaDex.' : 'Configure Sonarr or Radarr before running your first scan.'}</p><div className="flex flex-wrap justify-center gap-2"><button type="button" className={libraryConfigured ? buttonPrimary : cx(buttonBase, 'border-line bg-panel text-muted hover:text-ink')} onClick={onScan} disabled={!libraryConfigured}><Icon name="play" size={17}/>Scan library</button><button type="button" className={libraryConfigured ? cx(buttonBase, 'border-line bg-panel text-muted hover:text-ink') : buttonPrimary} onClick={onOpenConfig}><Icon name="settings" size={17}/>Open Config</button></div></div>}
       {!loading && results.length > 0 && groups.length === 0 && <div className="rounded-2xl border border-dashed border-line-strong py-14 text-center"><Icon name="filter" size={26} className="mx-auto mb-3 text-muted-dim"/><h2 className="mb-1 text-lg font-bold">No matching titles</h2><p className="mb-4 text-sm text-muted">Try changing or clearing the active filters.</p><button type="button" className="cursor-pointer text-sm font-bold text-accent-bright" onClick={clearFilters}>Clear filters</button></div>}
       <BulkDownloadDialog

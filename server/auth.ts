@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { scrypt, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
 import { dirname, join } from 'node:path'
@@ -184,6 +184,36 @@ export async function login(request: IncomingMessage, usernameValue: unknown, pa
   return { token: createSession(record.username), username: record.username }
 }
 
+export async function updateAccount(request: IncomingMessage, currentPasswordValue: unknown, usernameValue: unknown, newPasswordValue: unknown): Promise<{ token: string; username: string }> {
+  const activeUsername = authenticatedUsername(request)
+  if (!activeUsername) throw new AuthError(401, 'Authentication required')
+  const currentPassword = String(currentPasswordValue ?? '')
+  if (!currentPassword) throw new AuthError(400, 'Current password is required')
+  const current = loadAuthRecord()
+  const actualHash = await derivePassword(currentPassword, Buffer.from(current.salt, 'base64'))
+  const expectedHash = Buffer.from(current.password_hash, 'base64')
+  if (actualHash.length !== expectedHash.length || !timingSafeEqual(actualHash, expectedHash)) {
+    throw new AuthError(401, 'Current password is incorrect')
+  }
+  const requestedPassword = String(newPasswordValue ?? '')
+  const { username, password } = validateCredentials(usernameValue, requestedPassword || currentPassword)
+  const salt = randomBytes(16)
+  const passwordHash = await derivePassword(password, salt)
+  const record: AuthRecord = {
+    version: 1,
+    username,
+    salt: salt.toString('base64'),
+    password_hash: passwordHash.toString('base64'),
+  }
+  const temporary = `${AUTH_FILE}.tmp`
+  writeFileSync(temporary, JSON.stringify(record, null, 2), { encoding: 'utf8', mode: 0o600 })
+  chmodSync(temporary, 0o600)
+  renameSync(temporary, AUTH_FILE)
+  chmodSync(AUTH_FILE, 0o600)
+  sessions.clear()
+  return { token: createSession(username), username }
+}
+
 export function logout(request: IncomingMessage): void {
   const token = requestToken(request)
   if (token) sessions.delete(token)
@@ -202,4 +232,3 @@ export function sessionCookie(request: IncomingMessage, token: string): string {
 export function expiredSessionCookie(request: IncomingMessage): string {
   return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${requestIsSecure(request) ? '; Secure' : ''}`
 }
-

@@ -9,6 +9,7 @@ import { useToast } from './Toast'
 import DownloadsPanel, { DownloadActions, DownloadEntry } from './DownloadsPanel'
 import ConfirmDialog from './ConfirmDialog'
 import { useRestoreFocus } from './useRestoreFocus'
+import MappingDialog from './MappingDialog'
 
 const IconSpinner = () => <span className="block size-[15px] animate-spin rounded-full border-2 border-accent/35 border-t-accent-bright group-disabled/dl:border-ink/30 group-disabled/dl:border-t-ink" aria-hidden="true" />
 
@@ -31,6 +32,8 @@ interface CardProps {
   config: Config | null
   hidden?: boolean
   onToggle: () => void
+  onRulesChanged: () => Promise<void>
+  onRescan: () => void
 }
 
 const HIDE_DURATION_MS = 280
@@ -110,7 +113,7 @@ function releaseSurface(tone: string, isBest: boolean): string {
   return isBest ? 'bg-good/5' : 'bg-panel'
 }
 
-export default function Card({ group, index, config, hidden = false, onToggle }: CardProps) {
+export default function Card({ group, index, config, hidden = false, onToggle, onRulesChanged, onRescan }: CardProps) {
   const [hiding, setHiding] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [detailsVisible, setDetailsVisible] = useState(false)
@@ -118,8 +121,12 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
   const [busyDownload, setBusyDownload] = useState<string | null>(null)
   const [removeTarget, setRemoveTarget] = useState<DownloadEntry | null>(null)
   const [deleteFiles, setDeleteFiles] = useState(false)
+  const [mappingOpen, setMappingOpen] = useState(false)
+  const [ruleBusy, setRuleBusy] = useState('')
   const removeTargetRef = useRef<DownloadEntry | null>(null)
   removeTargetRef.current = removeTarget
+  const mappingOpenRef = useRef(false)
+  mappingOpenRef.current = mappingOpen
   const hideTimer = useRef<number | null>(null)
   const closing = useRef(false)
   const openFrame = useRef<number | null>(null)
@@ -379,7 +386,7 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
       openFrame.current = null
     })
     closeRef.current?.focus()
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !removeTargetRef.current) requestClose() }
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !removeTargetRef.current && !mappingOpenRef.current) requestClose() }
     window.addEventListener('keydown', closeOnEscape)
     return () => { document.body.style.overflow = previousOverflow; window.removeEventListener('keydown', closeOnEscape) }
   }, [detailsOpen])
@@ -397,6 +404,28 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
   const handleOpenDetails = () => {
     setDetailsVisible(false)
     setDetailsOpen(true)
+  }
+
+  const toggleExclusion = async (season: ResultItem, part: string, excluded: boolean) => {
+    if (!season.library_key) return
+    const id = `${season.key}:${part || '*'}`
+    setRuleBusy(id)
+    try {
+      await api.setExclusion(season.library_key, season.season, part, excluded)
+      await onRulesChanged()
+      toast.show(`${part || seasonLabel(season)} ${excluded ? 'ignored' : 'restored'} for bulk downloads and notifications`, 'success')
+    } catch (error: any) {
+      toast.show('Could not update the exclusion: ' + error.message, 'error')
+    } finally { setRuleBusy('') }
+  }
+
+  const applyMapping = async (anilistId: number | null) => {
+    const libraryKey = group.seasons[0]?.library_key
+    if (!libraryKey) throw new Error('Run a new scan before correcting this match')
+    await api.setMappingOverride(libraryKey, anilistId)
+    setMappingOpen(false)
+    toast.show(anilistId ? `Manual AniList match saved; rescanning ${group.title}` : 'Automatic AniList matching restored; rescanning library', 'success')
+    onRescan()
   }
 
   return <>
@@ -470,7 +499,7 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
           <aside className={cx('app-scrollbar max-h-full w-full max-w-[864px] overflow-y-auto rounded-2xl border border-line-strong bg-canvas shadow-[0_24px_60px_rgba(0,0,0,.45)]', PANEL_GLOW_COLOR[st], downloading && 'details-download-border')} role="dialog" aria-modal="true" aria-labelledby={titleId}>
           <div className="relative h-[230px] overflow-hidden border-b border-line bg-panel bg-cover bg-center" style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}><div className="absolute inset-0 bg-linear-to-t from-canvas via-canvas/55 to-black/15"/><button ref={closeRef} type="button" className="absolute top-4 right-4 z-2 grid size-10 cursor-pointer place-items-center rounded-xl border border-white/15 bg-black/40 text-white backdrop-blur-md hover:bg-black/60" onClick={() => requestClose()} aria-label="Close details"><Icon name="close"/></button><div className="absolute inset-x-5 bottom-5 z-1 flex items-end gap-4">{group.image && <img src={group.image} alt="" className="h-28 w-20 rounded-lg border border-white/15 object-cover shadow-xl"/>}<div className="min-w-0"><span className={cx('mb-2 inline-block rounded-full border px-2.5 py-1 text-[11px] font-extrabold', STATUS_BADGE[st])}>{STATUS_LABEL[st]}</span><h2 id={titleId} className="m-0 text-3xl leading-tight font-extrabold text-white">{group.title}</h2></div></div></div>
           <div className="space-y-4 p-5 max-[600px]:p-4">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">{group.arr_url && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{group.anilist_id && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList ↗</a>}<span className="ml-auto">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span></div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">{group.arr_url && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{group.anilist_id && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList ↗</a>}<button type="button" className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50" onClick={() => setMappingOpen(true)} disabled={!group.seasons[0]?.library_key} title={!group.seasons[0]?.library_key ? 'Run a new scan to enable manual matching' : undefined}><Icon name="refresh" size={14}/>{group.seasons.some((season) => season.mapping_override) ? 'Change manual match' : 'Correct match'}</button>{group.seasons.some((season) => season.mapping_override) && <span className="rounded-full border border-purple/35 bg-purple/10 px-2 py-1 text-[10px] font-extrabold text-purple">Manual match</span>}<span className="ml-auto">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span></div>
             {group.seasons.map((season) => <Season
               key={season.key}
               r={season}
@@ -482,6 +511,8 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
               onPause={(entry) => void handleDownloadAction(entry, 'pause')}
               onResume={(entry) => void handleDownloadAction(entry, 'resume')}
               onRemove={(entry) => { setDeleteFiles(false); setRemoveTarget(entry) }}
+              ruleBusy={ruleBusy}
+              onToggleExclusion={(part, excluded) => void toggleExclusion(season, part, excluded)}
             />)}
           </div>
           </aside>
@@ -502,6 +533,7 @@ export default function Card({ group, index, config, hidden = false, onToggle }:
         <span><span className="block font-bold text-bad">Also delete downloaded files</span><span className="mt-0.5 block text-xs text-muted">This cannot be undone.</span></span>
       </label>
     </ConfirmDialog>
+    <MappingDialog open={mappingOpen} title={group.title} currentAniListId={group.anilist_id} hasOverride={group.seasons.some((season) => season.mapping_override)} onApply={applyMapping} onClose={() => setMappingOpen(false)}/>
   </>
 }
 
@@ -515,6 +547,8 @@ interface SeasonProps {
   onPause: (entry: DownloadEntry) => void
   onResume: (entry: DownloadEntry) => void
   onRemove: (entry: DownloadEntry) => void
+  ruleBusy: string
+  onToggleExclusion: (part: string, excluded: boolean) => void
 }
 
 interface DisplayRelease {
@@ -577,7 +611,7 @@ function groupByCour(releases: DisplayRelease[]): { part: string; items: Display
   return groups
 }
 
-function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResume, onRemove }: SeasonProps) {
+function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResume, onRemove, ruleBusy, onToggleExclusion }: SeasonProps) {
   const st = r.status || 'upgrade'
 
   let middle: ReactNode
@@ -603,6 +637,13 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
             {group.part && (
               <div className="flex flex-wrap items-center gap-2 py-0.5">
                 <span className="rounded-full border border-line bg-panel-raised px-2.5 py-[3px] text-[11px] font-extrabold tracking-[0.8px] text-muted uppercase">{group.part}</span>
+                <button
+                  type="button"
+                  className={cx('inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-[3px] text-[10px] font-bold transition-colors', r.excluded || r.excluded_parts?.includes(group.part) ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line bg-panel-raised text-muted hover:text-ink')}
+                  title={r.excluded ? 'Restore the season before changing individual cours' : r.excluded_parts?.includes(group.part) ? `Include ${group.part} in bulk downloads and notifications` : `Ignore ${group.part} in bulk downloads and notifications`}
+                  disabled={!r.library_key || Boolean(r.excluded) || Boolean(ruleBusy)}
+                  onClick={() => onToggleExclusion(group.part, !r.excluded_parts?.includes(group.part))}
+                ><Icon name="ban" size={12}/>{r.excluded || r.excluded_parts?.includes(group.part) ? 'Ignored' : 'Ignore'}</button>
                 {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).length > 0 && <span className="text-[10px] font-bold tracking-[0.08em] text-muted-dim uppercase">Have</span>}
                 {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).map((releaseGroup) => <span key={releaseGroup} className={cx(BADGE, 'py-[3px] text-[11px]')} title={`Owned in ${group.part}`}>{releaseGroup}</span>)}
                 {r.precise_part_ownership && !(r.have_by_part?.[group.part] || []).length && <span className="text-[11px] text-muted-dim">No matching files owned</span>}
@@ -794,9 +835,10 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
       ] : []
 
   return (
-    <div className={cx('flex flex-col gap-[9px] rounded-control border border-line p-3', SEASON_TONE[tone])}>
+    <div className={cx('flex flex-col gap-[9px] rounded-control border p-3', r.excluded ? 'border-warn/45 opacity-75' : 'border-line', SEASON_TONE[tone])}>
       <div className="flex flex-wrap items-center gap-2">
         <span className={cx('min-w-[46px] rounded-full border px-[9px] py-[3px] text-center text-xs font-extrabold tracking-[0.5px]', SEASON_NUMBER_TONE[tone])}>{seasonLabel(r)}</span>
+        <button type="button" className={cx('inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-[3px] text-[10px] font-bold transition-colors', r.excluded ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line bg-panel-raised text-muted hover:text-ink')} title={r.excluded ? `Include ${seasonLabel(r)} in bulk downloads and notifications` : `Ignore ${seasonLabel(r)} in bulk downloads and notifications`} disabled={!r.library_key || Boolean(ruleBusy)} onClick={() => onToggleExclusion('', !r.excluded)}><Icon name="ban" size={12}/>{r.excluded ? 'Ignored' : 'Ignore'}</button>
         {displaySeasonHave && <span className="text-[10px] font-bold tracking-[0.08em] text-muted-dim uppercase">Have</span>}
         <div className="flex flex-1 flex-wrap gap-[5px]" title="Release groups you already have">
           {have}

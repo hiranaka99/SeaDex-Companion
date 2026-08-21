@@ -6,6 +6,7 @@ import LogTab from './components/LogTab'
 import AuthPage from './components/AuthPage'
 import ConfirmDialog from './components/ConfirmDialog'
 import OperationCenter, { BulkOperationState } from './components/OperationCenter'
+import HistoryTab from './components/HistoryTab'
 import { useToast } from './components/Toast'
 import { TabId, Status, ResultItem, Config, AuthState } from './types'
 import * as api from './api'
@@ -23,6 +24,7 @@ const INITIAL_STATUS: Status = {
 interface AuthenticatedAppProps {
   username: string
   onLogout: () => void
+  onAccountUpdated: (username: string) => void
 }
 
 const SIDEBAR_KEY = 'seadex-sidebar-collapsed'
@@ -35,7 +37,7 @@ function readCollapsed(): boolean {
   }
 }
 
-function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
+function AuthenticatedApp({ username, onLogout, onAccountUpdated }: AuthenticatedAppProps) {
   const [tab, setTab] = useState<TabId>('anime')
   const [status, setStatus] = useState<Status>(INITIAL_STATUS)
   const [results, setResults] = useState<ResultItem[]>([])
@@ -177,9 +179,11 @@ function AuthenticatedApp({ username, onLogout }: AuthenticatedAppProps) {
             onOpenConfig={() => setTab('config')}
             onBulkOperationChange={setBulkOperation}
             operationsVisible={status.running || Boolean(status.error) || Boolean(scanCompleted) || Boolean(bulkOperation)}
+            onResultsChanged={loadResults}
           />
         )}
-        {tab === 'config' && <ConfigTab config={config} onSaved={loadConfig} onScannedDataCleared={handleScannedDataCleared} />}
+        {tab === 'history' && <HistoryTab />}
+        {tab === 'config' && <ConfigTab config={config} username={username} onAccountUpdated={onAccountUpdated} onSaved={loadConfig} onScannedDataCleared={handleScannedDataCleared} />}
         {tab === 'log' && <LogTab active={tab === 'log'} />}
       </main>
     </div>
@@ -231,7 +235,7 @@ export default function App() {
   if (!auth) return <main className="grid min-h-screen place-items-center text-sm text-muted">Loading…</main>
   if (!auth.authenticated) return <AuthPage setupRequired={auth.setup_required} onAuthenticated={setAuth} />
   return <>
-    <AuthenticatedApp username={auth.username || 'Administrator'} onLogout={() => setLogoutOpen(true)} />
+    <AuthenticatedApp username={auth.username || 'Administrator'} onLogout={() => setLogoutOpen(true)} onAccountUpdated={(username) => setAuth((current) => current ? { ...current, username } : current)} />
     <ConfirmDialog open={logoutOpen} title="Log out?" description="You will need your administrator password to return." confirmLabel="Log out" onConfirm={handleLogout} onClose={() => setLogoutOpen(false)} />
   </>
 }
