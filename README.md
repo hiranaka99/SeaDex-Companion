@@ -14,9 +14,11 @@ SeaDex Companion is a web UI that compares your **Sonarr / Radarr** anime librar
 - **Bulk download** every upgrade at once, plus a **Downloads panel** to monitor, pause, resume and delete torrents
 - **Live scan progress** and automatic re-scan on a configurable interval
 - **Search & filter** by title, release group, source and status; hide cards you don't care about
+- **Manual AniList corrections** for ambiguous titles, plus season/cour exclusions for bulk downloads and notifications
+- **Scan history** with a change feed for new, resolved and changed upgrades
 - **Discord notifications** for newly-found upgrades
 - **Live log tab**
-- **Password-protected WebUI** with first-run administrator setup; credentials are encrypted at rest (AES-256-GCM)
+- **Password-protected WebUI** with account maintenance and session revocation; credentials are encrypted at rest (AES-256-GCM)
 
 ## Run with Docker (recommended)
 
@@ -113,4 +115,3 @@ npm --prefix frontend run dev   # Vite UI, proxies /api to :8080
 # 
 
 <img width="60%" alt="zen_hbDMnDwqHo" src="https://github.com/user-attachments/assets/ddf51c68-717d-4f4b-92a9-8da7b90c44be" />
-

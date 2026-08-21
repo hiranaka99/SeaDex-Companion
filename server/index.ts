@@ -3,14 +3,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, isAbsolute, normalize, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  DATA_DIR, DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, clearScannedData, forgetOwnedTorrents,
-  finishBulkDownloadBatch, getState, indexResultReleases, loadConfig, loadLastResults, log, normalizeQbStates, ownedTorrentsSnapshot,
+  DATA_DIR, DEFAULT_CONFIG, LOG_FILE, STATIC_DIR, applyUserRulesToResults, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, clearScannedData, exclusionRuleKey, forgetOwnedTorrents,
+  finishBulkDownloadBatch, getState, indexResultReleases, loadConfig, loadLastResults, loadScanHistory, loadUserRules, log, normalizeQbStates, ownedTorrentsSnapshot,
   publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, qbGetTorrents, recordOwnedTorrents, resetBulkDownloadBatch,
-  resultsForRequest, runScan, saveConfig, scannedDataInfo, SECRET_CONFIG_KEYS, settleBulkDownloadBatch, setState, testIntegration,
+  resultsForRequest, runScan, saveConfig, saveUserRules, scannedDataInfo, searchAniListTitles, SECRET_CONFIG_KEYS, settleBulkDownloadBatch, setState, testIntegration,
 } from './app.js'
 import {
   AuthError, authState, expiredSessionCookie, isAuthenticated, login, logout, sessionCookie,
-  setupAccount,
+  setupAccount, updateAccount,
 } from './auth.js'
 import type { Config, JsonObject } from './types.js'
 
@@ -143,7 +143,57 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return sendJson(response, 401, { error: 'Authentication required' }, { 'Cache-Control': 'no-store' })
   }
 
+  if (method === 'POST' && path === '/api/auth/account') {
+    const data = await readJson(request)
+    const result = await updateAccount(request, data.current_password, data.username, data.new_password)
+    log('INFO', `Administrator account updated: ${result.username}; all other sessions revoked (client: ${clientAddress(request)})`)
+    return sendJson(response, 200, { setup_required: false, authenticated: true, username: result.username }, {
+      'Cache-Control': 'no-store', 'Set-Cookie': sessionCookie(request, result.token),
+    })
+  }
+
   if (method === 'GET' && path === '/api/config') return sendJson(response, 200, publicConfig(loadConfig()))
+
+  if (method === 'GET' && path === '/api/history') return sendJson(response, 200, { scans: loadScanHistory() })
+
+  if (method === 'GET' && path === '/api/anilist/search') {
+    const query = String(url.searchParams.get('q') || '').trim()
+    if (query.length < 2) return sendJson(response, 400, { error: 'Enter at least two characters' })
+    return sendJson(response, 200, { results: await searchAniListTitles(query) })
+  }
+
+  if (method === 'POST' && path === '/api/mapping-overrides') {
+    if (getState().running) return sendJson(response, 409, { error: 'Wait for the current scan to finish before changing a match' })
+    const data = await readJson(request)
+    const libraryKey = String(data.library_key || '').trim()
+    if (!libraryKey || !resultsForRequest().some((result) => result.library_key === libraryKey)) return sendJson(response, 404, { error: 'Library title not found — run a scan first' })
+    const rules = loadUserRules()
+    if (data.anilist_id == null) delete rules.mappings[libraryKey]
+    else {
+      const anilistId = Number(data.anilist_id)
+      if (!Number.isInteger(anilistId) || anilistId <= 0) return sendJson(response, 400, { error: 'A valid AniList ID is required' })
+      rules.mappings[libraryKey] = anilistId
+    }
+    saveUserRules(rules)
+    log('INFO', `${data.anilist_id == null ? 'Removed manual AniList match' : `Set manual AniList match to ${rules.mappings[libraryKey]}`} for ${libraryKey}`)
+    return sendJson(response, 200, { ok: true, anilist_id: rules.mappings[libraryKey] || null })
+  }
+
+  if (method === 'POST' && path === '/api/exclusions') {
+    const data = await readJson(request)
+    const libraryKey = String(data.library_key || '').trim()
+    const season = Number(data.season || 0)
+    const part = String(data.part || '').trim()
+    if (!libraryKey || !Number.isInteger(season) || season < 0 || !resultsForRequest().some((result) => result.library_key === libraryKey && Number(result.season || 0) === season)) {
+      return sendJson(response, 404, { error: 'Season not found — run a scan first' })
+    }
+    const rules = loadUserRules(); const exclusions = new Set(rules.exclusions)
+    const key = exclusionRuleKey(libraryKey, season, part)
+    if (data.excluded) exclusions.add(key); else exclusions.delete(key)
+    rules.exclusions = [...exclusions]; saveUserRules(rules)
+    log('INFO', `${data.excluded ? 'Ignored' : 'Restored'} ${libraryKey} season ${season || 'Movie'}${part ? ` ${part}` : ''} for bulk downloads and notifications`)
+    return sendJson(response, 200, { ok: true, excluded: Boolean(data.excluded) })
+  }
 
   if (method === 'GET' && path === '/api/scanned-data') return sendJson(response, 200, { ok: true, ...scannedDataInfo() })
 
@@ -237,7 +287,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (method === 'GET' && path === '/api/results') {
     const state = getState()
-    return sendJson(response, 200, state.running || state.results.length ? { results: state.results, last_run: state.last_run } : (loadLastResults() || { results: [], last_run: null }))
+    const payload = state.running || state.results.length ? { results: state.results, last_run: state.last_run } : (loadLastResults() || { results: [], last_run: null })
+    return sendJson(response, 200, { ...payload, results: applyUserRulesToResults(payload.results || []) })
   }
 
   if (method === 'GET' && path === '/api/logs') {
