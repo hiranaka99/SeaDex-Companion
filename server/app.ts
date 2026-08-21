@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -116,6 +116,37 @@ export function log(level: 'INFO' | 'WARNING' | 'ERROR', message: string): void 
   if (level === 'ERROR') console.error(line)
   else if (level === 'WARNING') console.warn(line)
   else console.log(line)
+}
+
+/**
+ * Reads only the tail of the log file (bounded by `limit` bytes) instead of the
+ * whole file on every poll. Because the window is anchored to the end of the
+ * current file, log rotation (which swaps in a fresh, smaller file) and external
+ * truncation are handled automatically without any offset/inode bookkeeping.
+ * A partial line at the head of the window is dropped so callers only ever see
+ * complete lines.
+ */
+export function readLogTail(limit = 256 * 1024): string[] {
+  try {
+    if (!existsSync(LOG_FILE)) return []
+    const size = statSync(LOG_FILE).size
+    if (!size) return []
+    const fd = openSync(LOG_FILE, 'r')
+    try {
+      const length = Math.min(limit, size)
+      const buffer = Buffer.alloc(length)
+      readSync(fd, buffer, 0, length, size - length)
+      const text = buffer.toString('utf8')
+      if (!text) return []
+      const lines = text.split('\n')
+      // A partial line can only appear at the head (we always stop at EOF).
+      return lines.slice(1)
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return []
+  }
 }
 
 function readJson<T>(file: string, fallback: T, warning?: string): T {
@@ -1443,6 +1474,10 @@ async function qbSelectTorrentFiles(config: Config, hash: string, selectedFiles:
   let files: JsonObject[] | null = null
   const metadataDeadline = Date.now() + timeoutMs
   try {
+    // The file list is polled with exponential backoff (100ms → 2s) instead of a
+    // fixed 100ms so we stop hammering qBittorrent once the metadata clearly
+    // needs more time to arrive, while staying responsive when it does.
+    let pollDelay = 100
     while (Date.now() < metadataDeadline) {
       try {
         const response = await qbRequest(config, `/api/v2/torrents/files?hash=${encodeURIComponent(hash)}`, {}, true, Math.max(1_000, Math.min(5_000, metadataDeadline - Date.now())))
@@ -1459,7 +1494,8 @@ async function qbSelectTorrentFiles(config: Config, hash: string, selectedFiles:
         // hard failure that aborts this torrent.
         if (!isTimeoutLikeError(error)) throw error
       }
-      await sleep(100)
+      await sleep(pollDelay)
+      pollDelay = Math.min(pollDelay * 2, 2000)
     }
   } catch (error) {
     try { await qbPostWithFallback(config, ['/api/v2/torrents/stop', '/api/v2/torrents/pause'], stateBody) } catch { /* preserve the metadata error */ }

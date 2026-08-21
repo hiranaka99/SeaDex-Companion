@@ -142,21 +142,24 @@ export default function Card({ group, index, config, hidden = false, onToggle, o
   const [dlBySeason, setDlBySeason] = useState<Record<string, Record<number, DlState>>>({})
   const dlBySeasonRef = useRef<Record<string, Record<number, DlState>>>({})
   dlBySeasonRef.current = dlBySeason
-  const pollers = useRef<Record<string, number>>({})
+  const unsubscribers = useRef<Record<string, () => void>>({})
 
   const stopPolling = (seasonKey: string, release: number) => {
     const idKey = `${seasonKey}\u0000${release}`
-    const id = pollers.current[idKey]
-    if (id) {
-      window.clearInterval(id)
-      delete pollers.current[idKey]
+    const unsubscribe = unsubscribers.current[idKey]
+    if (unsubscribe) {
+      unsubscribe()
+      delete unsubscribers.current[idKey]
     }
   }
 
+  // Live progress is driven by one shared /api/download_progress/all timer
+  // (see api.watchDownloadProgress) instead of an interval per release, so many
+  // simultaneous downloads cost a single qBittorrent request per tick.
   const startPolling = (seasonKey: string, release: number) => {
     const idKey = `${seasonKey}\u0000${release}`
-    if (pollers.current[idKey]) return
-    pollers.current[idKey] = window.setInterval(() => pollProgress(seasonKey, release), 3000)
+    if (unsubscribers.current[idKey]) return
+    unsubscribers.current[idKey] = api.watchDownloadProgress(idKey, (progress) => applyProgress(seasonKey, release, progress))
   }
 
   const applyProgress = (seasonKey: string, release: number, p: api.DownloadProgress) => {
@@ -202,7 +205,7 @@ export default function Card({ group, index, config, hidden = false, onToggle, o
   // resume polling for any that are in progress or already complete. The
   // backend caches the qBittorrent response, so this burst stays cheap.
   useEffect(() => {
-    const activePollers = pollers.current
+    const activeUnsubscribers = { ...unsubscribers.current }
     api.getAllDownloadProgress().then(({ downloads }) => {
       for (const season of group.seasons) {
         // Mirror the Season download-button logic: for split seasons (cours) use
@@ -224,7 +227,7 @@ export default function Card({ group, index, config, hidden = false, onToggle, o
       /* qBittorrent may be unconfigured or temporarily unavailable. */
     })
     return () => {
-      for (const k of Object.keys(activePollers)) window.clearInterval(activePollers[k])
+      for (const unsubscribe of Object.values(activeUnsubscribers)) unsubscribe()
     }
     // Runs once per mount (fresh after a reload), so the first-render seasons are used.
     // eslint-disable-next-line react-hooks/exhaustive-deps

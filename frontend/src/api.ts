@@ -147,6 +147,48 @@ export const getAllDownloadProgress = (): Promise<AllDownloadProgress> => {
   return allDownloadProgressRequest
 }
 
+/** A synthetic "not present in qBittorrent" progress entry. */
+const NOT_FOUND_PROGRESS: DownloadProgress = { ok: true, found: false, progress: 0, downloaded: 0, total_size: 0, speed: 0, state: 'unknown' }
+
+type DownloadProgressCallback = (progress: DownloadProgress) => void
+const downloadProgressCallbacks = new Map<string, DownloadProgressCallback>()
+let sharedDownloadTimer: number | null = null
+
+/**
+ * One timer serves every registered release. Each tick fetches a single
+ * /api/download_progress/all snapshot and fans the matching entry out to each
+ * callback (a release absent from the snapshot is reported as not found). This
+ * replaces the old per-release intervals so many simultaneous downloads cost one
+ * qBittorrent request per tick instead of one request per release.
+ */
+function tickSharedDownloads(): void {
+  getAllDownloadProgress()
+    .then((res) => {
+      const downloads = res.downloads || {}
+      for (const [idKey, callback] of downloadProgressCallbacks) callback(downloads[idKey] ?? NOT_FOUND_PROGRESS)
+    })
+    .catch(() => {
+      /* transient network/backend error — keep polling */
+    })
+}
+
+/**
+ * Registers `callback` to receive live progress for the release identified by
+ * `idKey`. Returns an unsubscribe function; the shared timer stops once the last
+ * watcher is removed.
+ */
+export function watchDownloadProgress(idKey: string, callback: DownloadProgressCallback): () => void {
+  downloadProgressCallbacks.set(idKey, callback)
+  if (sharedDownloadTimer === null) sharedDownloadTimer = window.setInterval(tickSharedDownloads, 3000)
+  return () => {
+    downloadProgressCallbacks.delete(idKey)
+    if (!downloadProgressCallbacks.size && sharedDownloadTimer !== null) {
+      window.clearInterval(sharedDownloadTimer)
+      sharedDownloadTimer = null
+    }
+  }
+}
+
 export type DownloadAction = 'pause' | 'resume' | 'remove'
 
 export const controlDownload = (key: string, release: number, action: DownloadAction, deleteFiles = false) =>
