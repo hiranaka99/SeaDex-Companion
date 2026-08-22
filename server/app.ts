@@ -1258,11 +1258,7 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
           for (const part of resolved) for (const [kind, release] of orderedPartReleases(part.best, part.alts)) releases.push(releaseDict(kind, release, part.label, part.source.url))
           results.push({ ...common, key: `${item.arr}:${alid}:${season}:${bestGroup}`, status: 'partial', upgrade_available: !ownsAllBest, best_group: bestGroup, best_size: bestSize, releases })
         } else if (ownsAllBest) {
-          for (const part of resolved) {
-            for (const [kind, release] of orderedPartReleases(commonBest || part.best, part.alts)) {
-              if (kind === 'best') releases.push(releaseDict(kind, release, part.label, part.source.url))
-            }
-          }
+          for (const part of resolved) for (const [kind, release] of orderedPartReleases(commonBest || part.best, part.alts)) releases.push(releaseDict(kind, release, part.label, part.source.url))
           results.push({ ...common, key: `${item.arr}:${alid}:${season}:${bestGroup}`, status: 'best', best_group: bestGroup, best_size: bestSize, releases })
         } else {
           for (const part of resolved) for (const [kind, release] of orderedPartReleases(part.best, part.alts)) releases.push(releaseDict(kind, release, part.label, part.source.url))
