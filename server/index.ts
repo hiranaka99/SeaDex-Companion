@@ -37,6 +37,12 @@ async function readJson(request: IncomingMessage): Promise<JsonObject> {
   if (!chunks.length) return {}
   return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
+export function parseReleaseIndex(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isInteger(value) && value >= 0 ? value : null
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) ? parsed : null
+}
 
 function findResult(key: string, releaseIndex: number): { result?: JsonObject; release?: JsonObject; error?: [number, string] } {
   const result = resultsForRequest().find((item) => item.key === key)
@@ -228,7 +234,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }
       if (!(key in data)) continue
       const value = data[key]
-      if (typeof defaultValue === 'boolean') config[key] = Boolean(value)
+      if (typeof defaultValue === 'boolean') {
+        if (typeof value !== 'boolean') return sendJson(response, 400, { error: `${key} must be a boolean` })
+        config[key] = value
+      }
       else if (typeof defaultValue === 'number') {
         const parsed = Number.parseInt(String(value), 10)
         config[key] = Number.isFinite(parsed) ? Math.max(0, parsed) : defaultValue
@@ -338,8 +347,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (method === 'POST' && path === '/api/download') {
     const data = await readJson(request)
     const key = String(data.key || '').trim()
-    const releaseIndex = Number.parseInt(String(data.release ?? 0), 10) || 0
+    const releaseIndex = parseReleaseIndex(data.release ?? 0)
     if (!key) return sendJson(response, 400, { ok: false, error: 'No key provided' })
+    if (releaseIndex === null) return sendJson(response, 400, { ok: false, error: 'Release must be a non-negative integer' })
     const found = findResult(key, releaseIndex)
     if (found.error) return sendJson(response, found.error[0], { ok: false, error: found.error[1] })
     const hashes = (found.release!.info_hashes || []).map((hash: string) => hash.toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash))
@@ -570,8 +580,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (method === 'GET' && path === '/api/download_progress') {
     const key = String(url.searchParams.get('key') || '').trim()
-    const releaseIndex = Number.parseInt(url.searchParams.get('release') || '0', 10) || 0
+    const releaseIndex = parseReleaseIndex(url.searchParams.get('release') || '0')
     if (!key) return sendJson(response, 400, { ok: false, error: 'No key provided' })
+    if (releaseIndex === null) return sendJson(response, 400, { ok: false, error: 'Release must be a non-negative integer' })
     const found = findResult(key, releaseIndex)
     if (found.error) return sendJson(response, found.error[0], { ok: false, error: found.error[1] })
     const progressKey = `${key}\0${releaseIndex}`
@@ -616,9 +627,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (method === 'POST' && path === '/api/download_control') {
     const data = await readJson(request)
     const key = String(data.key || '').trim()
-    const releaseIndex = Number.parseInt(String(data.release ?? 0), 10) || 0
+    const releaseIndex = parseReleaseIndex(data.release ?? 0)
     const action = String(data.action || '')
     if (!key) return sendJson(response, 400, { ok: false, error: 'No key provided' })
+    if (releaseIndex === null) return sendJson(response, 400, { ok: false, error: 'Release must be a non-negative integer' })
     if (action !== 'pause' && action !== 'resume' && action !== 'remove') {
       return sendJson(response, 400, { ok: false, error: 'Unknown torrent action' })
     }

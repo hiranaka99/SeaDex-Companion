@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { DATA_DIR } from './app.js'
 
 export const AUTH_FILE = join(DATA_DIR, 'auth.json')
-
+export const AUTH_SESSIONS_FILE = join(DATA_DIR, 'auth_sessions.json')
 const SESSION_COOKIE = 'seadex_session'
 const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 const LOGIN_WINDOW_MS = 15 * 60 * 1000
@@ -41,7 +41,33 @@ export class AuthError extends Error {
   }
 }
 
-const sessions = new Map<string, Session>()
+function loadSessions(): Map<string, Session> {
+  if (!existsSync(AUTH_SESSIONS_FILE)) return new Map()
+  try {
+    const parsed = JSON.parse(readFileSync(AUTH_SESSIONS_FILE, 'utf8')) as unknown
+    if (!Array.isArray(parsed)) return new Map()
+    return new Map(parsed.flatMap((value): Array<[string, Session]> => {
+      if (!value || typeof value !== 'object') return []
+      const record = value as Record<string, unknown>
+      if (typeof record.token !== 'string' || typeof record.username !== 'string' || typeof record.expiresAt !== 'number' || record.expiresAt <= Date.now()) return []
+      return [[record.token, { username: record.username, expiresAt: record.expiresAt }]]
+    }))
+  } catch {
+    return new Map()
+  }
+}
+
+function saveSessions(): void {
+  mkdirSync(dirname(AUTH_SESSIONS_FILE), { recursive: true })
+  const temporary = `${AUTH_SESSIONS_FILE}.tmp`
+  const records = [...sessions].map(([token, session]) => ({ token, ...session }))
+  writeFileSync(temporary, JSON.stringify(records), { encoding: 'utf8', mode: 0o600 })
+  chmodSync(temporary, 0o600)
+  renameSync(temporary, AUTH_SESSIONS_FILE)
+  chmodSync(AUTH_SESSIONS_FILE, 0o600)
+}
+
+const sessions = loadSessions()
 const loginLimits = new Map<string, LoginLimit>()
 
 function derivePassword(password: string, salt: Buffer): Promise<Buffer> {
@@ -96,15 +122,16 @@ function authenticatedUsername(request: IncomingMessage): string | null {
   if (!session) return null
   if (session.expiresAt <= Date.now()) {
     sessions.delete(token)
+    saveSessions()
     return null
   }
-  session.expiresAt = Date.now() + SESSION_TTL_SECONDS * 1000
   return session.username
 }
 
 function createSession(username: string): string {
   const token = randomBytes(32).toString('base64url')
   sessions.set(token, { username, expiresAt: Date.now() + SESSION_TTL_SECONDS * 1000 })
+  saveSessions()
   return token
 }
 
@@ -163,6 +190,8 @@ export async function setupAccount(usernameValue: unknown, passwordValue: unknow
     if (error?.code === 'EEXIST') throw new AuthError(409, 'An administrator account already exists')
     throw error
   }
+  sessions.clear()
+  saveSessions()
   return { token: createSession(username), username }
 }
 
@@ -211,12 +240,13 @@ export async function updateAccount(request: IncomingMessage, currentPasswordVal
   renameSync(temporary, AUTH_FILE)
   chmodSync(AUTH_FILE, 0o600)
   sessions.clear()
-  return { token: createSession(username), username }
+  const token = createSession(username)
+  return { token, username }
 }
 
 export function logout(request: IncomingMessage): void {
   const token = requestToken(request)
-  if (token) sessions.delete(token)
+  if (token && sessions.delete(token)) saveSessions()
 }
 
 function requestIsSecure(request: IncomingMessage): boolean {

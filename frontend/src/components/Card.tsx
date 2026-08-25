@@ -205,8 +205,9 @@ export default function Card({ group, index, config, hidden = false, onToggle, o
   // resume polling for any that are in progress or already complete. The
   // backend caches the qBittorrent response, so this burst stays cheap.
   useEffect(() => {
-    const activeUnsubscribers = { ...unsubscribers.current }
+    let active = true
     api.getAllDownloadProgress().then(({ downloads }) => {
+      if (!active) return
       for (const season of group.seasons) {
         // Mirror the Season download-button logic: for split seasons (cours) use
         // the per-part ownership so a download for one cour is not skipped just
@@ -227,7 +228,9 @@ export default function Card({ group, index, config, hidden = false, onToggle, o
       /* qBittorrent may be unconfigured or temporarily unavailable. */
     })
     return () => {
-      for (const unsubscribe of Object.values(activeUnsubscribers)) unsubscribe()
+      active = false
+      for (const unsubscribe of Object.values(unsubscribers.current)) unsubscribe()
+      unsubscribers.current = {}
     }
     // Runs once per mount (fresh after a reload), so the first-render seasons are used.
     // eslint-disable-next-line react-hooks/exhaustive-deps
