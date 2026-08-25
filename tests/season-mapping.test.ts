@@ -6,11 +6,11 @@ import { join } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
 import {
   anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, clearScannedData, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, effectiveSeasonParts,
-  encryptSecretValues, getState, localItems, localPartOwnership, normalizeQbStates, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
-  qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart,
+  encryptSecretValues, getState, loadStringSet, localItems, localPartOwnership, normalizeQbStates, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
+  qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest,
   resetRuntimeForTests, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration,
 } from '../server/app.js'
-import { refreshAutocheckSchedule } from '../server/index.js'
+import { parseReleaseIndex, refreshAutocheckSchedule } from '../server/index.js'
 import type { JsonObject, ReleaseCandidate } from '../server/types.js'
 
 function node(id: number, title: string, year: number | null, season: string | null, episodes: number | null, options: JsonObject = {}): JsonObject {
@@ -78,6 +78,20 @@ describe('configuration secret security', () => {
     assert.equal(response.radarr_key_configured, false)
     assert.equal(response.qbittorrent_pass, '')
     assert.equal(response.qbittorrent_pass_configured, true)
+  })
+})
+describe('persisted collection validation', () => {
+  test('treats valid JSON with the wrong shape as an empty string set', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'seadex-string-set-'))
+    const file = join(directory, 'ledger.json')
+    try {
+      writeFileSync(file, '{}', 'utf8')
+      assert.deepEqual([...loadStringSet(file, 'Invalid ledger')], [])
+      writeFileSync(file, JSON.stringify(['valid', 3, '', 'also-valid']), 'utf8')
+      assert.deepEqual([...loadStringSet(file, 'Invalid ledger')], ['valid', 'also-valid'])
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })
 
@@ -196,6 +210,34 @@ describe('notifications and scheduling', () => {
     refreshAutocheckSchedule({ ...DEFAULT_CONFIG, autocheck_minutes: 0 }, 1_200)
     assert.equal(autocheckState.next, null)
   })
+
+  test('allows an upgrade notification after the same result was resolved', async () => {
+    let saved = new Set<string>()
+    let deliveries = 0
+    const dependencies = {
+      load: () => new Set(saved),
+      save: (keys: Set<string>) => { saved = new Set(keys) },
+      send: async (_webhook: string, results: JsonObject[], onSent?: (result: JsonObject) => void) => {
+        deliveries += results.length
+        for (const result of results) onSent?.(result)
+        return results.length
+      },
+    }
+    const config = { ...DEFAULT_CONFIG, notify_enabled: true, webhook: 'https://discord.example/webhook' }
+    setState({ results: [{ key: 'same', status: 'upgrade', releases: [] }] })
+    await autoNotifyNew(config, dependencies)
+    setState({ results: [{ key: 'same', status: 'best', releases: [] }] })
+    await autoNotifyNew(config, dependencies)
+    setState({ results: [{ key: 'same', status: 'upgrade', releases: [] }] })
+    await autoNotifyNew(config, dependencies)
+    assert.equal(deliveries, 2)
+  })
+
+  test('rejects malformed release indexes', () => {
+    assert.equal(parseReleaseIndex('0'), 0)
+    assert.equal(parseReleaseIndex(2), 2)
+    for (const value of ['abc', '1junk', '1.9', '-1', 1.5, -1]) assert.equal(parseReleaseIndex(value), null)
+  })
 })
 
 describe('Sonarr and Radarr URL normalization', () => {
@@ -265,6 +307,31 @@ describe('Sonarr and Radarr URL normalization', () => {
         () => localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key' }),
         /HTTP 503/,
       )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
+
+describe('SeaDex catalog aggregation', () => {
+  test('keeps distinct torrents from the same group and tracker separate', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      items: [{
+        alID: 10,
+        expand: { trs: [
+          { releaseGroup: 'Group', tracker: 'Nyaa', isBest: true, infoHash: 'a'.repeat(40), files: [{ name: 'Show.S01E01.mkv', length: 100 }] },
+          { releaseGroup: 'Group', tracker: 'Nyaa', isBest: true, infoHash: 'b'.repeat(40), files: [{ name: 'Show.S01E01.v2.mkv', length: 110 }] },
+        ] },
+      }],
+      totalPages: 1,
+    }), { status: 200 })) as typeof fetch
+    try {
+      const catalog = await seadexBest()
+      const candidates = catalog.get(10)?.seasons[1].candidates as ReleaseCandidate[]
+      assert.equal(candidates.length, 2)
+      assert.deepEqual(candidates.map((candidate) => candidate.info_hashes), [['a'.repeat(40)], ['b'.repeat(40)]])
+      assert.deepEqual(candidates.map((candidate) => candidate.size), [100, 110])
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -484,6 +551,53 @@ describe('qBittorrent torrent controls', () => {
     }
     assert.equal(addRequested, false)
     assert.equal(recorded, false)
+  })
+
+  test('removes a newly added torrent when ownership recording fails', async () => {
+    const originalFetch = globalThis.fetch
+    const requests: string[] = []
+    const hash = 'e'.repeat(40)
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input); requests.push(url)
+      if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.', { status: 200 })
+      if (url.includes('/api/v2/torrents/info?')) return new Response('[]', { status: 200 })
+      return new Response('Ok.', { status: 200 })
+    }) as typeof fetch
+    try {
+      await assert.rejects(() => qbAddTorrent(
+        { ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' },
+        `magnet:?xt=urn:btih:${hash}`, '', [], undefined,
+        { record: () => { throw new Error('disk full') }, forget: () => undefined },
+      ), /disk full/)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    assert.ok(requests.some((url) => url.endsWith('/api/v2/torrents/delete')))
+  })
+
+  test('rejects misleading qBittorrent login responses', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response('Not Ok', { status: 200 })) as typeof fetch
+    try {
+      await assert.rejects(() => testIntegration({ ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' }, 'qbittorrent'), /login failed/)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('does not automatically follow credential-bearing redirects', async () => {
+    const originalFetch = globalThis.fetch
+    let redirect: RequestRedirect | undefined
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      redirect = init?.redirect
+      return new Response('', { status: 302, headers: { Location: 'https://attacker.example/' } })
+    }) as typeof fetch
+    try {
+      await assert.rejects(() => testIntegration({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr.example', sonarr_key: 'secret' }, 'sonarr'), /HTTP 302/)
+      assert.equal(redirect, 'manual')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })
 
