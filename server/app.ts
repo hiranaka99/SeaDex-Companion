@@ -159,6 +159,15 @@ function readJson<T>(file: string, fallback: T, warning?: string): T {
   }
 }
 
+export function loadStringSet(file: string, warning: string, normalize: (value: unknown) => string | null = (value) => typeof value === 'string' && value ? value : null): Set<string> {
+  const stored = readJson<unknown>(file, [], warning)
+  if (!Array.isArray(stored)) {
+    log('WARNING', `${warning} (expected a JSON array), using defaults`)
+    return new Set()
+  }
+  return new Set(stored.map(normalize).filter((value): value is string => value !== null))
+}
+
 function writeJsonAtomic(file: string, value: unknown, pretty = false, mode?: number): void {
   mkdirSync(dirname(file), { recursive: true })
   const temporary = `${file}.tmp`
@@ -426,11 +435,11 @@ export function clearScannedData(cacheFile = CACHE_FILE, resultsFile = RESULTS_F
   setState({ progress: 0, total: 0, message: 'Idle', results: [], error: null, last_run: null })
   return { cacheEntries: info.cache_entries, results: info.results }
 }
-export function loadNotified(): Set<string> { return new Set(readJson<string[]>(NOTIFIED_FILE, [])) }
-export function saveNotified(keys: Set<string>): void { writeJsonAtomic(NOTIFIED_FILE, [...keys].sort()) }
+export function loadNotified(file = NOTIFIED_FILE): Set<string> { return loadStringSet(file, 'Could not read notification history') }
+export function saveNotified(keys: Set<string>, file = NOTIFIED_FILE): void { writeJsonAtomic(file, [...keys].sort()) }
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeout = 60_000): Promise<Response> {
-  return fetch(url, { ...init, signal: AbortSignal.timeout(timeout) })
+  return fetch(url, { ...init, redirect: 'manual', signal: AbortSignal.timeout(timeout) })
 }
 
 export async function api(url: string, key?: string, init: RequestInit = {}): Promise<any> {
@@ -497,38 +506,27 @@ export async function seadexBest(): Promise<Map<number, JsonObject>> {
         }
         for (const season of seasons) {
           entry.seasons[season] ||= { candidates: [] }
-          const candidates = entry.seasons[season].candidates as ReleaseCandidate[]
           let size = sizes.get(season) || 0
           let count = counts.get(season) || 0
           if (!size && season !== 0) size = sizes.get(0) || 0
           if (!count && season !== 0) count = counts.get(0) || 0
-          const groupKey = `${String(torrent.releaseGroup).toLowerCase()}\0${String(torrent.tracker || '').toLowerCase()}`
-          let release = candidates.find((candidate) => `${candidate.releaseGroup.toLowerCase()}\0${String(candidate.tracker || '').toLowerCase()}` === groupKey)
-          if (!release) {
-            release = {
-              releaseGroup: torrent.releaseGroup,
-              tracker: torrent.tracker,
-              quality,
-              tags: torrent.tags || [],
-              dual_audio: Boolean(torrent.dualAudio),
-              size: 0,
-              file_count: 0,
-              info_hashes: [],
-              is_best: false,
-              source_files: [],
-            }
-            candidates.push(release)
-          }
-          release.size += size
-          release.file_count += count
-          release.is_best ||= Boolean(torrent.isBest)
-          release.dual_audio ||= Boolean(torrent.dualAudio)
           const seasonFiles = detectedSeasons.size > 1
             ? files.filter((file) => Number(String(file.name || '').match(/S(\d{1,3})E/i)?.[1] || 0) === season)
             : files
-          release.source_files!.push(...seasonFiles.map((file) => ({ name: String(file.name || ''), length: Number(file.length || 0) })))
-          const hash = torrent.infoHash || ''
-          if (hash && !release.info_hashes.includes(hash)) release.info_hashes.push(hash)
+          const hash = String(torrent.infoHash || '')
+          const release: ReleaseCandidate = {
+            releaseGroup: torrent.releaseGroup,
+            tracker: torrent.tracker,
+            quality,
+            tags: torrent.tags || [],
+            dual_audio: Boolean(torrent.dualAudio),
+            size,
+            file_count: count,
+            info_hashes: hash ? [hash] : [],
+            is_best: Boolean(torrent.isBest),
+            source_files: seasonFiles.map((file) => ({ name: String(file.name || ''), length: Number(file.length || 0) })),
+          }
+          ;(entry.seasons[season].candidates as ReleaseCandidate[]).push(release)
         }
       }
     }
@@ -1328,15 +1326,27 @@ export interface NotificationDependencies {
 }
 
 export async function autoNotifyNew(config: Config, dependencies: NotificationDependencies = {}): Promise<number> {
+  const notified = (dependencies.load || loadNotified)()
+  const save = dependencies.save || saveNotified
+  const currentByKey = new Map(scanState.results.filter((result) => result.key).map((result) => [String(result.key), result]))
+  let notificationStateChanged = false
+  for (const key of [...notified]) {
+    const current = currentByKey.get(key)
+    if (current && current.status !== 'upgrade' && !(current.status === 'partial' && current.upgrade_available)) {
+      notified.delete(key)
+      notificationStateChanged = true
+    }
+  }
   if (!config.notify_enabled) {
+    if (notificationStateChanged) save(notified)
     log('INFO', 'Discord notifications skipped: disabled in configuration')
     return 0
   }
   if (!config.webhook) {
+    if (notificationStateChanged) save(notified)
     log('WARNING', 'Discord notifications skipped: no webhook is configured')
     return 0
   }
-  const notified = (dependencies.load || loadNotified)()
   const fresh = applyUserRulesToResults(scanState.results).filter((result) => {
     if (result.excluded) return false
     const excludedParts = new Set((result.excluded_parts || []).map(String))
@@ -1345,13 +1355,14 @@ export async function autoNotifyNew(config: Config, dependencies: NotificationDe
     return hasIncludedPart && (result.status === 'upgrade' || (result.status === 'partial' && result.upgrade_available)) && result.key && !notified.has(result.key)
   })
   if (!fresh.length) {
+    if (notificationStateChanged) save(notified)
     log('INFO', 'Discord notifications: no new upgrades to send')
     return 0
   }
   const delivered: JsonObject[] = []
   const sent = await (dependencies.send || sendToDiscord)(config.webhook, fresh, (result) => delivered.push(result))
   for (const result of delivered) notified.add(result.key)
-  if (delivered.length) (dependencies.save || saveNotified)(notified)
+  if (notificationStateChanged || delivered.length) save(notified)
   return sent
 }
 
@@ -1377,7 +1388,7 @@ async function qbLogin(base: string, user: string, password: string): Promise<Qb
     body: new URLSearchParams({ username: user, password }),
   }, 30_000)
   const text = await response.text()
-  if (response.status === 204 || (response.status === 200 && text.includes('Ok'))) {
+  if (response.status === 204 || (response.status === 200 && text.trim() === 'Ok.')) {
     return { cookie: (response.headers.get('set-cookie') || '').split(';', 1)[0] }
   }
   throw new Error(`qBittorrent login failed (HTTP ${response.status})`)
@@ -1549,19 +1560,18 @@ export async function qbAddTorrent(config: Config, magnet: string, category?: st
         try { const data = JSON.parse(text); accepted = data.success_count > 0 || Boolean(data.added_torrent_ids?.length) } catch { /* handled below */ }
       }
       if (accepted) {
-        if (hash) ownership?.record(hash)
-        if (selectedFiles.length) {
+        try {
+          if (hash) ownership?.record(hash)
+          if (selectedFiles.length) await qbSelectTorrentFiles(config, hash!, selectedFiles, timeoutMs)
+        } catch (error) {
+          if (!hash) throw error
           try {
-            await qbSelectTorrentFiles(config, hash!, selectedFiles, timeoutMs)
-          } catch (error) {
-            try {
-              await qbPostWithFallback(config, ['/api/v2/torrents/delete'], new URLSearchParams({ hashes: hash!, deleteFiles: 'false' }))
-              ownership?.forget(hash!)
-            } catch (cleanupError) {
-              throw new Error(`${errorMessage(error)}; cleanup failed and the torrent remains app-owned: ${errorMessage(cleanupError)}`)
-            }
-            throw error
+            await qbPostWithFallback(config, ['/api/v2/torrents/delete'], new URLSearchParams({ hashes: hash, deleteFiles: 'false' }))
+            ownership?.forget(hash)
+          } catch (cleanupError) {
+            throw new Error(`${errorMessage(error)}; cleanup failed and the torrent may remain in qBittorrent: ${errorMessage(cleanupError)}`)
           }
+          throw error
         }
         qbCache = { data: null, timestamp: 0 }
         return
@@ -1749,31 +1759,41 @@ function normalizeInfoHash(value: unknown): string | null {
   return /^[0-9a-f]{40}$/.test(hash) ? hash : null
 }
 
-const ownedTorrents = new Set<string>(readJson<string[]>(OWNED_TORRENTS_FILE, []))
+const ownedTorrents = loadStringSet(OWNED_TORRENTS_FILE, 'Could not read torrent ownership ledger', normalizeInfoHash)
+
+function persistOwnedTorrents(values: Set<string>): void {
+  writeJsonAtomic(OWNED_TORRENTS_FILE, [...values].sort())
+}
 
 export function saveOwnedTorrents(): void {
-  writeJsonAtomic(OWNED_TORRENTS_FILE, [...ownedTorrents].sort())
+  persistOwnedTorrents(ownedTorrents)
+}
+
+function replaceOwnedTorrents(values: Set<string>): void {
+  ownedTorrents.clear()
+  for (const hash of values) ownedTorrents.add(hash)
 }
 
 export function recordOwnedTorrents(hashes: string[]): void {
-  let changed = false
+  const next = new Set(ownedTorrents)
   for (const hash of hashes) {
     const normalized = normalizeInfoHash(hash)
-    if (normalized && !ownedTorrents.has(normalized)) {
-      ownedTorrents.add(normalized)
-      changed = true
-    }
+    if (normalized) next.add(normalized)
   }
-  if (changed) saveOwnedTorrents()
+  if (next.size === ownedTorrents.size) return
+  persistOwnedTorrents(next)
+  replaceOwnedTorrents(next)
 }
 
 export function forgetOwnedTorrents(hashes: string[]): void {
-  let changed = false
+  const next = new Set(ownedTorrents)
   for (const hash of hashes) {
     const normalized = normalizeInfoHash(hash)
-    if (normalized && ownedTorrents.delete(normalized)) changed = true
+    if (normalized) next.delete(normalized)
   }
-  if (changed) saveOwnedTorrents()
+  if (next.size === ownedTorrents.size) return
+  persistOwnedTorrents(next)
+  replaceOwnedTorrents(next)
 }
 
 export function ownedTorrentsSnapshot(): string[] {

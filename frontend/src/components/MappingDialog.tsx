@@ -22,23 +22,33 @@ export default function MappingDialog({ open, title, currentAniListId, hasOverri
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
+  const searchGeneration = useRef(0)
 
   const search = async (value = query) => {
     if (value.trim().length < 2) { setError('Enter at least two characters'); return }
+    const generation = ++searchGeneration.current
     setSearching(true); setError('')
-    try { const response = await api.searchAniList(value); setResults(response.results || []) }
-    catch (caught: any) { setError(caught?.message || 'AniList search failed') }
-    finally { setSearching(false) }
+    try {
+      const response = await api.searchAniList(value)
+      if (generation === searchGeneration.current) setResults(response.results || [])
+    } catch (caught: any) {
+      if (generation === searchGeneration.current) setError(caught?.message || 'AniList search failed')
+    } finally {
+      if (generation === searchGeneration.current) setSearching(false)
+    }
   }
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      searchGeneration.current += 1
+      return
+    }
     setQuery(title); setResults([]); setSelected(typeof currentAniListId === 'number' ? currentAniListId : Number(currentAniListId) || null); setError('')
     window.setTimeout(() => inputRef.current?.focus(), 0)
     void search(title)
   // Search only when a fresh dialog opens.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
+  }, [open, title])
 
   useEffect(() => {
     if (!open) return

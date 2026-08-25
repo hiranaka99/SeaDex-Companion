@@ -1,4 +1,4 @@
-import { useEffect, useState, FormEvent, ReactNode } from 'react'
+import { useEffect, useRef, useState, FormEvent, ReactNode } from 'react'
 import { Config, ScannedDataInfo } from '../types'
 import * as api from '../api'
 import Icon from './Icons'
@@ -42,6 +42,7 @@ export default function ConfigTab({ config, username, onAccountUpdated, onSaved,
   const [connections, setConnections] = useState<Record<Service, ConnectionState>>({ sonarr: { phase: 'idle' }, radarr: { phase: 'idle' }, qbittorrent: { phase: 'idle' }, discord: { phase: 'idle' } })
   const toast = useToast()
   const secretConfiguredFields: Record<string, string> = { sonarr_key: 'sonarr_key_configured', radarr_key: 'radarr_key_configured', qbittorrent_pass: 'qbittorrent_pass_configured', webhook: 'webhook_configured' }
+  const testGeneration = useRef<Record<Service, number>>({ sonarr: 0, radarr: 0, qbittorrent: 0, discord: 0 })
 
   useEffect(() => {
     if (!config) return
@@ -62,22 +63,38 @@ export default function ConfigTab({ config, username, onAccountUpdated, onSaved,
     return () => window.clearInterval(timer)
   }, [])
 
-  const set = (name: string, value: any) => {
+  const set = (name: string, value: unknown) => {
     setForm((current) => ({ ...current, [name]: value }))
     const service: Service | undefined = name.startsWith('sonarr') ? 'sonarr' : name.startsWith('radarr') ? 'radarr' : name.startsWith('qbittorrent') ? 'qbittorrent' : name === 'webhook' ? 'discord' : undefined
-    if (service) setConnections((current) => ({ ...current, [service]: { phase: 'idle' } }))
+    if (service) {
+      testGeneration.current[service] += 1
+      setConnections((current) => ({ ...current, [service]: { phase: 'idle' } }))
+    }
     if (value && name in secretConfiguredFields) setClearedSecrets((current) => { const next = new Set(current); next.delete(name); return next })
   }
-  const clearSecret = (name: string) => { const configuredField = secretConfiguredFields[name]; setForm((current) => ({ ...current, [name]: '', [configuredField]: false })); setClearedSecrets((current) => new Set(current).add(name)); setPendingClear(null) }
+  const clearSecret = (name: string) => { const configuredField = secretConfiguredFields[name]; set(name, ''); setForm((current) => ({ ...current, [configuredField]: false })); setClearedSecrets((current) => new Set(current).add(name)); setPendingClear(null) }
   const sonarrConfigured = Boolean(String(form.sonarr_url || '').trim() && (String(form.sonarr_key || '').trim() || form.sonarr_key_configured))
   const radarrConfigured = Boolean(String(form.radarr_url || '').trim() && (String(form.radarr_key || '').trim() || form.radarr_key_configured))
   const qbConfigured = Boolean(String(form.qbittorrent_url || '').trim() && String(form.qbittorrent_user || '').trim() && (String(form.qbittorrent_pass || '').trim() || form.qbittorrent_pass_configured))
   const discordConfigured = Boolean(String(form.webhook || '').trim() || form.webhook_configured)
 
   const test = async (service: Service, quiet = false): Promise<boolean> => {
+    const generation = ++testGeneration.current[service]
+    const submitted = { ...form }
     setConnections((current) => ({ ...current, [service]: { phase: 'testing' } }))
-    try { const result = await api.testConnection(service, form); setConnections((current) => ({ ...current, [service]: { phase: 'success', message: result.message } })); if (!quiet) toast.show(result.message, 'success'); return true }
-    catch (error: any) { setConnections((current) => ({ ...current, [service]: { phase: 'error', message: error.message } })); if (!quiet) toast.show(`${service === 'qbittorrent' ? 'qBittorrent' : service[0].toUpperCase() + service.slice(1)}: ${error.message}`, 'error'); return false }
+    try {
+      const result = await api.testConnection(service, submitted)
+      if (generation !== testGeneration.current[service]) return false
+      setConnections((current) => ({ ...current, [service]: { phase: 'success', message: result.message } }))
+      if (!quiet) toast.show(result.message, 'success')
+      return true
+    } catch (error: unknown) {
+      if (generation !== testGeneration.current[service]) return false
+      const message = error instanceof Error ? error.message : String(error)
+      setConnections((current) => ({ ...current, [service]: { phase: 'error', message } }))
+      if (!quiet) toast.show(`${service === 'qbittorrent' ? 'qBittorrent' : service[0].toUpperCase() + service.slice(1)}: ${message}`, 'error')
+      return false
+    }
   }
 
   const submit = async (event: FormEvent) => {

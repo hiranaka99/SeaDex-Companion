@@ -66,24 +66,29 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   const scanWasRunning = useRef(false)
   const statusInitialized = useRef(false)
   const lastSeenRun = useRef<string | null>(null)
+  const pollGeneration = useRef(0)
+  const mounted = useRef(true)
 
-  const loadResults = useCallback(async () => {
+  const loadResults = useCallback(async (generation?: number) => {
     try {
       const data = await api.getResults()
+      if (!mounted.current || (generation !== undefined && generation !== pollGeneration.current)) return
       setResults(data.results || [])
       setLastRun(data.last_run || null)
       setResultsError('')
-    } catch (e: any) {
+    } catch (e: unknown) {
+      if (!mounted.current || (generation !== undefined && generation !== pollGeneration.current)) return
       console.error('Failed to load results:', e)
-      setResultsError(e?.message || 'Could not load scanned results')
+      setResultsError(e instanceof Error ? e.message : 'Could not load scanned results')
     } finally {
-      setResultsLoading(false)
+      if (mounted.current && (generation === undefined || generation === pollGeneration.current)) setResultsLoading(false)
     }
   }, [])
 
-  const pollStatus = useCallback(async () => {
+  const pollStatus = useCallback(async (generation: number): Promise<void> => {
     try {
       const st = await api.getStatus()
+      if (!mounted.current || generation !== pollGeneration.current) return
       if (st.running || st.error) setScanCompleted(null)
       const completedSinceLastPoll = statusInitialized.current && Boolean(st.last_run) && st.last_run !== lastSeenRun.current
       if ((scanWasRunning.current || completedSinceLastPoll) && !st.running && !st.error) setScanCompleted(st.last_run || 'just now')
@@ -91,11 +96,13 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
       lastSeenRun.current = st.last_run
       statusInitialized.current = true
       setStatus(st)
-      await loadResults()
-      pollTimer.current = window.setTimeout(pollStatus, st.running ? 1500 : 10_000)
+      await loadResults(generation)
+      if (!mounted.current || generation !== pollGeneration.current) return
+      pollTimer.current = window.setTimeout(() => { void pollStatus(generation) }, st.running ? 1500 : 10_000)
     } catch (e) {
       console.error('Status poll failed:', e)
-      pollTimer.current = window.setTimeout(pollStatus, 3000)
+      if (!mounted.current || generation !== pollGeneration.current) return
+      pollTimer.current = window.setTimeout(() => { void pollStatus(generation) }, 3000)
     }
   }, [loadResults])
 
@@ -109,10 +116,13 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   }, [])
 
   useEffect(() => {
+    mounted.current = true
+    const generation = ++pollGeneration.current
     loadConfig()
-    loadResults()
-    pollStatus()
+    void pollStatus(generation)
     return () => {
+      mounted.current = false
+      pollGeneration.current += 1
       if (pollTimer.current) window.clearTimeout(pollTimer.current)
     }
   }, [loadConfig, loadResults, pollStatus])
@@ -126,7 +136,8 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
       setStatus({ ...INITIAL_STATUS, running: true, message: 'Starting scan…' })
       if (pollTimer.current) window.clearTimeout(pollTimer.current)
       pollTimer.current = null
-      void pollStatus()
+      const generation = ++pollGeneration.current
+      void pollStatus(generation)
     } catch (e: any) {
       toast.show('Could not start scan: ' + e.message, 'error')
     }

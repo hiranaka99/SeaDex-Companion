@@ -139,6 +139,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
   const handleBulkDownloads = async (action: 'start' | 'cancel', selections: api.BulkDownloadTarget[] = [], deleteFiles = false) => {
     setBulkBusy(action)
     let pollId: number | null = null
+    let polling = true
     try {
       if (action === 'start') {
         const allHashes = new Set<string>()
@@ -152,6 +153,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
         const request = api.bulkDownloads('start', selections)
         pollId = window.setInterval(() => {
           void api.getBulkDownloadStatus().then((status) => {
+            if (!polling) return
             const settled = status.added.length + status.failures.length
             onBulkOperationChange({ action, phase: 'running', settled, total: settled + status.pending.length, added: status.added.length, failed: status.failures.length, message: `${status.added.length} added · ${status.pending.length} pending${status.failures.length ? ` · ${status.failures.length} failed` : ''}` })
             setBulkOutcome((current) => current ? {
@@ -163,6 +165,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
           }).catch(() => { /* transient poll failure — keep polling */ })
         }, 700)
         const result = await request
+        polling = false
         let status: api.BulkDownloadStatus | null = null
         try { status = await api.getBulkDownloadStatus() } catch { /* fall back to the request result */ }
         const failures = status && status.failures.length ? status.failures : (result.failures || [])
@@ -211,6 +214,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
         setBulkConfirm(null)
       }
     } finally {
+      polling = false
       if (pollId !== null) window.clearInterval(pollId)
       setBulkBusy(null)
     }
