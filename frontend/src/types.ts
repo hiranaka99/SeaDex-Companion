@@ -65,6 +65,7 @@ export interface ScanHistoryChange {
   best_group: string | null
   from: string | null
   to: string | null
+  details?: string[]
 }
 
 export interface ScanHistoryEntry {
