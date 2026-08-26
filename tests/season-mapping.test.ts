@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
 import {
-  anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, clearScannedData, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, effectiveSeasonParts,
+  anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, clearScannedData, commonBestRelease, decryptSecretValues, describeResultChange, discordMessageBody, DEFAULT_CONFIG, effectiveSeasonParts,
   encryptSecretValues, getState, loadStringSet, localItems, localPartOwnership, normalizeQbStates, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
   qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest,
   resetRuntimeForTests, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration,
@@ -185,6 +185,58 @@ describe('notifications and scheduling', () => {
     } finally {
       globalThis.fetch = originalFetch
     }
+  })
+
+  test('describes what changed on releases.moe between scans', () => {
+    const previous: JsonObject = {
+      library_key: 'Sonarr:item1', season: 7, title: 'My Hero Academia', arr: 'Sonarr', status: 'upgrade',
+      best_group: 'SubsPlease', notes: 'old notes', unavailable_parts: [{ label: 'Cour 2', reason: 'No releases available on SeaDex' }],
+      releases: [
+        { kind: 'best', releaseGroup: 'SubsPlease', quality: '1080p WEB-DL', tracker: 'AB', tags: [] },
+        { kind: 'alt', releaseGroup: 'FLUX', quality: '1080p WEB-DL', tracker: 'Nyaa', tags: [] },
+      ],
+    }
+    const current: JsonObject = {
+      library_key: 'Sonarr:item1', season: 7, title: 'My Hero Academia', arr: 'Sonarr', status: 'upgrade',
+      best_group: '-ZR-', notes: 'new notes', unavailable_parts: [],
+      releases: [
+        { kind: 'best', releaseGroup: '-ZR-', quality: 'BD', tracker: 'AB', tags: [] },
+        { kind: 'alt', releaseGroup: 'FLUX', quality: '1080p WEB-DL', tracker: 'Nyaa', tags: [] },
+        { kind: 'alt', releaseGroup: 'VALKYRiE', quality: 'BD', tracker: 'Nyaa', tags: [] },
+      ],
+    }
+    const details = describeResultChange(previous, current)
+    assert.ok(details.includes('Best release changed: SubsPlease → -ZR-'), details.join('|'))
+    assert.ok(details.includes('Quality changed: 1080p WEB-DL → BD'), details.join('|'))
+    assert.ok(details.includes('New alternative: VALKYRiE'), details.join('|'))
+    assert.ok(details.includes('Cour 2 now covered'), details.join('|'))
+    assert.ok(details.includes('releases.moe notes updated'), details.join('|'))
+    assert.deepEqual(describeResultChange(null, current), ['Newly added to your library'])
+  })
+
+  test('builds Discord embed notifications with update specifics', () => {
+    const body = discordMessageBody({
+      title: 'My Hero Academia', season: 7, arr: 'Sonarr', status: 'upgrade',
+      have: ['SubsPlease'], best_group: '-ZR-', url: 'https://releases.moe/163139/', image: 'https://img.example/cover.jpg',
+      notes: 'notes here', change_details: ['Best release changed: SubsPlease → -ZR-'],
+      releases: [
+        { kind: 'best', releaseGroup: '-ZR-', quality: '1080p WEB-DL', tracker: 'AB', tags: ['Subs'] },
+        { kind: 'alt', releaseGroup: 'VALKYRiE', quality: 'BD' },
+      ],
+    }) as JsonObject
+    assert.equal(body.content, 'My Hero Academia (S07) — new best release -ZR-')
+    const embed = body.embeds[0] as JsonObject
+    assert.equal(embed.title, 'My Hero Academia (S07)')
+    assert.equal(embed.url, 'https://releases.moe/163139/')
+    assert.deepEqual(embed.thumbnail, { url: 'https://img.example/cover.jpg' })
+    assert.equal(embed.color, 0xf1c40f)
+    const fields = Object.fromEntries((embed.fields as Array<{ name: string; value: string }>).map((field) => [field.name, field.value]))
+    assert.equal(fields['What changed'], 'Best release changed: SubsPlease → -ZR-')
+    assert.equal(fields.Have, 'SubsPlease')
+    assert.equal(fields['Best release'], '-ZR- · 1080p WEB-DL · AB')
+    assert.equal(fields.Alternatives, 'VALKYRiE (BD)')
+    assert.equal(fields.Tags, 'Subs')
+    assert.equal(fields.Notes, 'notes here')
   })
 
   test('marks only successfully delivered notifications', async () => {
