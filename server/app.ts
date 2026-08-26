@@ -347,8 +347,66 @@ function automationStatus(result: JsonObject): string {
   return result.status === 'partial' && result.upgrade_available ? 'upgrade' : String(result.status || 'unknown')
 }
 
+function previousResultIndex(previous: JsonObject[]): { byKey: Map<string, JsonObject>; byFallback: Map<string, JsonObject> } {
+  return {
+    byKey: new Map(previous.map((result) => [resultIdentity(result), result])),
+    byFallback: new Map(previous.map((result) => [resultFallbackIdentity(result), result])),
+  }
+}
+
+export function matchPreviousResult(previous: JsonObject[], current: JsonObject): JsonObject | null {
+  const index = previousResultIndex(previous)
+  return index.byKey.get(resultIdentity(current)) || index.byFallback.get(resultFallbackIdentity(current)) || null
+}
+
+function releaseGroupSet(result: JsonObject): Set<string> {
+  return new Set(((result.releases || []) as JsonObject[]).map((release) => String(release.releaseGroup || '').trim().toLowerCase()).filter(Boolean))
+}
+
+function bestQualitySummary(result: JsonObject): string {
+  const qualities = [...new Set(((result.releases || []) as JsonObject[])
+    .filter((release) => release.kind === 'best')
+    .map((release) => String(release.quality || '').trim())
+    .filter(Boolean))]
+  return qualities.join(' / ')
+}
+
+/** Human-readable specifics of what changed on releases.moe between two scans of the same title. */
+export function describeResultChange(previous: JsonObject | null, current: JsonObject): string[] {
+  if (!previous) return ['Newly added to your library']
+  const details: string[] = []
+  const from = automationStatus(previous)
+  const hasReleases = Boolean((current.releases || []).length)
+  if (from === 'missing' && hasReleases) details.push('Now listed on releases.moe')
+  else if (from === 'uncovered' && hasReleases) details.push('Releases now available on SeaDex')
+  const fromBest = String(previous.best_group || '').trim()
+  const toBest = String(current.best_group || '').trim()
+  if (toBest && toBest !== fromBest) details.push(fromBest ? `Best release changed: ${fromBest} → ${toBest}` : `New best release: ${toBest}`)
+  const fromQuality = bestQualitySummary(previous)
+  const toQuality = bestQualitySummary(current)
+  if (fromQuality && toQuality && toQuality !== fromQuality) details.push(`Quality changed: ${fromQuality} → ${toQuality}`)
+  const previousGroups = releaseGroupSet(previous)
+  const newAlternatives: string[] = []
+  for (const release of (current.releases || []) as JsonObject[]) {
+    if (release.kind !== 'alt') continue
+    const group = String(release.releaseGroup || '').trim()
+    if (!group || previousGroups.has(group.toLowerCase()) || group.toLowerCase() === toBest.toLowerCase()) continue
+    if (!newAlternatives.some((existing) => existing.toLowerCase() === group.toLowerCase())) newAlternatives.push(group)
+  }
+  if (newAlternatives.length) {
+    details.push(`${newAlternatives.length === 1 ? 'New alternative' : `New alternatives (${newAlternatives.length})`}: ${newAlternatives.slice(0, 3).join(', ')}${newAlternatives.length > 3 ? '…' : ''}`)
+  }
+  const previousUnavailable = new Set(((previous.unavailable_parts || []) as JsonObject[]).map((part) => String(part.label || '').trim()).filter(Boolean))
+  const currentUnavailable = new Set(((current.unavailable_parts || []) as JsonObject[]).map((part) => String(part.label || '').trim()).filter(Boolean))
+  for (const label of previousUnavailable) if (!currentUnavailable.has(label)) details.push(`${label} now covered`)
+  for (const label of currentUnavailable) if (!previousUnavailable.has(label)) details.push(`${label} no longer available on SeaDex`)
+  if (String(previous.notes || '').trim() !== String(current.notes || '').trim()) details.push('releases.moe notes updated')
+  return details.slice(0, 6)
+}
+
 export interface ScanHistoryChange extends JsonObject {
   type: 'new' | 'upgrade' | 'resolved' | 'changed' | 'removed'
+  details: string[]
 }
 
 export interface ScanHistoryEntry extends JsonObject {
@@ -359,8 +417,7 @@ export interface ScanHistoryEntry extends JsonObject {
 }
 
 export function buildScanHistoryEntry(previous: JsonObject[], current: JsonObject[], runAt: string): ScanHistoryEntry {
-  const before = new Map(previous.map((result) => [resultIdentity(result), result]))
-  const beforeByFallback = new Map(previous.map((result) => [resultFallbackIdentity(result), result]))
+  const { byKey: before, byFallback: beforeByFallback } = previousResultIndex(previous)
   const after = new Map(current.map((result) => [resultIdentity(result), result]))
   const matchedBefore = new Set<string>()
   const counts = current.reduce<Record<string, number>>((summary, result) => {
@@ -376,16 +433,16 @@ export function buildScanHistoryEntry(previous: JsonObject[], current: JsonObjec
   for (const [key, result] of after) {
     const old = before.get(key) || beforeByFallback.get(resultFallbackIdentity(result))
     const to = automationStatus(result)
-    if (!old) changes.push({ type: 'new', ...describe(result), from: null, to })
+    if (!old) changes.push({ type: 'new', ...describe(result), details: describeResultChange(null, result), from: null, to })
     else {
       matchedBefore.add(resultIdentity(old))
       const from = automationStatus(old)
-      if (from !== 'upgrade' && to === 'upgrade') changes.push({ type: 'upgrade', ...describe(result), from, to })
-      else if (from === 'upgrade' && to !== 'upgrade') changes.push({ type: 'resolved', ...describe(result), from, to })
-      else if (from !== to || String(old.best_group || '') !== String(result.best_group || '')) changes.push({ type: 'changed', ...describe(result), from, to })
+      if (from !== 'upgrade' && to === 'upgrade') changes.push({ type: 'upgrade', ...describe(result), details: describeResultChange(old, result), from, to })
+      else if (from === 'upgrade' && to !== 'upgrade') changes.push({ type: 'resolved', ...describe(result), details: [], from, to })
+      else if (from !== to || String(old.best_group || '') !== String(result.best_group || '')) changes.push({ type: 'changed', ...describe(result), details: describeResultChange(old, result), from, to })
     }
   }
-  for (const [key, result] of before) if (!after.has(key) && !matchedBefore.has(key)) changes.push({ type: 'removed', ...describe(result), from: automationStatus(result), to: null })
+  for (const [key, result] of before) if (!after.has(key) && !matchedBefore.has(key)) changes.push({ type: 'removed', ...describe(result), details: [], from: automationStatus(result), to: null })
   return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, run_at: runAt, counts, changes: changes.slice(0, 250) }
 }
 
@@ -1277,7 +1334,7 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
       log('WARNING', `Could not save scan history: ${errorMessage(error)}`)
     }
     stage = 'sending notifications'
-    await (dependencies.autoNotifyNew || autoNotifyNew)(config as Config)
+    await (dependencies.autoNotifyNew || autoNotifyNew)(config as Config, { previous: previousResults })
     const statusCounts = finalResults.reduce<Record<string, number>>((counts, result) => {
       const status = String(result.status || 'unknown')
       counts[status] = (counts[status] || 0) + 1
@@ -1296,16 +1353,82 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
   }
 }
 
+const DISCORD_EMBED_COLORS: Record<string, number> = {
+  upgrade: 0xf1c40f,
+  partial: 0xe67e22,
+  best: 0x57f287,
+  missing: 0xed4245,
+  uncovered: 0xed4245,
+}
+
+function truncateText(value: string, limit: number): string {
+  return value.length > limit ? `${value.slice(0, limit - 1).trimEnd()}…` : value
+}
+
+function seasonSuffix(result: JsonObject): string {
+  return result.season ? ` (S${String(result.season).padStart(2, '0')})` : ''
+}
+
+function bestReleaseInfo(result: JsonObject): { group: string; quality: string; tracker: string; tags: string[] } {
+  const releases = (result.releases || []) as JsonObject[]
+  const release = releases.find((candidate) => candidate.kind === 'best') || releases[0] || {}
+  return {
+    group: String(result.best_group || '').trim(),
+    quality: String(release.quality || '').trim(),
+    tracker: String(release.tracker || '').trim(),
+    tags: (Array.isArray(release.tags) ? release.tags : []).map(String).map((tag) => tag.trim()).filter(Boolean),
+  }
+}
+
+function alternativeSummary(result: JsonObject): string {
+  const seen = new Set<string>()
+  const parts: string[] = []
+  for (const release of (result.releases || []) as JsonObject[]) {
+    if (release.kind !== 'alt') continue
+    const group = String(release.releaseGroup || '').trim()
+    if (!group || seen.has(group.toLowerCase())) continue
+    seen.add(group.toLowerCase())
+    parts.push(String(release.quality || '').trim() ? `${group} (${String(release.quality).trim()})` : group)
+    if (parts.length >= 3) break
+  }
+  return parts.join(', ')
+}
+
+/** Discord webhook payload for one upgrade notification: a short content line plus a rich embed. */
+export function discordMessageBody(result: JsonObject): JsonObject {
+  const title = truncateText(`${result.title || 'Unknown title'}${seasonSuffix(result)}`, 256)
+  const info = bestReleaseInfo(result)
+  const details = (Array.isArray(result.change_details) ? result.change_details : []).map(String).filter(Boolean)
+  const fields: Array<{ name: string; value: string; inline?: boolean }> = []
+  if (details.length) fields.push({ name: 'What changed', value: truncateText(details.join('\n'), 1024) })
+  fields.push({ name: 'Have', value: truncateText((result.have || []).map(String).join(', ') || '—', 300), inline: true })
+  fields.push({ name: 'Best release', value: truncateText([info.group, info.quality, info.tracker].filter(Boolean).join(' · ') || '—', 300), inline: true })
+  const alternatives = alternativeSummary(result)
+  if (alternatives) fields.push({ name: 'Alternatives', value: truncateText(alternatives, 512) })
+  if (info.tags.length) fields.push({ name: 'Tags', value: truncateText(info.tags.join(', '), 300), inline: true })
+  const notes = String(result.notes || '').trim()
+  if (notes && notes !== '-') fields.push({ name: 'Notes', value: truncateText(notes, 1024) })
+  const embed: JsonObject = {
+    title,
+    color: DISCORD_EMBED_COLORS[String(result.status || '')] ?? 0x5865f2,
+    author: { name: `SeaDex · ${String(result.arr || 'Library')}` },
+    fields,
+    footer: { text: 'releases.moe' },
+    timestamp: new Date().toISOString(),
+  }
+  if (result.url) embed.url = String(result.url)
+  if (result.image) embed.thumbnail = { url: String(result.image) }
+  const content = info.group ? `${title} — new best release ${info.group}` : `${title} — upgrade available`
+  return { content: truncateText(content, 1900), embeds: [embed] }
+}
+
 export async function sendToDiscord(webhook: string, results: JsonObject[], onSent?: (result: JsonObject) => void): Promise<number> {
   const started = Date.now()
   log('INFO', `Discord notification batch started: ${results.length} upgrade${results.length === 1 ? '' : 's'}`)
   let sent = 0
   for (const result of results) {
-    const title = result.title + (result.season ? `  (S${String(result.season).padStart(2, '0')})` : '')
-    const release = result.releases?.[0] || {}
-    const message = `${result.arr} · ${title}\n  have : ${(result.have || []).join(', ')}\n  best : ${result.best_group}  (${release.quality || ''}, ${release.tracker || ''})\n  notes: ${result.notes}\n  tags : ${(release.tags || []).join(', ') || '-'}\n  ${result.url}`
     try {
-      const response = await fetchWithTimeout(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: message.slice(0, 1900) }) }, 30_000)
+      const response = await fetchWithTimeout(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(discordMessageBody(result)) }, 30_000)
       if (!response.ok) {
         const detail = (await response.text()).slice(0, 160)
         throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ''}`)
@@ -1313,7 +1436,7 @@ export async function sendToDiscord(webhook: string, results: JsonObject[], onSe
       sent += 1
       onSent?.(result)
       await sleep(500)
-    } catch (error) { log('ERROR', `Discord webhook failed for ${title}: ${errorMessage(error)}`) }
+    } catch (error) { log('ERROR', `Discord webhook failed for ${String(result.title || 'Unknown title')}: ${errorMessage(error)}`) }
   }
   log(sent === results.length ? 'INFO' : 'WARNING', `Discord notification batch finished in ${((Date.now() - started) / 1000).toFixed(1)}s: sent ${sent}/${results.length}`)
   return sent
@@ -1323,6 +1446,7 @@ export interface NotificationDependencies {
   load?: typeof loadNotified
   save?: typeof saveNotified
   send?: typeof sendToDiscord
+  previous?: JsonObject[]
 }
 
 export async function autoNotifyNew(config: Config, dependencies: NotificationDependencies = {}): Promise<number> {
@@ -1359,8 +1483,14 @@ export async function autoNotifyNew(config: Config, dependencies: NotificationDe
     log('INFO', 'Discord notifications: no new upgrades to send')
     return 0
   }
+  const previous = dependencies.previous || []
+  const payload = fresh.map((result) => {
+    if (!previous.length) return result
+    const details = describeResultChange(matchPreviousResult(previous, result), result)
+    return details.length ? { ...result, change_details: details } : result
+  })
   const delivered: JsonObject[] = []
-  const sent = await (dependencies.send || sendToDiscord)(config.webhook, fresh, (result) => delivered.push(result))
+  const sent = await (dependencies.send || sendToDiscord)(config.webhook, payload, (result) => delivered.push(result))
   for (const result of delivered) notified.add(result.key)
   if (notificationStateChanged || delivered.length) save(notified)
   return sent
@@ -1414,7 +1544,15 @@ export async function testIntegration(config: Config, service: string): Promise<
     if (!config.webhook) throw new Error('Discord webhook URL is required')
     const response = await fetchWithTimeout(config.webhook, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: '✅ SeaDex Companion connection test successful.' }),
+      body: JSON.stringify({
+        embeds: [{
+          title: 'Connection test successful',
+          description: 'Your SeaDex Companion Discord webhook is configured correctly.',
+          color: 0x57f287,
+          footer: { text: 'SeaDex Companion' },
+          timestamp: new Date().toISOString(),
+        }],
+      }),
     }, 30_000)
     if (!response.ok) throw new Error(`Discord rejected the test message (HTTP ${response.status})`)
     return 'Test message sent to Discord'
