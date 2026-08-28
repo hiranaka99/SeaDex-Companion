@@ -529,6 +529,54 @@ export function seasonsFromFiles(files: JsonObject[] = []): Set<number> {
   return seasons
 }
 
+/** Integer episode numbers parsed from a candidate's source files; extras without parseable numbers are ignored. */
+function candidateEpisodes(candidate: ReleaseCandidate): number[] {
+  const episodes: number[] = []
+  for (const file of candidate.source_files || []) {
+    const parsed = episodeFromFilename(file.name)
+    if (parsed && Number.isInteger(parsed.episode)) episodes.push(parsed.episode)
+  }
+  return episodes.sort((left, right) => left - right)
+}
+
+/**
+ * Groups upload a season either as one batched torrent or as multiple
+ * complementary torrents (per-episode uploads or partial batches). Complementary
+ * uploads from the same group and tracker — ones whose episode coverage does not
+ * overlap — are merged into a single candidate so downloading the group queues
+ * the entire season. Overlapping uploads (re-releases of the same episodes under
+ * new hashes) stay separate so pickBest can choose one torrent.
+ */
+export function mergeComplementaryCandidates(candidates: ReleaseCandidate[]): ReleaseCandidate[] {
+  const sets = new Map<string, Array<{ members: ReleaseCandidate[]; coverage: Set<number> }>>()
+  for (const candidate of candidates) {
+    const key = `${candidate.releaseGroup.trim().toLowerCase()}\0${String(candidate.tracker || '').trim().toLowerCase()}`
+    const episodes = candidateEpisodes(candidate)
+    const groupSets = sets.get(key) || []
+    let target = groupSets.find((set) => !episodes.some((episode) => set.coverage.has(episode)))
+    if (!target) { target = { members: [], coverage: new Set<number>() }; groupSets.push(target); sets.set(key, groupSets) }
+    target.members.push(candidate)
+    for (const episode of episodes) target.coverage.add(episode)
+  }
+  const merged: ReleaseCandidate[] = []
+  for (const groupSets of sets.values()) {
+    for (const set of groupSets) {
+      if (set.members.length === 1) { merged.push(set.members[0]); continue }
+      const members = [...set.members].sort((left, right) =>
+        (candidateEpisodes(left)[0] ?? Number.POSITIVE_INFINITY) - (candidateEpisodes(right)[0] ?? Number.POSITIVE_INFINITY))
+      merged.push({
+        ...members[0],
+        size: members.reduce((sum, member) => sum + (member.size || 0), 0),
+        file_count: members.reduce((sum, member) => sum + (member.file_count || 0), 0),
+        info_hashes: members.flatMap((member) => member.info_hashes),
+        source_files: members.flatMap((member) => member.source_files || []),
+        is_best: members.some((member) => member.is_best),
+      })
+    }
+  }
+  return merged
+}
+
 export async function seadexBest(): Promise<Map<number, JsonObject>> {
   const best = new Map<number, JsonObject>()
   let page = 1
@@ -589,6 +637,12 @@ export async function seadexBest(): Promise<Map<number, JsonObject>> {
     }
     if (page >= data.totalPages) break
     page += 1
+  }
+  for (const entry of best.values()) {
+    for (const slot of Object.values(entry.seasons || {})) {
+      const candidates = (slot as JsonObject).candidates
+      if (Array.isArray(candidates) && candidates.length > 1) (slot as JsonObject).candidates = mergeComplementaryCandidates(candidates as ReleaseCandidate[])
+    }
   }
   return best
 }

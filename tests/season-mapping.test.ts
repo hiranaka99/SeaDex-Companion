@@ -388,6 +388,52 @@ describe('SeaDex catalog aggregation', () => {
       globalThis.fetch = originalFetch
     }
   })
+
+  test('merges complementary per-episode torrents from the same group into one release', async () => {
+    const originalFetch = globalThis.fetch
+    const episode = (number: number, hashCharacter: string) => ({
+      releaseGroup: 'Unfucked', tracker: 'Nyaa', isBest: false, infoHash: hashCharacter.repeat(40),
+      files: [{ name: `Show.S01E${String(number).padStart(2, '0')}.mkv`, length: 100 }],
+    })
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      items: [{ alID: 10, expand: { trs: [episode(1, 'a'), episode(2, 'b'), episode(3, 'c')] } }],
+      totalPages: 1,
+    }), { status: 200 })) as typeof fetch
+    try {
+      const catalog = await seadexBest()
+      const candidates = catalog.get(10)?.seasons[1].candidates as ReleaseCandidate[]
+      assert.equal(candidates.length, 1)
+      assert.deepEqual(candidates[0].info_hashes, ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)])
+      assert.equal(candidates[0].size, 300)
+      assert.equal(candidates[0].file_count, 3)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('keeps re-uploads of already covered episodes separate from complementary batches', async () => {
+    const originalFetch = globalThis.fetch
+    const batch = (first: number, last: number, hashCharacter: string) => ({
+      releaseGroup: 'Batched', tracker: 'Nyaa', isBest: false, infoHash: hashCharacter.repeat(40),
+      files: Array.from({ length: last - first + 1 }, (_, index) => ({
+        name: `Show.S01E${String(first + index).padStart(2, '0')}.mkv`, length: 100,
+      })),
+    })
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      items: [{ alID: 10, expand: { trs: [batch(1, 2, 'a'), batch(3, 4, 'b'), batch(1, 4, 'c')] } }],
+      totalPages: 1,
+    }), { status: 200 })) as typeof fetch
+    try {
+      const catalog = await seadexBest()
+      const candidates = catalog.get(10)?.seasons[1].candidates as ReleaseCandidate[]
+      assert.equal(candidates.length, 2)
+      assert.deepEqual(candidates[0].info_hashes, ['a'.repeat(40), 'b'.repeat(40)])
+      assert.equal(candidates[0].size, 400)
+      assert.deepEqual(candidates[1].info_hashes, ['c'.repeat(40)])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
 })
 
 describe('qBittorrent torrent controls', () => {
