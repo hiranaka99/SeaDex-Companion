@@ -20,23 +20,35 @@ SeaDex Companion is a web UI that compares your **Sonarr / Radarr** anime librar
 - **Live log tab**
 - **Password-protected WebUI** with account maintenance and session revocation; credentials are encrypted at rest (AES-256-GCM)
 
+## Security and network exposure
+
+> **Internet exposure is not recommended.** SeaDex Companion is intended for a trusted home network. Do not publish port `8080` directly to the internet.
+
+For remote access, use a private VPN or an HTTPS reverse proxy with access controls. TLS is required to protect the administrator password and session cookie in transit. When TLS terminates at a reverse proxy, forward `X-Forwarded-Proto: https` so the app marks its session cookie `Secure`.
+
+- Use a unique administrator password.
+- Keep the container and host patched.
+- Do not grant untrusted users administrator access: configured integration URLs can reach private services on the app's network.
+- Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
 ## Run with Docker (recommended)
 
-The app is published on [Docker Hub](https://hub.docker.com/r/hiranaka/seadex-companion) — no Node.js or build step required.
+The app is published on [Docker Hub](https://hub.docker.com/r/hiranaka/seadex-companion) — no Node.js or build step required. For reproducible deployment and rollback, replace `<version>` below with an immutable release tag such as `1.0.0`; avoid `latest` in production.
 
 ```bash
 docker run -d \
   --name seadex-companion \
   --restart unless-stopped \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -v seadex-data:/app/data \
-  hiranaka/seadex-companion:latest
+  hiranaka/seadex-companion:<version>
 ```
 
 Then open **http://localhost:8080**, create the administrator account when prompted, and configure Sonarr, Radarr, qBittorrent and Discord in the **Config** tab.
 
-- Config, the encryption key, caches and logs all persist in the `seadex-data` volume
+- Config, account data, the encryption key, caches and logs all persist in the `seadex-data` volume
 - Every integration is configured in the WebUI — nothing to set in Docker
+- The container includes a health check at `/healthz` and runs as an unprivileged user
 
 ### With Docker Compose
 
@@ -48,13 +60,16 @@ services:
     build: .
     container_name: seadex-compare
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
-      - ./data:/app/data
+      - seadex-data:/app/data
     environment:
       - PORT=8080
       - DATA_DIR=/app/data
     restart: unless-stopped
+
+volumes:
+  seadex-data:
 ```
 
 ```bash
@@ -66,10 +81,10 @@ Prefer the pre-built image? Swap the service for:
 ```yaml
 services:
   seadex-companion:
-    image: hiranaka/seadex-companion:latest
+    image: hiranaka/seadex-companion:<version>
     container_name: seadex-companion
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - seadex-data:/app/data
     environment:
@@ -80,7 +95,34 @@ volumes:
   seadex-data:
 ```
 
-Update with `docker compose pull && docker compose up -d`.
+Update by changing the pinned version and running `docker compose pull && docker compose up -d`. Roll back by restoring the previous version tag or recorded image digest.
+When upgrading from an older image that wrote the volume as root, migrate ownership once before starting the new image:
+
+```bash
+docker run --rm --user root -v seadex-data:/data alpine chown -R 1000:1000 /data
+```
+
+For bind mounts, ensure the host directory is writable by UID/GID `1000:1000`.
+Update by changing the pinned version and running `docker compose pull && docker compose up -d`. Roll back by restoring the previous version tag or recorded image digest.
+
+### Backup and restore
+
+Back up the entire `/app/data` volume as one unit while the container is stopped. It contains the administrator account, sessions, configuration, encrypted secrets, encryption key, scan history, caches, logs, and torrent ownership ledger.
+
+```bash
+docker stop seadex-companion
+docker run --rm -v seadex-data:/data -v "$PWD":/backup alpine \
+  tar -czf /backup/seadex-data-backup.tar.gz -C /data .
+docker start seadex-companion
+```
+
+Restore into an empty volume using the same directory contents, then start the same or a compatible app version. The `.seadex-key` and `secrets.enc.json` files must be restored together; encrypted integration credentials cannot be recovered without the matching key.
+
+For bind-mount deployments, stop the container and copy the complete `data/` directory. Protect backups because they contain authentication material and integration credentials.
+
+### Data and privacy
+
+SeaDex Companion stores configuration, account details, scan results, history, and logs in `/app/data`. Integration secrets are encrypted at rest with the key stored in the same volume. The app sends library titles and metadata to releases.moe and AniList during scans, sends configured notifications to Discord, and communicates with the Sonarr, Radarr, and qBittorrent endpoints you provide. It does not include analytics or telemetry.
 
 ## Run locally
 
@@ -100,6 +142,14 @@ For development (live reload, separate terminals):
 npm run dev                     # backend
 npm --prefix frontend run dev   # Vite UI, proxies /api to :8080
 ```
+
+## Releases and support
+
+- Releases follow semantic versioning and are recorded in [CHANGELOG.md](CHANGELOG.md).
+- Immutable image tags and digests support deterministic rollback; see [RELEASING.md](RELEASING.md).
+- Report normal defects through [GitHub Issues](https://github.com/hiranaka99/SeaDex-Companion/issues).
+- Report security issues privately through [GitHub Security Advisories](https://github.com/hiranaka99/SeaDex-Companion/security/advisories/new).
+- Licensed under the [MIT License](LICENSE).
 
 ## Images
 ### Library

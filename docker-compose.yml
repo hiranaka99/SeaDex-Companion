@@ -3,10 +3,19 @@ services:
     build: .
     container_name: seadex-compare
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
-      - ./data:/app/data
+      - seadex-data:/app/data
     environment:
       - PORT=8080
       - DATA_DIR=/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
     restart: unless-stopped
+
+volumes:
+  seadex-data:
