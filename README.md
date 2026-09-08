@@ -117,7 +117,7 @@ SeaDex Companion stores configuration, account details, scan results, history, a
 
 ## Run locally
 
-Requires **Node.js 22+**.
+Requires **Node.js 24+**.
 
 ```bash
 npm install
