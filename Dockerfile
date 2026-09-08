@@ -48,7 +48,7 @@ RUN apk upgrade --no-cache \
 COPY package.json ./
 COPY --from=backend /app/dist ./dist
 COPY --from=frontend /app/static ./static
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Config, encryption key and cache live in /app/data (mount a volume here to persist).
 ENV DATA_DIR=/app/data
@@ -58,5 +58,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD ["node", "-e", "const p=process.env.PORT||'8080';fetch('http://127.0.0.1:'+p+'/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 
-ENTRYPOINT ["docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "dist/server/index.js"]
