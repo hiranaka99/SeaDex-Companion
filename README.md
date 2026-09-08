@@ -95,14 +95,6 @@ volumes:
 ```
 
 Update with `docker compose pull && docker compose up -d`.
-### Upgrading from the former root container
-
-Older images wrote the data volume as root. Existing installations may need this one-time ownership migration before starting the new image:
-```bash
-docker run --rm --user root -v seadex-data:/data alpine chown -R 1000:1000 /data
-```
-
-For bind mounts, ensure the host directory is writable by UID/GID `1000:1000`.
 
 ### Backup and restore
 
