@@ -39,14 +39,22 @@ FROM node:22-alpine
 
 WORKDIR /app
 
+# Refresh runtime libraries, remove package-manager tooling that the application
+# does not use, and run with the unprivileged user provided by the Node image.
+RUN apk upgrade --no-cache \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 COPY package.json ./
 COPY --from=backend /app/dist ./dist
 COPY --from=frontend /app/static ./static
 
-# Config, encryption key and cache live in /app/data (mount a volume here to persist)
+# Config, encryption key and cache live in /app/data (mount a volume here to persist).
 ENV DATA_DIR=/app/data
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data && chown node:node /app/data
 
+USER node
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 
 CMD ["node", "dist/server/index.js"]

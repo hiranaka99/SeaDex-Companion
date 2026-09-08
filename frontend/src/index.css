@@ -21,7 +21,7 @@
   --radius-card: 14px;
   --radius-control: 10px;
   --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.35);
-  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
   --animate-rise: rise 0.4s ease both;
   --animate-pulse-ring: pulse-ring 1.4s infinite;
