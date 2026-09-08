@@ -32,8 +32,7 @@ For remote access, use a private VPN or an HTTPS reverse proxy with access contr
 
 ## Run with Docker (recommended)
 
-The app is published on [Docker Hub](https://hub.docker.com/r/hiranaka/seadex-companion) — no Node.js or build step required. The `latest` image is rebuilt automatically whenever a change passes CI on the main branch.
-
+The app is published on [Docker Hub](https://hub.docker.com/r/hiranaka/seadex-companion)
 ```bash
 docker run -d \
   --name seadex-companion \
@@ -96,24 +95,6 @@ volumes:
 
 Update with `docker compose pull && docker compose up -d`.
 
-### Backup and restore
-
-Back up the entire `/app/data` volume as one unit while the container is stopped. It contains the administrator account, sessions, configuration, encrypted secrets, encryption key, scan history, caches, logs, and torrent ownership ledger.
-
-```bash
-docker stop seadex-companion
-docker run --rm -v seadex-data:/data -v "$PWD":/backup alpine \
-  tar -czf /backup/seadex-data-backup.tar.gz -C /data .
-docker start seadex-companion
-```
-
-Restore into an empty volume using the same directory contents, then start the app. The `.seadex-key` and `secrets.enc.json` files must be restored together; encrypted integration credentials cannot be recovered without the matching key.
-
-For bind-mount deployments, stop the container and copy the complete `data/` directory. Protect backups because they contain authentication material and integration credentials.
-
-### Data and privacy
-
-SeaDex Companion stores configuration, account details, scan results, history, and logs in `/app/data`. Integration secrets are encrypted at rest with the key stored in the same volume. The app sends library titles and metadata to releases.moe and AniList during scans, sends configured notifications to Discord, and communicates with the Sonarr, Radarr, and qBittorrent endpoints you provide. It does not include analytics or telemetry.
 
 ## Run locally
 
