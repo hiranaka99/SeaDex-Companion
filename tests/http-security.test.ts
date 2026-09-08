@@ -55,7 +55,7 @@ after(async () => {
 })
 
 test('health and application responses carry browser security headers', async () => {
-  for (const path of ['/healthz', '/']) {
+  for (const path of ['/healthz', '/api/auth/status']) {
     const response = await fetch(`${baseUrl}${path}`)
     assert.equal(response.status, 200)
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff')
