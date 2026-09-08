@@ -29,7 +29,11 @@ jobs:
         run: |
           docker run --detach --name seadex-companion-ci --publish 18080:8080 seadex-companion:ci
           for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:18080/healthz; then exit 0; fi
+            if curl --fail --silent --show-error --header 'X-Smoke-Test: 1' --dump-header /tmp/headers http://127.0.0.1:18080/healthz | grep --quiet '"status":"ok"'; then
+              grep --ignore-case --quiet '^x-content-type-options: nosniff' /tmp/headers
+              grep --ignore-case --quiet '^content-security-policy:' /tmp/headers
+              exit 0
+            fi
             sleep 1
           done
           docker logs seadex-companion-ci
