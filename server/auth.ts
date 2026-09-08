@@ -69,6 +69,7 @@ function saveSessions(): void {
 
 const sessions = loadSessions()
 const loginLimits = new Map<string, LoginLimit>()
+const setupLimits = new Map<string, LoginLimit>()
 
 function derivePassword(password: string, salt: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -162,6 +163,23 @@ function recordFailedLogin(address: string): void {
   }
 }
 
+function recordSetupAttempt(address: string): void {
+  const now = Date.now()
+  const current = setupLimits.get(address)
+  if (!current || current.resetAt <= now) setupLimits.set(address, { attempts: 1, resetAt: now + LOGIN_WINDOW_MS })
+  else current.attempts += 1
+}
+
+function checkSetupLimit(address: string): void {
+  const now = Date.now()
+  const limit = setupLimits.get(address)
+  if (!limit || limit.resetAt <= now) {
+    setupLimits.delete(address)
+    return
+  }
+  if (limit.attempts >= LOGIN_ATTEMPTS_PER_WINDOW) throw new AuthError(429, 'Too many setup attempts. Try again later.')
+}
+
 export function authState(request: IncomingMessage): AuthState {
   const setupRequired = !existsSync(AUTH_FILE)
   const username = setupRequired ? null : authenticatedUsername(request)
@@ -172,8 +190,11 @@ export function isAuthenticated(request: IncomingMessage): boolean {
   return authenticatedUsername(request) !== null
 }
 
-export async function setupAccount(usernameValue: unknown, passwordValue: unknown): Promise<{ token: string; username: string }> {
+export async function setupAccount(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<{ token: string; username: string }> {
   if (existsSync(AUTH_FILE)) throw new AuthError(409, 'An administrator account already exists')
+  const address = requestAddress(request)
+  checkSetupLimit(address)
+  recordSetupAttempt(address)
   const { username, password } = validateCredentials(usernameValue, passwordValue)
   const salt = randomBytes(16)
   const passwordHash = await derivePassword(password, salt)
@@ -186,10 +207,11 @@ export async function setupAccount(usernameValue: unknown, passwordValue: unknow
   mkdirSync(dirname(AUTH_FILE), { recursive: true })
   try {
     writeFileSync(AUTH_FILE, JSON.stringify(record, null, 2), { encoding: 'utf8', flag: 'wx', mode: 0o600 })
-  } catch (error: any) {
-    if (error?.code === 'EEXIST') throw new AuthError(409, 'An administrator account already exists')
+  } catch (error: unknown) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST') throw new AuthError(409, 'An administrator account already exists')
     throw error
   }
+  setupLimits.delete(address)
   sessions.clear()
   saveSessions()
   return { token: createSession(username), username }

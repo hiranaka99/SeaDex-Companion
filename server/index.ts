@@ -14,9 +14,17 @@ import {
 } from './auth.js'
 import type { Config, JsonObject } from './types.js'
 
+const SECURITY_HEADERS: Record<string, string> = {
+  'Content-Security-Policy': "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: https:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+  'Referrer-Policy': 'no-referrer',
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+}
+
 function sendJson(response: ServerResponse, status: number, value: unknown, headers: Record<string, string> = {}): void {
   const body = JSON.stringify(value)
   response.writeHead(status, {
+    ...SECURITY_HEADERS,
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
@@ -104,7 +112,7 @@ function serveStatic(pathname: string, response: ServerResponse): boolean {
   const containedPath = relative(root, target)
   if (containedPath.startsWith('..') || isAbsolute(containedPath)) return false
   if (!existsSync(target) || !statSync(target).isFile()) return false
-  const headers: Record<string, string> = { 'Content-Type': MIME_TYPES[extname(target)] || 'application/octet-stream' }
+  const headers: Record<string, string> = { ...SECURITY_HEADERS, 'Content-Type': MIME_TYPES[extname(target)] || 'application/octet-stream' }
   // Vite emits content-hashed files under /assets/ — they never change once built,
   // so let the browser cache them indefinitely. index.html (and any non-hashed file)
   // must stay uncached so new deploys are picked up on reload.
@@ -119,13 +127,22 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   const url = new URL(request.url || '/', 'http://localhost')
   const path = url.pathname
 
+  if ((method === 'GET' || method === 'HEAD') && path === '/healthz') {
+    if (method === 'HEAD') {
+      response.writeHead(200, { ...SECURITY_HEADERS, 'Cache-Control': 'no-store' })
+      response.end()
+      return
+    }
+    return sendJson(response, 200, { status: 'ok' })
+  }
+
   if (method === 'GET' && path === '/api/auth/status') {
     return sendJson(response, 200, authState(request), { 'Cache-Control': 'no-store' })
   }
 
   if (method === 'POST' && path === '/api/auth/setup') {
     const data = await readJson(request)
-    const result = await setupAccount(data.username, data.password)
+    const result = await setupAccount(request, data.username, data.password)
     log('INFO', `Administrator account created: ${result.username} (client: ${clientAddress(request)})`)
     return sendJson(response, 201, { setup_required: false, authenticated: true, username: result.username }, {
       'Cache-Control': 'no-store', 'Set-Cookie': sessionCookie(request, result.token),
@@ -717,8 +734,29 @@ export function startScheduler(): NodeJS.Timeout {
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 if (isMain) {
   const port = Number.parseInt(process.env.PORT || '8080', 10)
-  startScheduler()
-  makeServer().listen(port, '0.0.0.0', () => {
+  const scheduler = startScheduler()
+  const server = makeServer()
+  let shuttingDown = false
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    log('INFO', `${signal} received; shutting down`)
+    clearInterval(scheduler)
+    const deadline = setTimeout(() => {
+      log('ERROR', 'Graceful shutdown timed out')
+      process.exit(1)
+    }, 10_000)
+    deadline.unref()
+    server.close((error) => {
+      clearTimeout(deadline)
+      if (error) log('ERROR', `Shutdown failed: ${error.message}`)
+      else log('INFO', 'Server stopped')
+      process.exit(error ? 1 : 0)
+    })
+  }
+  process.once('SIGINT', () => shutdown('SIGINT'))
+  process.once('SIGTERM', () => shutdown('SIGTERM'))
+  server.listen(port, '0.0.0.0', () => {
     log('INFO', `Server listening on 0.0.0.0:${port} (Node ${process.version}; data: ${DATA_DIR}; static: ${STATIC_DIR})`)
     try {
       const config = loadConfig()
