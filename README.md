@@ -29,7 +29,6 @@ For remote access, use a private VPN or an HTTPS reverse proxy with access contr
 - Use a unique administrator password.
 - Keep the container and host patched.
 - Do not grant untrusted users administrator access: configured integration URLs can reach private services on the app's network.
-- Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 ## Run with Docker (recommended)
 
@@ -143,12 +142,9 @@ npm run dev                     # backend
 npm --prefix frontend run dev   # Vite UI, proxies /api to :8080
 ```
 
-## Releases and support
+## Support and license
 
-- Releases follow semantic versioning and are recorded in [CHANGELOG.md](CHANGELOG.md).
-- Immutable image tags and digests support deterministic rollback; see [RELEASING.md](RELEASING.md).
-- Report normal defects through [GitHub Issues](https://github.com/hiranaka99/SeaDex-Companion/issues).
-- Report security issues privately through [GitHub Security Advisories](https://github.com/hiranaka99/SeaDex-Companion/security/advisories/new).
+- Report defects through [GitHub Issues](https://github.com/hiranaka99/SeaDex-Companion/issues).
 - Licensed under the [MIT License](LICENSE).
 
 ## Images
