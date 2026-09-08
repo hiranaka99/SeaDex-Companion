@@ -9,6 +9,7 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
+    "types": ["node"],
     "noUncheckedIndexedAccess": false
   },
   "include": ["server/**/*.ts", "tests/**/*.ts"]

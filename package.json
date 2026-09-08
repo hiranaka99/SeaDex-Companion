@@ -13,9 +13,12 @@
     "test": "npm run build:server && node --test --experimental-test-isolation=none dist/tests/*.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && npm --prefix frontend run build -- --emptyOutDir=false"
   },
+  "engines": {
+    "node": ">=24"
+  },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "24.13.3",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "7.0.2"
   }
 }
