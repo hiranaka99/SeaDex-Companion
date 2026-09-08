@@ -44,12 +44,13 @@ jobs:
           load: true
           tags: seadex-companion:release-candidate
       - name: Scan release candidate
-        uses: docker/scout-action@v1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          command: cves
-          image: local://seadex-companion:release-candidate
-          only-severities: critical,high
-          exit-code: true
+          image-ref: seadex-companion:release-candidate
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
       - uses: docker/build-push-action@v6
         id: push
         with:

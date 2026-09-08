@@ -39,9 +39,10 @@ jobs:
           docker logs seadex-companion-ci
           exit 1
       - name: Scan runtime image
-        uses: docker/scout-action@v1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          command: cves
-          image: local://seadex-companion:ci
-          only-severities: critical,high
-          exit-code: true
+          image-ref: seadex-companion:ci
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
