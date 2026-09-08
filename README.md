@@ -32,7 +32,7 @@ For remote access, use a private VPN or an HTTPS reverse proxy with access contr
 
 ## Run with Docker (recommended)
 
-The app is published on [Docker Hub](https://hub.docker.com/r/hiranaka/seadex-companion) — no Node.js or build step required. For reproducible deployment and rollback, replace `<version>` below with an immutable release tag such as `1.0.0`; avoid `latest` in production.
+The app is published on [Docker Hub](https://hub.docker.com/r/hiranaka/seadex-companion) — no Node.js or build step required. The `latest` image is rebuilt automatically whenever a change passes CI on the main branch.
 
 ```bash
 docker run -d \
@@ -40,7 +40,7 @@ docker run -d \
   --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
   -v seadex-data:/app/data \
-  hiranaka/seadex-companion:<version>
+  hiranaka/seadex-companion:latest
 ```
 
 Then open **http://localhost:8080**, create the administrator account when prompted, and configure Sonarr, Radarr, qBittorrent and Discord in the **Config** tab.
@@ -80,7 +80,7 @@ Prefer the pre-built image? Swap the service for:
 ```yaml
 services:
   seadex-companion:
-    image: hiranaka/seadex-companion:<version>
+    image: hiranaka/seadex-companion:latest
     container_name: seadex-companion
     ports:
       - "127.0.0.1:8080:8080"
@@ -94,15 +94,15 @@ volumes:
   seadex-data:
 ```
 
-Update by changing the pinned version and running `docker compose pull && docker compose up -d`. Roll back by restoring the previous version tag or recorded image digest.
-When upgrading from an older image that wrote the volume as root, migrate ownership once before starting the new image:
+Update with `docker compose pull && docker compose up -d`.
+### Upgrading from the former root container
 
+Older images wrote the data volume as root. Existing installations may need this one-time ownership migration before starting the new image:
 ```bash
 docker run --rm --user root -v seadex-data:/data alpine chown -R 1000:1000 /data
 ```
 
 For bind mounts, ensure the host directory is writable by UID/GID `1000:1000`.
-Update by changing the pinned version and running `docker compose pull && docker compose up -d`. Roll back by restoring the previous version tag or recorded image digest.
 
 ### Backup and restore
 
@@ -115,7 +115,7 @@ docker run --rm -v seadex-data:/data -v "$PWD":/backup alpine \
 docker start seadex-companion
 ```
 
-Restore into an empty volume using the same directory contents, then start the same or a compatible app version. The `.seadex-key` and `secrets.enc.json` files must be restored together; encrypted integration credentials cannot be recovered without the matching key.
+Restore into an empty volume using the same directory contents, then start the app. The `.seadex-key` and `secrets.enc.json` files must be restored together; encrypted integration credentials cannot be recovered without the matching key.
 
 For bind-mount deployments, stop the container and copy the complete `data/` directory. Protect backups because they contain authentication material and integration credentials.
 
