@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { scrypt, randomBytes, timingSafeEqual } from 'node:crypto'
+import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto'
+import { Algorithm, hash, verify } from '@node-rs/argon2'
 import type { IncomingMessage } from 'node:http'
 import { dirname, join } from 'node:path'
 import { DATA_DIR } from './app.js'
@@ -10,13 +11,27 @@ const SESSION_COOKIE = 'seadex_session'
 const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 const LOGIN_WINDOW_MS = 15 * 60 * 1000
 const LOGIN_ATTEMPTS_PER_WINDOW = 5
+const ARGON2_OPTIONS = {
+  algorithm: Algorithm.Argon2id,
+  memoryCost: 19_456,
+  timeCost: 2,
+  parallelism: 1,
+} as const
 
-interface AuthRecord {
+interface LegacyAuthRecord {
   version: 1
   username: string
   salt: string
   password_hash: string
 }
+
+interface AuthRecord {
+  version: 2
+  username: string
+  password_hash: string
+}
+
+type StoredAuthRecord = LegacyAuthRecord | AuthRecord
 
 interface Session {
   username: string
@@ -71,13 +86,33 @@ const sessions = loadSessions()
 const loginLimits = new Map<string, LoginLimit>()
 const setupLimits = new Map<string, LoginLimit>()
 
-function derivePassword(password: string, salt: Buffer): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    scrypt(password, salt, 64, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }, (error, key) => {
-      if (error) reject(error)
-      else resolve(key)
-    })
+function deriveLegacyPassword(password: string, salt: Buffer): Promise<Buffer> {
+  const { promise, resolve, reject } = Promise.withResolvers<Buffer>()
+  scrypt(password, salt, 64, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }, (error, key) => {
+    if (error) reject(error)
+    else resolve(key)
   })
+  return promise
+}
+
+async function createAuthRecord(username: string, password: string): Promise<AuthRecord> {
+  return { version: 2, username, password_hash: await hash(password, ARGON2_OPTIONS) }
+}
+
+function saveAuthRecord(record: AuthRecord): void {
+  mkdirSync(dirname(AUTH_FILE), { recursive: true })
+  const temporary = `${AUTH_FILE}.tmp`
+  writeFileSync(temporary, JSON.stringify(record, null, 2), { encoding: 'utf8', mode: 0o600 })
+  chmodSync(temporary, 0o600)
+  renameSync(temporary, AUTH_FILE)
+  chmodSync(AUTH_FILE, 0o600)
+}
+
+async function verifyPassword(record: StoredAuthRecord, password: string): Promise<boolean> {
+  if (record.version === 2) return verify(record.password_hash, password)
+  const actualHash = await deriveLegacyPassword(password, Buffer.from(record.salt, 'base64'))
+  const expectedHash = Buffer.from(record.password_hash, 'base64')
+  return actualHash.length === expectedHash.length && timingSafeEqual(actualHash, expectedHash)
 }
 
 function validateCredentials(usernameValue: unknown, passwordValue: unknown): { username: string; password: string } {
@@ -91,17 +126,19 @@ function validateCredentials(usernameValue: unknown, passwordValue: unknown): { 
   return { username, password }
 }
 
-function loadAuthRecord(): AuthRecord {
-  let parsed: Partial<AuthRecord>
+function loadAuthRecord(): StoredAuthRecord {
+  let parsed: Record<string, unknown>
   try {
-    parsed = JSON.parse(readFileSync(AUTH_FILE, 'utf8')) as Partial<AuthRecord>
+    parsed = JSON.parse(readFileSync(AUTH_FILE, 'utf8')) as Record<string, unknown>
   } catch {
     throw new AuthError(500, 'Could not read the authentication file')
   }
-  if (parsed.version !== 1 || typeof parsed.username !== 'string' || typeof parsed.salt !== 'string' || typeof parsed.password_hash !== 'string') {
+  const validBase = typeof parsed.username === 'string' && typeof parsed.password_hash === 'string'
+  const validLegacy = parsed.version === 1 && typeof parsed.salt === 'string'
+  if (!validBase || (parsed.version !== 2 && !validLegacy)) {
     throw new AuthError(500, 'The authentication file is invalid')
   }
-  return parsed as AuthRecord
+  return parsed as unknown as StoredAuthRecord
 }
 
 function requestToken(request: IncomingMessage): string | null {
@@ -196,14 +233,7 @@ export async function setupAccount(request: IncomingMessage, usernameValue: unkn
   checkSetupLimit(address)
   recordSetupAttempt(address)
   const { username, password } = validateCredentials(usernameValue, passwordValue)
-  const salt = randomBytes(16)
-  const passwordHash = await derivePassword(password, salt)
-  const record: AuthRecord = {
-    version: 1,
-    username,
-    salt: salt.toString('base64'),
-    password_hash: passwordHash.toString('base64'),
-  }
+  const record = await createAuthRecord(username, password)
   mkdirSync(dirname(AUTH_FILE), { recursive: true })
   try {
     writeFileSync(AUTH_FILE, JSON.stringify(record, null, 2), { encoding: 'utf8', flag: 'wx', mode: 0o600 })
@@ -224,13 +254,13 @@ export async function login(request: IncomingMessage, usernameValue: unknown, pa
   const username = String(usernameValue ?? '').trim()
   const password = String(passwordValue ?? '')
   const record = loadAuthRecord()
-  const actualHash = await derivePassword(password, Buffer.from(record.salt, 'base64'))
-  const expectedHash = Buffer.from(record.password_hash, 'base64')
-  const validHash = actualHash.length === expectedHash.length && timingSafeEqual(actualHash, expectedHash)
-  if (username !== record.username || !validHash) {
+  const validHash = await verifyPassword(record, password)
+  const validCredentials = username === record.username && validHash
+  if (!validCredentials) {
     recordFailedLogin(address)
     throw new AuthError(401, 'Invalid username or password')
   }
+  if (record.version === 1) saveAuthRecord(await createAuthRecord(record.username, password))
   loginLimits.delete(address)
   return { token: createSession(record.username), username: record.username }
 }
@@ -241,26 +271,13 @@ export async function updateAccount(request: IncomingMessage, currentPasswordVal
   const currentPassword = String(currentPasswordValue ?? '')
   if (!currentPassword) throw new AuthError(400, 'Current password is required')
   const current = loadAuthRecord()
-  const actualHash = await derivePassword(currentPassword, Buffer.from(current.salt, 'base64'))
-  const expectedHash = Buffer.from(current.password_hash, 'base64')
-  if (actualHash.length !== expectedHash.length || !timingSafeEqual(actualHash, expectedHash)) {
+  if (!await verifyPassword(current, currentPassword)) {
     throw new AuthError(401, 'Current password is incorrect')
   }
   const requestedPassword = String(newPasswordValue ?? '')
   const { username, password } = validateCredentials(usernameValue, requestedPassword || currentPassword)
-  const salt = randomBytes(16)
-  const passwordHash = await derivePassword(password, salt)
-  const record: AuthRecord = {
-    version: 1,
-    username,
-    salt: salt.toString('base64'),
-    password_hash: passwordHash.toString('base64'),
-  }
-  const temporary = `${AUTH_FILE}.tmp`
-  writeFileSync(temporary, JSON.stringify(record, null, 2), { encoding: 'utf8', mode: 0o600 })
-  chmodSync(temporary, 0o600)
-  renameSync(temporary, AUTH_FILE)
-  chmodSync(AUTH_FILE, 0o600)
+  const record = await createAuthRecord(username, password)
+  saveAuthRecord(record)
   sessions.clear()
   const token = createSession(username)
   return { token, username }

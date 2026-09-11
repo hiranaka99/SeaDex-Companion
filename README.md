@@ -18,7 +18,7 @@ SeaDex Companion is a web UI that compares your **Sonarr / Radarr** anime librar
 - **Scan history** with a change feed for new, resolved and changed upgrades
 - **Discord notifications** for newly-found upgrades
 - **Live log tab**
-- **Password-protected WebUI** with account maintenance and session revocation; credentials are encrypted at rest (AES-256-GCM)
+- **Password-protected WebUI** with Argon2ID password hashing, account maintenance and session revocation; integration credentials are encrypted at rest with AES-256-GCM
 
 ## Security and network exposure
 
