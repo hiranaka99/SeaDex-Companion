@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
+import { scryptSync } from 'node:crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { once } from 'node:events'
 import { tmpdir } from 'node:os'
@@ -65,6 +66,39 @@ test('health and application responses carry browser security headers', async ()
   }
 })
 
+test('legacy scrypt credentials migrate to Argon2ID after successful login', async () => {
+  const password = 'legacy correct horse battery staple'
+  const salt = Buffer.alloc(16, 7)
+  writeFileSync(join(dataDir, 'auth.json'), JSON.stringify({
+    version: 1,
+    username: 'legacy-admin',
+    salt: salt.toString('base64'),
+    password_hash: scryptSync(password, salt, 64, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }).toString('base64'),
+  }))
+
+  const legacyLogin = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'legacy-admin', password }),
+  })
+  assert.equal(legacyLogin.status, 200)
+
+  const migrated = JSON.parse(readFileSync(join(dataDir, 'auth.json'), 'utf8')) as Record<string, unknown>
+  assert.equal(migrated.version, 2)
+  assert.equal(migrated.username, 'legacy-admin')
+  assert.match(String(migrated.password_hash), /^\$argon2id\$v=19\$m=19456,t=2,p=1\$/)
+  assert.equal(migrated.salt, undefined)
+
+  const migratedLogin = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'legacy-admin', password }),
+  })
+  assert.equal(migratedLogin.status, 200)
+  rmSync(join(dataDir, 'auth.json'))
+})
+
+
 test('account setup, authenticated access, revocation, and login throttling work over HTTP', async () => {
   const setup = await fetch(`${baseUrl}/api/auth/setup`, {
     method: 'POST',
@@ -72,6 +106,10 @@ test('account setup, authenticated access, revocation, and login throttling work
     body: JSON.stringify({ username: 'administrator', password: 'correct horse battery staple' }),
   })
   assert.equal(setup.status, 201)
+  const stored = JSON.parse(readFileSync(join(dataDir, 'auth.json'), 'utf8')) as Record<string, unknown>
+  assert.equal(stored.version, 2)
+  assert.match(String(stored.password_hash), /^\$argon2id\$v=19\$m=19456,t=2,p=1\$/)
+  assert.equal(stored.salt, undefined)
   const setupCookie = cookie(setup)
   assert.match(setup.headers.get('set-cookie') || '', /HttpOnly/)
   assert.match(setup.headers.get('set-cookie') || '', /SameSite=Strict/)

@@ -12,6 +12,8 @@ RUN npm ci
 
 COPY server/ ./server/
 RUN npm run build:server
+# Retain production dependencies, including Alpine's prebuilt Argon2 binary.
+RUN npm prune --omit=dev
 
 # ---------------------------------------------------------------------------
 # Stage 2: Build the React + TypeScript frontend (Vite)
@@ -47,6 +49,7 @@ RUN apk upgrade --no-cache \
 
 COPY package.json ./
 COPY --from=backend /app/dist ./dist
+COPY --from=backend /app/node_modules ./node_modules
 COPY --from=frontend /app/static ./static
 COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
