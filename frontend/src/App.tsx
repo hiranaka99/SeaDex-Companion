@@ -166,7 +166,8 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
       />
-      <main className="app-scrollbar overflow-y-auto px-8 pt-7 pb-14 max-[1200px]:px-6 max-[900px]:px-4 max-[900px]:pt-20 max-[900px]:pb-24">
+      <main className="app-scrollbar overflow-y-auto px-8 pb-14 max-[1200px]:px-6 max-[900px]:px-4 max-[900px]:pb-24">
+        <div className="pt-7 max-[900px]:pt-20">
         <OperationCenter
           status={status}
           scanCompleted={scanCompleted}
@@ -194,8 +195,9 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
           />
         )}
         {tab === 'history' && <HistoryTab />}
-        {tab === 'config' && <ConfigTab config={config} username={username} onAccountUpdated={onAccountUpdated} onSaved={loadConfig} onScannedDataCleared={handleScannedDataCleared} />}
+        {tab === 'config' && <ConfigTab config={config} status={status} username={username} onAccountUpdated={onAccountUpdated} onSaved={loadConfig} onScannedDataCleared={handleScannedDataCleared} />}
         {tab === 'log' && <LogTab active={tab === 'log'} />}
+        </div>
       </main>
     </div>
   )

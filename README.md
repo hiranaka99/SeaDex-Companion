@@ -12,7 +12,7 @@ SeaDex Companion is a web UI that compares your **Sonarr / Radarr** anime librar
 - **Smart upgrade detection** — understands split seasons (Cours / Part 1 & 2) and tracks ownership episode-by-episode
 - **One-click download** of the best release to qBittorrent, fetching only the missing episodes/cour (public trackers only)
 - **Bulk download** every upgrade at once, plus a **Downloads panel** to monitor, pause, resume and delete torrents
-- **Live scan progress** and automatic re-scan on a configurable interval
+- **Flexible automatic scans** on an interval, at a daily time, or on selected weekdays, with timezone and missed-run controls
 - **Search & filter** by title, release group, source and status; hide cards you don't care about
 - **Manual AniList corrections** for ambiguous titles, plus season/cour exclusions for bulk downloads and notifications
 - **Scan history** with a change feed for new, resolved and changed upgrades
@@ -107,6 +107,8 @@ npm start
 ```
 
 Open **http://localhost:8080**, create the administrator account, then set your Sonarr/Radarr base URLs and API keys in the Config tab and hit **Scan Library**.
+
+Automatic scans are configured under **Configuration → Automation**. Choose an interval, a daily local time, or selected weekdays; calendar schedules use the configured IANA timezone and can either run once after downtime or skip missed runs.
 
 For development (live reload, separate terminals):
 

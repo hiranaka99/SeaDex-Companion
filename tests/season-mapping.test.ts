@@ -6,11 +6,11 @@ import { join } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
 import {
   anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, clearScannedData, commonBestRelease, decryptSecretValues, describeResultChange, discordMessageBody, DEFAULT_CONFIG, effectiveSeasonParts,
-  encryptSecretValues, getState, loadStringSet, localItems, localPartOwnership, normalizeQbStates, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
+  encryptSecretValues, getState, loadStringSet, localItems, localPartOwnership, normalizeQbStates, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
   qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest,
   resetRuntimeForTests, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration,
 } from '../server/app.js'
-import { parseReleaseIndex, refreshAutocheckSchedule } from '../server/index.js'
+import { nextScheduledTime, parseReleaseIndex, processAutocheck, refreshAutocheckSchedule } from '../server/index.js'
 import type { JsonObject, ReleaseCandidate } from '../server/types.js'
 
 function node(id: number, title: string, year: number | null, season: string | null, episodes: number | null, options: JsonObject = {}): JsonObject {
@@ -254,13 +254,37 @@ describe('notifications and scheduling', () => {
     assert.deepEqual([...saved], ['sent'])
   })
 
-  test('publishes and refreshes the next automatic check time', () => {
-    refreshAutocheckSchedule({ ...DEFAULT_CONFIG, autocheck_minutes: 30 }, 1_000)
-    assert.equal(autocheckState.next, 2_800)
-    refreshAutocheckSchedule({ ...DEFAULT_CONFIG, autocheck_minutes: 10 }, 1_100)
-    assert.equal(autocheckState.next, 1_700)
-    refreshAutocheckSchedule({ ...DEFAULT_CONFIG, autocheck_minutes: 0 }, 1_200)
-    assert.equal(autocheckState.next, null)
+  test('migrates legacy automatic scan intervals without changing behavior', () => {
+    assert.deepEqual(normalizeScanSchedule(undefined, 90), {
+      enabled: true, mode: 'interval', interval_minutes: 90, times: ['03:00'], weekdays: [0], timezone: 'UTC', missed_run: 'run_once',
+    })
+    assert.equal(normalizeScanSchedule(undefined, 0).enabled, false)
+  })
+
+  test('calculates interval, daily, and weekly schedules in their configured timezone', () => {
+    const interval = { ...DEFAULT_CONFIG.scan_schedule, interval_minutes: 30 }
+    assert.equal(nextScheduledTime(interval, 1_000), 2_800)
+
+    const daily = { ...DEFAULT_CONFIG.scan_schedule, mode: 'daily' as const, times: ['03:00'], timezone: 'America/New_York' }
+    assert.equal(nextScheduledTime(daily, Date.parse('2026-07-01T06:59:00Z') / 1000), Date.parse('2026-07-01T07:00:00Z') / 1000)
+
+    const weekly = { ...daily, mode: 'weekly' as const, weekdays: [1] }
+    assert.equal(nextScheduledTime(weekly, Date.parse('2026-07-01T07:00:00Z') / 1000), Date.parse('2026-07-06T07:00:00Z') / 1000)
+  })
+
+  test('queues one due automatic scan while another scan is running', async () => {
+    const config = { ...DEFAULT_CONFIG, scan_schedule: { ...DEFAULT_CONFIG.scan_schedule, interval_minutes: 30 } }
+    refreshAutocheckSchedule(config, 1_000)
+    setState({ running: true })
+    let scans = 0
+    await processAutocheck(config, 2_800, async () => { scans += 1 })
+    await processAutocheck(config, 2_900, async () => { scans += 1 })
+    assert.equal(scans, 0)
+    assert.equal(autocheckState.pending, true)
+    setState({ running: false })
+    await processAutocheck(config, 3_000, async () => { scans += 1 })
+    assert.equal(scans, 1)
+    assert.equal(autocheckState.pending, false)
   })
 
   test('allows an upgrade notification after the same result was resolved', async () => {

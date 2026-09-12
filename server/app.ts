@@ -37,7 +37,15 @@ export const DEFAULT_CONFIG: Config = {
   qbittorrent_pass: '',
   webhook: '',
   notify_enabled: true,
-  autocheck_minutes: 1440,
+  scan_schedule: {
+    enabled: true,
+    mode: 'interval',
+    interval_minutes: 1440,
+    times: ['03:00'],
+    weekdays: [0],
+    timezone: 'UTC',
+    missed_run: 'run_once',
+  },
   hidden: [],
 }
 
@@ -73,10 +81,10 @@ export const scanState: ScanState = {
   last_run: null,
 }
 
-export const autocheckState: { last: number; next: number | null; minutes: number } = {
-  last: Date.now() / 1000,
+export const autocheckState: { next: number | null; signature: string; pending: boolean } = {
   next: null,
-  minutes: 0,
+  signature: '',
+  pending: false,
 }
 
 export function setState(values: Partial<ScanState>): void {
@@ -243,8 +251,33 @@ function loadEncryptedSecrets(): Partial<Record<SecretConfigKey, string>> {
   return decryptSecretValues(payload, loadSecretKey())
 }
 
+export function normalizeScanSchedule(value: unknown, legacyMinutes?: number): Config['scan_schedule'] {
+  const source = value && typeof value === 'object' ? value as JsonObject : {}
+  const mode = source.mode === 'daily' || source.mode === 'weekly' ? source.mode : 'interval'
+  const intervalMinutes = Math.max(1, Number.parseInt(String(source.interval_minutes ?? legacyMinutes ?? 1440), 10) || 1440)
+  const times = Array.isArray(source.times)
+    ? [...new Set(source.times.filter((time): time is string => typeof time === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)))].sort()
+    : []
+  const weekdays = Array.isArray(source.weekdays)
+    ? [...new Set(source.weekdays.map(Number).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))].sort()
+    : []
+  const timezone = typeof source.timezone === 'string' && source.timezone ? source.timezone : 'UTC'
+  try { new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format() } catch { throw new Error('scan_schedule.timezone must be a valid IANA timezone') }
+  if (mode !== 'interval' && !times.length) throw new Error('scan_schedule.times must contain at least one HH:MM time')
+  if (mode === 'weekly' && !weekdays.length) throw new Error('scan_schedule.weekdays must contain at least one day')
+  return {
+    enabled: source.enabled === undefined ? Number(legacyMinutes) > 0 : source.enabled === true,
+    mode,
+    interval_minutes: intervalMinutes,
+    times: times.length ? times : ['03:00'],
+    weekdays: weekdays.length ? weekdays : [0],
+    timezone,
+    missed_run: source.missed_run === 'skip' ? 'skip' : 'run_once',
+  }
+}
+
 export function loadConfig(): Config {
-  const stored = readJson<Partial<Config>>(CONFIG_FILE, {}, 'Could not read config')
+  const stored = readJson<Partial<Config> & { autocheck_minutes?: number }>(CONFIG_FILE, {}, 'Could not read config')
   const encryptedSecrets = loadEncryptedSecrets()
   const plaintextSecrets: Partial<Record<SecretConfigKey, string>> = {}
   let containsPlaintextSecretFields = false
@@ -252,12 +285,15 @@ export function loadConfig(): Config {
     if (Object.prototype.hasOwnProperty.call(stored, key)) containsPlaintextSecretFields = true
     if (typeof stored[key] === 'string' && stored[key]) plaintextSecrets[key] = stored[key]
   }
-  const config = { ...DEFAULT_CONFIG, ...stored, ...encryptedSecrets, ...plaintextSecrets }
+  const legacyMinutes = Number(stored.autocheck_minutes)
+  const scanSchedule = normalizeScanSchedule(stored.scan_schedule, legacyMinutes)
+  const config = { ...DEFAULT_CONFIG, ...stored, scan_schedule: scanSchedule, ...encryptedSecrets, ...plaintextSecrets }
+  delete config.autocheck_minutes
   config.sonarr_url = arrBaseUrl(config.sonarr_url)
   config.radarr_url = arrBaseUrl(config.radarr_url)
-  if (containsPlaintextSecretFields) {
+  if (containsPlaintextSecretFields || Object.prototype.hasOwnProperty.call(stored, 'autocheck_minutes')) {
     saveConfig(config)
-    log('INFO', 'Migrated plaintext configuration secrets to encrypted storage')
+    log('INFO', containsPlaintextSecretFields ? 'Migrated legacy configuration and plaintext secrets' : 'Migrated legacy automatic scan interval')
   }
   return config
 }
@@ -2097,5 +2133,5 @@ export function resetRuntimeForTests(): void {
   Object.assign(scanState, { running: false, progress: 0, total: 0, message: 'Idle', results: [], error: null, last_run: null })
   qbSession = null; qbCache = { data: null, timestamp: 0 }; qbQueue = Promise.resolve(); ownedTorrents.clear()
   bulkBatch.finished = true; bulkBatch.pending = []; bulkBatch.added = []; bulkBatch.failures = []
-  autocheckState.last = Date.now() / 1000; autocheckState.next = null; autocheckState.minutes = 0
+  autocheckState.next = null; autocheckState.signature = ''; autocheckState.pending = false
 }
