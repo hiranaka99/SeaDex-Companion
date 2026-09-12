@@ -708,6 +708,7 @@ export async function seadexBest(): Promise<Map<number, JsonObject>> {
 
 export async function localItems(config: Config, scope: ScanScope = {}): Promise<JsonObject[]> {
   const items: JsonObject[] = []
+  const now = Date.now()
   if (config.sonarr_url && config.sonarr_key) {
     const series = await api(`${arrApiUrl(config.sonarr_url)}/series`, config.sonarr_key) as JsonObject[]
     for (const show of series) {
@@ -726,8 +727,16 @@ export async function localItems(config: Config, scope: ScanScope = {}): Promise
       const groupsBySeasonEpisode = new Map<number, Map<string, Set<number>>>()
       const episodeNumbersBySeason = new Map<number, Set<number>>()
       const fileEpisodes = new Map<number, { season: number; episode: number }[]>()
+      // A season counts as released once any of its episodes has aired. Seasons
+      // with no air-date metadata at all are kept so incomplete TVDB data does
+      // not hide real library entries.
+      const seasonAired = new Map<number, boolean>()
       for (const episode of episodes) {
         const season = Number(episode.seasonNumber || 0)
+        if (Number.isInteger(season) && season > 0) {
+          const airDate = Date.parse(String(episode.airDate || ''))
+          if (Number.isFinite(airDate)) seasonAired.set(season, (seasonAired.get(season) ?? false) || airDate <= now)
+        }
         const number = Number(episode.episodeNumber || 0)
         if (!Number.isInteger(season) || season <= 0 || !Number.isInteger(number) || number <= 0) continue
         const seasonNumbers = episodeNumbersBySeason.get(season) || new Set<number>()
@@ -756,6 +765,8 @@ export async function localItems(config: Config, scope: ScanScope = {}): Promise
       for (const season of show.seasons || []) {
         const number = season.seasonNumber || 0
         if (number === 0) continue
+        const aired = seasonAired.get(Number(number))
+        if (aired !== undefined && !aired) continue
         const stats = season.statistics || {}
         const groups = stats.releaseGroups || []
         const episodeGroups = groupsBySeasonEpisode.get(Number(number))
@@ -779,6 +790,9 @@ export async function localItems(config: Config, scope: ScanScope = {}): Promise
     const movies = await api(`${arrApiUrl(config.radarr_url)}/movie`, config.radarr_key) as JsonObject[]
     for (const movie of movies) {
       if (scope.radarrIds?.length && !scope.radarrIds.includes(Number(movie.id))) continue
+      // Skip movies that have not reached their cinema release date yet.
+      const inCinemas = Date.parse(String(movie.inCinemas || ''))
+      if (Number.isFinite(inCinemas) && inCinemas > now) continue
       const stats = movie.statistics || {}
       const groups = stats.releaseGroups || []
       items.push({
