@@ -56,7 +56,7 @@ The repo ships a `docker-compose.yml` that builds from source:
 services:
   seadex-compare:
     build: .
-    container_name: seadex-compare
+    container_name: seadex-companion
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
