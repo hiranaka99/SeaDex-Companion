@@ -96,6 +96,16 @@ export interface GroupedCard {
   status: CardStatus
 }
 
+export interface ScanSchedule {
+  enabled: boolean
+  mode: 'interval' | 'daily' | 'weekly'
+  interval_minutes: number
+  times: string[]
+  weekdays: number[]
+  timezone: string
+  missed_run: 'run_once' | 'skip'
+}
+
 export interface Config {
   sonarr_url: string
   sonarr_key: string
@@ -112,7 +122,7 @@ export interface Config {
   webhook: string
   webhook_configured: boolean
   notify_enabled: boolean
-  autocheck_minutes: number
+  scan_schedule: ScanSchedule
   hidden: string[]
 }
 

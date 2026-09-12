@@ -1,10 +1,10 @@
-import { createReadStream, existsSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { extname, isAbsolute, normalize, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   DATA_DIR, DEFAULT_CONFIG, STATIC_DIR, applyUserRulesToResults, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, clearScannedData, exclusionRuleKey, forgetOwnedTorrents,
-  finishBulkDownloadBatch, getState, indexResultReleases, loadConfig, loadLastResults, loadScanHistory, loadUserRules, log, normalizeQbStates, ownedTorrentsSnapshot,
+  finishBulkDownloadBatch, getState, indexResultReleases, loadConfig, loadLastResults, loadScanHistory, loadUserRules, log, normalizeQbStates, normalizeScanSchedule, ownedTorrentsSnapshot,
   publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, qbGetTorrents, readLogTail, recordOwnedTorrents, resetBulkDownloadBatch,
   resultsForRequest, runScan, saveConfig, saveUserRules, scannedDataInfo, searchAniListTitles, SECRET_CONFIG_KEYS, settleBulkDownloadBatch, setState, testIntegration,
 } from './app.js'
@@ -12,7 +12,7 @@ import {
   AuthError, authState, expiredSessionCookie, isAuthenticated, login, logout, sessionCookie,
   setupAccount, updateAccount,
 } from './auth.js'
-import type { Config, JsonObject } from './types.js'
+import type { Config, JsonObject, ScanSchedule } from './types.js'
 
 const SECURITY_HEADERS: Record<string, string> = {
   'Content-Security-Policy': "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: https:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'",
@@ -251,7 +251,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }
       if (!(key in data)) continue
       const value = data[key]
-      if (typeof defaultValue === 'boolean') {
+      if (key === 'scan_schedule') config.scan_schedule = normalizeScanSchedule(value)
+      else if (typeof defaultValue === 'boolean') {
         if (typeof value !== 'boolean') return sendJson(response, 400, { error: `${key} must be a boolean` })
         config[key] = value
       }
@@ -272,7 +273,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       `Discord=${config.webhook ? 'configured' : 'incomplete'}`,
     ].join(', ')
     const secretChanges = [...updatedSecrets.map((key) => `${key} updated`), ...[...clearedSecrets].map((key) => `${key} cleared`)]
-    log('INFO', `Configuration saved (${integrationState}; auto-check: ${config.autocheck_minutes}m; notifications: ${config.notify_enabled ? 'enabled' : 'disabled'}; hidden titles: ${config.hidden.length}${secretChanges.length ? `; credentials: ${secretChanges.join(', ')}` : ''})`)
+    log('INFO', `Configuration saved (${integrationState}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'}; notifications: ${config.notify_enabled ? 'enabled' : 'disabled'}; hidden titles: ${config.hidden.length}${secretChanges.length ? `; credentials: ${secretChanges.join(', ')}` : ''})`)
     return sendJson(response, 200, publicConfig(config))
   }
 
@@ -697,36 +698,106 @@ export function makeServer() {
   })
 }
 
+const SCHEDULE_STATE_FILE = resolve(DATA_DIR, 'scan_schedule_state.json')
+
+function scheduleSignature(schedule: ScanSchedule): string {
+  return JSON.stringify(schedule)
+}
+
+function localTimeParts(timestamp: number, timezone: string): { date: string; weekday: number; hour: number; minute: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(timestamp * 1000))
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return { date: `${values.year}-${values.month}-${values.day}`, weekday: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(values.weekday), hour: Number(values.hour), minute: Number(values.minute) }
+}
+
+export function nextScheduledTime(schedule: ScanSchedule, after: number): number | null {
+  if (!schedule.enabled) return null
+  if (schedule.mode === 'interval') return after + Math.max(1, schedule.interval_minutes) * 60
+  const times = new Set(schedule.times)
+  const weekdays = new Set(schedule.weekdays)
+  let candidate = Math.floor(after / 60) * 60 + 60
+  const limit = candidate + 8 * 24 * 60 * 60
+  for (; candidate <= limit; candidate += 60) {
+    const local = localTimeParts(candidate, schedule.timezone)
+    const time = `${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')}`
+    if (!times.has(time) || (schedule.mode === 'weekly' && !weekdays.has(local.weekday))) continue
+    const previous = localTimeParts(candidate - 60 * 60, schedule.timezone)
+    const duplicatedByClockChange = previous.date === local.date && previous.hour === local.hour && previous.minute === local.minute
+    if (!duplicatedByClockChange) return candidate
+  }
+  return null
+}
+
+function persistAutocheckState(): void {
+  const temporary = `${SCHEDULE_STATE_FILE}.tmp`
+  writeFileSync(temporary, JSON.stringify({ signature: autocheckState.signature, next: autocheckState.next }), 'utf8')
+  renameSync(temporary, SCHEDULE_STATE_FILE)
+}
+
+function restoreAutocheckState(): void {
+  try {
+    const stored = JSON.parse(readFileSync(SCHEDULE_STATE_FILE, 'utf8'))
+    if (typeof stored.signature === 'string' && (stored.next === null || Number.isFinite(stored.next))) {
+      autocheckState.signature = stored.signature
+      autocheckState.next = stored.next
+    }
+  } catch { /* A missing or damaged state file starts a fresh schedule. */ }
+}
+
+function skipMissedAutocheck(config: Config, now: number): void {
+  if (config.scan_schedule.missed_run !== 'skip' || autocheckState.next === null || autocheckState.next > now) return
+  autocheckState.next = nextScheduledTime(config.scan_schedule, now)
+  persistAutocheckState()
+}
+
 export function refreshAutocheckSchedule(config: Config, now = Date.now() / 1000): void {
-  const minutes = Number(config.autocheck_minutes || 0)
-  if (minutes <= 0) {
-    autocheckState.minutes = 0
+  const schedule = config.scan_schedule
+  const signature = scheduleSignature(schedule)
+  if (!schedule.enabled) {
+    autocheckState.signature = signature
     autocheckState.next = null
+    autocheckState.pending = false
+    persistAutocheckState()
     return
   }
-  if (autocheckState.minutes !== minutes || autocheckState.next === null) {
-    autocheckState.minutes = minutes
-    autocheckState.last = now
-    autocheckState.next = now + minutes * 60
+  if (autocheckState.signature !== signature || autocheckState.next === null) {
+    autocheckState.signature = signature
+    autocheckState.next = nextScheduledTime(schedule, now)
+    autocheckState.pending = false
+    persistAutocheckState()
   }
 }
 
+export async function processAutocheck(config: Config, now = Date.now() / 1000, scan: (config: Config) => Promise<void> = runScan): Promise<void> {
+  refreshAutocheckSchedule(config, now)
+  const schedule = config.scan_schedule
+  if (!schedule.enabled) return
+  const due = autocheckState.next !== null && now >= autocheckState.next
+  if (due) {
+    autocheckState.next = nextScheduledTime(schedule, now)
+    if (getState().running) autocheckState.pending = true
+    persistAutocheckState()
+  }
+  if (!due && !autocheckState.pending) return
+  if (getState().running) {
+    if (due) log('INFO', 'Automatic scan due while another scan is running — queued one scan')
+    return
+  }
+  autocheckState.pending = false
+  persistAutocheckState()
+  log('INFO', `Automatic scan triggered (${schedule.mode} schedule)`)
+  await scan(config)
+}
+
 export function startScheduler(): NodeJS.Timeout {
-  try { refreshAutocheckSchedule(loadConfig()) } catch (error) { log('ERROR', `Scheduler initialization failed: ${error instanceof Error ? error.message : String(error)}`) }
+  restoreAutocheckState()
+  try { const config = loadConfig(); refreshAutocheckSchedule(config); skipMissedAutocheck(config, Date.now() / 1000) } catch (error) { log('ERROR', `Scheduler initialization failed: ${error instanceof Error ? error.message : String(error)}`) }
   return setInterval(() => {
     void (async () => {
-      try {
-        const config = loadConfig(); const minutes = config.autocheck_minutes || 0
-        const now = Date.now() / 1000
-        refreshAutocheckSchedule(config, now)
-        if (minutes <= 0) return
-        const interval = minutes * 60
-        if (now - autocheckState.last >= interval) {
-          autocheckState.last = now; autocheckState.next = now + interval
-          if (getState().running) { log('INFO', 'Auto-check due, but a scan is already running — skipping'); return }
-          log('INFO', `Auto-check triggered (interval ${minutes} min)`); await runScan(config)
-        }
-      } catch (error) { log('ERROR', `Scheduler error: ${error instanceof Error ? error.message : String(error)}`) }
+      try { await processAutocheck(loadConfig()) }
+      catch (error) { log('ERROR', `Scheduler error: ${error instanceof Error ? error.message : String(error)}`) }
     })()
   }, 30_000)
 }
@@ -762,7 +833,7 @@ if (isMain) {
       const config = loadConfig()
       const savedResults = loadLastResults()?.results?.length || 0
       const hiddenCount = Array.isArray(config.hidden) ? config.hidden.length : 0
-      log('INFO', `Runtime state restored (saved results: ${savedResults}; tracked torrents: ${ownedTorrentsSnapshot().length}; hidden titles: ${hiddenCount}; auto-check: ${config.autocheck_minutes > 0 ? `${config.autocheck_minutes}m` : 'disabled'})`)
+      log('INFO', `Runtime state restored (saved results: ${savedResults}; tracked torrents: ${ownedTorrentsSnapshot().length}; hidden titles: ${hiddenCount}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'})`)
     } catch (error) {
       log('ERROR', `Runtime configuration could not be restored: ${error instanceof Error ? error.message : String(error)}`)
     }
