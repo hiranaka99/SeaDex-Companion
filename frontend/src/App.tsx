@@ -17,8 +17,12 @@ const INITIAL_STATUS: Status = {
   total: 0,
   message: 'Idle',
   error: null,
+  cancelled: false,
+  trigger: null,
+  source_errors: {},
   last_run: null,
   next_check: null,
+  webhook_scan: { queued: false, due_at: null, sources: [] },
 }
 
 interface AuthenticatedAppProps {
@@ -89,9 +93,9 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
     try {
       const st = await api.getStatus()
       if (!mounted.current || generation !== pollGeneration.current) return
-      if (st.running || st.error) setScanCompleted(null)
+      if (st.running || st.error || st.cancelled) setScanCompleted(null)
       const completedSinceLastPoll = statusInitialized.current && Boolean(st.last_run) && st.last_run !== lastSeenRun.current
-      if ((scanWasRunning.current || completedSinceLastPoll) && !st.running && !st.error) setScanCompleted(st.last_run || 'just now')
+      if ((scanWasRunning.current || completedSinceLastPoll) && !st.running && !st.error && !st.cancelled) setScanCompleted(st.last_run || 'just now')
       scanWasRunning.current = st.running
       lastSeenRun.current = st.last_run
       statusInitialized.current = true
@@ -143,10 +147,15 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
     }
   }
 
+  const handleCancelScan = async () => {
+    try { await api.cancelScan(); toast.show('Cancelling scan…', 'info') }
+    catch (error: unknown) { toast.show(`Could not cancel scan: ${error instanceof Error ? error.message : String(error)}`, 'error') }
+  }
+
   const handleScannedDataCleared = () => {
     setResults([])
     setLastRun(null)
-    setStatus((current) => ({ ...INITIAL_STATUS, next_check: current.next_check }))
+    setStatus((current) => ({ ...INITIAL_STATUS, next_check: current.next_check, webhook_scan: current.webhook_scan }))
     setResultsError('')
     setScanCompleted(null)
   }
@@ -171,6 +180,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
         <OperationCenter
           status={status}
           scanCompleted={scanCompleted}
+          onCancelScan={() => void handleCancelScan()}
           bulk={bulkOperation}
           onRetryScan={() => void handleScan()}
           onOpenLibrary={() => setTab('anime')}
@@ -195,7 +205,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
           />
         )}
         {tab === 'history' && <HistoryTab />}
-        {tab === 'config' && <ConfigTab config={config} status={status} username={username} onAccountUpdated={onAccountUpdated} onSaved={loadConfig} onScannedDataCleared={handleScannedDataCleared} />}
+        {tab === 'config' && <ConfigTab config={config} status={status} username={username} onRunScan={handleScan} onAccountUpdated={onAccountUpdated} onSaved={loadConfig} onScannedDataCleared={handleScannedDataCleared} />}
         {tab === 'log' && <LogTab active={tab === 'log'} />}
         </div>
       </main>

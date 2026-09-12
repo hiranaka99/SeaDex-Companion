@@ -3,7 +3,8 @@ import { ResultItem, Release } from '../types'
 import { formatBytes, resultGroupKey, seasonLabel } from '../utils'
 import { buttonBase, cx } from '../styles'
 import Icon from './Icons'
-import { BulkDownloadTarget } from '../api'
+import * as api from '../api'
+import type { BulkDownloadTarget } from '../api'
 import { useRestoreFocus } from './useRestoreFocus'
 
 interface IndexedRelease {
@@ -91,6 +92,7 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [view, setView] = useState<ViewId>('ready')
   const cancelRef = useRef<HTMLButtonElement>(null)
+  const [existingDownloads, setExistingDownloads] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     if (!open) return
@@ -99,6 +101,8 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
     setSelected(Object.fromEntries(review.ready.filter((group) => group.options.length === 1).map((group) => [group.id, group.options[0].index])))
     setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, !hiddenKeys.has(hiddenKey(group.result))])))
     setExpanded({})
+    setExistingDownloads({})
+    void api.getAllDownloadProgress().then((response) => setExistingDownloads(Object.fromEntries(Object.entries(response.downloads || {}).filter(([, progress]) => progress.found).map(([key]) => [key, true])))).catch(() => setExistingDownloads({}))
     setView(review.ready.length ? 'ready' : 'unavailable')
     cancelRef.current?.focus()
   }, [open, review, hiddenKeys])
@@ -112,14 +116,21 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
 
   if (!open) return null
 
-  const enabledGroups = review.ready.filter((group) => enabled[group.id] !== false)
-  const allChecked = review.ready.length > 0 && enabledGroups.length === review.ready.length
+  const enabledGroups = review.ready.filter((group) => {
+    const release = selected[group.id] ?? group.options[0].index
+    return enabled[group.id] !== false && !existingDownloads[`${group.result.key}\0${release}`]
+  })
   const selections = enabledGroups.map((group) => ({ key: group.result.key, release: selected[group.id] ?? group.options[0].index }))
   const totalDelta = enabledGroups.reduce((total, group) => {
     const option = group.options.find(({ index }) => index === (selected[group.id] ?? group.options[0].index)) || group.options[0]
     const localSize = group.part ? (group.result.local_size_by_part?.[group.part] || 0) : group.result.local_size
     return option.release.size && localSize ? total + option.release.size - localSize : total
   }, 0)
+  const selectedOptions = enabledGroups.map((group) => group.options.find(({ index }) => index === (selected[group.id] ?? group.options[0].index)) || group.options[0])
+  const totalDownloadSize = selectedOptions.reduce((total, option) => total + (option.release.size || 0), 0)
+  const torrentCount = new Set(selectedOptions.flatMap((option) => option.release.info_hashes.map((hash) => hash.toLowerCase()))).size
+  const selectedFileCount = selectedOptions.reduce((total, option) => total + (option.release.selected_files?.length || 0), 0)
+  const existingCount = review.ready.filter((group) => existingDownloads[`${group.result.key}\0${selected[group.id] ?? group.options[0].index}`]).length
   const automaticCount = review.ready.filter((group) => group.options.length === 1 && !hiddenKeys.has(hiddenKey(group.result))).length
   const pendingChoices = review.choices.filter((group) => enabled[group.id] !== false && selected[group.id] === undefined).length
   const blockedSorted = [...review.blocked].sort((a, b) =>
@@ -167,9 +178,10 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
           <div className="flex flex-wrap gap-2 text-xs font-bold">
             <button type="button" className={cx('cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'ready' ? 'border-good/60 bg-good/25 text-good' : 'border-good/30 bg-good/10 text-good hover:bg-good/18')} onClick={() => setView('ready')} aria-pressed={view === 'ready'}>{review.ready.length} ready</button>
             {review.blocked.length > 0 && <button type="button" className={cx('cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'unavailable' ? 'border-warn/60 bg-warn/25 text-warn' : 'border-warn/30 bg-warn/10 text-warn hover:bg-warn/18')} onClick={() => setView('unavailable')} aria-pressed={view === 'unavailable'}>{review.blocked.length} unavailable</button>}
-            {review.ready.length > 0 && <button type="button" className={cx('ml-auto cursor-pointer rounded-full border px-3 py-1.5 transition-colors', allChecked ? 'border-line-strong bg-panel text-ink hover:bg-canvas-soft hover:border-ink/25' : 'border-accent/50 bg-accent/15 font-extrabold text-accent-bright hover:bg-accent/25')} title={allChecked ? 'Uncheck every ready download' : 'Check every ready download'} onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, !allChecked])))}>{allChecked ? 'Uncheck all' : 'Check all'}</button>}
+            {review.ready.length > 0 && <div className="ml-auto flex gap-2"><button type="button" className="cursor-pointer rounded-full border border-accent/50 bg-accent/15 px-3 py-1.5 font-extrabold text-accent-bright transition-colors hover:bg-accent/25" onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, true])))}>Check all</button><button type="button" className="cursor-pointer rounded-full border border-line-strong bg-panel px-3 py-1.5 text-ink transition-colors hover:border-ink/25 hover:bg-canvas-soft" onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, false])))}>Uncheck all</button></div>}
           </div>
 
+          {view === 'ready' && review.ready.length > 0 && <div className="grid grid-cols-2 gap-2 sm:grid-cols-5"><div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">Selections</span><strong className="text-sm text-ink">{selections.length}</strong></div><div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">Torrents</span><strong className="text-sm text-ink">{torrentCount}</strong></div><div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">Download size</span><strong className="text-sm text-ink">{formatBytes(totalDownloadSize) || 'Unknown'}</strong></div><div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">File scope</span><strong className="text-sm text-ink">{selectedFileCount ? `${selectedFileCount} files` : 'Whole torrents'}</strong></div><div className={cx('rounded-lg border p-3', existingCount ? 'border-warn/35 bg-warn/8' : 'border-line bg-canvas-soft')}><span className="block text-[10px] font-bold text-muted uppercase">Already in qBit</span><strong className={cx('text-sm', existingCount ? 'text-warn' : 'text-ink')}>{existingCount}</strong></div></div>}
           {view === 'ready' && (
             <section>
               <h3 className="mb-3 text-xs font-extrabold tracking-[0.12em] text-good uppercase">Ready to download</h3>

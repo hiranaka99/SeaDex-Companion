@@ -247,7 +247,7 @@ export async function setupAccount(request: IncomingMessage, usernameValue: unkn
   return { token: createSession(username), username }
 }
 
-export async function login(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<{ token: string; username: string }> {
+export async function verifyLoginCredentials(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<string> {
   if (!existsSync(AUTH_FILE)) throw new AuthError(409, 'Create the administrator account first')
   const address = requestAddress(request)
   checkLoginLimit(address)
@@ -255,14 +255,18 @@ export async function login(request: IncomingMessage, usernameValue: unknown, pa
   const password = String(passwordValue ?? '')
   const record = loadAuthRecord()
   const validHash = await verifyPassword(record, password)
-  const validCredentials = username === record.username && validHash
-  if (!validCredentials) {
+  if (username !== record.username || !validHash) {
     recordFailedLogin(address)
     throw new AuthError(401, 'Invalid username or password')
   }
   if (record.version === 1) saveAuthRecord(await createAuthRecord(record.username, password))
   loginLimits.delete(address)
-  return { token: createSession(record.username), username: record.username }
+  return record.username
+}
+
+export async function login(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<{ token: string; username: string }> {
+  const username = await verifyLoginCredentials(request, usernameValue, passwordValue)
+  return { token: createSession(username), username }
 }
 
 export async function updateAccount(request: IncomingMessage, currentPasswordValue: unknown, usernameValue: unknown, newPasswordValue: unknown): Promise<{ token: string; username: string }> {

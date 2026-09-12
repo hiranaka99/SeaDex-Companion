@@ -1,18 +1,18 @@
-import { createReadStream, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { extname, isAbsolute, normalize, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  DATA_DIR, DEFAULT_CONFIG, STATIC_DIR, applyUserRulesToResults, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, clearScannedData, exclusionRuleKey, forgetOwnedTorrents,
+  DATA_DIR, DEFAULT_CONFIG, STATIC_DIR, applyUserRulesToResults, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, cancelScan, clearScannedData, exclusionRuleKey, forgetOwnedTorrents,
   finishBulkDownloadBatch, getState, indexResultReleases, loadConfig, loadLastResults, loadScanHistory, loadUserRules, log, normalizeQbStates, normalizeScanSchedule, ownedTorrentsSnapshot,
   publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, qbGetTorrents, readLogTail, recordOwnedTorrents, resetBulkDownloadBatch,
   resultsForRequest, runScan, saveConfig, saveUserRules, scannedDataInfo, searchAniListTitles, SECRET_CONFIG_KEYS, settleBulkDownloadBatch, setState, testIntegration,
 } from './app.js'
 import {
   AuthError, authState, expiredSessionCookie, isAuthenticated, login, logout, sessionCookie,
-  setupAccount, updateAccount,
+  setupAccount, updateAccount, verifyLoginCredentials,
 } from './auth.js'
-import type { Config, JsonObject, ScanSchedule } from './types.js'
+import type { Config, JsonObject, ScanSchedule, ScanScope, ScanTrigger } from './types.js'
 
 const SECURITY_HEADERS: Record<string, string> = {
   'Content-Security-Policy': "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: https:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'",
@@ -122,6 +122,58 @@ function serveStatic(pathname: string, response: ServerResponse): boolean {
   return true
 }
 
+const WEBHOOK_DEBOUNCE_SECONDS = 10
+const SCHEDULER_TICK_MS = 5_000
+
+const WEBHOOK_EVENTS: Record<'sonarr' | 'radarr', Set<string>> = {
+  sonarr: new Set(['seriesadd']),
+  radarr: new Set(['movieadded']),
+}
+export const webhookScanState: { dueAt: number | null; sources: Set<'sonarr' | 'radarr'>; sonarrIds: Set<number>; radarrIds: Set<number> } = { dueAt: null, sources: new Set(), sonarrIds: new Set(), radarrIds: new Set() }
+
+export function resetWebhookScanState(): void {
+  webhookScanState.dueAt = null
+  webhookScanState.sources.clear()
+  webhookScanState.sonarrIds.clear()
+  webhookScanState.radarrIds.clear()
+}
+
+async function authenticateWebhook(request: IncomingMessage): Promise<void> {
+  const authorization = String(request.headers.authorization || '')
+  if (!authorization.startsWith('Basic ')) throw new AuthError(401, 'SeaDex login credentials required')
+  let decoded = ''
+  try { decoded = Buffer.from(authorization.slice(6), 'base64').toString('utf8') } catch { throw new AuthError(401, 'SeaDex login credentials required') }
+  const separator = decoded.indexOf(':')
+  if (separator < 0) throw new AuthError(401, 'SeaDex login credentials required')
+  await verifyLoginCredentials(request, decoded.slice(0, separator), decoded.slice(separator + 1))
+}
+
+export function queueWebhookScan(source: 'sonarr' | 'radarr', eventType: unknown, targetId?: unknown, now = Date.now() / 1000): { accepted: boolean; dueAt: number | null } {
+  const normalizedEvent = String(eventType || '').toLowerCase()
+  const id = Number(targetId)
+  if (!WEBHOOK_EVENTS[source].has(normalizedEvent) || !Number.isInteger(id) || id <= 0) return { accepted: false, dueAt: webhookScanState.dueAt }
+  webhookScanState.sources.add(source)
+  if (source === 'sonarr') webhookScanState.sonarrIds.add(id); else webhookScanState.radarrIds.add(id)
+  webhookScanState.dueAt = now + WEBHOOK_DEBOUNCE_SECONDS
+  const dueTime = new Date(webhookScanState.dueAt * 1000).toISOString()
+  log('INFO', `${source === 'sonarr' ? 'Sonarr' : 'Radarr'} ${eventType} webhook queued an automatic scan for ${dueTime}`)
+  return { accepted: true, dueAt: webhookScanState.dueAt }
+}
+
+function webhookTrigger(): ScanTrigger {
+  return webhookScanState.sources.size > 1 ? 'sonarr+radarr' : webhookScanState.sources.has('sonarr') ? 'sonarr' : 'radarr'
+}
+export async function processWebhookScans(config: Config, now = Date.now() / 1000, scan: (config: Config, trigger: ScanTrigger, scope: ScanScope) => Promise<void> = (scanConfig, trigger, scope) => runScan(scanConfig, {}, trigger, scope)): Promise<void> {
+  const scheduledPending = autocheckState.pending
+  if (webhookScanState.dueAt === null || now < webhookScanState.dueAt || getState().running) return
+  const trigger = scheduledPending ? 'scheduled' : webhookTrigger()
+  const scope: ScanScope = scheduledPending ? {} : { sonarrIds: [...webhookScanState.sonarrIds], radarrIds: [...webhookScanState.radarrIds] }
+  resetWebhookScanState()
+  autocheckState.pending = false
+  log('INFO', `Webhook debounce elapsed; starting ${scheduledPending ? 'full scheduled' : `incremental ${trigger}`} scan`)
+  await scan(config, trigger, scope)
+}
+
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const method = request.method || 'GET'
   const url = new URL(request.url || '/', 'http://localhost')
@@ -134,6 +186,16 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return
     }
     return sendJson(response, 200, { status: 'ok' })
+  }
+
+  const webhookMatch = path.match(/^\/api\/webhooks\/(sonarr|radarr)$/)
+  if (method === 'POST' && webhookMatch) {
+    const source = webhookMatch[1] as 'sonarr' | 'radarr'
+    await authenticateWebhook(request)
+    const data = await readJson(request)
+    const queued = queueWebhookScan(source, data.eventType, source === 'sonarr' ? data.series?.id : data.movie?.id)
+    if (!queued.accepted) { response.writeHead(204, { ...SECURITY_HEADERS, 'Cache-Control': 'no-store' }); response.end(); return }
+    return sendJson(response, 202, { accepted: true, action: 'scan_queued', due_at: queued.dueAt }, { 'Cache-Control': 'no-store' })
   }
 
   if (method === 'GET' && path === '/api/auth/status') {
@@ -251,7 +313,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       }
       if (!(key in data)) continue
       const value = data[key]
-      if (key === 'scan_schedule') config.scan_schedule = normalizeScanSchedule(value)
+      if (key === 'scan_schedule') {
+        try { config.scan_schedule = normalizeScanSchedule(value) }
+        catch (error) { return sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }) }
+      }
       else if (typeof defaultValue === 'boolean') {
         if (typeof value !== 'boolean') return sendJson(response, 400, { error: `${key} must be a boolean` })
         config[key] = value
@@ -313,7 +378,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const state = getState()
     return sendJson(response, 200, {
       running: state.running, progress: state.progress, total: state.total, message: state.message,
-      error: state.error, last_run: state.last_run, next_check: autocheckState.next,
+      error: state.error, cancelled: state.cancelled, trigger: state.trigger, source_errors: state.source_errors,
+      last_run: state.last_run, next_check: autocheckState.next,
+      webhook_scan: { queued: webhookScanState.dueAt !== null, due_at: webhookScanState.dueAt, sources: [...webhookScanState.sources] },
     })
   }
 
@@ -326,10 +393,13 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (method === 'GET' && path === '/api/logs') {
     const requested = Number.parseInt(url.searchParams.get('lines') || '500', 10)
     const count = Math.max(1, Math.min(Number.isFinite(requested) ? requested : 500, 2000))
-    // Only a bounded tail of the log file is read (see readLogTail), so polling
-    // this endpoint stays cheap as the log grows and survives log rotation.
     const lines = readLogTail().slice(-count)
     return sendJson(response, 200, { lines, total: lines.length })
+  }
+
+  if (method === 'POST' && path === '/api/scan/cancel') {
+    if (!cancelScan()) return sendJson(response, 409, { ok: false, error: 'No scan is running' })
+    return sendJson(response, 202, { ok: true })
   }
 
   if (method === 'POST' && path === '/api/scan') {
@@ -337,15 +407,15 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       log('WARNING', 'Manual scan request ignored: a scan is already running')
       return sendJson(response, 409, { ok: false, error: 'Scan already running' })
     }
-    log('INFO', 'Manual scan requested')
     let config: Config
     try { config = loadConfig() } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       log('ERROR', `Manual scan could not start: ${message}`)
       return sendJson(response, 500, { ok: false, error: message })
     }
+    resetWebhookScanState(); autocheckState.pending = false
     setState({ running: true })
-    void runScan(config)
+    void runScan(config, {}, 'manual')
     return sendJson(response, 200, { ok: true })
   }
 
@@ -733,7 +803,8 @@ export function nextScheduledTime(schedule: ScanSchedule, after: number): number
 function persistAutocheckState(): void {
   const temporary = `${SCHEDULE_STATE_FILE}.tmp`
   writeFileSync(temporary, JSON.stringify({ signature: autocheckState.signature, next: autocheckState.next }), 'utf8')
-  renameSync(temporary, SCHEDULE_STATE_FILE)
+  try { renameSync(temporary, SCHEDULE_STATE_FILE) }
+  catch { writeFileSync(SCHEDULE_STATE_FILE, readFileSync(temporary)); try { rmSync(temporary) } catch { /* best effort */ } }
 }
 
 function restoreAutocheckState(): void {
@@ -770,25 +841,25 @@ export function refreshAutocheckSchedule(config: Config, now = Date.now() / 1000
   }
 }
 
-export async function processAutocheck(config: Config, now = Date.now() / 1000, scan: (config: Config) => Promise<void> = runScan): Promise<void> {
+export async function processAutocheck(config: Config, now = Date.now() / 1000, scan: (config: Config, trigger: ScanTrigger) => Promise<void> = (scanConfig, trigger) => runScan(scanConfig, {}, trigger)): Promise<void> {
   refreshAutocheckSchedule(config, now)
   const schedule = config.scan_schedule
   if (!schedule.enabled) return
   const due = autocheckState.next !== null && now >= autocheckState.next
   if (due) {
     autocheckState.next = nextScheduledTime(schedule, now)
-    if (getState().running) autocheckState.pending = true
+    if (getState().running || webhookScanState.dueAt !== null) autocheckState.pending = true
     persistAutocheckState()
   }
   if (!due && !autocheckState.pending) return
-  if (getState().running) {
-    if (due) log('INFO', 'Automatic scan due while another scan is running — queued one scan')
+  if (getState().running || webhookScanState.dueAt !== null) {
+    if (due && getState().running) log('INFO', 'Automatic scan due while another scan is running — queued one scan')
     return
   }
   autocheckState.pending = false
   persistAutocheckState()
   log('INFO', `Automatic scan triggered (${schedule.mode} schedule)`)
-  await scan(config)
+  await scan(config, 'scheduled')
 }
 
 export function startScheduler(): NodeJS.Timeout {
@@ -796,10 +867,10 @@ export function startScheduler(): NodeJS.Timeout {
   try { const config = loadConfig(); refreshAutocheckSchedule(config); skipMissedAutocheck(config, Date.now() / 1000) } catch (error) { log('ERROR', `Scheduler initialization failed: ${error instanceof Error ? error.message : String(error)}`) }
   return setInterval(() => {
     void (async () => {
-      try { await processAutocheck(loadConfig()) }
+      try { const config = loadConfig(); await processAutocheck(config); await processWebhookScans(config) }
       catch (error) { log('ERROR', `Scheduler error: ${error instanceof Error ? error.message : String(error)}`) }
     })()
-  }, 30_000)
+  }, SCHEDULER_TICK_MS)
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)

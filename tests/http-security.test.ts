@@ -138,6 +138,24 @@ test('account setup, authenticated access, revocation, and login throttling work
   assert.equal((await fetch(`${baseUrl}/api/config`, { headers: { Cookie: setupCookie } })).status, 401)
   assert.equal((await fetch(`${baseUrl}/api/config`, { headers: { Cookie: updatedCookie } })).status, 200)
 
+  const basic = `Basic ${Buffer.from('administrator:new correct horse battery staple').toString('base64')}`
+  const wrongBasic = `Basic ${Buffer.from('administrator:incorrect password').toString('base64')}`
+  assert.equal((await fetch(`${baseUrl}/api/webhooks/sonarr`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventType: 'SeriesAdd', series: { id: 42 } }) })).status, 401)
+  assert.equal((await fetch(`${baseUrl}/api/webhooks/sonarr`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: wrongBasic }, body: JSON.stringify({ eventType: 'SeriesAdd', series: { id: 42 } }) })).status, 401)
+  assert.equal((await fetch(`${baseUrl}/api/webhooks/sonarr`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: basic }, body: JSON.stringify({ eventType: 'Download', series: { id: 42 } }) })).status, 204)
+  assert.equal((await fetch(`${baseUrl}/api/webhooks/sonarr`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: basic }, body: JSON.stringify({ eventType: 'SeriesAdd', series: { id: 42 } }) })).status, 202)
+  const queuedStatus = await (await fetch(`${baseUrl}/api/status`, { headers: { Cookie: updatedCookie } })).json()
+  assert.deepEqual(queuedStatus.webhook_scan.sources, ['sonarr'])
+  assert.equal(queuedStatus.webhook_scan.queued, true)
+
+  const invalidSchedule = await fetch(`${baseUrl}/api/config`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: updatedCookie },
+    body: JSON.stringify({ scan_schedule: { enabled: true, mode: 'weekly', interval_minutes: 60, times: ['03:00'], weekdays: [], timezone: 'UTC', missed_run: 'run_once' } }),
+  })
+  assert.equal(invalidSchedule.status, 400)
+  assert.match(String((await invalidSchedule.json()).error), /at least one day/)
+  assert.equal((await fetch(`${baseUrl}/api/scan/cancel`, { method: 'POST', headers: { Cookie: updatedCookie } })).status, 409)
+
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const failed = await fetch(`${baseUrl}/api/auth/login`, {
       method: 'POST',
