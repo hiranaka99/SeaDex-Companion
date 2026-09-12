@@ -440,6 +440,41 @@ describe('Sonarr and Radarr URL normalization', () => {
     }
   })
 
+  test('hides unreleased Sonarr seasons and Radarr movies', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input)
+      let data: JsonObject[] = []
+      if (url.includes('sonarr') && url.endsWith('/series')) data = [{
+        id: 20, title: 'Future Show', titleSlug: 'future-show',
+        seasons: [
+          { seasonNumber: 1, statistics: { episodeCount: 2, releaseGroups: [], sizeOnDisk: 0 } },
+          { seasonNumber: 2, statistics: { episodeCount: 12, releaseGroups: [], sizeOnDisk: 0 } },
+        ],
+      }]
+      else if (url.includes('sonarr') && url.includes('/episode?')) data = [
+        { seasonNumber: 1, episodeNumber: 1, episodeFileId: 0, airDate: '2024-01-05T09:00:00Z' },
+        { seasonNumber: 1, episodeNumber: 2, episodeFileId: 0, airDate: '2024-01-12T09:00:00Z' },
+        { seasonNumber: 2, episodeNumber: 1, episodeFileId: 0, airDate: '2030-01-05T09:00:00Z' },
+        { seasonNumber: 2, episodeNumber: 2, episodeFileId: 0, airDate: '2030-01-12T09:00:00Z' },
+      ]
+      else if (url.includes('radarr') && url.endsWith('/movie')) data = [
+        { id: 21, title: 'Old Movie', titleSlug: 'old-movie', inCinemas: '2024-03-01T00:00:00Z', statistics: { releaseGroups: [], sizeOnDisk: 0 } },
+        { id: 22, title: 'Upcoming Movie', titleSlug: 'upcoming-movie', inCinemas: '2030-03-01T00:00:00Z', statistics: { releaseGroups: [], sizeOnDisk: 0 } },
+      ]
+      return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }) as typeof fetch
+
+    try {
+      const items = await localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key', radarr_url: 'http://radarr', radarr_key: 'key' })
+      assert.equal(items.length, 2)
+      assert.deepEqual(Object.keys(items[0].seasons), ['1'])
+      assert.equal(items[1].id, 21)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   test('fails the scan input when a configured library API is unavailable', async () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = (async () => new Response('unavailable', { status: 503 })) as typeof fetch
