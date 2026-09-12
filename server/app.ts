@@ -727,10 +727,11 @@ export async function localItems(config: Config, scope: ScanScope = {}): Promise
       const groupsBySeasonEpisode = new Map<number, Map<string, Set<number>>>()
       const episodeNumbersBySeason = new Map<number, Set<number>>()
       const fileEpisodes = new Map<number, { season: number; episode: number }[]>()
-      // A season counts as released once any of its episodes has aired. Seasons
-      // with no air-date metadata at all are kept so incomplete TVDB data does
-      // not hide real library entries.
+      // A season is shown when any episode has aired or any episode file exists;
+      // announced seasons with neither signal (TVDB usually leaves air dates
+      // empty until a schedule is set) are assumed unreleased and hidden.
       const seasonAired = new Map<number, boolean>()
+      const seasonHasFile = new Set<number>()
       for (const episode of episodes) {
         const season = Number(episode.seasonNumber || 0)
         if (Number.isInteger(season) && season > 0) {
@@ -742,6 +743,7 @@ export async function localItems(config: Config, scope: ScanScope = {}): Promise
         const seasonNumbers = episodeNumbersBySeason.get(season) || new Set<number>()
         seasonNumbers.add(number); episodeNumbersBySeason.set(season, seasonNumbers)
         const fileId = Number(episode.episodeFileId || episode.episodeFile?.id || 0)
+        if (fileId > 0) seasonHasFile.add(season)
         const group = String(episode.episodeFile?.releaseGroup || fileGroups.get(fileId) || '').trim()
         if (fileId && !fileSizes.has(fileId) && episode.episodeFile?.size) fileSizes.set(fileId, Number(episode.episodeFile.size))
         if (fileId) fileEpisodes.set(fileId, [...(fileEpisodes.get(fileId) || []), { season, episode: number }])
@@ -765,8 +767,7 @@ export async function localItems(config: Config, scope: ScanScope = {}): Promise
       for (const season of show.seasons || []) {
         const number = season.seasonNumber || 0
         if (number === 0) continue
-        const aired = seasonAired.get(Number(number))
-        if (aired !== undefined && !aired) continue
+        if (seasonAired.get(Number(number)) !== true && !seasonHasFile.has(Number(number))) continue
         const stats = season.statistics || {}
         const groups = stats.releaseGroups || []
         const episodeGroups = groupsBySeasonEpisode.get(Number(number))
@@ -790,10 +791,11 @@ export async function localItems(config: Config, scope: ScanScope = {}): Promise
     const movies = await api(`${arrApiUrl(config.radarr_url)}/movie`, config.radarr_key) as JsonObject[]
     for (const movie of movies) {
       if (scope.radarrIds?.length && !scope.radarrIds.includes(Number(movie.id))) continue
-      // Skip movies that have not reached their cinema release date yet.
-      const inCinemas = Date.parse(String(movie.inCinemas || ''))
-      if (Number.isFinite(inCinemas) && inCinemas > now) continue
       const stats = movie.statistics || {}
+      // A movie is shown once it has reached its cinema release date or any
+      // file exists; entries with neither signal are assumed unreleased.
+      const inCinemas = Date.parse(String(movie.inCinemas || ''))
+      if (!(Number.isFinite(inCinemas) && inCinemas <= now) && Number(stats.sizeOnDisk || 0) <= 0) continue
       const groups = stats.releaseGroups || []
       items.push({
         arr: 'Radarr', id: movie.id, title: movie.title, slug: movie.titleSlug,

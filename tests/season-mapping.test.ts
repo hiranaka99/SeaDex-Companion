@@ -399,8 +399,8 @@ describe('Sonarr and Radarr URL normalization', () => {
         seasons: [{ seasonNumber: 1, statistics: { releaseGroups: ['IK'], sizeOnDisk: 100 } }],
       }]
       else if (url.includes('/episode?')) data = [
-        { seasonNumber: 1, episodeNumber: 2, episodeFileId: 0 },
-        { seasonNumber: 1, episodeNumber: 1, episodeFileId: 20 },
+        { seasonNumber: 1, episodeNumber: 2, episodeFileId: 0, airDate: '2024-01-12T09:00:00Z' },
+        { seasonNumber: 1, episodeNumber: 1, episodeFileId: 20, airDate: '2024-01-05T09:00:00Z' },
         { seasonNumber: 0, episodeNumber: 1, episodeFileId: 0 },
       ]
       else if (url.includes('/episodefile?')) data = [{ id: 20, releaseGroup: 'IK', size: 100 }]
@@ -426,8 +426,8 @@ describe('Sonarr and Radarr URL normalization', () => {
         id: 11, title: 'New Series', titleSlug: 'new-series',
         seasons: [{ seasonNumber: 0 }, { seasonNumber: 1, statistics: { episodeCount: 12, releaseGroups: [], sizeOnDisk: 0 } }],
       }]
-      else if (url.includes('sonarr') && url.includes('/episode?')) data = Array.from({ length: 12 }, (_, index) => ({ seasonNumber: 1, episodeNumber: index + 1, episodeFileId: 0 }))
-      else if (url.includes('radarr') && url.endsWith('/movie')) data = [{ id: 12, title: 'New Movie', titleSlug: 'new-movie', statistics: { releaseGroups: [], sizeOnDisk: 0 } }]
+      else if (url.includes('sonarr') && url.includes('/episode?')) data = Array.from({ length: 12 }, (_, index) => ({ seasonNumber: 1, episodeNumber: index + 1, episodeFileId: 0, airDate: '2024-01-05T09:00:00Z' }))
+      else if (url.includes('radarr') && url.endsWith('/movie')) data = [{ id: 12, title: 'New Movie', titleSlug: 'new-movie', inCinemas: '2024-03-01T00:00:00Z', statistics: { releaseGroups: [], sizeOnDisk: 0 } }]
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }) as typeof fetch
     try {
@@ -450,6 +450,8 @@ describe('Sonarr and Radarr URL normalization', () => {
         seasons: [
           { seasonNumber: 1, statistics: { episodeCount: 2, releaseGroups: [], sizeOnDisk: 0 } },
           { seasonNumber: 2, statistics: { episodeCount: 12, releaseGroups: [], sizeOnDisk: 0 } },
+          { seasonNumber: 3, statistics: { episodeCount: 8, releaseGroups: [], sizeOnDisk: 0 } },
+          { seasonNumber: 4, statistics: { episodeCount: 1, releaseGroups: ['IK'], sizeOnDisk: 5 } },
         ],
       }]
       else if (url.includes('sonarr') && url.includes('/episode?')) data = [
@@ -457,10 +459,14 @@ describe('Sonarr and Radarr URL normalization', () => {
         { seasonNumber: 1, episodeNumber: 2, episodeFileId: 0, airDate: '2024-01-12T09:00:00Z' },
         { seasonNumber: 2, episodeNumber: 1, episodeFileId: 0, airDate: '2030-01-05T09:00:00Z' },
         { seasonNumber: 2, episodeNumber: 2, episodeFileId: 0, airDate: '2030-01-12T09:00:00Z' },
+        { seasonNumber: 3, episodeNumber: 1, episodeFileId: 0 },
+        { seasonNumber: 4, episodeNumber: 1, episodeFileId: 30 },
       ]
+      else if (url.includes('sonarr') && url.includes('/episodefile?')) data = [{ id: 30, releaseGroup: 'IK', size: 5 }]
       else if (url.includes('radarr') && url.endsWith('/movie')) data = [
         { id: 21, title: 'Old Movie', titleSlug: 'old-movie', inCinemas: '2024-03-01T00:00:00Z', statistics: { releaseGroups: [], sizeOnDisk: 0 } },
         { id: 22, title: 'Upcoming Movie', titleSlug: 'upcoming-movie', inCinemas: '2030-03-01T00:00:00Z', statistics: { releaseGroups: [], sizeOnDisk: 0 } },
+        { id: 23, title: 'Unknown Movie', titleSlug: 'unknown-movie', statistics: { releaseGroups: [], sizeOnDisk: 0 } },
       ]
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }) as typeof fetch
@@ -468,7 +474,7 @@ describe('Sonarr and Radarr URL normalization', () => {
     try {
       const items = await localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key', radarr_url: 'http://radarr', radarr_key: 'key' })
       assert.equal(items.length, 2)
-      assert.deepEqual(Object.keys(items[0].seasons), ['1'])
+      assert.deepEqual(Object.keys(items[0].seasons), ['1', '4'])
       assert.equal(items[1].id, 21)
     } finally {
       globalThis.fetch = originalFetch
