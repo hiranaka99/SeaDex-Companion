@@ -112,6 +112,11 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
   )
   const autoCheckMinutes = status.next_check ? Math.max(0, Math.round((status.next_check - Date.now() / 1000) / 60)) : null
   const autoCheckLabel = autoCheckMinutes == null ? null : (() => { const hours = Math.floor(autoCheckMinutes / 60); const minutes = autoCheckMinutes % 60; return hours > 0 ? (minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`) : `${minutes} min` })()
+  const scheduleDescription = config?.scan_schedule?.enabled
+    ? config.scan_schedule.mode === 'interval'
+      ? `Every ${config.scan_schedule.interval_minutes >= 60 ? `${Math.floor(config.scan_schedule.interval_minutes / 60)}h ${config.scan_schedule.interval_minutes % 60 ? `${config.scan_schedule.interval_minutes % 60}m` : ''}`.trim() : `${config.scan_schedule.interval_minutes}m`}`
+      : `${config.scan_schedule.mode === 'daily' ? 'Daily' : config.scan_schedule.weekdays.map((day) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ')} at ${config.scan_schedule.times.join(', ')} ${config.scan_schedule.timezone}`
+    : null
   const clearFilters = () => { setSearch(''); setArr(''); setStatusFilter(''); setSort('recommended'); setShowHidden(false) }
   const statusFilters: { value: string; label: string; count: number; tone: string; icon: IconName }[] = [
     { value: '', label: 'All', count: allGroups.length, tone: 'text-ink', icon: 'library' },
@@ -223,7 +228,7 @@ export default function AnimeTab({ results, config, status, lastRun, onScan, loa
   return (
     <section>
       <header className="mb-6 flex flex-wrap items-start justify-between gap-5">
-        <div><p className="mb-1 text-xs font-bold tracking-[0.14em] text-accent-bright uppercase">Overview</p><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}</span>{autoCheckLabel !== null && <span>Next check in ~{autoCheckLabel}</span>}</div></div>
+        <div><p className="mb-1 text-xs font-bold tracking-[0.14em] text-accent-bright uppercase">Overview</p><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}</span>{autoCheckLabel !== null && <span title={scheduleDescription || undefined}>{scheduleDescription} · next in ~{autoCheckLabel}</span>}{status.webhook_scan.queued && <span className="text-accent-bright">Webhook scan queued</span>}</div></div>
         <div className="flex flex-wrap items-center gap-2.5">
           <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/10 text-good hover:bg-good/18')} onClick={() => { setBulkOutcome(null); setBulkConfirm('start') }} disabled={status.running || bulkBusy !== null || upgradeSeasonCount === 0}>{bulkBusy === 'start' ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}<span>Bulk download</span></button>
           <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={() => setBulkConfirm('cancel')} disabled={status.running || bulkBusy !== null}>{bulkBusy === 'cancel' ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}<span>Bulk cancel</span></button>

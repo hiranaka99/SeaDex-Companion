@@ -71,6 +71,12 @@ export interface ScanHistoryChange {
 export interface ScanHistoryEntry {
   id: string
   run_at: string
+  trigger?: 'manual' | 'scheduled' | 'sonarr' | 'radarr' | 'sonarr+radarr'
+  duration_seconds?: number
+  outcome?: 'success' | 'partial' | 'cancelled' | 'failed'
+  scanned_titles?: number
+  source_errors?: Record<string, string>
+  error?: string
   counts: Record<string, number>
   changes: ScanHistoryChange[]
 }
@@ -132,6 +138,10 @@ export interface Status {
   total: number
   message: string
   error: string | null
+  cancelled: boolean
+  trigger: 'manual' | 'scheduled' | 'sonarr' | 'radarr' | 'sonarr+radarr' | null
+  source_errors: Record<string, string>
   last_run: string | null
   next_check: number | null
+  webhook_scan: { queued: boolean; due_at: number | null; sources: Array<'sonarr' | 'radarr'> }
 }

@@ -110,6 +110,11 @@ Open **http://localhost:8080**, create the administrator account, then set your 
 
 Automatic scans are configured under **Configuration → Automation**. Choose an interval, a daily local time, or selected weekdays; calendar schedules use the configured IANA timezone and can either run once after downtime or skip missed runs.
 
+For near-real-time discovery of newly added library entries, add Sonarr and Radarr webhook connections under **Configuration → Library webhooks**. Configure HTTP Basic Authentication using the same username and password used to sign in to SeaDex. SeaDex accepts Sonarr `SeriesAdd` and Radarr `MovieAdded` events and groups bursts for 10 seconds before one incremental scan. Keep the time-based schedule enabled: it reconciles existing titles when releases.moe updates older entries.
+
+
+The operation panel can cancel an active scan while preserving the previous complete results. Webhook scans update only the affected Sonarr series or Radarr movie. The Automation panel validates schedules, previews the next run before saving, and provides a **Run now** action. Bulk-download review summarizes download size, unique torrents, selected files, and torrents already present in qBittorrent. Scan history records trigger, duration, scanned-title count, and partial integration failures.
+
 For development (live reload, separate terminals):
 
 ```bash

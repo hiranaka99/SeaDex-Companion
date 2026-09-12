@@ -26,6 +26,13 @@ export interface Config extends JsonObject {
   hidden: string[]
 }
 
+export type ScanTrigger = 'manual' | 'scheduled' | 'sonarr' | 'radarr' | 'sonarr+radarr'
+
+export interface ScanScope {
+  sonarrIds?: number[]
+  radarrIds?: number[]
+}
+
 export interface ScanState {
   running: boolean
   progress: number
@@ -34,6 +41,9 @@ export interface ScanState {
   results: JsonObject[]
   error: string | null
   last_run: string | null
+  cancelled: boolean
+  trigger: ScanTrigger | null
+  source_errors: Record<string, string>
 }
 
 export interface ReleaseCandidate extends JsonObject {

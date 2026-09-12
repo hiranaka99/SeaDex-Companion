@@ -58,6 +58,7 @@ export const saveConfig = (cfg: Partial<Config>) =>
     body: JSON.stringify(cfg),
   })
 
+
 export const testConnection = (service: 'sonarr' | 'radarr' | 'qbittorrent' | 'discord', config: Record<string, any>) =>
   api<{ ok: boolean; message: string }>('/api/config/test', {
     method: 'POST',
@@ -102,6 +103,9 @@ export const getLogs = (lines = 500) =>
 
 export const startScan = () =>
   api<{ ok: boolean; error?: string }>('/api/scan', { method: 'POST' })
+
+export const cancelScan = () =>
+  api<{ ok: boolean; error?: string }>('/api/scan/cancel', { method: 'POST' })
 
 export const setHidden = (key: string, hidden: boolean) =>
   api<{ ok: boolean; hidden: string[] }>('/api/hidden', {

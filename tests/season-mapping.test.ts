@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
 import {
-  anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, clearScannedData, commonBestRelease, decryptSecretValues, describeResultChange, discordMessageBody, DEFAULT_CONFIG, effectiveSeasonParts,
-  encryptSecretValues, getState, loadStringSet, localItems, localPartOwnership, normalizeQbStates, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
+  anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, cancelScan, clearScannedData, commonBestRelease, decryptSecretValues, describeResultChange, discordMessageBody, DEFAULT_CONFIG, effectiveSeasonParts,
+  encryptSecretValues, getState, loadLocalLibrary, loadStringSet, localItems, localPartOwnership, normalizeQbStates, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
   qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest,
   resetRuntimeForTests, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration,
 } from '../server/app.js'
-import { nextScheduledTime, parseReleaseIndex, processAutocheck, refreshAutocheckSchedule } from '../server/index.js'
-import type { JsonObject, ReleaseCandidate } from '../server/types.js'
+import { nextScheduledTime, parseReleaseIndex, processAutocheck, processWebhookScans, queueWebhookScan, refreshAutocheckSchedule, resetWebhookScanState, webhookScanState } from '../server/index.js'
+import type { JsonObject, ReleaseCandidate, ScanTrigger } from '../server/types.js'
 
 function node(id: number, title: string, year: number | null, season: string | null, episodes: number | null, options: JsonObject = {}): JsonObject {
   const edges: JsonObject[] = []
@@ -45,7 +45,7 @@ async function makeChain(nodes: Map<number, JsonObject>) {
   })
 }
 
-beforeEach(() => resetRuntimeForTests())
+beforeEach(() => { resetRuntimeForTests(); resetWebhookScanState(); if (existsSync(join(process.cwd(), 'scan_schedule_state.json'))) rmSync(join(process.cwd(), 'scan_schedule_state.json')); if (existsSync(join(process.cwd(), 'scan_schedule_state.json.tmp'))) rmSync(join(process.cwd(), 'scan_schedule_state.json.tmp')) })
 
 describe('configuration secret security', () => {
   test('encrypts and authenticates configuration secrets', () => {
@@ -158,6 +158,17 @@ describe('manual rules and scan history', () => {
     assert.deepEqual(entry.counts, { best: 1, upgrade: 1 })
   })
 
+  test('records trigger, duration, scope size, and partial source failures', () => {
+    const entry = buildScanHistoryEntry([], [{ key: 'new', title: 'New', arr: 'Sonarr', status: 'missing' }], 'today', 'scheduled', {
+      durationSeconds: 4.2, scannedTitles: 1, sourceErrors: { Radarr: 'HTTP 503' },
+    })
+    assert.equal(entry.trigger, 'scheduled')
+    assert.equal(entry.duration_seconds, 4.2)
+    assert.equal(entry.scanned_titles, 1)
+    assert.equal(entry.outcome, 'partial')
+    assert.deepEqual(entry.source_errors, { Radarr: 'HTTP 503' })
+  })
+
   test('passes a saved manual AniList ID into title resolution', async () => {
     let receivedOverride: number | undefined
     await runScan({ sonarr_url: 'http://sonarr/api/v3' }, {
@@ -259,6 +270,14 @@ describe('notifications and scheduling', () => {
       enabled: true, mode: 'interval', interval_minutes: 90, times: ['03:00'], weekdays: [0], timezone: 'UTC', missed_run: 'run_once',
     })
     assert.equal(normalizeScanSchedule(undefined, 0).enabled, false)
+    assert.equal(normalizeScanSchedule(undefined).enabled, true)
+  })
+
+  test('rejects invalid enabled scan schedules', () => {
+    assert.throws(() => normalizeScanSchedule({ ...DEFAULT_CONFIG.scan_schedule, interval_minutes: 1 }), /between 5/)
+    assert.throws(() => normalizeScanSchedule({ ...DEFAULT_CONFIG.scan_schedule, mode: 'daily', times: ['03:00', '03:00'] }), /duplicates/)
+    assert.throws(() => normalizeScanSchedule({ ...DEFAULT_CONFIG.scan_schedule, mode: 'weekly', weekdays: [] }), /at least one day/)
+    assert.throws(() => normalizeScanSchedule({ ...DEFAULT_CONFIG.scan_schedule, mode: 'daily', timezone: 'Not/AZone' }), /IANA timezone/)
   })
 
   test('calculates interval, daily, and weekly schedules in their configured timezone', () => {
@@ -285,6 +304,29 @@ describe('notifications and scheduling', () => {
     await processAutocheck(config, 3_000, async () => { scans += 1 })
     assert.equal(scans, 1)
     assert.equal(autocheckState.pending, false)
+  })
+
+  test('debounces only new Sonarr and Radarr entries and combines their trigger', async () => {
+    const config = { ...DEFAULT_CONFIG }
+    assert.deepEqual(queueWebhookScan('sonarr', 'Download', 10, 1_000), { accepted: false, dueAt: null })
+    assert.deepEqual(queueWebhookScan('sonarr', 'SeriesAdd', 10, 1_000), { accepted: true, dueAt: 1_010 })
+    assert.deepEqual(queueWebhookScan('radarr', 'MovieAdded', 20, 1_003), { accepted: true, dueAt: 1_013 })
+    const calls: Array<{ trigger: ScanTrigger; sonarrIds?: number[]; radarrIds?: number[] }> = []
+    await processWebhookScans(config, 1_012, async (_config, trigger, scope) => { calls.push({ trigger, ...scope }) })
+    assert.equal(calls.length, 0)
+    await processWebhookScans(config, 1_013, async (_config, trigger, scope) => { calls.push({ trigger, ...scope }) })
+    assert.deepEqual(calls, [{ trigger: 'sonarr+radarr', sonarrIds: [10], radarrIds: [20] }])
+    assert.equal(webhookScanState.dueAt, null)
+  })
+
+  test('starts a queued webhook scan after the fixed debounce', async () => {
+    const config = { ...DEFAULT_CONFIG }
+    queueWebhookScan('sonarr', 'SeriesAdd', 10, 2_000)
+    const triggers: ScanTrigger[] = []
+    await processWebhookScans(config, 2_009, async (_config, trigger) => { triggers.push(trigger) })
+    assert.equal(triggers.length, 0)
+    await processWebhookScans(config, 2_010, async (_config, trigger) => { triggers.push(trigger) })
+    assert.deepEqual(triggers, ['sonarr'])
   })
 
   test('allows an upgrade notification after the same result was resolved', async () => {
@@ -370,6 +412,29 @@ describe('Sonarr and Radarr URL normalization', () => {
       assert.deepEqual(items[0].seasons[1].episode_numbers, [1, 2])
       assert.equal(items[0].seasons[1].episode_count, 2)
       assert.deepEqual(items[0].seasons[1].groups_by_episode, { IK: [1] })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test('includes newly added Sonarr series and Radarr movies before files exist', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input)
+      let data: JsonObject[] = []
+      if (url.includes('sonarr') && url.endsWith('/series')) data = [{
+        id: 11, title: 'New Series', titleSlug: 'new-series',
+        seasons: [{ seasonNumber: 0 }, { seasonNumber: 1, statistics: { episodeCount: 12, releaseGroups: [], sizeOnDisk: 0 } }],
+      }]
+      else if (url.includes('sonarr') && url.includes('/episode?')) data = Array.from({ length: 12 }, (_, index) => ({ seasonNumber: 1, episodeNumber: index + 1, episodeFileId: 0 }))
+      else if (url.includes('radarr') && url.endsWith('/movie')) data = [{ id: 12, title: 'New Movie', titleSlug: 'new-movie', statistics: { releaseGroups: [], sizeOnDisk: 0 } }]
+      return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }) as typeof fetch
+    try {
+      const items = await localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key', radarr_url: 'http://radarr', radarr_key: 'key' })
+      assert.equal(items.length, 2)
+      assert.deepEqual(items[0].seasons[1], { groups: [], size: 0, episode_numbers: Array.from({ length: 12 }, (_, index) => index + 1), episode_count: 12, groups_by_episode: {}, sizes_by_episode: {} })
+      assert.deepEqual(items[1].seasons[0], { groups: [], size: 0 })
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -950,6 +1015,50 @@ describe('release selection and combined cours', () => {
     })
     assert.deepEqual(getState().results, previous)
     assert.match(getState().error || '', /Sonarr unavailable/)
+  })
+
+  test('preserves prior results when a scan is cancelled', async () => {
+    setState({ results: [{ key: 'old', title: 'Preserved' }], last_run: 'before' })
+    let releaseScan!: () => void
+    const blocked = new Promise<void>((resolve) => { releaseScan = resolve })
+    const scan = runScan(DEFAULT_CONFIG, {
+      seadexBest: async () => { await blocked; return new Map() },
+      localItems: async () => [], loadCache: () => ({}), saveLastResults: () => assert.fail('cancelled scans must not be saved'), autoNotifyNew: async () => 0,
+    })
+    assert.equal(cancelScan(), true)
+    releaseScan()
+    await scan
+    assert.equal(getState().cancelled, true)
+    assert.deepEqual(getState().results, [{ key: 'old', title: 'Preserved' }])
+  })
+
+  test('retains unscanned titles during an incremental webhook scan', async () => {
+    setState({ results: [{ key: 'old', library_key: 'Sonarr:item1', title: 'Existing', arr: 'Sonarr' }] })
+    await runScan(DEFAULT_CONFIG, {
+      seadexBest: async () => new Map(),
+      localItems: async (_config, scope) => {
+        assert.deepEqual(scope?.sonarrIds, [2])
+        return [{ arr: 'Sonarr', id: 2, title: 'New', seasons: { 1: { groups: [], size: 0 } } }]
+      },
+      anilistChain: async () => [], loadCache: () => ({}), saveLastResults: () => undefined, autoNotifyNew: async () => 0,
+    }, 'sonarr', { sonarrIds: [2] })
+    assert.deepEqual(getState().results.map((item) => item.title), ['Existing', 'New'])
+  })
+
+  test('preserves results from an unavailable integration', async () => {
+    setState({ results: [{ key: 'radarr-old', library_key: 'Radarr:item1', title: 'Movie', arr: 'Radarr' }] })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      if (String(input).includes('radarr')) return new Response('offline', { status: 503 })
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }) as typeof fetch
+    try {
+      await runScan({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key', radarr_url: 'http://radarr', radarr_key: 'key' }, {
+        seadexBest: async () => new Map(), loadCache: () => ({}), saveLastResults: () => undefined, autoNotifyNew: async () => 0,
+      })
+      assert.deepEqual(getState().results.map((item) => item.title), ['Movie'])
+      assert.match(getState().source_errors.Radarr, /HTTP 503/)
+    } finally { globalThis.fetch = originalFetch }
   })
 
   test('treats a filler SeaDex page with no releases as uncovered', async () => {

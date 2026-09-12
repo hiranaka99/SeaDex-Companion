@@ -2,7 +2,7 @@ import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, 
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { ChainEntry, ChainPart, Config, JsonObject, ReleaseCandidate, ScanState } from './types.js'
+import type { ChainEntry, ChainPart, Config, JsonObject, ReleaseCandidate, ScanScope, ScanState, ScanTrigger } from './types.js'
 
 export const SEADEX = 'https://releases.moe/api'
 export const ANILIST = 'https://graphql.anilist.co'
@@ -79,6 +79,9 @@ export const scanState: ScanState = {
   results: [],
   error: null,
   last_run: null,
+  cancelled: false,
+  trigger: null,
+  source_errors: {},
 }
 
 export const autocheckState: { next: number | null; signature: string; pending: boolean } = {
@@ -254,30 +257,30 @@ function loadEncryptedSecrets(): Partial<Record<SecretConfigKey, string>> {
 export function normalizeScanSchedule(value: unknown, legacyMinutes?: number): Config['scan_schedule'] {
   const source = value && typeof value === 'object' ? value as JsonObject : {}
   const mode = source.mode === 'daily' || source.mode === 'weekly' ? source.mode : 'interval'
-  const intervalMinutes = Math.max(1, Number.parseInt(String(source.interval_minutes ?? legacyMinutes ?? 1440), 10) || 1440)
-  const times = Array.isArray(source.times)
-    ? [...new Set(source.times.filter((time): time is string => typeof time === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)))].sort()
-    : []
-  const weekdays = Array.isArray(source.weekdays)
-    ? [...new Set(source.weekdays.map(Number).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))].sort()
-    : []
+  const requestedEnabled = source.enabled === undefined ? (legacyMinutes === undefined ? DEFAULT_CONFIG.scan_schedule.enabled : Number(legacyMinutes) > 0) : source.enabled === true
+  const rawInterval = Number(source.interval_minutes ?? legacyMinutes ?? 1440)
+  const intervalMinutes = !requestedEnabled && rawInterval === 0 ? DEFAULT_CONFIG.scan_schedule.interval_minutes : rawInterval
+  if (requestedEnabled && mode === 'interval' && (!Number.isInteger(intervalMinutes) || intervalMinutes < 5 || intervalMinutes > 525_600)) throw new Error('scan_schedule.interval_minutes must be between 5 and 525600')
+  const rawTimes = Array.isArray(source.times) ? source.times : ['03:00']
+  const times = rawTimes.filter((time): time is string => typeof time === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)).sort()
+  if (requestedEnabled && mode !== 'interval' && times.length !== rawTimes.length) throw new Error('scan_schedule.times must contain valid HH:MM times')
+  if (requestedEnabled && mode !== 'interval' && new Set(times).size !== times.length) throw new Error('scan_schedule.times must not contain duplicates')
+  const rawWeekdays = Array.isArray(source.weekdays) ? source.weekdays : [0]
+  const weekdays = rawWeekdays.map(Number).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6).sort()
+  if (requestedEnabled && mode === 'weekly' && (weekdays.length !== rawWeekdays.length || new Set(weekdays).size !== weekdays.length)) throw new Error('scan_schedule.weekdays must contain unique days from 0 to 6')
   const timezone = typeof source.timezone === 'string' && source.timezone ? source.timezone : 'UTC'
-  try { new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format() } catch { throw new Error('scan_schedule.timezone must be a valid IANA timezone') }
-  if (mode !== 'interval' && !times.length) throw new Error('scan_schedule.times must contain at least one HH:MM time')
-  if (mode === 'weekly' && !weekdays.length) throw new Error('scan_schedule.weekdays must contain at least one day')
+  try { new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format() } catch { if (requestedEnabled && mode !== 'interval') throw new Error('scan_schedule.timezone must be a valid IANA timezone') }
+  if (requestedEnabled && mode !== 'interval' && !times.length) throw new Error('scan_schedule.times must contain at least one HH:MM time')
+  if (requestedEnabled && mode === 'weekly' && !weekdays.length) throw new Error('scan_schedule.weekdays must contain at least one day')
   return {
-    enabled: source.enabled === undefined ? Number(legacyMinutes) > 0 : source.enabled === true,
-    mode,
-    interval_minutes: intervalMinutes,
-    times: times.length ? times : ['03:00'],
-    weekdays: weekdays.length ? weekdays : [0],
-    timezone,
+    enabled: requestedEnabled,
+    mode, interval_minutes: intervalMinutes, times, weekdays, timezone,
     missed_run: source.missed_run === 'skip' ? 'skip' : 'run_once',
   }
 }
 
 export function loadConfig(): Config {
-  const stored = readJson<Partial<Config> & { autocheck_minutes?: number }>(CONFIG_FILE, {}, 'Could not read config')
+  const stored = readJson<Partial<Config> & { autocheck_minutes?: number; scan_webhook_secret?: string; webhook_debounce_seconds?: number }>(CONFIG_FILE, {}, 'Could not read config')
   const encryptedSecrets = loadEncryptedSecrets()
   const plaintextSecrets: Partial<Record<SecretConfigKey, string>> = {}
   let containsPlaintextSecretFields = false
@@ -289,11 +292,14 @@ export function loadConfig(): Config {
   const scanSchedule = normalizeScanSchedule(stored.scan_schedule, legacyMinutes)
   const config = { ...DEFAULT_CONFIG, ...stored, scan_schedule: scanSchedule, ...encryptedSecrets, ...plaintextSecrets }
   delete config.autocheck_minutes
+  delete config.scan_webhook_secret
+  delete config.webhook_debounce_seconds
   config.sonarr_url = arrBaseUrl(config.sonarr_url)
   config.radarr_url = arrBaseUrl(config.radarr_url)
-  if (containsPlaintextSecretFields || Object.prototype.hasOwnProperty.call(stored, 'autocheck_minutes')) {
+  const hasLegacySettings = ['autocheck_minutes', 'scan_webhook_secret', 'webhook_debounce_seconds'].some((key) => Object.prototype.hasOwnProperty.call(stored, key))
+  if (containsPlaintextSecretFields || hasLegacySettings) {
     saveConfig(config)
-    log('INFO', containsPlaintextSecretFields ? 'Migrated legacy configuration and plaintext secrets' : 'Migrated legacy automatic scan interval')
+    log('INFO', containsPlaintextSecretFields ? 'Migrated legacy configuration and plaintext secrets' : 'Migrated legacy configuration')
   }
   return config
 }
@@ -448,11 +454,17 @@ export interface ScanHistoryChange extends JsonObject {
 export interface ScanHistoryEntry extends JsonObject {
   id: string
   run_at: string
+  trigger: ScanTrigger
+  duration_seconds: number
+  outcome: 'success' | 'partial' | 'cancelled' | 'failed'
+  scanned_titles: number
+  source_errors: Record<string, string>
+  error?: string
   counts: Record<string, number>
   changes: ScanHistoryChange[]
 }
 
-export function buildScanHistoryEntry(previous: JsonObject[], current: JsonObject[], runAt: string): ScanHistoryEntry {
+export function buildScanHistoryEntry(previous: JsonObject[], current: JsonObject[], runAt: string, trigger: ScanTrigger = 'manual', metadata: { durationSeconds?: number; scannedTitles?: number; sourceErrors?: Record<string, string>; outcome?: ScanHistoryEntry['outcome']; error?: string } = {}): ScanHistoryEntry {
   const { byKey: before, byFallback: beforeByFallback } = previousResultIndex(previous)
   const after = new Map(current.map((result) => [resultIdentity(result), result]))
   const matchedBefore = new Set<string>()
@@ -479,7 +491,8 @@ export function buildScanHistoryEntry(previous: JsonObject[], current: JsonObjec
     }
   }
   for (const [key, result] of before) if (!after.has(key) && !matchedBefore.has(key)) changes.push({ type: 'removed', ...describe(result), details: [], from: automationStatus(result), to: null })
-  return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, run_at: runAt, counts, changes: changes.slice(0, 250) }
+  const sourceErrors = metadata.sourceErrors || {}
+  return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, run_at: runAt, trigger, duration_seconds: metadata.durationSeconds || 0, outcome: metadata.outcome || (Object.keys(sourceErrors).length ? 'partial' : 'success'), scanned_titles: metadata.scannedTitles ?? current.length, source_errors: sourceErrors, ...(metadata.error ? { error: metadata.error } : {}), counts, changes: changes.slice(0, 250) }
 }
 
 export function loadScanHistory(file = HISTORY_FILE): ScanHistoryEntry[] {
@@ -487,8 +500,8 @@ export function loadScanHistory(file = HISTORY_FILE): ScanHistoryEntry[] {
   return stored && typeof stored === 'object' && Array.isArray(stored.scans) ? stored.scans.slice(0, 30) as ScanHistoryEntry[] : []
 }
 
-export function recordScanHistory(previous: JsonObject[], current: JsonObject[], runAt: string, file = HISTORY_FILE): ScanHistoryEntry {
-  const entry = buildScanHistoryEntry(previous, current, runAt)
+export function recordScanHistory(previous: JsonObject[], current: JsonObject[], runAt: string, file = HISTORY_FILE, trigger: ScanTrigger = 'manual', metadata: { durationSeconds?: number; scannedTitles?: number; sourceErrors?: Record<string, string>; outcome?: ScanHistoryEntry['outcome']; error?: string } = {}): ScanHistoryEntry {
+  const entry = buildScanHistoryEntry(previous, current, runAt, trigger, metadata)
   writeJsonAtomic(file, { version: 1, scans: [entry, ...loadScanHistory(file)].slice(0, 30) }, true)
   return entry
 }
@@ -531,8 +544,18 @@ export function clearScannedData(cacheFile = CACHE_FILE, resultsFile = RESULTS_F
 export function loadNotified(file = NOTIFIED_FILE): Set<string> { return loadStringSet(file, 'Could not read notification history') }
 export function saveNotified(keys: Set<string>, file = NOTIFIED_FILE): void { writeJsonAtomic(file, [...keys].sort()) }
 
+let activeScanController: AbortController | null = null
+
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeout = 60_000): Promise<Response> {
-  return fetch(url, { ...init, redirect: 'manual', signal: AbortSignal.timeout(timeout) })
+  const timeoutSignal = AbortSignal.timeout(timeout)
+  const signal = activeScanController ? AbortSignal.any([activeScanController.signal, timeoutSignal]) : timeoutSignal
+  return fetch(url, { ...init, redirect: 'manual', signal })
+}
+
+export function cancelScan(): boolean {
+  if (!activeScanController || activeScanController.signal.aborted) return false
+  activeScanController.abort()
+  return true
 }
 
 export async function api(url: string, key?: string, init: RequestInit = {}): Promise<any> {
@@ -683,11 +706,12 @@ export async function seadexBest(): Promise<Map<number, JsonObject>> {
   return best
 }
 
-export async function localItems(config: Config): Promise<JsonObject[]> {
+export async function localItems(config: Config, scope: ScanScope = {}): Promise<JsonObject[]> {
   const items: JsonObject[] = []
   if (config.sonarr_url && config.sonarr_key) {
     const series = await api(`${arrApiUrl(config.sonarr_url)}/series`, config.sonarr_key) as JsonObject[]
     for (const show of series) {
+      if (scope.sonarrIds?.length && !scope.sonarrIds.includes(Number(show.id))) continue
       const [episodes, episodeFiles] = await Promise.all([
         api(`${arrApiUrl(config.sonarr_url)}/episode?seriesId=${show.id}`, config.sonarr_key),
         api(`${arrApiUrl(config.sonarr_url)}/episodefile?seriesId=${show.id}`, config.sonarr_key),
@@ -734,20 +758,18 @@ export async function localItems(config: Config): Promise<JsonObject[]> {
         if (number === 0) continue
         const stats = season.statistics || {}
         const groups = stats.releaseGroups || []
-        if (groups.length) {
-          const episodeGroups = groupsBySeasonEpisode.get(Number(number))
-          const episodeSizes = sizesBySeasonEpisode.get(Number(number))
-          const episodeNumbers = [...(episodeNumbersBySeason.get(Number(number)) || [])].sort((left, right) => left - right)
-          seasons[number] = {
-            groups,
-            size: stats.sizeOnDisk || 0,
-            episode_numbers: episodeNumbers,
-            episode_count: episodeNumbers.length || null,
-            groups_by_episode: episodeGroups
-              ? Object.fromEntries([...episodeGroups].map(([group, numbers]) => [group, [...numbers].sort((left, right) => left - right)]))
-              : {},
-            sizes_by_episode: episodeSizes ? Object.fromEntries(episodeSizes) : {},
-          }
+        const episodeGroups = groupsBySeasonEpisode.get(Number(number))
+        const episodeSizes = sizesBySeasonEpisode.get(Number(number))
+        const episodeNumbers = [...(episodeNumbersBySeason.get(Number(number)) || [])].sort((left, right) => left - right)
+        seasons[number] = {
+          groups,
+          size: stats.sizeOnDisk || 0,
+          episode_numbers: episodeNumbers,
+          episode_count: episodeNumbers.length || Number(stats.episodeCount || stats.totalEpisodeCount || 0) || null,
+          groups_by_episode: episodeGroups
+            ? Object.fromEntries([...episodeGroups].map(([group, numbers]) => [group, [...numbers].sort((left, right) => left - right)]))
+            : {},
+          sizes_by_episode: episodeSizes ? Object.fromEntries(episodeSizes) : {},
         }
       }
       if (Object.keys(seasons).length) items.push({ arr: 'Sonarr', id: show.id, title: show.title, slug: show.titleSlug, seasons })
@@ -756,9 +778,10 @@ export async function localItems(config: Config): Promise<JsonObject[]> {
   if (config.radarr_url && config.radarr_key) {
     const movies = await api(`${arrApiUrl(config.radarr_url)}/movie`, config.radarr_key) as JsonObject[]
     for (const movie of movies) {
+      if (scope.radarrIds?.length && !scope.radarrIds.includes(Number(movie.id))) continue
       const stats = movie.statistics || {}
       const groups = stats.releaseGroups || []
-      if (groups.length) items.push({
+      items.push({
         arr: 'Radarr', id: movie.id, title: movie.title, slug: movie.titleSlug,
         seasons: { 0: { groups, size: stats.sizeOnDisk || 0 } },
       })
@@ -1262,31 +1285,53 @@ export function localPartOwnership(local: JsonObject, parts: JsonObject[]): Part
   return { have, owned, sizes, precise }
 }
 
+export async function loadLocalLibrary(config: Config, scope: ScanScope = {}): Promise<{ items: JsonObject[]; sourceErrors: Record<string, string> }> {
+  const items: JsonObject[] = []
+  const sourceErrors: Record<string, string> = {}
+  const scoped = Boolean(scope.sonarrIds || scope.radarrIds)
+  const scanSonarr = Boolean(config.sonarr_url && config.sonarr_key && (!scoped || Boolean(scope.sonarrIds?.length)))
+  const scanRadarr = Boolean(config.radarr_url && config.radarr_key && (!scoped || Boolean(scope.radarrIds?.length)))
+  if (scanSonarr) {
+    try { items.push(...await localItems({ ...config, radarr_url: '', radarr_key: '' }, scope)) }
+    catch (error) { if (error instanceof DOMException && error.name === 'AbortError') throw error; sourceErrors.Sonarr = errorMessage(error) }
+  }
+  if (scanRadarr) {
+    try { items.push(...await localItems({ ...config, sonarr_url: '', sonarr_key: '' }, scope)) }
+    catch (error) { if (error instanceof DOMException && error.name === 'AbortError') throw error; sourceErrors.Radarr = errorMessage(error) }
+  }
+  if (!items.length && Object.keys(sourceErrors).length === Number(scanSonarr) + Number(scanRadarr) && Object.keys(sourceErrors).length > 0) throw new Error(Object.entries(sourceErrors).map(([source, message]) => `${source}: ${message}`).join('; '))
+  return { items, sourceErrors }
+}
+
 export interface ScanDependencies {
   seadexBest?: typeof seadexBest
-  localItems?: typeof localItems
+  localItems?: (config: Config, scope?: ScanScope) => Promise<JsonObject[]>
   anilistChain?: typeof anilistChain
   loadCache?: typeof loadCache
   saveLastResults?: typeof saveLastResults
   autoNotifyNew?: typeof autoNotifyNew
   loadUserRules?: typeof loadUserRules
-  recordScanHistory?: typeof recordScanHistory
+  recordScanHistory?: (previous: JsonObject[], current: JsonObject[], runAt: string, file?: string, trigger?: ScanTrigger, metadata?: { durationSeconds?: number; scannedTitles?: number; sourceErrors?: Record<string, string>; outcome?: ScanHistoryEntry['outcome']; error?: string }) => ScanHistoryEntry
 }
 
-export async function runScan(config: Config | JsonObject, dependencies: ScanDependencies = {}): Promise<void> {
+export async function runScan(config: Config | JsonObject, dependencies: ScanDependencies = {}, trigger: ScanTrigger = 'manual', scope: ScanScope = {}): Promise<void> {
   const started = Date.now()
   const previousState = getState()
+  const controller = new AbortController()
+  activeScanController = controller
   let stage = 'initializing'
   try {
     const enabledSources = [config.sonarr_url && config.sonarr_key ? 'Sonarr' : '', config.radarr_url && config.radarr_key ? 'Radarr' : ''].filter(Boolean)
-    log('INFO', `Scan started (sources: ${enabledSources.join(', ') || 'none configured'}; Discord notifications: ${config.notify_enabled && config.webhook ? 'enabled' : 'disabled'})`)
-    setState({ running: true, error: null, progress: 0, total: 0, message: 'Loading SeaDex best releases…' })
+    log('INFO', `Scan started (trigger: ${trigger}; sources: ${enabledSources.join(', ') || 'none configured'}; Discord notifications: ${config.notify_enabled && config.webhook ? 'enabled' : 'disabled'})`)
+    setState({ running: true, cancelled: false, trigger, source_errors: {}, error: null, progress: 0, total: 0, message: 'Loading SeaDex best releases…' })
     stage = 'loading the SeaDex catalog'
     const best = await (dependencies.seadexBest || seadexBest)()
     log('INFO', `SeaDex catalog loaded: ${best.size} best-release entr${best.size === 1 ? 'y' : 'ies'}`)
     setState({ message: 'Loading local library…' })
     stage = 'loading the Sonarr/Radarr library'
-    const items = await (dependencies.localItems || localItems)(config as Config)
+    const loaded = dependencies.localItems ? { items: await dependencies.localItems(config as Config, scope), sourceErrors: {} } : await loadLocalLibrary(config as Config, scope)
+    const items = loaded.items
+    const sourceErrors = loaded.sourceErrors
     const sourceCounts = items.reduce<Record<string, number>>((counts, item) => {
       const source = String(item.arr || 'Unknown')
       counts[source] = (counts[source] || 0) + 1
@@ -1296,11 +1341,19 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
     log('INFO', `Local library loaded: ${items.length} item${items.length === 1 ? '' : 's'}${sourceDetails ? ` (${sourceDetails})` : ''}`)
     setState({ total: items.length })
     const cache = (dependencies.loadCache || loadCache)()
+    const previousResults = (previousState.results.length ? previousState.results : loadLastResults()?.results || []) as JsonObject[]
     const rules = (dependencies.loadUserRules || loadUserRules)()
-    const previousResults = (loadLastResults()?.results || previousState.results || []) as JsonObject[]
+    const scopedKeys = new Set([...(scope.sonarrIds || []).map((id) => `Sonarr:item${id}`), ...(scope.radarrIds || []).map((id) => `Radarr:item${id}`)])
+    const retainedResults = previousResults.filter((result) => {
+      const source = String(result.arr || '')
+      if (sourceErrors[source]) return true
+      if (scopedKeys.size > 0) return !scopedKeys.has(String(result.library_key || ''))
+      return !['Sonarr', 'Radarr'].includes(source)
+    })
     const results: JsonObject[] = []
     stage = 'resolving library titles'
     for (const [itemIndex, item] of items.entries()) {
+      if (controller.signal.aborted) throw new DOMException('Scan cancelled', 'AbortError')
       setState({ progress: itemIndex, message: `Resolving: ${item.title}` })
       const arrUrl = arrItemUrl(config, item)
       const libraryKey = libraryItemKey(item)
@@ -1410,21 +1463,24 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
           results.push({ ...common, key: `${item.arr}:${alid}:${season}:${bestGroup}`, status: 'upgrade', best_group: bestGroup, best_size: bestSize, releases })
         }
       }
-      setState({ progress: itemIndex + 1, results: [...results] })
+      setState({ progress: itemIndex + 1, results: [...retainedResults, ...results] })
     }
+    if (controller.signal.aborted) throw new DOMException('Scan cancelled', 'AbortError')
     const lastRun = timestamp()
-    const finalResults = applyUserRulesToResults(results, rules)
-    setState({ progress: items.length, message: 'Done', results: finalResults, last_run: lastRun })
+    const finalResults = applyUserRulesToResults([...retainedResults, ...results], rules)
+    setState({ progress: items.length, message: Object.keys(sourceErrors).length ? 'Done with integration errors' : 'Done', results: finalResults, last_run: lastRun, source_errors: sourceErrors })
     stage = 'saving scan results'
     ;(dependencies.saveLastResults || saveLastResults)(finalResults, lastRun)
     try {
-      if (dependencies.recordScanHistory) dependencies.recordScanHistory(previousResults, finalResults, lastRun)
-      else if (!dependencies.saveLastResults) recordScanHistory(previousResults, finalResults, lastRun)
+      const metadata = { durationSeconds: Math.round((Date.now() - started) / 100) / 10, scannedTitles: items.length, sourceErrors }
+      if (dependencies.recordScanHistory) dependencies.recordScanHistory(previousResults, finalResults, lastRun, undefined, trigger, metadata)
+      else if (!dependencies.saveLastResults) recordScanHistory(previousResults, finalResults, lastRun, HISTORY_FILE, trigger, metadata)
     } catch (error) {
       log('WARNING', `Could not save scan history: ${errorMessage(error)}`)
     }
     stage = 'sending notifications'
-    await (dependencies.autoNotifyNew || autoNotifyNew)(config as Config, { previous: previousResults })
+    if (!Object.keys(sourceErrors).length) await (dependencies.autoNotifyNew || autoNotifyNew)(config as Config, { previous: previousResults })
+    else log('WARNING', `Notifications skipped after partial scan: ${Object.keys(sourceErrors).join(', ')} unavailable`)
     const statusCounts = finalResults.reduce<Record<string, number>>((counts, result) => {
       const status = String(result.status || 'unknown')
       counts[status] = (counts[status] || 0) + 1
@@ -1436,9 +1492,22 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
       .join(', ')
     log('INFO', `Scan finished in ${((Date.now() - started) / 1000).toFixed(1)}s — ${finalResults.length} result${finalResults.length === 1 ? '' : 's'}${statusDetails ? ` (${statusDetails})` : ''}`)
   } catch (error) {
-    log('ERROR', `Scan failed while ${stage} after ${((Date.now() - started) / 1000).toFixed(1)}s: ${errorMessage(error)}`)
-    setState({ ...previousState, running: true, error: errorMessage(error) })
+    const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')
+    const message = errorMessage(error)
+    const outcome = cancelled ? 'cancelled' : 'failed'
+    if (cancelled) {
+      log('INFO', `Scan cancelled while ${stage} after ${((Date.now() - started) / 1000).toFixed(1)}s`)
+      setState({ ...previousState, running: true, cancelled: true, error: null, message: 'Scan cancelled' })
+    } else {
+      log('ERROR', `Scan failed while ${stage} after ${((Date.now() - started) / 1000).toFixed(1)}s: ${message}`)
+      setState({ ...previousState, running: true, cancelled: false, error: message })
+    }
+    if (!dependencies.saveLastResults) {
+      try { recordScanHistory(previousState.results, previousState.results, timestamp(), HISTORY_FILE, trigger, { durationSeconds: Math.round((Date.now() - started) / 100) / 10, scannedTitles: 0, outcome, error: cancelled ? 'Cancelled by user' : message }) }
+      catch (historyError) { log('WARNING', `Could not save failed scan history: ${errorMessage(historyError)}`) }
+    }
   } finally {
+    if (activeScanController === controller) activeScanController = null
     setState({ running: false })
   }
 }
@@ -2130,7 +2199,7 @@ export function resultsForRequest(): JsonObject[] {
 }
 
 export function resetRuntimeForTests(): void {
-  Object.assign(scanState, { running: false, progress: 0, total: 0, message: 'Idle', results: [], error: null, last_run: null })
+  Object.assign(scanState, { running: false, progress: 0, total: 0, message: 'Idle', results: [], error: null, last_run: null, cancelled: false, trigger: null, source_errors: {} })
   qbSession = null; qbCache = { data: null, timestamp: 0 }; qbQueue = Promise.resolve(); ownedTorrents.clear()
   bulkBatch.finished = true; bulkBatch.pending = []; bulkBatch.added = []; bulkBatch.failures = []
   autocheckState.next = null; autocheckState.signature = ''; autocheckState.pending = false
