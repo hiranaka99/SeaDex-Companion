@@ -68,6 +68,8 @@ export const testConnection = (service: 'sonarr' | 'radarr' | 'qbittorrent' | 'd
 
 export const getStatus = () => api<Status>('/api/status')
 
+export const checkForUpdates = () => api<{ current: string; latest: string | null; url: string | null }>('/api/update-check')
+
 export const getResults = () =>
   api<{ results: ResultItem[]; last_run: string | null }>('/api/results')
 
