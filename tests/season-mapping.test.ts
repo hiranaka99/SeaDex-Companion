@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
 import {
-  anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, cancelScan, clearScannedData, commonBestRelease, decryptSecretValues, describeResultChange, discordMessageBody, DEFAULT_CONFIG, effectiveSeasonParts,
+  anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, cancelScan, checkForUpdates, clearScannedData, commonBestRelease, decryptSecretValues, describeResultChange, discordMessageBody, DEFAULT_CONFIG, effectiveSeasonParts,
   encryptSecretValues, getState, loadLocalLibrary, loadStringSet, localItems, localPartOwnership, normalizeQbStates, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
   qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest,
-  resetRuntimeForTests, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration,
+  resetRuntimeForTests, resetUpdateCheck, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration,
 } from '../server/app.js'
 import { nextScheduledTime, parseReleaseIndex, processAutocheck, processWebhookScans, queueWebhookScan, refreshAutocheckSchedule, resetWebhookScanState, webhookScanState } from '../server/index.js'
 import type { JsonObject, ReleaseCandidate, ScanTrigger } from '../server/types.js'
@@ -1236,3 +1236,42 @@ async function scanWith(best: Map<number, JsonObject>, chain: JsonObject[], item
     autoNotifyNew: async () => 0,
   })
 }
+
+describe('update checking', () => {
+  test('reports a newer GitHub release and caches the result', async () => {
+    const originalFetch = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      return new Response(JSON.stringify({ tag_name: 'v9.9.9', html_url: 'https://github.com/hiranaka99/SeaDex-Companion/releases/tag/v9.9.9' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }) as typeof fetch
+    try {
+      resetUpdateCheck()
+      const first = await checkForUpdates()
+      assert.equal(first.latest, '9.9.9')
+      assert.equal(first.url, 'https://github.com/hiranaka99/SeaDex-Companion/releases/tag/v9.9.9')
+      const second = await checkForUpdates()
+      assert.deepEqual(second, first)
+      assert.equal(calls, 1)
+    } finally {
+      globalThis.fetch = originalFetch
+      resetUpdateCheck()
+    }
+  })
+
+  test('reports no update when the release is older or GitHub is unreachable', async () => {
+    const originalFetch = globalThis.fetch
+    try {
+      resetUpdateCheck()
+      globalThis.fetch = (async () => new Response(JSON.stringify({ tag_name: 'v1.0.0', html_url: 'https://github.com/hiranaka99/SeaDex-Companion/releases/tag/v1.0.0' }), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch
+      assert.equal((await checkForUpdates()).latest, null)
+
+      resetUpdateCheck()
+      globalThis.fetch = (async () => new Response('unavailable', { status: 503 })) as typeof fetch
+      assert.equal((await checkForUpdates()).latest, null)
+    } finally {
+      globalThis.fetch = originalFetch
+      resetUpdateCheck()
+    }
+  })
+})

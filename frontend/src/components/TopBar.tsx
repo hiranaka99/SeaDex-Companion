@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react'
+import * as api from '../api'
 import { TabId } from '../types'
 import { cx } from '../styles'
 import Icon, { IconName } from './Icons'
@@ -31,6 +33,16 @@ function Brand({ compact = false }: { compact?: boolean }) {
 }
 
 export default function TopBar({ tab, onTabChange, username, onLogout, collapsed, onToggleCollapsed }: Props) {
+  const [update, setUpdate] = useState<{ latest: string; url: string } | null>(null)
+
+  useEffect(() => {
+    let active = true
+    api.checkForUpdates()
+      .then((info) => { if (active && info.latest) setUpdate({ latest: info.latest, url: info.url || 'https://github.com/hiranaka99/SeaDex-Companion/releases' }) })
+      .catch(() => undefined)
+    return () => { active = false }
+  }, [])
+
   return (
     <>
       <aside className={cx('flex h-dvh flex-col border-r border-line bg-canvas-soft py-5 max-[900px]:hidden', collapsed ? 'items-center px-3' : 'px-4')}>
@@ -62,7 +74,7 @@ export default function TopBar({ tab, onTabChange, username, onLogout, collapsed
         <div className={cx('mt-auto', collapsed && 'flex w-full flex-col items-center')}>
           {collapsed ? (
             <div className="flex w-full flex-col items-center gap-3 animate-fade">
-              <div className="text-[10px] font-semibold tracking-[0.14em] text-muted-dim" title={`SeaDex Companion ${APP_VERSION}`}>{APP_VERSION}</div>
+              <div className={cx('flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.14em]', update ? 'text-accent-bright' : 'text-muted-dim')} title={update ? `SeaDex Companion ${APP_VERSION} installed — v${update.latest} available` : `SeaDex Companion ${APP_VERSION}`}>{APP_VERSION}{update && <span className="size-1.5 rounded-full bg-accent-bright" aria-label="Update available"/>}</div>
               <div className="flex w-full flex-col items-center gap-2 border-t border-line pt-4">
                 <span className="grid size-9 place-items-center rounded-full bg-panel-raised text-muted" title={username}><Icon name="user" size={17} /></span>
                 <button type="button" onClick={onLogout} aria-label="Log out" title="Log out" className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-bad/10 hover:text-bad"><Icon name="log-out" size={18} /></button>
@@ -70,7 +82,11 @@ export default function TopBar({ tab, onTabChange, username, onLogout, collapsed
             </div>
           ) : (
             <div className="flex w-full flex-col gap-3 animate-fade">
-              <div className="px-1 text-[10px] font-semibold tracking-[0.14em] text-muted-dim" title={`SeaDex Companion ${APP_VERSION}`}>{APP_VERSION}</div>
+              {update ? (
+                <a href={update.url} target="_blank" rel="noreferrer" className="px-1 text-[10px] font-semibold tracking-[0.14em] text-accent-bright hover:underline" title={`SeaDex Companion ${APP_VERSION} installed — v${update.latest} is available`}>v{update.latest} available</a>
+              ) : (
+                <div className="px-1 text-[10px] font-semibold tracking-[0.14em] text-muted-dim" title={`SeaDex Companion ${APP_VERSION}`}>{APP_VERSION}</div>
+              )}
               <div className="flex items-center gap-2.5 border-t border-line pt-4">
                 <span className="grid size-9 shrink-0 place-items-center rounded-full bg-panel-raised text-muted"><Icon name="user" size={17} /></span>
                 <div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold text-ink" title={username}>{username}</div><div className="text-[11px] text-muted-dim">Administrator</div></div>
