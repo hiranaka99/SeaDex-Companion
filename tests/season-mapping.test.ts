@@ -961,7 +961,7 @@ describe('release selection and combined cours', () => {
     const candidate = { ...release('Group', 5, true), size: 45, source_files: sourceFiles }
     const season = scopeReleaseToPart(candidate, 2, 0, 1)
 
-    assert.equal(season.size, 20)
+    assert.equal(season.size, 45)
     assert.equal(season.file_count, 2)
     assert.deepEqual(season.selected_files, ['Show.S01E01.mkv', 'Show.S01E02.mkv'])
   })
@@ -972,6 +972,26 @@ describe('release selection and combined cours', () => {
       source_files: [{ name: 'Show.S01E01.mkv', length: 10 }, { name: 'Unrecognized episode.mkv', length: 10 }],
     }
     assert.equal(scopeReleaseToPart(candidate, 2, 0, 1), candidate)
+  })
+
+  test('shows full SEV torrent size without selecting numbered extras as episodes', () => {
+    const episodeFiles = Array.from({ length: 11 }, (_, index) => ({
+      name: `Demon Slayer - Episode ${index + 45} - Swordsmith Village.mkv`, length: 3_000_000_000,
+    }))
+    const candidate = {
+      ...release('SEV', 11), size: 62_915_587_330,
+      source_files: [
+        ...episodeFiles,
+        { name: 'Extras/[Disc 01] Demon Slayer - Season 03 - ITA BD Menu.mkv', length: 1_000_000_000 },
+        { name: 'Extras/Demon Slayer Encyclopedia 01.mkv', length: 1_000_000_000 },
+        { name: 'Extras/01. soundtrack.flac', length: 27_915_587_330 },
+      ],
+    }
+    const season = scopeReleaseToPart(candidate, 11, 0, 1)
+
+    assert.equal(releaseDict('alt', season).size, 62_915_587_330)
+    assert.equal(season.file_count, 11)
+    assert.deepEqual(season.selected_files, episodeFiles.map((file) => file.name))
   })
 
   test('scopes whole-season torrents to the current cour size', () => {

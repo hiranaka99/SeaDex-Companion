@@ -588,14 +588,11 @@ export function seasonsFromFiles(files: JsonObject[] = []): Set<number> {
   return seasons
 }
 
-/** Integer episode numbers parsed from a candidate's source files; extras without parseable numbers are ignored. */
+/** Episode numbers from the release's video files, preferring explicit episode labels over incidental numbers in extras. */
 function candidateEpisodes(candidate: ReleaseCandidate): number[] {
-  const episodes: number[] = []
-  for (const file of candidate.source_files || []) {
-    const parsed = episodeFromFilename(file.name)
-    if (parsed && Number.isInteger(parsed.episode)) episodes.push(parsed.episode)
-  }
-  return episodes.sort((left, right) => left - right)
+  const parsed = (candidate.source_files || []).map((file) => episodeFromFilename(file.name)).filter((item): item is ParsedEpisode => item !== null)
+  const episodes = parsed.some((item) => item.explicit) ? parsed.filter((item) => item.explicit) : parsed
+  return episodes.map((item) => item.episode).filter(Number.isInteger).sort((left, right) => left - right)
 }
 
 /**
@@ -1111,24 +1108,20 @@ export function pickBest(candidates: ReleaseCandidate[], episodeCount?: number |
 interface ParsedEpisode {
   episode: number
   season: number | null
+  explicit: boolean
 }
 
 function episodeFromFilename(name: string): ParsedEpisode | null {
-  // Opening/ending theme clips are extras, never episodes. Keeping them unparsed
-  // lets scopeReleaseToPart treat them as cour extras instead of mis-reading the
-  // "NCOP 01" / "NCED1" counters as absolute episode numbers.
-  if (/NCOP|NCED/i.test(name)) return null
-  const standard = name.match(/S(\d{1,3})E(\d{1,3}(?:\.\d+)?)/i)
-  if (standard) return { season: Number(standard[1]), episode: Number(standard[2]) }
-  const named = name.match(/(?:\bSeason\b|\bEpisode\b|\bEp\.?)[ ._-]*(\d{1,3}(?:\.\d+)?)(?=[ ._[\]()-]|$)/i)
-  if (named) return { season: null, episode: Number(named[1]) }
-  // Absolute episode numbering with no season/episode keyword, e.g.
-  // "[Thighs] Mushoku Tensei - 05 (BD 1080p ...).mkv". This is a common whole-season
-  // encode layout: the first standalone 1-3 digit value (optional half-episode) after
-  // the title is the absolute episode number. The trailing boundary keeps resolution
-  // tags such as "1080p" (a 4-digit run) from being mistaken for an episode.
-  const absolute = name.match(/(?:^|[\s_-])(\d{1,3}(?:\.\d+)?)(?=[\s(.\]]|$)/)
-  return absolute ? { season: null, episode: Number(absolute[1]) } : null
+  const filename = name.split(/[\\/]/).at(-1) || ''
+  if (!/\.(?:mkv|mp4|avi|m4v|ts|webm)$/i.test(filename) || /NCOP|NCED/i.test(filename)) return null
+  const standard = filename.match(/S(\d{1,3})E(\d{1,3}(?:\.\d+)?)/i)
+  if (standard) return { season: Number(standard[1]), episode: Number(standard[2]), explicit: true }
+  const named = filename.match(/\b(?:Episode|Ep\.?)\s*[._-]*\s*(\d{1,3}(?:\.\d+)?)(?=[ ._[\]()-]|$)/i)
+  if (named) return { season: null, episode: Number(named[1]), explicit: true }
+  // Unlabelled absolute episode numbers are common in whole-season encodes.
+  // Only use these when no explicitly numbered episodes exist in the torrent.
+  const absolute = filename.match(/(?:^|[\s_-])(\d{1,3}(?:\.\d+)?)(?=[\s(.\]]|$)/)
+  return absolute ? { season: null, episode: Number(absolute[1]), explicit: false } : null
 }
 
 function extraBelongsToPart(name: string, partNumber: number): boolean {
@@ -1152,7 +1145,11 @@ export function scopeReleaseToPart(
   const files = release.source_files || []
   if (!episodeCount || episodeCount <= 0 || !files.length) return release
 
-  const parsed = files.map((file) => ({ file, parsed: episodeFromFilename(file.name) }))
+  const parsedFiles = files.map((file) => ({ file, parsed: episodeFromFilename(file.name) }))
+  const hasExplicitEpisodes = parsedFiles.some(({ parsed }) => parsed?.explicit)
+  const parsed = hasExplicitEpisodes
+    ? parsedFiles.map((item) => item.parsed?.explicit ? item : { ...item, parsed: null })
+    : parsedFiles
   const seasonFrequency = new Map<number, number>()
   for (const item of parsed) {
     const season = item.parsed?.season
@@ -1185,7 +1182,7 @@ export function scopeReleaseToPart(
     if (selectedEpisodeFiles.length === files.length) return release
     return {
       ...release,
-      size: selectedEpisodeFiles.reduce((total, { file }) => total + file.length, 0),
+      // Show the full torrent size; selected_files still omits extras on download.
       file_count: selectedNumbers.length,
       selected_files: selectedEpisodeFiles.map(({ file }) => file.name),
     }
