@@ -1182,7 +1182,7 @@ export function scopeReleaseToPart(
     if (selectedEpisodeFiles.length === files.length) return release
     return {
       ...release,
-      // Show the full torrent size; selected_files still omits extras on download.
+      size: selectedEpisodeFiles.reduce((total, { file }) => total + file.length, 0),
       file_count: selectedNumbers.length,
       selected_files: selectedEpisodeFiles.map(({ file }) => file.name),
     }
