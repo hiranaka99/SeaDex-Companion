@@ -1,6 +1,6 @@
-export type CardStatus = 'upgrade' | 'best' | 'missing' | 'partial'
+export type CardStatus = 'upgrade' | 'best' | 'missing' | 'partial' | 'review'
 
-export type TabId = 'anime' | 'history' | 'config' | 'log'
+export type TabId = 'anime' | 'history' | 'config' | 'log' | 'downloads'
 
 export interface AuthState {
   setup_required: boolean
@@ -21,6 +21,7 @@ export interface Release {
   info_hashes: string[]
   downloadable: boolean
   selected_files?: string[]
+  torrent_files?: import('../../shared/download-estimate.js').TorrentFiles[]
 }
 
 export interface ResultItem {
@@ -30,6 +31,8 @@ export interface ResultItem {
   title: string
   season: number | null
   status: string
+  match_status?: 'matched' | 'unmatched'
+  missing_episode_count?: number
   upgrade_available?: boolean
   have: string[]
   have_by_part?: Record<string, string[]>
@@ -133,6 +136,7 @@ export interface Config {
 }
 
 export interface Status {
+  results_revision?: string
   running: boolean
   progress: number
   total: number

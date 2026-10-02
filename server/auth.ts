@@ -85,6 +85,15 @@ function saveSessions(): void {
 const sessions = loadSessions()
 const loginLimits = new Map<string, LoginLimit>()
 const setupLimits = new Map<string, LoginLimit>()
+let accountQueue: Promise<void> = Promise.resolve()
+
+async function withAccountLock<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = accountQueue
+  let release!: () => void
+  accountQueue = new Promise<void>(resolve => { release = resolve })
+  await previous
+  try { return await operation() } finally { release() }
+}
 
 function deriveLegacyPassword(password: string, salt: Buffer): Promise<Buffer> {
   const { promise, resolve, reject } = Promise.withResolvers<Buffer>()
@@ -133,6 +142,7 @@ function loadAuthRecord(): StoredAuthRecord {
   } catch {
     throw new AuthError(500, 'Could not read the authentication file')
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new AuthError(500, 'The authentication file is invalid')
   const validBase = typeof parsed.username === 'string' && typeof parsed.password_hash === 'string'
   const validLegacy = parsed.version === 1 && typeof parsed.salt === 'string'
   if (!validBase || (parsed.version !== 2 && !validLegacy)) {
@@ -228,6 +238,10 @@ export function isAuthenticated(request: IncomingMessage): boolean {
 }
 
 export async function setupAccount(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<{ token: string; username: string }> {
+  return withAccountLock(() => setupAccountLocked(request, usernameValue, passwordValue))
+}
+
+async function setupAccountLocked(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<{ token: string; username: string }> {
   if (existsSync(AUTH_FILE)) throw new AuthError(409, 'An administrator account already exists')
   const address = requestAddress(request)
   checkSetupLimit(address)
@@ -248,11 +262,19 @@ export async function setupAccount(request: IncomingMessage, usernameValue: unkn
 }
 
 export async function verifyLoginCredentials(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<string> {
+  return withAccountLock(() => verifyLoginCredentialsLocked(request, usernameValue, passwordValue))
+}
+
+async function verifyLoginCredentialsLocked(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<string> {
   if (!existsSync(AUTH_FILE)) throw new AuthError(409, 'Create the administrator account first')
   const address = requestAddress(request)
   checkLoginLimit(address)
   const username = String(usernameValue ?? '').trim()
   const password = String(passwordValue ?? '')
+  if (username.length > 64 || password.length > 1024) {
+    recordFailedLogin(address)
+    throw new AuthError(401, 'Invalid username or password')
+  }
   const record = loadAuthRecord()
   const validHash = await verifyPassword(record, password)
   if (username !== record.username || !validHash) {
@@ -265,11 +287,17 @@ export async function verifyLoginCredentials(request: IncomingMessage, usernameV
 }
 
 export async function login(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<{ token: string; username: string }> {
-  const username = await verifyLoginCredentials(request, usernameValue, passwordValue)
-  return { token: createSession(username), username }
+  return withAccountLock(async () => {
+    const username = await verifyLoginCredentialsLocked(request, usernameValue, passwordValue)
+    return { token: createSession(username), username }
+  })
 }
 
 export async function updateAccount(request: IncomingMessage, currentPasswordValue: unknown, usernameValue: unknown, newPasswordValue: unknown): Promise<{ token: string; username: string }> {
+  return withAccountLock(() => updateAccountLocked(request, currentPasswordValue, usernameValue, newPasswordValue))
+}
+
+async function updateAccountLocked(request: IncomingMessage, currentPasswordValue: unknown, usernameValue: unknown, newPasswordValue: unknown): Promise<{ token: string; username: string }> {
   const activeUsername = authenticatedUsername(request)
   if (!activeUsername) throw new AuthError(401, 'Authentication required')
   const currentPassword = String(currentPasswordValue ?? '')

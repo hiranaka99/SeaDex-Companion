@@ -16,8 +16,11 @@ SeaDex Companion is a self-hosted web UI that compares your **Sonarr** and **Rad
 - Episode-aware matching for split seasons, cours, and multi-part releases
 - Current-size versus target-size comparison
 - One-click or bulk downloads through qBittorrent, limited to missing episodes when possible
+- Bulk download estimates deduplicate shared torrents and selected files, skip existing hashes, and check qBittorrent download-disk space where supported
 - Download monitoring, pause, resume, cancellation, and removal
 - Search and filtering by title, release group, source, and status
+- Compact library table, matching-review status, and aired-episode missing counts
+- Downloads page that keeps app-added torrents manageable after recommendations change
 - Manual AniList corrections and season/cour exclusions
 - Interval, daily, or weekly scans with timezone and missed-run controls
 - Sonarr and Radarr webhooks for incremental scans when titles are added
@@ -88,6 +91,8 @@ All integrations are configured in the WebUI; no integration credentials need to
 4. Test each configured integration, save, and select **Scan library**.
 5. Configure automatic scans under **Configuration → Automation**.
 
+Bulk download review shows the size of new torrents and checks free space on qBittorrent's download paths. Existing torrents are skipped without changing their files or ownership. Low-space warnings require acknowledgement before sending downloads. Older clients may only report space for their default save path; other paths are shown as unavailable. Run a new scan after updating to populate the per-torrent file sizes used by accurate estimates. Estimates do not reserve space or include torrent overhead and library-import copies.
+
 For near-real-time discovery, add these webhook connections in Sonarr and Radarr using HTTP Basic Authentication with your SeaDex Companion username and password:
 
 - Sonarr: `https://your-seadex-host/api/webhooks/sonarr`
@@ -113,6 +118,8 @@ npm --prefix frontend run dev
 ```
 
 The Vite development server proxies `/api` requests to the backend on port `8080`.
+
+Run `npm test` for backend, HTTP, scheduling, and frontend utility regressions. For browser workflow checks, run `npm run test:browser`. The browser checks use isolated local fixtures and default to Microsoft Edge on Windows; set `BROWSER_PATH` to a Chromium executable on other systems.
 
 ## Security
 

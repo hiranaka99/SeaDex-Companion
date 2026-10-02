@@ -1,48 +1,60 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as api from '../api'
-import { ScanHistoryEntry } from '../types'
+import { ResultItem, ScanHistoryChange, ScanHistoryEntry } from '../types'
 import Icon from './Icons'
-import { buttonBase, cx } from '../styles'
+import { buttonBase, control, cx } from '../styles'
 
 const changeTone: Record<string, string> = {
-  upgrade: 'border-accent/35 bg-accent/8 text-accent-bright',
-  resolved: 'border-good/35 bg-good/8 text-good',
-  new: 'border-purple/35 bg-purple/8 text-purple',
-  removed: 'border-line bg-canvas-soft text-muted',
-  changed: 'border-warn/35 bg-warn/8 text-warn',
+  upgrade: 'border-accent/35 bg-accent/8 text-accent-bright', resolved: 'border-good/35 bg-good/8 text-good',
+  new: 'border-purple/35 bg-purple/8 text-purple', removed: 'border-line bg-canvas-soft text-muted', changed: 'border-warn/35 bg-warn/8 text-warn',
 }
+const changeLabel: Record<string, string> = { upgrade: 'Now upgradable', resolved: 'Resolved', new: 'New title', removed: 'Removed', changed: 'Changed' }
+const statusLabel: Record<string, string> = { upgrade: 'Upgradable', best: 'Best quality', missing: 'Not on SeaDex', uncovered: 'No releases', partial: 'Partially on SeaDex' }
+interface Props { active: boolean; results: ResultItem[]; onOpenResult: (key: string) => void }
 
-const changeLabel: Record<string, string> = {
-  upgrade: 'Now upgradable', resolved: 'Resolved', new: 'New title', removed: 'Removed', changed: 'Changed',
-}
-
-export default function HistoryTab() {
+export default function HistoryTab({ active, results, onOpenResult }: Props) {
   const [scans, setScans] = useState<ScanHistoryEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-
-  const load = async () => {
+  const [query, setQuery] = useState('')
+  const [changeType, setChangeType] = useState('')
+  const request = useRef(0)
+  const load = useCallback(async () => {
+    const current = ++request.current
     setLoading(true)
-    try { const result = await api.getScanHistory(); setScans(result.scans || []); setError('') }
-    catch (caught: any) { setError(caught?.message || 'Could not load scan history') }
-    finally { setLoading(false) }
-  }
-
-  useEffect(() => { void load() }, [])
+    try { const response = await api.getScanHistory(); if (current === request.current) { setScans(response.scans || []); setError('') } }
+    catch (caught) { if (current === request.current) setError(caught instanceof Error ? caught.message : 'Could not load scan history') }
+    finally { if (current === request.current) setLoading(false) }
+  }, [])
+  useEffect(() => { if (active) void load(); return () => { request.current += 1 } }, [active, load])
+  const filtered = useMemo(() => scans.map(scan => ({ ...scan, changes: scan.changes.filter(change =>
+    change.title.toLowerCase().includes(query.trim().toLowerCase()) && (!changeType || change.type === changeType),
+  ) })).filter(scan => (!query.trim() && !changeType) || scan.changes.length), [scans, query, changeType])
+  const currentResult = (change: ScanHistoryChange) => results.find(result => result.key === change.key) || results.find(result =>
+    result.arr === change.arr && result.title === change.title && result.season === change.season,
+  )
 
   return <section>
     <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
-      <div><p className="mb-1 text-xs font-bold tracking-[.14em] text-accent-bright uppercase">Activity</p><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Scan history</h1><p className="mt-2 mb-0 text-sm text-muted">See what changed between completed library scans.</p></div>
-      <button type="button" className={cx(buttonBase, 'border-line bg-panel text-muted hover:text-ink')} onClick={() => void load()} disabled={loading}><Icon name="refresh" size={16}/>{loading ? 'Loading…' : 'Refresh'}</button>
+      <div><p className="mb-1 text-xs font-bold tracking-[.14em] text-accent-bright uppercase">Activity</p><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Scan history</h1><p className="mt-2 mb-0 text-sm text-muted">See what changed and open a title to review its current releases.</p></div>
+      <button type="button" className={cx(buttonBase, 'border-line bg-panel text-muted')} onClick={() => void load()} disabled={loading}><Icon name="refresh" size={16}/>{loading ? 'Loading…' : 'Refresh'}</button>
     </header>
+    <div className="mb-4 flex flex-wrap gap-3"><label className="min-w-48 flex-1"><span className="sr-only">Search history by title</span><input className={cx(control, 'w-full')} type="search" placeholder="Search titles in history" value={query} onChange={event => setQuery(event.target.value)}/></label><select aria-label="Change type" className={control} value={changeType} onChange={event => setChangeType(event.target.value)}><option value="">All changes</option>{Object.entries(changeLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
     {error && <div className="mb-4 rounded-xl border border-bad/30 bg-bad/8 px-4 py-3 text-sm text-bad" role="alert">{error}</div>}
-    {!loading && !error && scans.length === 0 && <div className="rounded-2xl border border-dashed border-line-strong bg-panel/45 px-6 py-16 text-center"><Icon name="clock" size={30} className="mx-auto mb-3 text-muted-dim"/><h2 className="mb-2 text-lg font-bold">No scan history yet</h2><p className="m-0 text-sm text-muted">Complete a scan to create the first history entry.</p></div>}
-    <div className="space-y-4">{scans.map((scan, scanIndex) => {
-      const countSummary = Object.entries(scan.counts || {}).filter(([, count]) => count > 0)
-      return <article key={scan.id} className="overflow-hidden rounded-2xl border border-line bg-panel">
-        <header className="flex flex-wrap items-center gap-3 border-b border-line px-5 py-4"><span className={cx('grid size-10 place-items-center rounded-xl', scan.outcome === 'failed' || scan.outcome === 'cancelled' ? 'bg-bad/10 text-bad' : scan.outcome === 'partial' ? 'bg-warn/10 text-warn' : 'bg-accent/10 text-accent-bright')}><Icon name={scan.outcome && scan.outcome !== 'success' ? 'alert' : 'clock'} size={18}/></span><div className="min-w-0 flex-1"><h2 className="m-0 text-sm font-extrabold">{scan.run_at}</h2><p className="mt-1 mb-0 text-xs text-muted">{scanIndex === 0 ? 'Latest scan' : `${scan.changes.length} recorded change${scan.changes.length === 1 ? '' : 's'}`} · {scan.trigger === 'scheduled' ? 'Scheduled' : scan.trigger === 'sonarr' ? 'Sonarr webhook' : scan.trigger === 'radarr' ? 'Radarr webhook' : scan.trigger === 'sonarr+radarr' ? 'Sonarr + Radarr webhooks' : 'Manual'}{scan.scanned_titles !== undefined ? ` · ${scan.scanned_titles} titles` : ''}{scan.duration_seconds !== undefined ? ` · ${scan.duration_seconds.toFixed(1)}s` : ''}{scan.outcome && scan.outcome !== 'success' ? ` · ${scan.outcome[0].toUpperCase()}${scan.outcome.slice(1)}` : ''}</p>{scan.error && <p className="mt-1 mb-0 text-[10px] text-bad">{scan.error}</p>}{Object.entries(scan.source_errors || {}).map(([source, message]) => <p key={source} className="mt-1 mb-0 text-[10px] text-warn">{source}: {message}</p>)}</div><div className="flex flex-wrap gap-1.5">{countSummary.map(([status, count]) => <span key={status} className="rounded-full border border-line bg-canvas-soft px-2.5 py-1 text-[10px] font-bold text-muted">{count} {status}</span>)}</div></header>
-        {scan.outcome === 'failed' || scan.outcome === 'cancelled' ? null : <div className="p-5">{scan.changes.length === 0 ? <p className="m-0 text-sm text-muted">No changes from the previous scan.</p> : <ul className="m-0 grid list-none gap-2 p-0 sm:grid-cols-2">{scan.changes.map((change, index) => <li key={`${change.key}:${index}`} className="flex items-center gap-3 rounded-xl border border-line bg-canvas-soft px-3 py-2.5"><span className={cx('shrink-0 rounded-full border px-2 py-1 text-[9px] font-extrabold uppercase', changeTone[change.type])}>{changeLabel[change.type]}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold text-ink" title={change.title}>{change.title}</span><span className="mt-0.5 block text-[10px] text-muted">{change.season ? `S${String(change.season).padStart(2, '0')}` : 'Movie'}{change.from || change.to ? ` · ${change.from || '—'} → ${change.to || '—'}` : ''}{(change.details || []).length ? ` — ${(change.details || []).join(' · ')}` : ''}</span></span></li>)}</ul>}</div>}
-      </article>
-    })}</div>
+    {!loading && !error && !filtered.length && <div className="rounded-xl border border-dashed border-line p-10 text-center text-sm text-muted">{scans.length ? 'No changes match these filters.' : 'Complete a scan to create the first history entry.'}</div>}
+    <div className="space-y-4">{filtered.map(scan => <article key={scan.id} className="overflow-hidden rounded-2xl border border-line bg-panel">
+      <header className="flex flex-wrap items-center gap-3 border-b border-line px-5 py-4">
+        <Icon name={scan.outcome && scan.outcome !== 'success' ? 'alert' : 'clock'} className="text-accent-bright"/>
+        <div className="min-w-0 flex-1"><h2 className="m-0 text-sm font-extrabold">{scan.run_at}</h2><p className="mt-1 mb-0 text-xs text-muted">{scan.id === scans[0]?.id ? 'Latest scan · ' : ''}{scan.changes.length} recorded changes · {scan.trigger === 'scheduled' ? 'Scheduled' : scan.trigger && scan.trigger !== 'manual' ? scan.trigger + ' webhook' : 'Manual'}{scan.duration_seconds !== undefined ? ' · ' + scan.duration_seconds.toFixed(1) + 's' : ''}{scan.outcome && scan.outcome !== 'success' ? ' · ' + scan.outcome : ''}</p>{scan.error && <p className="mt-1 text-xs text-bad">{scan.error}</p>}{Object.entries(scan.source_errors || {}).map(([source, message]) => <p key={source} className="mt-1 text-xs text-warn">{source}: {message}</p>)}</div>
+        <div className="flex flex-wrap gap-1.5">{Object.entries(scan.counts || {}).filter(([, count]) => count > 0).map(([status, count]) => <span key={status} className="rounded-full border border-line px-2.5 py-1 text-[10px] text-muted">{count} {statusLabel[status] || status}</span>)}</div>
+      </header>
+      {scan.outcome === 'failed' || scan.outcome === 'cancelled' ? null : <div className="p-5">{!scan.changes.length ? <p className="m-0 text-sm text-muted">No changes from the previous scan.</p> : <ul className="m-0 grid list-none gap-2 p-0 sm:grid-cols-2">{scan.changes.map((change, index) => {
+        const result = currentResult(change)
+        return <li key={change.key + ':' + index} className="flex items-center gap-3 rounded-xl border border-line bg-canvas-soft px-3 py-2.5">
+          <span className={cx('shrink-0 rounded-full border px-2 py-1 text-[9px] font-extrabold uppercase', changeTone[change.type])}>{changeLabel[change.type]}</span>
+          <span className="min-w-0 flex-1"><button type="button" className="block w-full cursor-pointer truncate text-left text-xs font-bold text-accent-bright hover:underline disabled:cursor-default disabled:text-muted disabled:no-underline" disabled={!result} title={result ? 'Open ' + change.title + ' in the library' : change.title + ' is no longer in the current library'} onClick={() => result && onOpenResult(result.key)}>{change.title}</button><span className="mt-0.5 block text-[10px] text-muted">{change.season ? 'S' + String(change.season).padStart(2, '0') : 'Movie'}{change.from || change.to ? ' · ' + (statusLabel[change.from || ''] || change.from || '—') + ' → ' + (statusLabel[change.to || ''] || change.to || '—') : ''}{change.details?.length ? ' — ' + change.details.join(' · ') : ''}</span></span>
+        </li>
+      })}</ul>}</div>}
+    </article>)}</div>
   </section>
 }

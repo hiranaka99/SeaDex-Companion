@@ -57,6 +57,7 @@ export interface ReleaseCandidate extends JsonObject {
   info_hashes: string[]
   is_best: boolean
   source_files?: { name: string; length: number }[]
+  torrent_files?: import('../shared/download-estimate.js').TorrentFiles[]
   selected_files?: string[]
 }
 

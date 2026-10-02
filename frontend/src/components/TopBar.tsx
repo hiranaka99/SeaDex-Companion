@@ -5,11 +5,12 @@ import { cx } from '../styles'
 import Icon, { IconName } from './Icons'
 import pkg from '../../package.json'
 
-const APP_VERSION = `v${pkg.version}`
+const APP_VERSION = `v${pkg.version.replace(/\.0$/, '')}`
 
 const NAV: { id: TabId; icon: IconName; label: string }[] = [
   { id: 'anime', icon: 'library', label: 'Library' },
   { id: 'history', icon: 'clock', label: 'Scan history' },
+  { id: 'downloads', icon: 'download', label: 'Downloads' },
   { id: 'config', icon: 'settings', label: 'Configuration' },
   { id: 'log', icon: 'logs', label: 'Server log' },
 ]
@@ -104,7 +105,7 @@ export default function TopBar({ tab, onTabChange, username, onLogout, collapsed
 
       <nav className="fixed inset-x-3 bottom-3 z-50 hidden h-16 items-center justify-around rounded-2xl border border-line-strong bg-panel-raised/95 px-2 shadow-card backdrop-blur-xl max-[900px]:flex" aria-label="Mobile navigation">
         {NAV.map((item) => (
-          <button key={item.id} type="button" className={cx('flex min-w-20 cursor-pointer flex-col items-center gap-1 rounded-xl px-3 py-2 text-[10px] font-bold transition-colors', tab === item.id ? 'bg-accent/12 text-accent-bright' : 'text-muted')} aria-current={tab === item.id ? 'page' : undefined} onClick={() => onTabChange(item.id)}><Icon name={item.icon} size={19} />{item.label.replace('Configuration', 'Config').replace('Server log', 'Log')}</button>
+          <button key={item.id} type="button" className={cx('flex min-w-0 flex-1 cursor-pointer flex-col items-center gap-1 rounded-xl px-1 py-2 text-[10px] font-bold transition-colors', tab === item.id ? 'bg-accent/12 text-accent-bright' : 'text-muted')} aria-current={tab === item.id ? 'page' : undefined} onClick={() => onTabChange(item.id)}><Icon name={item.icon} size={19} />{item.label.replace('Configuration', 'Config').replace('Server log', 'Log').replace('Scan history', 'History')}</button>
         ))}
       </nav>
     </>

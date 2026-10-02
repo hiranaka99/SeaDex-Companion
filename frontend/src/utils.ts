@@ -1,4 +1,4 @@
-import { CardStatus, GroupedCard, ResultItem } from './types'
+import type { CardStatus, GroupedCard, ResultItem } from './types.js'
 
 /** Badge text shown on each card banner. */
 export const STATUS_LABEL: Record<CardStatus, string> = {
@@ -6,6 +6,7 @@ export const STATUS_LABEL: Record<CardStatus, string> = {
   best: 'Best quality',
   missing: 'Not on SeaDex',
   partial: 'Partially on SeaDex',
+  review: 'Match needs review',
 }
 
 export function formatBytes(n: number): string {
@@ -97,7 +98,8 @@ export function groupResults(results: ResultItem[]): GroupedCard[] {
     const st = g.seasons.map((r) => r.status || 'upgrade')
     const hasUnresolved = st.some((status) => status === 'missing' || status === 'uncovered' || status === 'partial')
     const hasResolved = st.some((status) => status === 'upgrade' || status === 'best')
-    if (st.includes('partial') || (hasUnresolved && hasResolved)) g.status = 'partial'
+    if (g.seasons.some(season => season.match_status === 'unmatched' || (!season.anilist_id && season.status === 'missing'))) g.status = 'review'
+    else if (st.includes('partial') || (hasUnresolved && hasResolved)) g.status = 'partial'
     else if (hasUnresolved) g.status = 'missing'
     else if (st.includes('upgrade')) g.status = 'upgrade'
     else g.status = 'best'

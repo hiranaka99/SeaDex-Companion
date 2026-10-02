@@ -2,6 +2,8 @@ import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, 
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { ChainEntry, ChainPart, Config, JsonObject, ReleaseCandidate, ScanScope, ScanState, ScanTrigger } from './types.js'
 
 export const SEADEX = 'https://releases.moe/api'
@@ -18,6 +20,7 @@ export const CACHE_FILE = join(DATA_DIR, 'anilist_cache.json')
 export const RESULTS_FILE = join(DATA_DIR, 'last_results.json')
 export const NOTIFIED_FILE = join(DATA_DIR, 'notified.json')
 export const OWNED_TORRENTS_FILE = join(DATA_DIR, 'owned_torrents.json')
+export const DOWNLOAD_RECORDS_FILE = join(DATA_DIR, 'download_records.json')
 export const USER_RULES_FILE = join(DATA_DIR, 'user_rules.json')
 export const HISTORY_FILE = join(DATA_DIR, 'scan_history.json')
 export const LOG_DIR = join(DATA_DIR, 'logs')
@@ -90,7 +93,14 @@ export const autocheckState: { next: number | null; signature: string; pending: 
   pending: false,
 }
 
+let resultRevision = 0
+export function resultsRevision(): string {
+  const stamp = (file: string) => { try { const stat = statSync(file); return `${stat.mtimeMs}:${stat.size}` } catch { return '' } }
+  return `${resultRevision}:${stamp(RESULTS_FILE)}:${stamp(USER_RULES_FILE)}`
+}
+
 export function setState(values: Partial<ScanState>): void {
+  if ('results' in values) resultRevision += 1
   Object.assign(scanState, values)
 }
 
@@ -146,12 +156,18 @@ export function readLogTail(limit = 256 * 1024): string[] {
     try {
       const length = Math.min(limit, size)
       const buffer = Buffer.alloc(length)
-      readSync(fd, buffer, 0, length, size - length)
-      const text = buffer.toString('utf8')
+      const offset = size - length
+      const read = readSync(fd, buffer, 0, length, offset)
+      const text = buffer.subarray(0, read).toString('utf8')
       if (!text) return []
       const lines = text.split('\n')
       // A partial line can only appear at the head (we always stop at EOF).
-      return lines.slice(1)
+      if (offset > 0) {
+        const previous = Buffer.alloc(1)
+        if (readSync(fd, previous, 0, 1, offset - 1) !== 1 || previous[0] !== 10) lines.shift()
+      }
+      if (lines.at(-1) === '') lines.pop()
+      return lines
     } finally {
       closeSync(fd)
     }
@@ -280,7 +296,8 @@ export function normalizeScanSchedule(value: unknown, legacyMinutes?: number): C
 }
 
 export function loadConfig(): Config {
-  const stored = readJson<Partial<Config> & { autocheck_minutes?: number; scan_webhook_secret?: string; webhook_debounce_seconds?: number }>(CONFIG_FILE, {}, 'Could not read config')
+  const raw = readJson<unknown>(CONFIG_FILE, {}, 'Could not read config')
+  const stored: Partial<Config> & { autocheck_minutes?: number; scan_webhook_secret?: string; webhook_debounce_seconds?: number } = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
   const encryptedSecrets = loadEncryptedSecrets()
   const plaintextSecrets: Partial<Record<SecretConfigKey, string>> = {}
   let containsPlaintextSecretFields = false
@@ -296,6 +313,7 @@ export function loadConfig(): Config {
   delete config.webhook_debounce_seconds
   config.sonarr_url = arrBaseUrl(config.sonarr_url)
   config.radarr_url = arrBaseUrl(config.radarr_url)
+  config.hidden = Array.isArray(config.hidden) ? config.hidden.filter((key): key is string => typeof key === 'string' && Boolean(key)) : []
   const hasLegacySettings = ['autocheck_minutes', 'scan_webhook_secret', 'webhook_debounce_seconds'].some((key) => Object.prototype.hasOwnProperty.call(stored, key))
   if (containsPlaintextSecretFields || hasLegacySettings) {
     saveConfig(config)
@@ -326,12 +344,19 @@ export function saveConfig(config: Config): void {
   }
   writeJsonAtomic(CONFIG_FILE, stored, true, 0o600)
 }
-export function loadCache(): JsonObject { return readJson<JsonObject>(CACHE_FILE, {}) }
+export function loadCache(): JsonObject {
+  const cache = readJson<unknown>(CACHE_FILE, {})
+  return cache && typeof cache === 'object' && !Array.isArray(cache) ? cache as JsonObject : {}
+}
 export function saveCache(cache: JsonObject): void { writeJsonAtomic(CACHE_FILE, cache, true) }
 export function saveLastResults(results: JsonObject[], lastRun: string): void {
   writeJsonAtomic(RESULTS_FILE, { results, last_run: lastRun })
 }
-export function loadLastResults(): JsonObject | null { return readJson<JsonObject | null>(RESULTS_FILE, null) }
+export function loadLastResults(): JsonObject | null {
+  const saved = readJson<JsonObject | null>(RESULTS_FILE, null)
+  if (!saved || typeof saved !== 'object' || !Array.isArray(saved.results)) return null
+  return { ...saved, results: saved.results.filter((result: unknown) => result && typeof result === 'object' && !Array.isArray(result)), last_run: typeof saved.last_run === 'string' ? saved.last_run : null }
+}
 
 export interface UserRules {
   mappings: Record<string, number>
@@ -341,7 +366,8 @@ export interface UserRules {
 const EMPTY_USER_RULES: UserRules = { mappings: {}, exclusions: [] }
 
 export function loadUserRules(file = USER_RULES_FILE): UserRules {
-  const stored = readJson<Partial<UserRules>>(file, EMPTY_USER_RULES, 'Could not read user rules')
+  const raw = readJson<unknown>(file, EMPTY_USER_RULES, 'Could not read user rules')
+  const stored: Partial<UserRules> = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : EMPTY_USER_RULES
   const mappings = stored.mappings && typeof stored.mappings === 'object' && !Array.isArray(stored.mappings)
     ? Object.fromEntries(Object.entries(stored.mappings).filter(([key, value]) => key && Number.isInteger(value) && Number(value) > 0).map(([key, value]) => [key, Number(value)]))
     : {}
@@ -497,7 +523,10 @@ export function buildScanHistoryEntry(previous: JsonObject[], current: JsonObjec
 
 export function loadScanHistory(file = HISTORY_FILE): ScanHistoryEntry[] {
   const stored = readJson<JsonObject>(file, { version: 1, scans: [] }, 'Could not read scan history')
-  return stored && typeof stored === 'object' && Array.isArray(stored.scans) ? stored.scans.slice(0, 30) as ScanHistoryEntry[] : []
+  return stored && typeof stored === 'object' && Array.isArray(stored.scans)
+    ? stored.scans.filter((scan: unknown): scan is ScanHistoryEntry => Boolean(scan && typeof scan === 'object' && typeof (scan as JsonObject).id === 'string' && typeof (scan as JsonObject).run_at === 'string' && Array.isArray((scan as JsonObject).changes)))
+      .slice(0, 30).map((scan: ScanHistoryEntry) => ({ ...scan, changes: scan.changes.filter(change => change && typeof change.title === 'string' && typeof change.type === 'string') }))
+    : []
 }
 
 export function recordScanHistory(previous: JsonObject[], current: JsonObject[], runAt: string, file = HISTORY_FILE, trigger: ScanTrigger = 'manual', metadata: { durationSeconds?: number; scannedTitles?: number; sourceErrors?: Record<string, string>; outcome?: ScanHistoryEntry['outcome']; error?: string } = {}): ScanHistoryEntry {
@@ -545,10 +574,12 @@ export function loadNotified(file = NOTIFIED_FILE): Set<string> { return loadStr
 export function saveNotified(keys: Set<string>, file = NOTIFIED_FILE): void { writeJsonAtomic(file, [...keys].sort()) }
 
 let activeScanController: AbortController | null = null
+const scanRequests = new AsyncLocalStorage<AbortSignal>()
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeout = 60_000): Promise<Response> {
   const timeoutSignal = AbortSignal.timeout(timeout)
-  const signal = activeScanController ? AbortSignal.any([activeScanController.signal, timeoutSignal]) : timeoutSignal
+  const signals = [timeoutSignal, scanRequests.getStore(), init.signal].filter((signal): signal is AbortSignal => Boolean(signal))
+  const signal = AbortSignal.any(signals)
   return fetch(url, { ...init, redirect: 'manual', signal })
 }
 
@@ -609,7 +640,8 @@ export function mergeComplementaryCandidates(candidates: ReleaseCandidate[]): Re
     const key = `${candidate.releaseGroup.trim().toLowerCase()}\0${String(candidate.tracker || '').trim().toLowerCase()}`
     const episodes = candidateEpisodes(candidate)
     const groupSets = sets.get(key) || []
-    let target = groupSets.find((set) => !episodes.some((episode) => set.coverage.has(episode)))
+    // Without episode coverage, separate uploads may be alternate full batches.
+    let target = episodes.length ? groupSets.find((set) => set.coverage.size > 0 && !episodes.some((episode) => set.coverage.has(episode))) : undefined
     if (!target) { target = { members: [], coverage: new Set<number>() }; groupSets.push(target); sets.set(key, groupSets) }
     target.members.push(candidate)
     for (const episode of episodes) target.coverage.add(episode)
@@ -626,6 +658,7 @@ export function mergeComplementaryCandidates(candidates: ReleaseCandidate[]): Re
         file_count: members.reduce((sum, member) => sum + (member.file_count || 0), 0),
         info_hashes: members.flatMap((member) => member.info_hashes),
         source_files: members.flatMap((member) => member.source_files || []),
+        torrent_files: members.flatMap((member) => member.torrent_files || []),
         is_best: members.some((member) => member.is_best),
       })
     }
@@ -686,6 +719,7 @@ export async function seadexBest(): Promise<Map<number, JsonObject>> {
             info_hashes: hash ? [hash] : [],
             is_best: Boolean(torrent.isBest),
             source_files: seasonFiles.map((file) => ({ name: String(file.name || ''), length: Number(file.length || 0) })),
+            torrent_files: hash ? [{ hash: hash.toLowerCase(), files: files.map((file) => ({ name: String(file.name || ''), length: Number(file.length || 0) })) }] : [],
           }
           ;(entry.seasons[season].candidates as ReleaseCandidate[]).push(release)
         }
@@ -775,6 +809,7 @@ export async function localItems(config: Config, scope: ScanScope = {}): Promise
           size: stats.sizeOnDisk || 0,
           episode_numbers: episodeNumbers,
           episode_count: episodeNumbers.length || Number(stats.episodeCount || stats.totalEpisodeCount || 0) || null,
+          missing_episode_count: episodes.filter(episode => Number(episode.seasonNumber) === Number(number) && Date.parse(String(episode.airDate || '')) <= now && !Number(episode.episodeFileId || episode.episodeFile?.id || 0)).length,
           groups_by_episode: episodeGroups
             ? Object.fromEntries([...episodeGroups].map(([group, numbers]) => [group, [...numbers].sort((left, right) => left - right)]))
             : {},
@@ -871,7 +906,7 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
 }
 
 let lastAnilist = 0
-const sleep = (milliseconds: number) => new Promise((done) => setTimeout(done, milliseconds))
+const sleep = (milliseconds: number) => delay(milliseconds, undefined, { signal: scanRequests.getStore() })
 
 async function pacedAniList(payload: JsonObject, search: boolean): Promise<any> {
   let lastError = 'unknown error'
@@ -885,6 +920,7 @@ async function pacedAniList(payload: JsonObject, search: boolean): Promise<any> 
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
       }, 30_000)
     } catch (error) {
+      scanRequests.getStore()?.throwIfAborted()
       lastError = errorMessage(error)
       log('WARNING', `AniList ${search ? 'search ' : ''}network error, retrying: ${lastError}`)
       await sleep(3000)
@@ -1210,6 +1246,7 @@ export function releaseDict(kind: string, release: JsonObject, part?: string | n
   if (part) result.part = part
   if (url) result.url = url
   if (release.selected_files?.length) result.selected_files = [...release.selected_files]
+  if (release.torrent_files?.length) result.torrent_files = release.torrent_files
   return result
 }
 
@@ -1388,10 +1425,14 @@ export interface ScanDependencies {
 }
 
 export async function runScan(config: Config | JsonObject, dependencies: ScanDependencies = {}, trigger: ScanTrigger = 'manual', scope: ScanScope = {}): Promise<void> {
-  const started = Date.now()
-  const previousState = getState()
   const controller = new AbortController()
   activeScanController = controller
+  return scanRequests.run(controller.signal, () => performScan(config, dependencies, trigger, scope, controller))
+}
+
+async function performScan(config: Config | JsonObject, dependencies: ScanDependencies, trigger: ScanTrigger, scope: ScanScope, controller: AbortController): Promise<void> {
+  const started = Date.now()
+  const previousState = getState()
   let stage = 'initializing'
   try {
     const enabledSources = [config.sonarr_url && config.sonarr_key ? 'Sonarr' : '', config.radarr_url && config.radarr_key ? 'Radarr' : ''].filter(Boolean)
@@ -1439,10 +1480,11 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
           key: `${item.arr}:item${item.id}:${season}:missing`, group_id: null, arr: item.arr, title: item.title,
           library_key: libraryKey, mapping_override: Boolean(mappingId),
           season, status: 'missing', have: [...local.groups].sort(), local_size: local.size || 0,
+          match_status: 'unmatched', missing_episode_count: local.missing_episode_count,
           best_group: null, best_size: 0, releases: [], url: null, notes: null, image: null,
           banner: null, anilist_id: null, arr_url: arrUrl,
         })
-        setState({ progress: itemIndex + 1, results: [...results] })
+        setState({ progress: itemIndex + 1, results: [...retainedResults, ...results] })
         continue
       }
       for (const [season, local] of seasonEntries) {
@@ -1454,6 +1496,7 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
         const partOwnership = localPartOwnership(local, parts)
         const common: JsonObject = {
           group_id: chain[0].id, arr: item.arr, title: item.title, season, have: [...localGroups].sort(),
+          match_status: 'matched', missing_episode_count: local.missing_episode_count,
           library_key: libraryKey, mapping_override: Boolean(mappingId),
           have_by_part: partOwnership.have, owned_by_part: partOwnership.owned, precise_part_ownership: partOwnership.precise,
           local_size_by_part: partOwnership.sizes,
@@ -1552,7 +1595,10 @@ export async function runScan(config: Config | JsonObject, dependencies: ScanDep
       log('WARNING', `Could not save scan history: ${errorMessage(error)}`)
     }
     stage = 'sending notifications'
-    if (!Object.keys(sourceErrors).length) await (dependencies.autoNotifyNew || autoNotifyNew)(config as Config, { previous: previousResults })
+    if (!Object.keys(sourceErrors).length) {
+      try { await (dependencies.autoNotifyNew || autoNotifyNew)(config as Config, { previous: previousResults }) }
+      catch (error) { log('WARNING', `Scan results were saved, but notifications ${controller.signal.aborted ? 'were cancelled' : `failed: ${errorMessage(error)}`}`) }
+    }
     else log('WARNING', `Notifications skipped after partial scan: ${Object.keys(sourceErrors).join(', ')} unavailable`)
     const statusCounts = finalResults.reduce<Record<string, number>>((counts, result) => {
       const status = String(result.status || 'unknown')
@@ -1668,7 +1714,10 @@ export async function sendToDiscord(webhook: string, results: JsonObject[], onSe
       sent += 1
       onSent?.(result)
       await sleep(500)
-    } catch (error) { log('ERROR', `Discord webhook failed for ${String(result.title || 'Unknown title')}: ${errorMessage(error)}`) }
+    } catch (error) {
+      scanRequests.getStore()?.throwIfAborted()
+      log('ERROR', `Discord webhook failed for ${String(result.title || 'Unknown title')}: ${errorMessage(error)}`)
+    }
   }
   log(sent === results.length ? 'INFO' : 'WARNING', `Discord notification batch finished in ${((Date.now() - started) / 1000).toFixed(1)}s: sent ${sent}/${results.length}`)
   return sent
@@ -1722,14 +1771,16 @@ export async function autoNotifyNew(config: Config, dependencies: NotificationDe
     return details.length ? { ...result, change_details: details } : result
   })
   const delivered: JsonObject[] = []
-  const sent = await (dependencies.send || sendToDiscord)(config.webhook, payload, (result) => delivered.push(result))
-  for (const result of delivered) notified.add(result.key)
-  if (notificationStateChanged || delivered.length) save(notified)
-  return sent
+  try { return await (dependencies.send || sendToDiscord)(config.webhook, payload, (result) => delivered.push(result)) }
+  finally {
+    for (const result of delivered) notified.add(result.key)
+    if (notificationStateChanged || delivered.length) save(notified)
+  }
 }
 
 interface QbSession { cookie: string }
 let qbSession: QbSession | null = null
+let qbConnection = ''
 let qbCache: { data: JsonObject[] | null; timestamp: number } = { data: null, timestamp: 0 }
 let qbQueue: Promise<void> = Promise.resolve()
 
@@ -1800,13 +1851,24 @@ function isTimeoutLikeError(error: unknown): boolean {
 }
 
 async function qbRequest(config: Config, path: string, init: RequestInit = {}, retry = true, timeout = 30_000): Promise<Response> {
-  const base = config.qbittorrent_url.replace(/\/$/, '')
+  const base = selectQbConnection(config)
   if (!base) throw new Error('qBittorrent is not configured (Config tab)')
   qbSession ||= await qbLogin(base, config.qbittorrent_user, config.qbittorrent_pass)
   const headers = new Headers(init.headers); if (qbSession.cookie) headers.set('Cookie', qbSession.cookie)
   const response = await fetchWithTimeout(`${base}${path}`, { ...init, headers }, timeout)
   if (response.status === 403 && retry) { qbSession = await qbLogin(base, config.qbittorrent_user, config.qbittorrent_pass); return qbRequest(config, path, init, false, timeout) }
   return response
+}
+
+function selectQbConnection(config: Config): string {
+  const base = String(config.qbittorrent_url || '').replace(/\/+$/, '')
+  const connection = JSON.stringify([base, config.qbittorrent_user, config.qbittorrent_pass])
+  if (connection !== qbConnection) {
+    qbConnection = connection
+    qbSession = null
+    qbCache = { data: null, timestamp: 0 }
+  }
+  return base
 }
 
 function magnetInfoHash(magnet: string): string | null {
@@ -2062,18 +2124,96 @@ export function bulkDownloadBatchStatus(): BulkDownloadBatchStatus {
 
 export async function qbGetTorrents(config: Config, hashes?: string[]): Promise<JsonObject[]> {
   return withQbLock(async () => {
+    selectQbConnection(config)
     let torrents = qbCache.data
     if (!torrents || Date.now() - qbCache.timestamp >= 2000) {
       const response = await qbRequest(config, '/api/v2/torrents/info')
       const text = await response.text()
       if (response.status !== 200) throw new Error(`qBittorrent error (HTTP ${response.status}: ${text.slice(0, 120)})`)
       const parsed = JSON.parse(text) as JsonObject[]
+      if (!Array.isArray(parsed) || parsed.some(torrent => !torrent || typeof torrent !== 'object' || typeof torrent.hash !== 'string')) throw new Error('qBittorrent returned an invalid torrent list')
       torrents = parsed; qbCache = { data: parsed, timestamp: Date.now() }
     }
     const available = torrents || []
     if (!hashes) return available
     const wanted = new Set(hashes.map((hash) => hash.toLowerCase()))
     return available.filter((torrent) => wanted.has(String(torrent.hash || '').toLowerCase()))
+  })
+}
+
+export interface QbStorageLocation {
+  category: string
+  path: string | null
+  free_bytes: number | null
+  reason?: string
+}
+
+/** Read space on qBittorrent's host, never on the Companion container's filesystem. */
+export async function qbGetDownloadStorage(config: Config, categories: string[]): Promise<QbStorageLocation[]> {
+  if (!categories.length) return []
+  return withQbLock(async () => {
+    const read = async (path: string): Promise<JsonObject> => {
+      const response = await qbRequest(config, path, {}, true, 5_000)
+      if (!response.ok) throw new Error(`qBittorrent storage check returned HTTP ${response.status}`)
+      return await response.json() as JsonObject
+    }
+    let preferences: JsonObject
+    let categoryPaths: JsonObject = {}
+    let defaultFree: number | null = null
+    const bytes = (value: unknown): number | null => {
+      if (typeof value !== 'number' && !(typeof value === 'string' && /^\d+$/.test(value.trim()))) return null
+      const parsed = Number(value)
+      return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null
+    }
+    try { preferences = await read('/api/v2/app/preferences') }
+    catch { return categories.map(category => ({ category, path: null, free_bytes: null, reason: 'Could not read qBittorrent download paths.' })) }
+    if (typeof preferences.auto_tmm_enabled !== 'boolean') return categories.map(category => ({ category, path: null, free_bytes: null, reason: 'Could not determine qBittorrent save-path settings.' }))
+    try { defaultFree = bytes((await read('/api/v2/sync/maindata?rid=0')).server_state?.free_space_on_disk) } catch { /* optional on older clients */ }
+    const usesCategoryPaths = preferences.auto_tmm_enabled === true || preferences.use_category_paths_in_manual_mode === true
+    if (usesCategoryPaths && categories.some(Boolean)) {
+      try { categoryPaths = await read('/api/v2/torrents/categories') }
+      catch { return categories.map(category => ({ category, path: null, free_bytes: null, reason: 'Could not read qBittorrent category paths.' })) }
+    }
+    const locations: QbStorageLocation[] = []
+    for (const category of categories) {
+      let savePath = String(preferences.save_path || '')
+      if (usesCategoryPaths && category) {
+        const settings = categoryPaths[category]
+        // Subcategories and custom category download directories need settings
+        // unavailable on some clients. Do not claim the default disk is theirs.
+        if (!settings || settings.downloadPath?.enabled) {
+          locations.push({ category, path: null, free_bytes: null, reason: 'The category download path could not be determined.' })
+          continue
+        }
+        const categoryPath = String(settings.savePath || '')
+        if (categoryPath) {
+          if (categoryPath.startsWith('/') || /^[a-z]:[\\/]/i.test(categoryPath) || categoryPath.startsWith('\\\\')) savePath = categoryPath
+          else { locations.push({ category, path: null, free_bytes: null, reason: 'Relative category paths cannot be checked reliably.' }); continue }
+        }
+      }
+      const paths = [savePath, ...(preferences.temp_path_enabled ? [String(preferences.temp_path || '')] : [])]
+      for (const path of new Set(paths)) locations.push({ category, path: path || null, free_bytes: null })
+    }
+    const freeByPath = new Map<string, number | null>()
+    let pathApiUnsupported = false
+    for (const location of locations) {
+      if (!location.path) { location.reason = 'qBittorrent did not report a download path.'; continue }
+      if (!freeByPath.has(location.path)) {
+        let free: number | null = null
+        if (!pathApiUnsupported) {
+          try {
+            const response = await qbRequest(config, `/api/v2/app/getFreeSpaceAtPath?path=${encodeURIComponent(location.path)}`, {}, true, 5_000)
+            if (response.status === 404 || response.status === 405) pathApiUnsupported = true
+            if (response.ok) free = bytes(await response.text())
+          } catch { /* continue with default-path fallback */ }
+        }
+        if (free === null && location.path === String(preferences.save_path || '')) free = defaultFree
+        freeByPath.set(location.path, free)
+      }
+      location.free_bytes = freeByPath.get(location.path)!
+      if (location.free_bytes === null) location.reason = 'This qBittorrent client could not report free space for this path.'
+    }
+    return locations
   })
 }
 
@@ -2130,6 +2270,36 @@ function normalizeInfoHash(value: unknown): string | null {
 }
 
 const ownedTorrents = loadStringSet(OWNED_TORRENTS_FILE, 'Could not read torrent ownership ledger', normalizeInfoHash)
+export function loadDownloadRecords(file = DOWNLOAD_RECORDS_FILE): Record<string, BulkCancelInfo> {
+  const parsed = readJson<unknown>(file, {})
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  return Object.fromEntries(Object.entries(parsed).flatMap(([hash, info]) => {
+    const normalized = normalizeInfoHash(hash)
+    if (!normalized || !info || typeof info !== 'object' || typeof info.title !== 'string') return []
+    return [[normalized, {
+      key: typeof info.key === 'string' ? info.key : `torrent:${normalized}`,
+      release: Number.isInteger(info.release) && info.release >= 0 ? info.release : 0,
+      title: info.title, season: Number.isInteger(info.season) && info.season >= 0 ? info.season : null,
+      part: typeof info.part === 'string' ? info.part : '',
+      releaseGroup: typeof info.releaseGroup === 'string' ? info.releaseGroup : '',
+      tracker: typeof info.tracker === 'string' ? info.tracker : '', size: Number(info.size) || 0,
+    }]]
+  }))
+}
+
+export function recordDownloadDetails(hash: string, info: BulkCancelInfo, file = DOWNLOAD_RECORDS_FILE): void {
+  const normalized = normalizeInfoHash(hash)
+  if (!normalized) throw new Error('Invalid download hash')
+  writeJsonAtomic(file, { ...loadDownloadRecords(file), [normalized]: info })
+}
+
+export function trackedDownloadInfo(torrent: JsonObject, records: Record<string, BulkCancelInfo>, index: ResultReleaseIndex): BulkCancelInfo {
+  const hash = String(torrent.hash || '').toLowerCase()
+  return records[hash] || index.byHash.get(hash) || {
+    key: `torrent:${hash}`, release: 0, title: String(torrent.name || hash), season: null,
+    part: '', releaseGroup: '', tracker: '', size: Number(torrent.size || torrent.total_size || 0),
+  }
+}
 
 function persistOwnedTorrents(values: Set<string>): void {
   writeJsonAtomic(OWNED_TORRENTS_FILE, [...values].sort())
@@ -2164,6 +2334,9 @@ export function forgetOwnedTorrents(hashes: string[]): void {
   if (next.size === ownedTorrents.size) return
   persistOwnedTorrents(next)
   replaceOwnedTorrents(next)
+  try {
+    if (existsSync(DOWNLOAD_RECORDS_FILE)) writeJsonAtomic(DOWNLOAD_RECORDS_FILE, Object.fromEntries(Object.entries(loadDownloadRecords()).filter(([hash]) => next.has(hash))))
+  } catch (error) { log('WARNING', `Could not prune download details: ${errorMessage(error)}`) }
 }
 
 export function ownedTorrentsSnapshot(): string[] {
@@ -2172,7 +2345,7 @@ export function ownedTorrentsSnapshot(): string[] {
 
 export function normalizeQbStates(states: string[]): string {
   if (!states.length) return 'unknown'
-  if (states.some((state) => ['error', 'unknown'].includes(state))) return 'error'
+  if (states.some((state) => ['error', 'missingFiles', 'unknown'].includes(state))) return 'error'
   const downloading = new Set(['downloading', 'forcedDL', 'metaDL', 'queuedDL', 'stalledDL', 'checkingDL', 'allocating', 'checkingResumeData'])
   const uploading = new Set(['uploading', 'forcedUP', 'queuedUP', 'stalledUP'])
   const paused = new Set(['pausedDL', 'pausedUP', 'stoppedDL', 'stoppedUP'])
@@ -2273,7 +2446,7 @@ export function resultsForRequest(): JsonObject[] {
 
 export function resetRuntimeForTests(): void {
   Object.assign(scanState, { running: false, progress: 0, total: 0, message: 'Idle', results: [], error: null, last_run: null, cancelled: false, trigger: null, source_errors: {} })
-  qbSession = null; qbCache = { data: null, timestamp: 0 }; qbQueue = Promise.resolve(); ownedTorrents.clear()
+  qbSession = null; qbConnection = ''; qbCache = { data: null, timestamp: 0 }; qbQueue = Promise.resolve(); ownedTorrents.clear()
   bulkBatch.finished = true; bulkBatch.pending = []; bulkBatch.added = []; bulkBatch.failures = []
   autocheckState.next = null; autocheckState.signature = ''; autocheckState.pending = false
 }

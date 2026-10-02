@@ -1,5 +1,5 @@
-import { GroupedCard, ResultItem } from './types'
-import { groupResults, STATUS_LABEL } from './utils'
+import type { GroupedCard, ResultItem } from './types.js'
+import { groupResults, STATUS_LABEL } from './utils.js'
 
 function result(season: number, status: string): ResultItem {
   return {
@@ -70,3 +70,7 @@ expect(artlessCard.image, 'cover-1', 'card image also falls back when the first 
 const noArtCard = groupResults([resultWithArt(0, null, null), resultWithArt(1, null, null)])[0]
 expect(noArtCard.banner, null, 'cards without any banner stay bannerless')
 expect(noArtCard.image, null, 'cards without any cover stay coverless')
+
+const unmatchedCard = groupResults([{ ...result(1, 'missing'), anilist_id: null, group_id: null, match_status: 'unmatched' }])[0]
+expect(unmatchedCard.status, 'review', 'unmatched anime need matching review rather than being reported absent from SeaDex')
+expect(STATUS_LABEL.review, 'Match needs review', 'matching review has a distinct label')

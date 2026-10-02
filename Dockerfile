@@ -11,6 +11,7 @@ COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci
 
 COPY server/ ./server/
+COPY shared/ ./shared/
 RUN npm run build:server
 # Retain production dependencies, including Alpine's prebuilt Argon2 binary.
 RUN npm prune --omit=dev
@@ -32,6 +33,7 @@ RUN npm ci
 # vite.config.ts sets outDir to "../static" (emptyOutDir: true), so the
 # compiled app lands in /app/static inside this stage.
 COPY frontend/ ./
+COPY shared/ /app/shared/
 RUN npm run build
 
 # ---------------------------------------------------------------------------
