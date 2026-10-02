@@ -1,9 +1,11 @@
-import { AuthState, Config, ResultItem, ScanHistoryEntry, ScannedDataInfo, Status } from './types'
+import type { AuthState, Config, ResultItem, ScanHistoryEntry, ScannedDataInfo, Status } from './types.js'
 
 export const AUTH_REQUIRED_EVENT = 'seadex:authentication-required'
 
-async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
-  const r = await fetch(path, opts)
+async function api<T = any>(path: string, opts: RequestInit = {}, timeoutMs = 30_000): Promise<T> {
+  const timeout = AbortSignal.timeout(timeoutMs)
+  const signal = opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout
+  const r = await fetch(path, { ...opts, signal })
   if (!r.ok) {
     if (r.status === 401 && !path.startsWith('/api/auth/')) {
       window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT))
@@ -116,14 +118,16 @@ export const setHidden = (key: string, hidden: boolean) =>
     body: JSON.stringify({ key, hidden }),
   })
 
-export const download = (key: string, release: number) =>
+export const download = (key: string, release: number, identity?: string) =>
   api<{ ok: boolean; error?: string }>('/api/download', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, release }),
+    body: JSON.stringify({ key, release, identity }),
   })
 
 export interface DownloadProgress {
+  identity?: string
+  missing_torrents?: number
   ok: boolean
   found: boolean
   progress: number
@@ -148,16 +152,21 @@ let allDownloadProgressRequest: Promise<AllDownloadProgress> | null = null
 
 /** Coalesce the initial probe from every mounted card into one qBittorrent snapshot. */
 export const getAllDownloadProgress = (): Promise<AllDownloadProgress> => {
-  allDownloadProgressRequest ||= api<AllDownloadProgress>('/api/download_progress/all')
-    .finally(() => { allDownloadProgressRequest = null })
+  if (!allDownloadProgressRequest) {
+    const request = api<AllDownloadProgress>('/api/download_progress/all')
+      .finally(() => { if (allDownloadProgressRequest === request) allDownloadProgressRequest = null })
+    allDownloadProgressRequest = request
+  }
   return allDownloadProgressRequest
 }
+
+export const invalidateDownloadProgress = () => { allDownloadProgressRequest = null }
 
 /** A synthetic "not present in qBittorrent" progress entry. */
 const NOT_FOUND_PROGRESS: DownloadProgress = { ok: true, found: false, progress: 0, downloaded: 0, total_size: 0, speed: 0, state: 'unknown' }
 
 type DownloadProgressCallback = (progress: DownloadProgress) => void
-const downloadProgressCallbacks = new Map<string, DownloadProgressCallback>()
+const downloadProgressCallbacks = new Map<string, Set<DownloadProgressCallback>>()
 let sharedDownloadTimer: number | null = null
 
 /**
@@ -168,10 +177,13 @@ let sharedDownloadTimer: number | null = null
  * qBittorrent request per tick instead of one request per release.
  */
 function tickSharedDownloads(): void {
+  const subscribers = [...downloadProgressCallbacks].map(([key, callbacks]) => [key, [...callbacks]] as const)
   getAllDownloadProgress()
     .then((res) => {
       const downloads = res.downloads || {}
-      for (const [idKey, callback] of downloadProgressCallbacks) callback(downloads[idKey] ?? NOT_FOUND_PROGRESS)
+      for (const [idKey, callbacks] of subscribers) for (const callback of callbacks) {
+        if (downloadProgressCallbacks.get(idKey)?.has(callback)) callback(downloads[idKey] ?? NOT_FOUND_PROGRESS)
+      }
     })
     .catch(() => {
       /* transient network/backend error — keep polling */
@@ -184,10 +196,14 @@ function tickSharedDownloads(): void {
  * watcher is removed.
  */
 export function watchDownloadProgress(idKey: string, callback: DownloadProgressCallback): () => void {
-  downloadProgressCallbacks.set(idKey, callback)
+  const callbacks = downloadProgressCallbacks.get(idKey) || new Set<DownloadProgressCallback>()
+  callbacks.add(callback)
+  downloadProgressCallbacks.set(idKey, callbacks)
   if (sharedDownloadTimer === null) sharedDownloadTimer = window.setInterval(tickSharedDownloads, 3000)
   return () => {
-    downloadProgressCallbacks.delete(idKey)
+    const current = downloadProgressCallbacks.get(idKey)
+    current?.delete(callback)
+    if (current?.size === 0) downloadProgressCallbacks.delete(idKey)
     if (!downloadProgressCallbacks.size && sharedDownloadTimer !== null) {
       window.clearInterval(sharedDownloadTimer)
       sharedDownloadTimer = null
@@ -197,11 +213,11 @@ export function watchDownloadProgress(idKey: string, callback: DownloadProgressC
 
 export type DownloadAction = 'pause' | 'resume' | 'remove'
 
-export const controlDownload = (key: string, release: number, action: DownloadAction, deleteFiles = false) =>
+export const controlDownload = (key: string, release: number, action: DownloadAction, deleteFiles = false, identity?: string) =>
   api<{ ok: boolean; error?: string }>('/api/download_control', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, release, action, delete_files: deleteFiles }),
+    body: JSON.stringify({ key, release, action, delete_files: deleteFiles, identity }),
   })
 
 export const DOWNLOADS_CHANGED_EVENT = 'seadex:downloads-changed'
@@ -209,7 +225,13 @@ export const DOWNLOADS_CHANGED_EVENT = 'seadex:downloads-changed'
 export interface BulkDownloadTarget {
   key: string
   release: number
+  identity?: string
 }
+
+export const getBulkDownloadPreflight = (selections: BulkDownloadTarget[], signal?: AbortSignal) =>
+  api<import('../../shared/download-estimate.js').DownloadPreflight>('/api/download_bulk/preflight', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections }), signal,
+  })
 
 export interface BulkDownloadFailure {
   hash: string
@@ -222,6 +244,7 @@ export interface BulkDownloadResult {
   count: number
   targets: BulkDownloadTarget[]
   failures?: BulkDownloadFailure[]
+  existing?: string[]
   error?: string
 }
 
@@ -257,7 +280,24 @@ export async function bulkDownloads(action: 'start' | 'cancel', selections: Bulk
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, selections, delete_files: deleteFiles }),
-  })
+  }, action === 'start' ? Math.max(60_000, selections.length * 60_000) : 60_000)
   window.dispatchEvent(new CustomEvent(DOWNLOADS_CHANGED_EVENT, { detail: { action, targets: result.targets } }))
   return result
 }
+
+export interface TrackedDownload extends DownloadProgress {
+  paused?: boolean
+  hash: string
+  title: string
+  name: string
+  season: number | null
+  part: string
+  releaseGroup: string
+}
+
+export const getTrackedDownloads = () => api<{ downloads: TrackedDownload[] }>('/api/downloads')
+export const controlTrackedDownload = (hash: string, action: DownloadAction, deleteFiles = false) =>
+  api<{ ok: boolean }>('/api/downloads/control', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hash, action, delete_files: deleteFiles }),
+  })

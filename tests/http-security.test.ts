@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { scryptSync } from 'node:crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { once } from 'node:events'
 import { tmpdir } from 'node:os'
@@ -38,10 +38,13 @@ function cookie(response: Response): string {
 
 before(async () => {
   dataDir = mkdtempSync(join(tmpdir(), 'seadex-http-'))
+  const staticDir = join(dataDir, 'static')
+  mkdirSync(staticDir)
+  writeFileSync(join(staticDir, 'index.html'), '<!doctype html><title>Test</title>')
   const port = await availablePort()
   baseUrl = `http://127.0.0.1:${port}`
   child = spawn(process.execPath, ['dist/server/index.js'], {
-    env: { ...process.env, DATA_DIR: dataDir, PORT: String(port) },
+    env: { ...process.env, DATA_DIR: dataDir, STATIC_DIR: staticDir, PORT: String(port) },
     stdio: 'pipe',
   })
   await waitForStartup()
@@ -64,6 +67,22 @@ test('health and application responses carry browser security headers', async ()
     assert.equal(response.headers.get('referrer-policy'), 'no-referrer')
     assert.match(response.headers.get('content-security-policy') || '', /frame-ancestors 'none'/)
   }
+})
+
+test('non-object JSON request bodies are rejected cleanly', async () => {
+  for (const body of ['null', '[]', '"string"', '7']) {
+    const response = await fetch(`${baseUrl}/api/auth/setup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+    assert.equal(response.status, 400)
+    assert.match(String((await response.json()).error), /JSON object/)
+  }
+})
+
+test('static HEAD responses include browser security headers and no response body', async () => {
+  const response = await fetch(`${baseUrl}/`, { method: 'HEAD' })
+  assert.equal(response.status, 200)
+  assert.match(response.headers.get('content-type') || '', /text\/html/)
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff')
+  assert.equal(await response.text(), '')
 })
 
 test('legacy scrypt credentials migrate to Argon2ID after successful login', async () => {
@@ -100,11 +119,13 @@ test('legacy scrypt credentials migrate to Argon2ID after successful login', asy
 
 
 test('account setup, authenticated access, revocation, and login throttling work over HTTP', async () => {
-  const setup = await fetch(`${baseUrl}/api/auth/setup`, {
+  const setups = await Promise.all(Array.from({ length: 2 }, () => fetch(`${baseUrl}/api/auth/setup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: 'administrator', password: 'correct horse battery staple' }),
-  })
+  })))
+  assert.deepEqual(setups.map(response => response.status).sort(), [201, 409])
+  const setup = setups.find(response => response.status === 201)!
   assert.equal(setup.status, 201)
   const stored = JSON.parse(readFileSync(join(dataDir, 'auth.json'), 'utf8')) as Record<string, unknown>
   assert.equal(stored.version, 2)
@@ -128,12 +149,17 @@ test('account setup, authenticated access, revocation, and login throttling work
   assert.equal(login.status, 200)
   const secondCookie = cookie(login)
 
-  const update = await fetch(`${baseUrl}/api/auth/account`, {
+  const [update, racingLogin] = await Promise.all([fetch(`${baseUrl}/api/auth/account`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: secondCookie },
     body: JSON.stringify({ username: 'administrator', current_password: 'correct horse battery staple', new_password: 'new correct horse battery staple' }),
-  })
+  }), fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'administrator', password: 'correct horse battery staple' }),
+  })])
   assert.equal(update.status, 200)
+  assert.ok([200, 401].includes(racingLogin.status))
+  if (racingLogin.status === 200) assert.equal((await fetch(`${baseUrl}/api/config`, { headers: { Cookie: cookie(racingLogin) } })).status, 401)
   const updatedCookie = cookie(update)
   assert.equal((await fetch(`${baseUrl}/api/config`, { headers: { Cookie: setupCookie } })).status, 401)
   assert.equal((await fetch(`${baseUrl}/api/config`, { headers: { Cookie: updatedCookie } })).status, 200)
@@ -147,6 +173,7 @@ test('account setup, authenticated access, revocation, and login throttling work
   const queuedStatus = await (await fetch(`${baseUrl}/api/status`, { headers: { Cookie: updatedCookie } })).json()
   assert.deepEqual(queuedStatus.webhook_scan.sources, ['sonarr'])
   assert.equal(queuedStatus.webhook_scan.queued, true)
+  assert.equal(queuedStatus.last_run, null)
 
   const invalidSchedule = await fetch(`${baseUrl}/api/config`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: updatedCookie },
@@ -156,14 +183,12 @@ test('account setup, authenticated access, revocation, and login throttling work
   assert.match(String((await invalidSchedule.json()).error), /at least one day/)
   assert.equal((await fetch(`${baseUrl}/api/scan/cancel`, { method: 'POST', headers: { Cookie: updatedCookie } })).status, 409)
 
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const failed = await fetch(`${baseUrl}/api/auth/login`, {
+  const failures = await Promise.all(Array.from({ length: 8 }, () => fetch(`${baseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'administrator', password: 'definitely incorrect' }),
-    })
-    assert.equal(failed.status, 401)
-  }
+    })))
+  assert.deepEqual(failures.map(response => response.status).sort(), [401, 401, 401, 401, 401, 429, 429, 429])
   const limited = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

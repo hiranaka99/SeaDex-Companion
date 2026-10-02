@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
 import {
   anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, cancelScan, checkForUpdates, clearScannedData, commonBestRelease, decryptSecretValues, describeResultChange, discordMessageBody, DEFAULT_CONFIG, effectiveSeasonParts,
-  encryptSecretValues, getState, loadLocalLibrary, loadStringSet, localItems, localPartOwnership, normalizeQbStates, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
+  DATA_DIR, encryptSecretValues, getState, loadLocalLibrary, loadStringSet, localItems, localPartOwnership, normalizeQbStates, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
   qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest,
   resetRuntimeForTests, resetUpdateCheck, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration,
 } from '../server/app.js'
@@ -45,7 +45,7 @@ async function makeChain(nodes: Map<number, JsonObject>) {
   })
 }
 
-beforeEach(() => { resetRuntimeForTests(); resetWebhookScanState(); if (existsSync(join(process.cwd(), 'scan_schedule_state.json'))) rmSync(join(process.cwd(), 'scan_schedule_state.json')); if (existsSync(join(process.cwd(), 'scan_schedule_state.json.tmp'))) rmSync(join(process.cwd(), 'scan_schedule_state.json.tmp')) })
+beforeEach(() => { resetRuntimeForTests(); resetWebhookScanState(); if (existsSync(join(DATA_DIR, 'scan_schedule_state.json'))) rmSync(join(DATA_DIR, 'scan_schedule_state.json')); if (existsSync(join(DATA_DIR, 'scan_schedule_state.json.tmp'))) rmSync(join(DATA_DIR, 'scan_schedule_state.json.tmp')) })
 
 describe('configuration secret security', () => {
   test('encrypts and authenticates configuration secrets', () => {
@@ -433,7 +433,7 @@ describe('Sonarr and Radarr URL normalization', () => {
     try {
       const items = await localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key', radarr_url: 'http://radarr', radarr_key: 'key' })
       assert.equal(items.length, 2)
-      assert.deepEqual(items[0].seasons[1], { groups: [], size: 0, episode_numbers: Array.from({ length: 12 }, (_, index) => index + 1), episode_count: 12, groups_by_episode: {}, sizes_by_episode: {} })
+      assert.deepEqual(items[0].seasons[1], { groups: [], size: 0, episode_numbers: Array.from({ length: 12 }, (_, index) => index + 1), episode_count: 12, missing_episode_count: 12, groups_by_episode: {}, sizes_by_episode: {} })
       assert.deepEqual(items[1].seasons[0], { groups: [], size: 0 })
     } finally {
       globalThis.fetch = originalFetch
@@ -536,6 +536,7 @@ describe('SeaDex catalog aggregation', () => {
       assert.deepEqual(candidates[0].info_hashes, ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)])
       assert.equal(candidates[0].size, 300)
       assert.equal(candidates[0].file_count, 3)
+      assert.deepEqual(candidates[0].torrent_files?.map(torrent => [torrent.hash, torrent.files[0].length]), [['a'.repeat(40), 100], ['b'.repeat(40), 100], ['c'.repeat(40), 100]])
     } finally {
       globalThis.fetch = originalFetch
     }

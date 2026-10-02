@@ -7,6 +7,7 @@ import AuthPage from './components/AuthPage'
 import ConfirmDialog from './components/ConfirmDialog'
 import OperationCenter, { BulkOperationState } from './components/OperationCenter'
 import HistoryTab from './components/HistoryTab'
+import DownloadsTab from './components/DownloadsTab'
 import { useToast } from './components/Toast'
 import { TabId, Status, ResultItem, Config, AuthState } from './types'
 import * as api from './api'
@@ -41,14 +42,28 @@ function readCollapsed(): boolean {
   }
 }
 
+function readTab(): TabId {
+  const value = window.location.hash.slice(1)
+  return ['anime', 'history', 'config', 'log', 'downloads'].includes(value) ? value as TabId : 'anime'
+}
+
 function AuthenticatedApp({ username, onLogout, onAccountUpdated }: AuthenticatedAppProps) {
-  const [tab, setTab] = useState<TabId>('anime')
+  const [tab, setTab] = useState<TabId>(readTab)
+  const configVisited = useRef(tab === 'config')
+  const historyVisited = useRef(tab === 'history')
+  if (tab === 'config') configVisited.current = true
+  if (tab === 'history') historyVisited.current = true
+  const [openResultKey, setOpenResultKey] = useState<string | null>(null)
+  const changeTab = (next: TabId) => { if (next !== tab) window.location.hash = next; setTab(next) }
   const [status, setStatus] = useState<Status>(INITIAL_STATUS)
   const [results, setResults] = useState<ResultItem[]>([])
   const [lastRun, setLastRun] = useState<string | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
   const [resultsLoading, setResultsLoading] = useState(true)
   const [resultsError, setResultsError] = useState('')
+  const [configError, setConfigError] = useState('')
+  const [statusError, setStatusError] = useState('')
+  const [lastStatusUpdate, setLastStatusUpdate] = useState<Date | null>(null)
   const [bulkOperation, setBulkOperation] = useState<BulkOperationState | null>(null)
   const [scanCompleted, setScanCompleted] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<boolean>(readCollapsed)
@@ -72,20 +87,26 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   const lastSeenRun = useRef<string | null>(null)
   const pollGeneration = useRef(0)
   const mounted = useRef(true)
+  const lastLoadedRevision = useRef<string | undefined>(undefined)
+  const resultsRequest = useRef(0)
 
   const loadResults = useCallback(async (generation?: number) => {
+    const request = ++resultsRequest.current
     try {
       const data = await api.getResults()
-      if (!mounted.current || (generation !== undefined && generation !== pollGeneration.current)) return
+      if (!mounted.current || request !== resultsRequest.current || (generation !== undefined && generation !== pollGeneration.current)) return
+      api.invalidateDownloadProgress()
       setResults(data.results || [])
       setLastRun(data.last_run || null)
       setResultsError('')
+      return true
     } catch (e: unknown) {
-      if (!mounted.current || (generation !== undefined && generation !== pollGeneration.current)) return
+      if (!mounted.current || request !== resultsRequest.current || (generation !== undefined && generation !== pollGeneration.current)) return
       console.error('Failed to load results:', e)
       setResultsError(e instanceof Error ? e.message : 'Could not load scanned results')
+      return false
     } finally {
-      if (mounted.current && (generation === undefined || generation === pollGeneration.current)) setResultsLoading(false)
+      if (mounted.current && request === resultsRequest.current && (generation === undefined || generation === pollGeneration.current)) setResultsLoading(false)
     }
   }, [])
 
@@ -100,12 +121,18 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
       lastSeenRun.current = st.last_run
       statusInitialized.current = true
       setStatus(st)
-      await loadResults(generation)
+      setStatusError('')
+      setLastStatusUpdate(new Date())
+      if (!st.results_revision || st.results_revision !== lastLoadedRevision.current) {
+        if (await loadResults(generation)) lastLoadedRevision.current = st.results_revision
+      }
       if (!mounted.current || generation !== pollGeneration.current) return
       pollTimer.current = window.setTimeout(() => { void pollStatus(generation) }, st.running ? 1500 : 10_000)
     } catch (e) {
       console.error('Status poll failed:', e)
       if (!mounted.current || generation !== pollGeneration.current) return
+      setStatusError(e instanceof Error ? e.message : 'Could not connect to the server')
+      setResultsLoading(false)
       pollTimer.current = window.setTimeout(() => { void pollStatus(generation) }, 3000)
     }
   }, [loadResults])
@@ -113,10 +140,41 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   const loadConfig = useCallback(async () => {
     try {
       const cfg = await api.getConfig()
+      api.invalidateDownloadProgress()
       setConfig(cfg)
+      setConfigError('')
     } catch (e) {
       console.error('Failed to load config:', e)
+      setConfigError(e instanceof Error ? e.message : 'Could not load configuration')
     }
+  }, [])
+
+  useEffect(() => {
+    const navigate = () => setTab(readTab())
+    window.addEventListener('hashchange', navigate)
+    return () => window.removeEventListener('hashchange', navigate)
+  }, [])
+
+  const openHistoryResult = (key: string) => { setOpenResultKey(key); changeTab('anime') }
+
+  useEffect(() => {
+    let active = true
+    let timer = 0
+    let observing = false
+    const recoverBulk = async () => {
+      try {
+        const batch = await api.getBulkDownloadStatus()
+        if (!active) return
+        const settled = batch.added.length + batch.failures.length
+        if (!batch.finished || observing) {
+          observing = true
+          setBulkOperation({ action: 'start', phase: batch.finished ? batch.failures.length ? 'warning' : 'success' : 'running', settled, total: settled + batch.pending.length, added: batch.added.length, failed: batch.failures.length, message: `${batch.added.length} added · ${batch.pending.length} pending · ${batch.failures.length} failed` })
+          if (!batch.finished) timer = window.setTimeout(recoverBulk, 3000)
+        }
+      } catch { if (active) timer = window.setTimeout(recoverBulk, 3000) }
+    }
+    void recoverBulk()
+    return () => { active = false; window.clearTimeout(timer) }
   }, [])
 
   useEffect(() => {
@@ -153,6 +211,9 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   }
 
   const handleScannedDataCleared = () => {
+    resultsRequest.current += 1
+    lastLoadedRevision.current = undefined
+    api.invalidateDownloadProgress()
     setResults([])
     setLastRun(null)
     setStatus((current) => ({ ...INITIAL_STATUS, next_check: current.next_check, webhook_scan: current.webhook_scan }))
@@ -169,7 +230,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
     >
       <TopBar
         tab={tab}
-        onTabChange={setTab}
+        onTabChange={changeTab}
         username={username}
         onLogout={onLogout}
         collapsed={collapsed}
@@ -183,13 +244,20 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
           onCancelScan={() => void handleCancelScan()}
           bulk={bulkOperation}
           onRetryScan={() => void handleScan()}
-          onOpenLibrary={() => setTab('anime')}
-          onOpenConfig={() => setTab('config')}
+          onOpenLibrary={() => changeTab('anime')}
+          onOpenConfig={() => changeTab('config')}
           onDismissBulk={() => setBulkOperation(null)}
           onDismissScan={() => setScanCompleted(null)}
         />
-        {tab === 'anime' && (
+        <div className="mb-4 flex flex-wrap items-center gap-3 text-xs text-muted" role={statusError ? 'alert' : undefined}>
+          {statusError ? <><span className="text-bad">Connection lost: {statusError}. Displayed data may be outdated.</span><button className="cursor-pointer font-bold text-accent-bright" onClick={() => { if (pollTimer.current) window.clearTimeout(pollTimer.current); void pollStatus(++pollGeneration.current) }}>Retry connection</button></> : lastStatusUpdate && <span>Updated {lastStatusUpdate.toLocaleTimeString()}</span>}
+        </div>
+        <div hidden={tab !== 'anime'}>
           <AnimeTab
+            active={tab === 'anime'}
+            openResultKey={openResultKey}
+            onResultOpened={() => setOpenResultKey(null)}
+            bulkOperationActive={bulkOperation?.phase === 'running'}
             results={results}
             config={config}
             status={status}
@@ -198,14 +266,15 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
             loading={resultsLoading}
             loadError={resultsError}
             onReloadResults={() => void loadResults()}
-            onOpenConfig={() => setTab('config')}
+            onOpenConfig={() => changeTab('config')}
             onBulkOperationChange={setBulkOperation}
             operationsVisible={status.running || Boolean(status.error) || Boolean(scanCompleted) || Boolean(bulkOperation)}
-            onResultsChanged={loadResults}
+            onResultsChanged={async () => { await loadResults() }}
           />
-        )}
-        {tab === 'history' && <HistoryTab />}
-        {tab === 'config' && <ConfigTab config={config} status={status} username={username} onRunScan={handleScan} onAccountUpdated={onAccountUpdated} onSaved={loadConfig} onScannedDataCleared={handleScannedDataCleared} />}
+        </div>
+        {historyVisited.current && <div hidden={tab !== 'history'}><HistoryTab active={tab === 'history'} results={results} onOpenResult={openHistoryResult} /></div>}
+        {configVisited.current && <div hidden={tab !== 'config'}><ConfigTab active={tab === 'config'} loadError={configError} onRetry={() => void loadConfig()} config={config} status={status} username={username} onRunScan={handleScan} onAccountUpdated={onAccountUpdated} onSaved={saved => { api.invalidateDownloadProgress(); setConfig(saved) }} onScannedDataCleared={handleScannedDataCleared} /></div>}
+        {tab === 'downloads' && <DownloadsTab />}
         {tab === 'log' && <LogTab active={tab === 'log'} />}
         </div>
       </main>
@@ -218,12 +287,17 @@ export default function App() {
   const [loadError, setLoadError] = useState('')
   const [logoutOpen, setLogoutOpen] = useState(false)
   const toast = useToast()
+  const authRequest = useRef(0)
 
   const refreshAuth = useCallback(async () => {
+    const request = ++authRequest.current
     try {
-      setAuth(await api.getAuthStatus())
+      const status = await api.getAuthStatus()
+      if (request !== authRequest.current) return
+      setAuth(status)
       setLoadError('')
     } catch (caught: any) {
+      if (request !== authRequest.current) return
       setLoadError(caught?.message || 'Could not load authentication status')
     }
   }, [])
@@ -232,12 +306,13 @@ export default function App() {
     void refreshAuth()
     const authenticationRequired = () => { void refreshAuth() }
     window.addEventListener(api.AUTH_REQUIRED_EVENT, authenticationRequired)
-    return () => window.removeEventListener(api.AUTH_REQUIRED_EVENT, authenticationRequired)
+    return () => { authRequest.current += 1; window.removeEventListener(api.AUTH_REQUIRED_EVENT, authenticationRequired) }
   }, [refreshAuth])
 
   const handleLogout = async () => {
     try {
       await api.logout()
+      authRequest.current += 1
       setAuth({ setup_required: false, authenticated: false, username: null })
     } catch (caught: any) {
       toast.show('Could not log out: ' + (caught?.message || 'Unknown error'), 'error')
@@ -256,7 +331,7 @@ export default function App() {
     )
   }
   if (!auth) return <main className="grid min-h-screen place-items-center text-sm text-muted">Loading…</main>
-  if (!auth.authenticated) return <AuthPage setupRequired={auth.setup_required} onAuthenticated={setAuth} />
+  if (!auth.authenticated) return <AuthPage setupRequired={auth.setup_required} onAuthenticated={status => { authRequest.current += 1; setLoadError(''); setAuth(status) }} />
   return <>
     <AuthenticatedApp username={auth.username || 'Administrator'} onLogout={() => setLogoutOpen(true)} onAccountUpdated={(username) => setAuth((current) => current ? { ...current, username } : current)} />
     <ConfirmDialog open={logoutOpen} title="Log out?" description="You will need your administrator password to return." confirmLabel="Log out" onConfirm={handleLogout} onClose={() => setLogoutOpen(false)} />

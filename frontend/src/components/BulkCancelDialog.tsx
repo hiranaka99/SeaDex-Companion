@@ -3,7 +3,7 @@ import { formatBytes } from '../utils'
 import { buttonBase, cx } from '../styles'
 import Icon from './Icons'
 import { getCancelableBulkDownloads, BulkDownloadTarget, CancelableDownload } from '../api'
-import { useRestoreFocus } from './useRestoreFocus'
+import Modal from './Modal'
 
 interface Props {
   open: boolean
@@ -13,7 +13,6 @@ interface Props {
 }
 
 export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Props) {
-  useRestoreFocus(open)
   const [downloads, setDownloads] = useState<CancelableDownload[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -23,6 +22,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
 
   useEffect(() => {
     if (!open) return
+    let active = true
     setLoading(true)
     setDownloads([])
     setError('')
@@ -31,23 +31,20 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
     cancelRef.current?.focus()
     getCancelableBulkDownloads()
       .then((data) => {
+        if (!active) return
         const list = data.downloads || []
         setDownloads(list)
         setEnabled(Object.fromEntries(list.map((item) => [`${item.key}\0${item.release}`, true])))
       })
       .catch((caught: Error) => {
+        if (!active) return
         setDownloads([])
         setError(caught.message || 'Could not load incomplete torrents')
       })
-      .finally(() => setLoading(false))
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
   }, [open])
 
-  useEffect(() => {
-    if (!open) return
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !busy) onClose() }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [open, busy, onClose])
 
   if (!open) return null
 
@@ -57,8 +54,8 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
   const selectedTorrents = enabledItems.reduce((total, item) => total + item.hashes.length, 0)
 
   return (
-    <div className="fixed inset-0 z-[90] grid place-items-center bg-black/65 px-4 py-6 backdrop-blur-sm" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
-      <section className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" role="dialog" aria-modal="true" aria-labelledby="bulk-cancel-title" aria-busy={busy || loading}>
+    <Modal open={open} labelledBy="bulk-cancel-title" busy={busy} onClose={onClose}>
+      <section className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" aria-busy={busy || loading}>
         <header className="flex items-start gap-3 border-b border-line px-5 py-4">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-bad/12 text-bad"><Icon name="trash" size={19}/></span>
           <div className="min-w-0 flex-1">
@@ -76,14 +73,14 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
           ) : downloads.length > 0 ? (
             <>
               <div className="flex flex-wrap gap-2 text-xs font-bold">
-                <button type="button" className={cx('cursor-pointer rounded-full border px-3 py-1.5 transition-colors', allChecked ? 'border-line-strong bg-panel text-ink hover:bg-canvas-soft hover:border-ink/25' : 'border-bad/50 bg-bad/15 font-extrabold text-bad hover:bg-bad/25')} title={allChecked ? 'Uncheck every active download' : 'Check every active download'} onClick={() => setEnabled(Object.fromEntries(downloads.map((item) => [`${item.key}\0${item.release}`, !allChecked])))}>{allChecked ? 'Uncheck all' : 'Check all'}</button>
+                <button type="button" className={cx('cursor-pointer rounded-full border px-3 py-1.5 transition-colors', allChecked ? 'border-line-strong bg-panel text-ink hover:bg-canvas-soft hover:border-ink/25' : 'border-bad/50 bg-bad/15 font-extrabold text-bad hover:bg-bad/25')} disabled={busy} title={allChecked ? 'Uncheck every active download' : 'Check every active download'} onClick={() => setEnabled(Object.fromEntries(downloads.map((item) => [`${item.key}\0${item.release}`, !allChecked])))}>{allChecked ? 'Uncheck all' : 'Check all'}</button>
               </div>
               <div className="space-y-1.5">
                 {downloads.map((item) => {
                   const id = `${item.key}\0${item.release}`
                   return (
                     <label key={id} className={cx('flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', enabled[id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft opacity-55')}>
-                      <input type="checkbox" className="size-3.5 shrink-0 accent-red-500" checked={enabled[id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [id]: event.target.checked }))} />
+                      <input type="checkbox" disabled={busy} className="size-3.5 shrink-0 accent-red-500" checked={enabled[id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [id]: event.target.checked }))} />
                       <span className="font-semibold text-ink">{item.title}</span>
                       <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-muted">{item.season == null ? 'Movie' : `S${String(item.season).padStart(2, '0')}`}{item.part ? ` · ${item.part}` : ''}</span>
                       <span className="ml-auto flex items-center gap-1.5 tabular-nums" title={`${item.release_group} · ${item.tracker}`}>
@@ -121,6 +118,6 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
           </div>
         </footer>
       </section>
-    </div>
+    </Modal>
   )
 }

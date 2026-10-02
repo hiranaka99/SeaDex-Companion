@@ -5,7 +5,9 @@ import { buttonBase, cx } from '../styles'
 import Icon from './Icons'
 import * as api from '../api'
 import type { BulkDownloadTarget } from '../api'
-import { useRestoreFocus } from './useRestoreFocus'
+import Modal from './Modal'
+import { releaseIdentity } from '../../../shared/releases'
+import { estimateDownloads, type DownloadPreflight } from '../../../shared/download-estimate'
 
 interface IndexedRelease {
   index: number
@@ -85,14 +87,36 @@ function hiddenKey(result: ResultItem): string {
 }
 
 export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, outcome, onConfirm, onClose }: Props) {
-  useRestoreFocus(open)
-  const review = useMemo(() => buildReview(results), [results])
+  // Review a fixed snapshot until the dialog closes. The server checks release
+  // identities before adding anything if recommendations change meanwhile.
+  const review = useMemo(() => buildReview(results), [open])
   const [selected, setSelected] = useState<Record<string, number>>({})
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [view, setView] = useState<ViewId>('ready')
   const cancelRef = useRef<HTMLButtonElement>(null)
-  const [existingDownloads, setExistingDownloads] = useState<Record<string, boolean>>({})
+  const [preflight, setPreflight] = useState<{ signature: string; result: DownloadPreflight } | null>(null)
+  const [preflightError, setPreflightError] = useState<{ signature: string; message: string } | null>(null)
+  const [retry, setRetry] = useState(0)
+  const [acceptSpaceWarning, setAcceptSpaceWarning] = useState(false)
+  const enabledGroups = useMemo(() => review.ready.filter(group => enabled[group.id] !== false), [review, enabled])
+  const selectedOptions = useMemo(() => enabledGroups.map(group => group.options.find(option => option.index === selected[group.id]) || group.options[0]), [enabledGroups, selected])
+  const selections = useMemo(() => enabledGroups.map((group, index) => ({ key: group.result.key, release: selectedOptions[index].index, identity: releaseIdentity(selectedOptions[index].release) })), [enabledGroups, selectedOptions])
+  const signature = JSON.stringify(selections)
+
+  useEffect(() => {
+    if (!open || busy || outcome) return
+    const controller = new AbortController()
+    setPreflight(null)
+    setPreflightError(null)
+    setAcceptSpaceWarning(false)
+    const timer = window.setTimeout(() => {
+      void api.getBulkDownloadPreflight(JSON.parse(signature), AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]))
+        .then(result => { if (!controller.signal.aborted) setPreflight({ signature, result }) })
+        .catch(error => { if (!controller.signal.aborted) setPreflightError({ signature, message: error instanceof Error ? error.message : 'Could not check downloads' }) })
+    }, 300)
+    return () => { controller.abort(); window.clearTimeout(timer) }
+  }, [open, signature, retry, busy, outcome])
 
   useEffect(() => {
     if (!open) return
@@ -101,36 +125,19 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
     setSelected(Object.fromEntries(review.ready.filter((group) => group.options.length === 1).map((group) => [group.id, group.options[0].index])))
     setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, !hiddenKeys.has(hiddenKey(group.result))])))
     setExpanded({})
-    setExistingDownloads({})
-    void api.getAllDownloadProgress().then((response) => setExistingDownloads(Object.fromEntries(Object.entries(response.downloads || {}).filter(([, progress]) => progress.found).map(([key]) => [key, true])))).catch(() => setExistingDownloads({}))
     setView(review.ready.length ? 'ready' : 'unavailable')
     cancelRef.current?.focus()
-  }, [open, review, hiddenKeys])
+  }, [open])
 
-  useEffect(() => {
-    if (!open) return
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !busy) onClose() }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [open, busy, onClose])
 
   if (!open) return null
 
-  const enabledGroups = review.ready.filter((group) => {
-    const release = selected[group.id] ?? group.options[0].index
-    return enabled[group.id] !== false && !existingDownloads[`${group.result.key}\0${release}`]
-  })
-  const selections = enabledGroups.map((group) => ({ key: group.result.key, release: selected[group.id] ?? group.options[0].index }))
-  const totalDelta = enabledGroups.reduce((total, group) => {
-    const option = group.options.find(({ index }) => index === (selected[group.id] ?? group.options[0].index)) || group.options[0]
-    const localSize = group.part ? (group.result.local_size_by_part?.[group.part] || 0) : group.result.local_size
-    return option.release.size && localSize ? total + option.release.size - localSize : total
-  }, 0)
-  const selectedOptions = enabledGroups.map((group) => group.options.find(({ index }) => index === (selected[group.id] ?? group.options[0].index)) || group.options[0])
-  const totalDownloadSize = selectedOptions.reduce((total, option) => total + (option.release.size || 0), 0)
-  const torrentCount = new Set(selectedOptions.flatMap((option) => option.release.info_hashes.map((hash) => hash.toLowerCase()))).size
-  const selectedFileCount = selectedOptions.reduce((total, option) => total + (option.release.selected_files?.length || 0), 0)
-  const existingCount = review.ready.filter((group) => existingDownloads[`${group.result.key}\0${selected[group.id] ?? group.options[0].index}`]).length
+  const currentPreflight = preflight?.signature === signature ? preflight.result : null
+  const checkError = preflightError?.signature === signature ? preflightError.message : null
+  const checking = !currentPreflight && !checkError && !outcome
+  const estimate = currentPreflight || estimateDownloads(selectedOptions.map(option => ({ release: option.release, category: '' })))
+  const lowSpace = currentPreflight?.disk_space.some(check => check.sufficient === false)
+  const sizeText = estimate.unknown_torrents ? `${formatBytes(estimate.new_bytes) || '0 B'} + unknown` : estimate.new_bytes === 0 ? '0 B' : `${estimate.approximate_torrents ? '≈ ' : ''}${formatBytes(estimate.new_bytes)}`
   const automaticCount = review.ready.filter((group) => group.options.length === 1 && !hiddenKeys.has(hiddenKey(group.result))).length
   const pendingChoices = review.choices.filter((group) => enabled[group.id] !== false && selected[group.id] === undefined).length
   const blockedSorted = [...review.blocked].sort((a, b) =>
@@ -163,8 +170,8 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
     : null
 
   return (
-    <div className="fixed inset-0 z-[90] grid place-items-center bg-black/65 px-4 py-6 backdrop-blur-sm" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
-      <section className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" role="dialog" aria-modal="true" aria-labelledby="bulk-download-title" aria-busy={busy}>
+    <Modal open={open} labelledBy="bulk-download-title" busy={busy} onClose={onClose}>
+      <section className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" aria-busy={busy}>
         <header className="flex items-start gap-3 border-b border-line px-5 py-4">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-good/12 text-good"><Icon name="download" size={19}/></span>
           <div className="min-w-0 flex-1">
@@ -181,7 +188,30 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
             {review.ready.length > 0 && <div className="ml-auto flex gap-2"><button type="button" className="cursor-pointer rounded-full border border-accent/50 bg-accent/15 px-3 py-1.5 font-extrabold text-accent-bright transition-colors hover:bg-accent/25" onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, true])))}>Check all</button><button type="button" className="cursor-pointer rounded-full border border-line-strong bg-panel px-3 py-1.5 text-ink transition-colors hover:border-ink/25 hover:bg-canvas-soft" onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, false])))}>Uncheck all</button></div>}
           </div>
 
-          {view === 'ready' && review.ready.length > 0 && <div className="grid grid-cols-2 gap-2 sm:grid-cols-5"><div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">Selections</span><strong className="text-sm text-ink">{selections.length}</strong></div><div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">Torrents</span><strong className="text-sm text-ink">{torrentCount}</strong></div><div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">Download size</span><strong className="text-sm text-ink">{formatBytes(totalDownloadSize) || 'Unknown'}</strong></div><div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">File scope</span><strong className="text-sm text-ink">{selectedFileCount ? `${selectedFileCount} files` : 'Whole torrents'}</strong></div><div className={cx('rounded-lg border p-3', existingCount ? 'border-warn/35 bg-warn/8' : 'border-line bg-canvas-soft')}><span className="block text-[10px] font-bold text-muted uppercase">Already in qBit</span><strong className={cx('text-sm', existingCount ? 'text-warn' : 'text-ink')}>{existingCount}</strong></div></div>}
+          {view === 'ready' && review.ready.length > 0 && <>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+              <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">Selections</span><strong className="text-sm text-ink">{selections.length}</strong></div>
+              <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">New torrents</span><strong className="text-sm text-ink">{estimate.new_torrents}</strong></div>
+              <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">New download size</span><strong className="text-sm text-ink" data-testid="bulk-download-size">{checking ? 'Checking…' : sizeText}</strong></div>
+              <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">File scope</span><strong className="text-sm text-ink">{estimate.selected_file_count > 0 ? `${estimate.selected_file_count} files${estimate.whole_torrents ? ` + ${estimate.whole_torrents} whole` : ''}` : `${estimate.whole_torrents} whole torrents`}</strong></div>
+              <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">Already in qBit</span><strong className="text-sm text-warn">{checking || checkError ? 'Unknown' : estimate.existing_torrents}</strong></div>
+            </div>
+            {!outcome && <section className="space-y-2 rounded-xl border border-line bg-canvas-soft p-3 text-xs" aria-label="Download disk space" aria-live="polite">
+              <h3 className="m-0 text-xs font-bold">Disk space</h3>
+              {checking && <p className="m-0 text-muted">Checking qBittorrent download paths and existing torrents…</p>}
+              {checkError && <p className="m-0 text-warn">Check unavailable: {checkError}. Existing torrents and available space could not be verified.</p>}
+              {currentPreflight?.disk_space.map((check, index) => <div key={index} className={cx('break-words', check.sufficient === false ? 'text-bad' : check.sufficient === true ? 'text-muted' : 'text-warn')}>
+                <span className="font-bold">{check.path || 'Download path unavailable'}</span>: {check.free_bytes === null ? 'Free space unavailable' : `${formatBytes(check.free_bytes) || '0 B'} free`} · {formatBytes(check.required_bytes) || '0 B'} needed{check.unknown_torrents ? ' + unverified sizes' : ''}
+                {check.sufficient === false && <span className="block font-bold">Not enough space for these downloads.</span>}
+                {check.reason && <span className="block">{check.reason}</span>}
+              </div>)}
+              {currentPreflight && !estimate.new_torrents && <p className="m-0 text-muted">No new torrents to add. Existing torrents are kept unchanged.</p>}
+              {(estimate.unknown_torrents > 0 || estimate.approximate_torrents > 0) && <p className="m-0 text-warn">Some saved releases lack file sizes. Run a new scan for a more accurate estimate.</p>}
+              <p className="m-0 text-muted">Shared torrents and files are counted once. Existing torrents are skipped. Space is a snapshot; other downloads, torrent overhead, and library imports may need additional room.</p>
+              <button type="button" className="cursor-pointer font-bold text-accent-bright disabled:opacity-50" disabled={checking || busy} onClick={() => setRetry(current => current + 1)}>Refresh check</button>
+              {lowSpace && <label className="flex items-center gap-2 text-warn"><input type="checkbox" checked={acceptSpaceWarning} onChange={event => setAcceptSpaceWarning(event.target.checked)}/>Continue despite the disk space warning</label>}
+            </section>}
+          </>}
           {view === 'ready' && (
             <section>
               <h3 className="mb-3 text-xs font-extrabold tracking-[0.12em] text-good uppercase">Ready to download</h3>
@@ -299,7 +329,6 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
 
         <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-panel px-5 py-4">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
-            {selections.length > 0 && totalDelta !== 0 && <span className={cx('font-bold tabular-nums', totalDelta > 0 ? 'text-good' : 'text-bad')} title="Total size change of the checked downloads">{totalDelta > 0 ? '+' : '−'}{formatBytes(Math.abs(totalDelta))} total size change</span>}
             {pendingChoices > 0 && <span className="inline-flex items-center gap-1 font-bold text-warn"><Icon name="alert" size={13}/>Choose a release for {pendingChoices} title{pendingChoices === 1 ? '' : 's'} first</span>}
           </span>
           <div className="flex gap-2">
@@ -310,12 +339,12 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
             ) : (
               <>
                 <button ref={cancelRef} type="button" className={cx(buttonBase, 'border-line bg-panel-raised text-muted hover:text-ink')} onClick={onClose} disabled={busy}>{outcome ? 'Close' : 'Cancel'}</button>
-                {!outcome && <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/12 text-good hover:bg-good/20')} onClick={() => onConfirm(selections)} disabled={busy || selections.length === 0 || pendingChoices > 0}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}Download {selections.length || ''}</button>}
+                {!outcome && <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/12 text-good hover:bg-good/20')} onClick={() => onConfirm(selections)} disabled={busy || checking || selections.length === 0 || pendingChoices > 0 || estimate.new_torrents === 0 || Boolean(lowSpace && !acceptSpaceWarning)}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}Download {estimate.new_torrents || ''}</button>}
               </>
             )}
           </div>
         </footer>
       </section>
-    </div>
+    </Modal>
   )
 }

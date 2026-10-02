@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as api from '../api'
 import { buttonBase, buttonPrimary, control, cx } from '../styles'
 import Icon from './Icons'
-import { useRestoreFocus } from './useRestoreFocus'
+import Modal from './Modal'
 
 interface Props {
   open: boolean
@@ -14,7 +14,6 @@ interface Props {
 }
 
 export default function MappingDialog({ open, title, currentAniListId, hasOverride, onApply, onClose }: Props) {
-  useRestoreFocus(open)
   const [query, setQuery] = useState(title)
   const [results, setResults] = useState<api.AniListSearchResult[]>([])
   const [selected, setSelected] = useState<number | null>(null)
@@ -25,8 +24,8 @@ export default function MappingDialog({ open, title, currentAniListId, hasOverri
   const searchGeneration = useRef(0)
 
   const search = async (value = query) => {
-    if (value.trim().length < 2) { setError('Enter at least two characters'); return }
     const generation = ++searchGeneration.current
+    if (value.trim().length < 2) { setResults([]); setSearching(false); setError('Enter at least two characters'); return }
     setSearching(true); setError('')
     try {
       const response = await api.searchAniList(value)
@@ -50,11 +49,6 @@ export default function MappingDialog({ open, title, currentAniListId, hasOverri
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, title])
 
-  useEffect(() => {
-    if (!open) return
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !saving) onClose() }
-    window.addEventListener('keydown', escape); return () => window.removeEventListener('keydown', escape)
-  }, [open, saving, onClose])
 
   if (!open) return null
 
@@ -65,8 +59,8 @@ export default function MappingDialog({ open, title, currentAniListId, hasOverri
     finally { setSaving(false) }
   }
 
-  return <div className="fixed inset-0 z-[100] grid place-items-center bg-black/65 px-4 py-6 backdrop-blur-sm" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose() }}>
-    <section className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" role="dialog" aria-modal="true" aria-labelledby="mapping-title" aria-busy={saving}>
+  return <Modal open={open} labelledBy="mapping-title" busy={saving} onClose={onClose}>
+    <section className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" aria-busy={saving}>
       <header className="flex items-start gap-3 border-b border-line px-5 py-4"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent/12 text-accent-bright"><Icon name="search" size={19}/></span><div className="min-w-0 flex-1"><h2 id="mapping-title" className="m-0 text-lg font-extrabold">Correct AniList match</h2><p className="mt-1 mb-0 text-sm text-muted">Choose the anime that should anchor every season of <span className="font-bold text-ink">{title}</span>.</p></div><button type="button" className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onClose} disabled={saving} aria-label="Close"><Icon name="close" size={18}/></button></header>
       <div className="app-scrollbar min-h-0 flex-1 overflow-y-auto p-5">
         <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void search() }}><input ref={inputRef} className={cx(control, 'min-w-0 flex-1')} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search AniList"/><button type="submit" className={cx(buttonBase, 'border-line bg-panel text-muted hover:text-ink')} disabled={searching || saving}>{searching ? <span className="size-4 animate-spin rounded-full border-2 border-muted/30 border-t-accent"/> : <Icon name="search" size={16}/>}Search</button></form>
@@ -76,5 +70,5 @@ export default function MappingDialog({ open, title, currentAniListId, hasOverri
       </div>
       <footer className="flex flex-wrap items-center gap-2 border-t border-line px-5 py-4">{hasOverride && <button type="button" className={cx(buttonBase, 'border-warn/35 bg-warn/10 text-warn')} onClick={() => void apply(null)} disabled={saving}>Use automatic match</button>}<span className="flex-1"/><button type="button" className={cx(buttonBase, 'border-line bg-panel text-muted hover:text-ink')} onClick={onClose} disabled={saving}>Cancel</button><button type="button" className={buttonPrimary} onClick={() => selected && void apply(selected)} disabled={!selected || saving}>{saving ? <span className="size-4 animate-spin rounded-full border-2 border-white/35 border-t-white"/> : <Icon name="check" size={16}/>}Save and rescan</button></footer>
     </section>
-  </div>
+  </Modal>
 }

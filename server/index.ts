@@ -2,11 +2,15 @@ import { createReadStream, existsSync, readFileSync, renameSync, rmSync, statSyn
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { extname, isAbsolute, normalize, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { nextScanTime } from '../shared/scan-schedule.js'
+import { releaseIdentity } from '../shared/releases.js'
+import { downloadPreflight } from './download-preflight.js'
 import {
   DATA_DIR, DEFAULT_CONFIG, STATIC_DIR, applyUserRulesToResults, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, cancelScan, checkForUpdates, clearScannedData, exclusionRuleKey, forgetOwnedTorrents,
   finishBulkDownloadBatch, getState, indexResultReleases, loadConfig, loadLastResults, loadScanHistory, loadUserRules, log, normalizeQbStates, normalizeScanSchedule, ownedTorrentsSnapshot,
   publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, qbGetTorrents, readLogTail, recordOwnedTorrents, resetBulkDownloadBatch,
-  resultsForRequest, runScan, saveConfig, saveUserRules, scannedDataInfo, searchAniListTitles, SECRET_CONFIG_KEYS, settleBulkDownloadBatch, setState, testIntegration,
+  resultsForRequest, resultsRevision, runScan, saveConfig, saveUserRules, scannedDataInfo, searchAniListTitles, SECRET_CONFIG_KEYS, settleBulkDownloadBatch, setState, testIntegration,
+  loadDownloadRecords, recordDownloadDetails, trackedDownloadInfo,
 } from './app.js'
 import {
   AuthError, authState, expiredSessionCookie, isAuthenticated, login, logout, sessionCookie,
@@ -43,13 +47,37 @@ async function readJson(request: IncomingMessage): Promise<JsonObject> {
     chunks.push(buffer)
   }
   if (!chunks.length) return {}
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Request body must be a JSON object')
+  return parsed
 }
 export function parseReleaseIndex(value: unknown): number | null {
   if (typeof value === 'number') return Number.isInteger(value) && value >= 0 ? value : null
   if (typeof value !== 'string' || !/^\d+$/.test(value)) return null
   const parsed = Number(value)
   return Number.isSafeInteger(parsed) ? parsed : null
+}
+
+function selectedBulkTargets(selections: unknown): { targets: ReturnType<typeof bulkDownloadTargets>; error?: [number, string] } {
+  const targets: ReturnType<typeof bulkDownloadTargets> = []
+  if (!Array.isArray(selections)) return { targets, error: [400, 'No bulk release selections provided'] }
+  const results = resultsForRequest()
+  const available = new Map(bulkDownloadTargets().map(target => [`${target.key}\0${target.release}`, target]))
+  const parts = new Set<string>()
+  for (const selection of selections) {
+    const key = String(selection?.key || '')
+    const release = parseReleaseIndex(selection?.release)
+    if (release === null) return { targets, error: [400, 'Release must be a non-negative integer'] }
+    const target = available.get(`${key}\0${release}`)
+    if (!target) return { targets, error: [400, 'A selected bulk release is unavailable'] }
+    const selectedRelease = results.find(item => item.key === key)?.releases?.[release]
+    if (selection.identity && selection.identity !== releaseIdentity(selectedRelease || {})) return { targets, error: [409, 'A selected release changed. Reopen the review to see the latest recommendations.'] }
+    const part = `${key}\0${target.part}`
+    if (parts.has(part)) return { targets, error: [400, 'Choose only one best release per season or cour'] }
+    parts.add(part)
+    targets.push(target)
+  }
+  return { targets }
 }
 
 function findResult(key: string, releaseIndex: number): { result?: JsonObject; release?: JsonObject; error?: [number, string] } {
@@ -85,7 +113,7 @@ const downloadProgressStates = new Map<string, string>()
 const downloadProgressFailures = new Map<string, { message: string; lastLogged: number; suppressed: number }>()
 let bulkOperationActive = false
 
-function summarizeTorrentProgress(torrents: JsonObject[]): JsonObject {
+function summarizeTorrentProgress(torrents: JsonObject[], expectedCount = torrents.length): JsonObject {
   let totalSize = 0; let downloaded = 0; let speed = 0
   const states: string[] = []
   for (const torrent of torrents) {
@@ -95,8 +123,10 @@ function summarizeTorrentProgress(torrents: JsonObject[]): JsonObject {
   const found = torrents.length > 0
   const progress = totalSize > 0 ? downloaded / totalSize : 0
   let state = normalizeQbStates(states)
-  if (found && totalSize > 0 && progress >= 0.999) state = 'complete'
-  return { ok: true, found, progress: Math.round(progress * 10_000) / 10_000, downloaded, total_size: totalSize, speed, state }
+  const missing = Math.max(0, expectedCount - torrents.length)
+  if (missing && state === 'complete') state = 'waiting'
+  if (!missing && state !== 'error' && found && totalSize > 0 && progress >= 1) state = 'complete'
+  return { ok: true, found, progress: Math.floor(progress * 10_000) / 10_000, downloaded, total_size: totalSize, speed, state, missing_torrents: missing }
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -105,7 +135,7 @@ const MIME_TYPES: Record<string, string> = {
   '.woff': 'font/woff', '.woff2': 'font/woff2',
 }
 
-function serveStatic(pathname: string, response: ServerResponse): boolean {
+function serveStatic(pathname: string, response: ServerResponse, head = false): boolean {
   const relativeFile = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '')
   const root = resolve(STATIC_DIR)
   const target = resolve(root, normalize(relativeFile))
@@ -118,7 +148,13 @@ function serveStatic(pathname: string, response: ServerResponse): boolean {
   // must stay uncached so new deploys are picked up on reload.
   if (relativeFile.startsWith('assets/')) headers['Cache-Control'] = 'public, max-age=31536000, immutable'
   response.writeHead(200, headers)
-  createReadStream(target).pipe(response)
+  if (head) response.end()
+  else {
+    const stream = createReadStream(target)
+    stream.on('error', () => response.destroy())
+    response.on('close', () => stream.destroy())
+    stream.pipe(response)
+  }
   return true
 }
 
@@ -170,6 +206,7 @@ export async function processWebhookScans(config: Config, now = Date.now() / 100
   const scope: ScanScope = scheduledPending ? {} : { sonarrIds: [...webhookScanState.sonarrIds], radarrIds: [...webhookScanState.radarrIds] }
   resetWebhookScanState()
   autocheckState.pending = false
+  if (scheduledPending) persistAutocheckState()
   log('INFO', `Webhook debounce elapsed; starting ${scheduledPending ? 'full scheduled' : `incremental ${trigger}`} scan`)
   await scan(config, trigger, scope)
 }
@@ -255,6 +292,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (method === 'POST' && path === '/api/mapping-overrides') {
     if (getState().running) return sendJson(response, 409, { error: 'Wait for the current scan to finish before changing a match' })
     const data = await readJson(request)
+    if (getState().running) return sendJson(response, 409, { error: 'Wait for the current scan to finish before changing a match' })
     const libraryKey = String(data.library_key || '').trim()
     if (!libraryKey || !resultsForRequest().some((result) => result.library_key === libraryKey)) return sendJson(response, 404, { error: 'Library title not found — run a scan first' })
     const rules = loadUserRules()
@@ -306,7 +344,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       if (SECRET_CONFIG_KEYS.includes(key as any)) {
         if (clearedSecrets.has(key)) config[key] = ''
         else if (key in data) {
-          const replacement = data[key] == null ? '' : String(data[key]).trim()
+          const supplied = data[key] == null ? '' : String(data[key])
+          const replacement = key === 'qbittorrent_pass' ? supplied : supplied.trim()
           if (replacement) config[key] = replacement
         }
         continue
@@ -355,9 +394,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
     const fields = serviceFields[service]
     if (!fields) return sendJson(response, 400, { error: 'Unknown integration' })
+    const cleared = new Set(Array.isArray(submitted.clear_secrets) ? submitted.clear_secrets : [])
     for (const key of fields) {
+      if (SECRET_CONFIG_KEYS.includes(key as any) && cleared.has(key)) { config[key] = ''; continue }
       if (!(key in submitted)) continue
-      const value = submitted[key] == null ? '' : String(submitted[key]).trim()
+      const supplied = submitted[key] == null ? '' : String(submitted[key])
+      const value = key === 'qbittorrent_pass' ? supplied : supplied.trim()
       if (SECRET_CONFIG_KEYS.includes(key as any) && !value) continue
       config[key] = key === 'sonarr_url' || key === 'radarr_url' ? arrBaseUrl(value) : value
     }
@@ -379,7 +421,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return sendJson(response, 200, {
       running: state.running, progress: state.progress, total: state.total, message: state.message,
       error: state.error, cancelled: state.cancelled, trigger: state.trigger, source_errors: state.source_errors,
-      last_run: state.last_run, next_check: autocheckState.next,
+      last_run: state.last_run || (!state.running ? loadLastResults()?.last_run ?? null : null), next_check: autocheckState.next,
+      results_revision: resultsRevision(),
       webhook_scan: { queued: webhookScanState.dueAt !== null, due_at: webhookScanState.dueAt, sources: [...webhookScanState.sources] },
     })
   }
@@ -444,17 +487,19 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (releaseIndex === null) return sendJson(response, 400, { ok: false, error: 'Release must be a non-negative integer' })
     const found = findResult(key, releaseIndex)
     if (found.error) return sendJson(response, found.error[0], { ok: false, error: found.error[1] })
-    const hashes = (found.release!.info_hashes || []).map((hash: string) => hash.toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash))
+    if (data.identity && data.identity !== releaseIdentity(found.release!)) return sendJson(response, 409, { error: 'This release changed. Review the updated recommendation before downloading.' })
+    const hashes = [...new Set<string>((found.release!.info_hashes || []).map((hash: string) => hash.toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash)))]
     if (!hashes.length) return sendJson(response, 400, { ok: false, error: 'No magnet available for this release (private tracker)' })
     const config = loadConfig()
     const category = String(config[`${String(found.result!.arr).toLowerCase()}_category`] || '').trim()
     const selectedFiles = Array.isArray(found.release!.selected_files) ? found.release!.selected_files.map(String) : []
     const started = Date.now()
     const details = releaseDetails(found.result!, found.release!, releaseIndex)
+    const downloadInfo = indexResultReleases([found.result!]).byHash.get(hashes[0])!
     log('INFO', `Download requested: ${details} (torrents: ${hashes.length}; category: ${category || '-'}; files: ${selectedFiles.length ? `${selectedFiles.length} selected` : 'all'})`)
     try {
       for (const hash of hashes) await qbAddTorrent(config, `magnet:?xt=urn:btih:${hash}`, category, selectedFiles, undefined, {
-        record: (ownedHash) => recordOwnedTorrents([ownedHash]),
+        record: (ownedHash) => { recordOwnedTorrents([ownedHash]); recordDownloadDetails(ownedHash, downloadInfo) },
         forget: (ownedHash) => forgetOwnedTorrents([ownedHash]),
       })
     } catch (error) {
@@ -464,6 +509,18 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
     log('INFO', `Download added in ${((Date.now() - started) / 1000).toFixed(1)}s: ${details} (torrents: ${hashes.length}; tracked torrents: ${ownedTorrentsSnapshot().length})`)
     return sendJson(response, 200, { ok: true })
+  }
+
+  if (method === 'POST' && path === '/api/download_bulk/preflight') {
+    const selection = selectedBulkTargets((await readJson(request)).selections)
+    if (selection.error) return sendJson(response, selection.error[0], { error: selection.error[1] })
+    const config = loadConfig()
+    const results = resultsForRequest()
+    const estimate = await downloadPreflight(config, selection.targets.map(target => ({
+      release: results.find(result => result.key === target.key)!.releases[target.release],
+      category: String(config[`${target.arr.toLowerCase()}_category`] || '').trim(),
+    })))
+    return sendJson(response, 200, estimate, { 'Cache-Control': 'no-store' })
   }
 
   if (method === 'GET' && path === '/api/download_bulk/status') {
@@ -482,20 +539,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     bulkOperationActive = true
     try {
       if (action === 'start') {
-        if (!Array.isArray(data.selections)) return sendJson(response, 400, { ok: false, error: 'No bulk release selections provided' })
-        const byRelease = new Map(availableTargets.map((target) => [`${target.key}\0${target.release}`, target]))
-        const selectedParts = new Set<string>()
-        const targets = []
-        for (const selection of data.selections) {
-          const key = String(selection?.key || '')
-          const release = Number.parseInt(String(selection?.release ?? -1), 10)
-          const target = byRelease.get(`${key}\0${release}`)
-          if (!target) return sendJson(response, 400, { ok: false, error: 'A selected bulk release is unavailable' })
-          const partKey = `${target.key}\0${target.part}`
-          if (selectedParts.has(partKey)) return sendJson(response, 400, { ok: false, error: 'Choose only one best release per season or cour' })
-          selectedParts.add(partKey)
-          targets.push(target)
-        }
+        const selection = selectedBulkTargets(data.selections)
+        if (selection.error) return sendJson(response, selection.error[0], { error: selection.error[1] })
+        const targets = selection.targets
+        const existing = new Set((await qbGetTorrents(config)).map(torrent => String(torrent.hash || '').toLowerCase()))
         const pending = new Map<string, { category: string; selectedFiles: Set<string>; unrestricted: boolean }>()
         const labelsByHash = new Map<string, string[]>()
         for (const target of targets) {
@@ -503,6 +550,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           const item = resultsForRequest().find((entry) => entry.key === target.key)
           const label = `${item?.title || target.key}${target.part ? ` · ${target.part}` : ''}`
           for (const hash of target.hashes) {
+            if (existing.has(hash)) continue
             const current = pending.get(hash) || { category, selectedFiles: new Set<string>(), unrestricted: false }
             if (target.selectedFiles?.length) for (const file of target.selectedFiles) current.selectedFiles.add(file)
             else current.unrestricted = true
@@ -521,6 +569,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         // from being queued. Arm the live batch status first so the UI can poll
         // per-torrent progress (green/red) while the adds are still in flight.
         resetBulkDownloadBatch([...pending.keys()])
+        const downloadIndex = indexResultReleases()
         try {
           const outcome = await qbBulkAddTorrents(config, [...pending.entries()].map(([hash, target]) => ({
             hash,
@@ -530,7 +579,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           })), {
             onSettle: (hash, error) => settleBulkDownloadBatch(hash, (labelsByHash.get(hash) || [hash]).join(' / '), error),
             ownership: {
-              record: (hash) => recordOwnedTorrents([hash]),
+              record: (hash) => { recordOwnedTorrents([hash]); const info = downloadIndex.byHash.get(hash); if (info) recordDownloadDetails(hash, info) },
               forget: (hash) => forgetOwnedTorrents([hash]),
             },
           })
@@ -542,6 +591,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
           return sendJson(response, 200, {
             ok: outcome.added.length > 0,
             count: outcome.added.length,
+            existing: [...new Set(targets.flatMap(target => target.hashes).filter(hash => existing.has(hash)))],
             targets: targets.map(({ key, release }) => ({ key, release })),
             failures: outcome.failures,
           })
@@ -564,7 +614,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       const incompleteOwned = torrents
         .filter((torrent) => {
           const hash = String(torrent.hash || '').toLowerCase()
-          return /^[0-9a-f]{40}$/.test(hash) && ownedSet.has(hash) && Number(torrent.progress || 0) < 0.999
+          return /^[0-9a-f]{40}$/.test(hash) && ownedSet.has(hash) && Number(torrent.progress || 0) < 1
         })
         .map((torrent) => String(torrent.hash || '').toLowerCase())
       // With explicit selections only the checked releases are cancelled;
@@ -572,6 +622,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       const wanted = Array.isArray(data.selections)
         ? new Set<string>(
             (data.selections as Array<{ key?: unknown; release?: unknown }>).flatMap((selection) => {
+              const key = String(selection?.key || '')
+              if (key.startsWith('torrent:')) return ownedSet.has(key.slice(8)) && parseReleaseIndex(selection.release) === 0 ? [key.slice(8)] : []
               const targetKey = `${String(selection?.key || '')}\0${Number.parseInt(String(selection?.release ?? -1), 10)}`
               return [...(index.byTarget.get(targetKey) || [])]
             }),
@@ -607,6 +659,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (method === 'GET' && path === '/api/download_bulk/cancelable') {
     const index = indexResultReleases()
+    const records = loadDownloadRecords()
     const ownedSet = new Set(ownedTorrentsSnapshot())
     let torrents: JsonObject[] = []
     if (ownedSet.size) {
@@ -625,13 +678,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     for (const torrent of torrents) {
       const hash = String(torrent.hash || '').toLowerCase()
       if (!/^[0-9a-f]{40}$/.test(hash) || !ownedSet.has(hash)) continue
-      if (Number(torrent.progress || 0) >= 0.999) continue
-      const info = index.byHash.get(hash)
-      if (!info) continue
-      const targetKey = `${info.key}\0${info.release}`
+      if (Number(torrent.progress || 0) >= 1) continue
+      const info = trackedDownloadInfo(torrent, records, index)
+      const targetKey = `torrent:${hash}\0${0}`
       const entry = byTarget.get(targetKey) || {
-        key: info.key,
-        release: info.release,
+        key: `torrent:${hash}`,
+        release: 0,
         title: info.title,
         season: info.season,
         part: info.part,
@@ -651,6 +703,30 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return sendJson(response, 200, { ok: true, downloads })
   }
 
+  if (method === 'GET' && path === '/api/downloads') {
+    const owned = ownedTorrentsSnapshot()
+    const records = loadDownloadRecords()
+    const index = indexResultReleases()
+    const torrents = owned.length ? await qbGetTorrents(loadConfig(), owned) : []
+    return sendJson(response, 200, { downloads: torrents.map(torrent => ({
+      ...trackedDownloadInfo(torrent, records, index), hash: String(torrent.hash).toLowerCase(),
+      ...summarizeTorrentProgress([torrent]), name: String(torrent.name || ''),
+      paused: ['pausedDL', 'pausedUP', 'stoppedDL', 'stoppedUP'].includes(String(torrent.state)),
+    })) })
+  }
+
+  if (method === 'POST' && path === '/api/downloads/control') {
+    const data = await readJson(request)
+    const hash = String(data.hash || '').toLowerCase()
+    const action = String(data.action || '')
+    if (!ownedTorrentsSnapshot().includes(hash)) return sendJson(response, 404, { error: 'This torrent is not tracked by SeaDex Companion' })
+    if (action !== 'pause' && action !== 'resume' && action !== 'remove') return sendJson(response, 400, { error: 'Unknown torrent action' })
+    await qbControlTorrents(loadConfig(), [hash], action, data.delete_files === true)
+    if (action === 'remove') forgetOwnedTorrents([hash])
+    log('INFO', `Tracked torrent ${action}: ${hash} (delete files: ${action === 'remove' && data.delete_files === true})`)
+    return sendJson(response, 200, { ok: true })
+  }
+
   if (method === 'GET' && path === '/api/download_progress/all') {
     try {
       const torrents = await qbGetTorrents(loadConfig())
@@ -659,9 +735,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       for (const result of resultsForRequest()) {
         if (!result.key) continue
         for (const [releaseIndex, release] of (result.releases || []).entries()) {
-          const hashes = (release.info_hashes || []).map((hash: unknown) => String(hash).toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash))
+          const hashes = [...new Set<string>((release.info_hashes || []).map((hash: unknown) => String(hash).toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash)))]
           const matches = hashes.map((hash: string) => byHash.get(hash)).filter(Boolean) as JsonObject[]
-          if (matches.length) downloads[`${result.key}\0${releaseIndex}`] = summarizeTorrentProgress(matches)
+          if (matches.length) downloads[`${result.key}\0${releaseIndex}`] = { ...summarizeTorrentProgress(matches, hashes.length), identity: releaseIdentity(release) }
         }
       }
       return sendJson(response, 200, { ok: true, downloads })
@@ -679,7 +755,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (found.error) return sendJson(response, found.error[0], { ok: false, error: found.error[1] })
     const progressKey = `${key}\0${releaseIndex}`
     const details = releaseDetails(found.result!, found.release!, releaseIndex)
-    const hashes = (found.release!.info_hashes || []).map((hash: string) => hash.toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash))
+    const hashes = [...new Set<string>((found.release!.info_hashes || []).map((hash: string) => hash.toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash)))]
     if (!hashes.length) return sendJson(response, 400, { ok: false, error: 'No magnet available for this release' })
     let torrents: JsonObject[]
     try { torrents = await qbGetTorrents(loadConfig(), hashes) }
@@ -701,7 +777,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       log('INFO', `Download status checks recovered: ${details}${previousFailure.suppressed ? ` (${previousFailure.suppressed} repeated error${previousFailure.suppressed === 1 ? '' : 's'} were suppressed)` : ''}`)
       downloadProgressFailures.delete(progressKey)
     }
-    const summary = summarizeTorrentProgress(torrents)
+    const summary: JsonObject = { ...summarizeTorrentProgress(torrents, hashes.length), identity: releaseIdentity(found.release!) }
     const foundAny = Boolean(summary.found)
     const progress = Number(summary.progress)
     const state = String(summary.state)
@@ -728,6 +804,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
     const found = findResult(key, releaseIndex)
     if (found.error) return sendJson(response, found.error[0], { ok: false, error: found.error[1] })
+    if (data.identity && data.identity !== releaseIdentity(found.release!)) return sendJson(response, 409, { error: 'This release changed. Open Downloads to control the original torrent.' })
     const hashes = (found.release!.info_hashes || []).map((hash: string) => hash.toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash))
     if (!hashes.length) return sendJson(response, 400, { ok: false, error: 'No torrent hashes available for this release' })
     const deleteFiles = action === 'remove' && data.delete_files === true
@@ -751,7 +828,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return sendJson(response, 200, { ok: true })
   }
 
-  if (method === 'GET' && !path.startsWith('/api/') && serveStatic(path, response)) return
+  if ((method === 'GET' || method === 'HEAD') && !path.startsWith('/api/') && serveStatic(path, response, method === 'HEAD')) return
   sendJson(response, 404, { error: 'Not found' })
 }
 
@@ -778,35 +855,14 @@ function scheduleSignature(schedule: ScanSchedule): string {
   return JSON.stringify(schedule)
 }
 
-function localTimeParts(timestamp: number, timezone: string): { date: string; weekday: number; hour: number; minute: number } {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).formatToParts(new Date(timestamp * 1000))
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
-  return { date: `${values.year}-${values.month}-${values.day}`, weekday: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(values.weekday), hour: Number(values.hour), minute: Number(values.minute) }
-}
-
 export function nextScheduledTime(schedule: ScanSchedule, after: number): number | null {
-  if (!schedule.enabled) return null
-  if (schedule.mode === 'interval') return after + Math.max(1, schedule.interval_minutes) * 60
-  const times = new Set(schedule.times)
-  const weekdays = new Set(schedule.weekdays)
-  let candidate = Math.floor(after / 60) * 60 + 60
-  const limit = candidate + 8 * 24 * 60 * 60
-  for (; candidate <= limit; candidate += 60) {
-    const local = localTimeParts(candidate, schedule.timezone)
-    const time = `${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')}`
-    if (!times.has(time) || (schedule.mode === 'weekly' && !weekdays.has(local.weekday))) continue
-    const previous = localTimeParts(candidate - 60 * 60, schedule.timezone)
-    const duplicatedByClockChange = previous.date === local.date && previous.hour === local.hour && previous.minute === local.minute
-    if (!duplicatedByClockChange) return candidate
-  }
-  return null
+  const next = nextScanTime(schedule, after * 1000)
+  return next === null ? null : next / 1000
 }
 
 function persistAutocheckState(): void {
   const temporary = `${SCHEDULE_STATE_FILE}.tmp`
-  writeFileSync(temporary, JSON.stringify({ signature: autocheckState.signature, next: autocheckState.next }), 'utf8')
+  writeFileSync(temporary, JSON.stringify({ signature: autocheckState.signature, next: autocheckState.next, pending: autocheckState.pending }), 'utf8')
   try { renameSync(temporary, SCHEDULE_STATE_FILE) }
   catch { writeFileSync(SCHEDULE_STATE_FILE, readFileSync(temporary)); try { rmSync(temporary) } catch { /* best effort */ } }
 }
@@ -817,11 +873,13 @@ function restoreAutocheckState(): void {
     if (typeof stored.signature === 'string' && (stored.next === null || Number.isFinite(stored.next))) {
       autocheckState.signature = stored.signature
       autocheckState.next = stored.next
+      autocheckState.pending = stored.pending === true
     }
   } catch { /* A missing or damaged state file starts a fresh schedule. */ }
 }
 
 function skipMissedAutocheck(config: Config, now: number): void {
+  if (config.scan_schedule.missed_run === 'skip' && autocheckState.pending) { autocheckState.pending = false; persistAutocheckState() }
   if (config.scan_schedule.missed_run !== 'skip' || autocheckState.next === null || autocheckState.next > now) return
   autocheckState.next = nextScheduledTime(config.scan_schedule, now)
   persistAutocheckState()

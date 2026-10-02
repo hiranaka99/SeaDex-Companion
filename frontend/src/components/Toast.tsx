@@ -1,4 +1,5 @@
-import { createContext, ReactNode, useCallback, useContext, useMemo, useState } from 'react'
+import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import Icon from './Icons'
 import { cx } from '../styles'
 
@@ -10,6 +11,13 @@ const ToastContext = createContext<ToastApi | null>(null)
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([])
+  const [host, setHost] = useState<Element>(document.body)
+  useEffect(() => {
+    const updateHost = () => setHost(Array.from(document.querySelectorAll('dialog.modal-shell[open]')).slice(-1)[0] || document.body)
+    window.addEventListener('seadex:modal-change', updateHost)
+    updateHost()
+    return () => window.removeEventListener('seadex:modal-change', updateHost)
+  }, [])
   const show = useCallback((message: string, tone: ToastTone = 'info', durationMs?: number) => {
     const id = Date.now() + Math.random()
     setItems((current) => [...current, { id, message, tone }])
@@ -21,7 +29,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div className="pointer-events-none fixed top-4 right-4 z-[100] flex w-[min(380px,calc(100vw-2rem))] flex-col gap-2" aria-live="polite" aria-atomic="true">
+      {createPortal(<div className="pointer-events-none fixed top-4 right-4 z-[100] flex w-[min(380px,calc(100vw-2rem))] flex-col gap-2 max-[900px]:top-auto max-[900px]:bottom-24" aria-live="polite" aria-atomic="true">
         {items.map((item) => (
           <div key={item.id} role={item.tone === 'error' ? 'alert' : 'status'} className={cx(
             'pointer-events-auto flex animate-rise items-start gap-3 rounded-xl border bg-panel-raised/95 px-4 py-3 text-sm shadow-card backdrop-blur-xl',
@@ -34,7 +42,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             <button type="button" className="pointer-events-auto cursor-pointer text-muted hover:text-ink" onClick={() => setItems((current) => current.filter((currentItem) => currentItem.id !== item.id))} aria-label="Dismiss notification"><Icon name="close" size={16} /></button>
           </div>
         ))}
-      </div>
+      </div>, host)}
     </ToastContext.Provider>
   )
 }

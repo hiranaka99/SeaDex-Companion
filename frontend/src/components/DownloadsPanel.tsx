@@ -7,7 +7,8 @@ export interface DownloadEntry {
   releaseGroup: string
   seasonKey: string
   release: number
-  phase: 'sending' | 'downloading' | 'paused'
+  identity?: string
+  phase: 'sending' | 'downloading' | 'paused' | 'error'
   progress: number
   downloaded: number
   total_size: number
@@ -53,7 +54,7 @@ function EntryRow({ entry, busy, onPause, onResume, onRemove }: { entry: Downloa
         <div className="h-full rounded-full bg-linear-to-r from-accent to-good transition-[width] duration-500" style={{ width: Math.max(pct, 2) + '%' }} />
       </div>
       <div className="flex items-center gap-1.5 pb-px text-[11px] leading-none tabular-nums">
-        <span className="shrink-0 font-semibold text-accent-bright">{entry.phase === 'sending' ? 'Sending…' : entry.phase === 'paused' ? `Paused · ${pct.toFixed(1)}%` : pct.toFixed(1) + '%'}</span>
+        <span className="shrink-0 font-semibold text-accent-bright">{entry.phase === 'error' ? 'Download error' : entry.phase === 'sending' ? 'Sending…' : entry.phase === 'paused' ? `Paused · ${pct.toFixed(1)}%` : pct.toFixed(1) + '%'}</span>
         <span className="ml-auto flex shrink-0 items-center gap-1 text-muted-dim">
           {speed && <span>{speed}</span>}
           {eta && (<><span aria-hidden="true">·</span><span>{eta}</span></>)}
@@ -67,7 +68,7 @@ export default function DownloadsPanel({ downloads, busyId, onPause, onResume, o
   return (
     <div className="h-full rounded-lg border border-accent/25 bg-accent/6 px-2.5 py-1" aria-live="polite">
       <ul className="download-scrollbar flex h-full flex-col gap-3 overflow-y-auto" aria-label="Active downloads">
-        {downloads.map((entry) => <EntryRow key={entry.id} entry={entry} busy={busyId === entry.id} onPause={() => onPause(entry)} onResume={() => onResume(entry)} onRemove={() => onRemove(entry)} />)}
+        {downloads.map((entry) => <EntryRow key={entry.id} entry={entry} busy={busyId !== null} onPause={() => onPause(entry)} onResume={() => onResume(entry)} onRemove={() => onRemove(entry)} />)}
       </ul>
     </div>
   )
