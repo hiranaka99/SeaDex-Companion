@@ -79,13 +79,13 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
                 {downloads.map((item) => {
                   const id = `${item.key}\0${item.release}`
                   return (
-                    <label key={id} className={cx('flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', enabled[id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft opacity-55')}>
+                    <label key={id} className={cx('flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', enabled[id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft text-muted')}>
                       <input type="checkbox" disabled={busy} className="size-3.5 shrink-0 accent-red-500" checked={enabled[id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [id]: event.target.checked }))} />
                       <span className="font-semibold text-ink">{item.title}</span>
-                      <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-muted">{item.season == null ? 'Movie' : `S${String(item.season).padStart(2, '0')}`}{item.part ? ` · ${item.part}` : ''}</span>
+                      <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-ink">{item.season == null ? 'Movie' : `S${String(item.season).padStart(2, '0')}`}{item.part ? ` · ${item.part}` : ''}</span>
                       <span className="ml-auto flex items-center gap-1.5 tabular-nums" title={`${item.release_group} · ${item.tracker}`}>
                         <span className="text-muted" title="Release group">{item.release_group}</span>
-                        <span className="font-bold text-bad">{formatBytes(item.size) || 'Unknown'}</span>
+                        <span className="font-bold text-ink">{formatBytes(item.size) || 'Unknown'}</span>
                         {item.hashes.length > 1 && <span className="rounded border border-line px-1.5 py-0.5 text-[10px] font-bold text-muted">{item.hashes.length} torrents</span>}
                       </span>
                     </label>
@@ -113,7 +113,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
             {selectedTorrents > 0 ? <span><span className="font-bold text-ink">{selectedTorrents}</span> torrent{selectedTorrents === 1 ? '' : 's'} will be removed{deleteFiles ? ' and their downloaded files will be deleted' : ', downloaded files are kept'}.</span> : <span>Nothing selected.</span>}
           </span>
           <div className="flex gap-2">
-            <button ref={cancelRef} type="button" className={cx(buttonBase, 'border-line bg-panel-raised text-muted hover:text-ink')} onClick={onClose} disabled={busy}>Keep</button>
+            <button ref={cancelRef} type="button" className={cx(buttonBase, 'border-line bg-panel-raised text-ink hover:text-ink')} onClick={onClose} disabled={busy}>Keep</button>
             <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/12 text-bad hover:bg-bad/20')} onClick={() => onConfirm(selections, deleteFiles)} disabled={busy || selections.length === 0}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}Cancel {selections.length || ''}</button>
           </div>
         </footer>

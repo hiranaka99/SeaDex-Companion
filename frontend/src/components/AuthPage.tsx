@@ -50,7 +50,7 @@ export default function AuthPage({ setupRequired, onAuthenticated }: Props) {
         </header>
 
         <form className="flex flex-col gap-4" onSubmit={submit}>
-          <label className="flex flex-col gap-2 text-[13px] font-semibold text-muted">
+          <label className="flex flex-col gap-2 text-[13px] font-semibold text-ink">
             Username
             <input
               className={control}
@@ -66,7 +66,7 @@ export default function AuthPage({ setupRequired, onAuthenticated }: Props) {
             />
           </label>
 
-          <label className="flex flex-col gap-2 text-[13px] font-semibold text-muted">
+          <label className="flex flex-col gap-2 text-[13px] font-semibold text-ink">
             Password
             <input
               className={control}
@@ -82,7 +82,7 @@ export default function AuthPage({ setupRequired, onAuthenticated }: Props) {
           </label>
 
           {setupRequired && (
-            <label className="flex flex-col gap-2 text-[13px] font-semibold text-muted">
+            <label className="flex flex-col gap-2 text-[13px] font-semibold text-ink">
               Confirm password
               <input
                 className={control}

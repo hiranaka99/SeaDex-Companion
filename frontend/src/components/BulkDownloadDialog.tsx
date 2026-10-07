@@ -183,8 +183,8 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
 
         <div className="app-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
           <div className="flex flex-wrap gap-2 text-xs font-bold">
-            <button type="button" className={cx('cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'ready' ? 'border-good/60 bg-good/25 text-good' : 'border-good/30 bg-good/10 text-good hover:bg-good/18')} onClick={() => setView('ready')} aria-pressed={view === 'ready'}>{review.ready.length} ready</button>
-            {review.blocked.length > 0 && <button type="button" className={cx('cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'unavailable' ? 'border-warn/60 bg-warn/25 text-warn' : 'border-warn/30 bg-warn/10 text-warn hover:bg-warn/18')} onClick={() => setView('unavailable')} aria-pressed={view === 'unavailable'}>{review.blocked.length} unavailable</button>}
+            <button type="button" className={cx('cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'ready' ? 'border-good/60 bg-good/25 text-ink' : 'border-good/30 bg-good/10 text-ink hover:bg-good/18')} onClick={() => setView('ready')} aria-pressed={view === 'ready'}>{review.ready.length} ready</button>
+            {review.blocked.length > 0 && <button type="button" className={cx('cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'unavailable' ? 'border-warn/60 bg-warn/25 text-ink' : 'border-warn/30 bg-warn/10 text-ink hover:bg-warn/18')} onClick={() => setView('unavailable')} aria-pressed={view === 'unavailable'}>{review.blocked.length} unavailable</button>}
             {review.ready.length > 0 && <div className="ml-auto flex gap-2"><button type="button" className="cursor-pointer rounded-full border border-accent/50 bg-accent/15 px-3 py-1.5 font-extrabold text-accent-bright transition-colors hover:bg-accent/25" onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, true])))}>Check all</button><button type="button" className="cursor-pointer rounded-full border border-line-strong bg-panel px-3 py-1.5 text-ink transition-colors hover:border-ink/25 hover:bg-canvas-soft" onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, false])))}>Uncheck all</button></div>}
           </div>
 
@@ -194,7 +194,7 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
               <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">New torrents</span><strong className="text-sm text-ink">{estimate.new_torrents}</strong></div>
               <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">New download size</span><strong className="text-sm text-ink" data-testid="bulk-download-size">{checking ? 'Checking…' : sizeText}</strong></div>
               <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">File scope</span><strong className="text-sm text-ink">{estimate.selected_file_count > 0 ? `${estimate.selected_file_count} files${estimate.whole_torrents ? ` + ${estimate.whole_torrents} whole` : ''}` : `${estimate.whole_torrents} whole torrents`}</strong></div>
-              <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">Already in qBit</span><strong className="text-sm text-warn">{checking || checkError ? 'Unknown' : estimate.existing_torrents}</strong></div>
+              <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">Already in qBit</span><strong className={cx('text-sm', checkError ? 'text-warn' : 'text-ink')}>{checking || checkError ? 'Unknown' : estimate.existing_torrents}</strong></div>
             </div>
             {!outcome && <section className="space-y-2 rounded-xl border border-line bg-canvas-soft p-3 text-xs" aria-label="Download disk space" aria-live="polite">
               <h3 className="m-0 text-xs font-bold">Disk space</h3>
@@ -228,19 +228,19 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
                       const delta = release.size && localSize ? release.size - localSize : null
                       const status = groupStatus(group)
                       return (
-                        <label key={group.id} className={cx('flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', status === 'success' && 'border-good/50 bg-good/8', status === 'failure' && 'border-bad/50 bg-bad/8', status === 'pending' && 'border-accent/45 bg-accent/8', !status && (enabled[group.id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft opacity-55'))}>
+                        <label key={group.id} className={cx('flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', status === 'success' && 'border-good/50 bg-good/8', status === 'failure' && 'border-bad/50 bg-bad/8', status === 'pending' && 'border-accent/45 bg-accent/8', !status && (enabled[group.id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft text-muted'))}>
                           <input type="checkbox" className="size-3.5 shrink-0 accent-blue-500" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} />
                           {status === 'success' && <Icon name="check" size={13} className="text-good"/>}
                           {status === 'failure' && <Icon name="alert" size={13} className="text-bad"/>}
                           {status === 'pending' && <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/>}
                           <span className={cx('font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : 'text-ink')}>{group.result.title}</span>
-                          <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-muted">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
+                          <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-ink">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
                           {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-[10px] font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                           <span className="ml-auto flex items-center gap-1.5 tabular-nums" title={`${release.releaseGroup} · ${release.tracker}`}>
                             <span className="text-muted" title="Current local size">{formatBytes(localSize) || '—'}</span>
                             <span className="text-muted-dim">→</span>
-                            <span className="font-bold text-good" title="Selected best release size">{formatBytes(release.size) || 'Unknown'}</span>
-                            {delta !== null && delta !== 0 && <span className={delta > 0 ? 'text-good' : 'text-bad'}>({delta > 0 ? '+' : '−'}{formatBytes(Math.abs(delta))})</span>}
+                            <span className="font-bold text-ink" title="Selected best release size">{formatBytes(release.size) || 'Unknown'}</span>
+                            {delta !== null && delta !== 0 && <span className="text-muted-dim">({delta > 0 ? '+' : '−'}{formatBytes(Math.abs(delta))})</span>}
                           </span>
                         </label>
                       )
@@ -262,7 +262,7 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
                             {status === 'failure' && <Icon name="alert" size={13} className="text-bad"/>}
                             {status === 'pending' && <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/>}
                             <span className={cx('font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : 'text-ink')}>{group.result.title}</span>
-                            <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-muted">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
+                            <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-ink">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
                             {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-[10px] font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                             {chosen ? (
                               <span className="inline-flex items-center gap-1 rounded-full border border-good/40 bg-good/10 px-2 py-0.5 text-[10px] font-extrabold text-good"><Icon name="check" size={12}/>Selected</span>
@@ -273,7 +273,7 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
                               {chosenOption && (
                                 <span className="flex items-center gap-1.5 tabular-nums" title={`${chosenOption.release.releaseGroup} · ${chosenOption.release.tracker}`}>
                                   {localSize ? <><span className="text-muted" title="Current local size">{formatBytes(localSize) || '—'}</span><span className="text-muted-dim">→</span></> : null}
-                                  <span className="font-bold text-good">{formatBytes(chosenOption.release.size) || 'Unknown'}</span>
+                                  <span className="font-bold text-ink">{formatBytes(chosenOption.release.size) || 'Unknown'}</span>
                                 </span>
                               )}
                               <Icon name="chevron-right" size={15} className={cx('shrink-0 text-muted transition-transform', isExpanded ? 'rotate-90' : '')}/>
@@ -290,7 +290,7 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
                                     <input type="radio" name={group.id} className="mt-0.5 accent-blue-500" checked={checked} onChange={() => setSelected((current) => ({ ...current, [group.id]: index }))} />
                                     <span className="min-w-0 flex-1">
                                       <span className="block truncate text-sm font-bold text-ink" title={release.releaseGroup}>{release.releaseGroup}</span>
-                                      <span className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted"><span>{release.tracker}</span><span className="font-bold text-good">{formatBytes(release.size) || 'Unknown size'}</span></span>
+                                      <span className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted"><span>{release.tracker}</span><span className="font-bold text-ink">{formatBytes(release.size) || 'Unknown size'}</span></span>
                                     </span>
                                   </label>
                                 )
@@ -338,7 +338,7 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
               </button>
             ) : (
               <>
-                <button ref={cancelRef} type="button" className={cx(buttonBase, 'border-line bg-panel-raised text-muted hover:text-ink')} onClick={onClose} disabled={busy}>{outcome ? 'Close' : 'Cancel'}</button>
+                <button ref={cancelRef} type="button" className={cx(buttonBase, 'border-line bg-panel-raised text-ink hover:text-ink')} onClick={onClose} disabled={busy}>{outcome ? 'Close' : 'Cancel'}</button>
                 {!outcome && <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/12 text-good hover:bg-good/20')} onClick={() => onConfirm(selections)} disabled={busy || checking || selections.length === 0 || pendingChoices > 0 || estimate.new_torrents === 0 || Boolean(lowSpace && !acceptSpaceWarning)}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}Download {estimate.new_torrents || ''}</button>}
               </>
             )}

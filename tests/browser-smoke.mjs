@@ -59,7 +59,7 @@ const server = createServer(async (req, res) => {
       else response = { torrents: [], new_bytes: bytes, new_torrents: selected && !existing ? 1 : 0, existing_torrents: existing ? 1 : 0, unknown_torrents: 0, approximate_torrents: 0, selected_file_count: selected && !existing ? body.selections[0].release === 1 ? 2 : 1 : 0, whole_torrents: 0, disk_space: selected && !existing ? [{ path: '/downloads', categories: ['sonarr-anime'], required_bytes: bytes, unknown_torrents: 0, free_bytes: preflightMode === 'unavailable' ? null : preflightMode === 'low' ? 100 : 1000, sufficient: preflightMode === 'unavailable' ? null : preflightMode !== 'low', reason: preflightMode === 'unavailable' ? 'Client cannot report space for this path.' : undefined }] : [] }
     }
     else if (path === '/api/download_bulk/status') response = { ok: true, finished: true, pending: [], added: [], failures: [] }
-    else if (path === '/api/update-check') response = { current: '1.3.0', latest: null, url: null }
+    else if (path === '/api/update-check') response = { current: '1.4.0', latest: null, url: null }
     else if (path === '/api/scanned-data') response = { results: 2, cache_entries: 1, last_run: null, cache_valid: true, results_valid: true }
     else if (path === '/api/history') response = { scans: [{ id: 'scan-1', run_at: '2026-10-02 12:00:00', trigger: 'manual', counts: { upgrade: 1 }, changes: [{ key: example.key, title: example.title, arr: 'Sonarr', season: 1, type: 'upgrade', from: 'best', to: 'upgrade', best_group: 'Example' }] }] }
     else if (path === '/api/anilist/search') response = { results: [{ id: 1, title: 'Example anime', year: 2026, format: 'TV', episodes: 12, cover: null }] }
@@ -133,7 +133,7 @@ try {
   if (navigation.errorText) throw new Error(navigation.errorText)
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
   await wait(`document.querySelector('h1')?.textContent === 'Anime library' && document.body.textContent.includes('Unmatched anime')`)
-  assert.ok(await evaluate(`[...document.querySelectorAll('[title="SeaDex Companion v1.3"]')].some(element => element.textContent.trim() === 'v1.3')`), 'The app displays version v1.3')
+  assert.ok(await evaluate(`[...document.querySelectorAll('[title="SeaDex Companion v1.4"]')].some(element => element.textContent.trim() === 'v1.4')`), 'The app displays version v1.4')
   assert.ok(await evaluate(`document.body.textContent.includes('Match needs review')`))
   await click('Table')
   assert.equal(await evaluate(`document.querySelector('tbody').rows.length`), 2)
@@ -259,6 +259,7 @@ try {
   await pause(300)
   assert.ok(await evaluate(`document.querySelector('nav[aria-label="Mobile navigation"]').getBoundingClientRect().width <= 390`))
   assert.ok(await evaluate(`document.documentElement.scrollWidth <= 390`), 'Mobile page has no horizontal overflow')
+  assert.ok(await evaluate(`[...document.querySelectorAll('header [title="SeaDex Companion v1.4"]')].some(element => element.getClientRects().length && element.textContent.trim() === 'v1.4')`), 'The mobile header displays version v1.4')
   await capture('mobile-library')
   statusFailure = true
   await pause(10_500)

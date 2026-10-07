@@ -5,8 +5,8 @@ import Icon from './Icons'
 import { buttonBase, control, cx } from '../styles'
 
 const changeTone: Record<string, string> = {
-  upgrade: 'border-accent/35 bg-accent/8 text-accent-bright', resolved: 'border-good/35 bg-good/8 text-good',
-  new: 'border-purple/35 bg-purple/8 text-purple', removed: 'border-line bg-canvas-soft text-muted', changed: 'border-warn/35 bg-warn/8 text-warn',
+  upgrade: 'border-accent/35 bg-accent/8 text-ink', resolved: 'border-good/35 bg-good/8 text-ink',
+  new: 'border-purple/35 bg-purple/8 text-ink', removed: 'border-line bg-canvas-soft text-muted', changed: 'border-warn/35 bg-warn/8 text-ink',
 }
 const changeLabel: Record<string, string> = { upgrade: 'Now upgradable', resolved: 'Resolved', new: 'New title', removed: 'Removed', changed: 'Changed' }
 const statusLabel: Record<string, string> = { upgrade: 'Upgradable', best: 'Best quality', missing: 'Not on SeaDex', uncovered: 'No releases', partial: 'Partially on SeaDex' }
@@ -36,8 +36,8 @@ export default function HistoryTab({ active, results, onOpenResult }: Props) {
 
   return <section>
     <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
-      <div><p className="mb-1 text-xs font-bold tracking-[.14em] text-accent-bright uppercase">Activity</p><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Scan history</h1><p className="mt-2 mb-0 text-sm text-muted">See what changed and open a title to review its current releases.</p></div>
-      <button type="button" className={cx(buttonBase, 'border-line bg-panel text-muted')} onClick={() => void load()} disabled={loading}><Icon name="refresh" size={16}/>{loading ? 'Loading…' : 'Refresh'}</button>
+      <div><p className="mb-1 text-xs font-bold tracking-[.14em] text-muted-dim uppercase">Activity</p><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Scan history</h1><p className="mt-2 mb-0 text-sm text-muted">See what changed and open a title to review its current releases.</p></div>
+      <button type="button" className={cx(buttonBase, 'border-line bg-panel text-ink')} onClick={() => void load()} disabled={loading}><Icon name="refresh" size={16}/>{loading ? 'Loading…' : 'Refresh'}</button>
     </header>
     <div className="mb-4 flex flex-wrap gap-3"><label className="min-w-48 flex-1"><span className="sr-only">Search history by title</span><input className={cx(control, 'w-full')} type="search" placeholder="Search titles in history" value={query} onChange={event => setQuery(event.target.value)}/></label><select aria-label="Change type" className={control} value={changeType} onChange={event => setChangeType(event.target.value)}><option value="">All changes</option>{Object.entries(changeLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
     {error && <div className="mb-4 rounded-xl border border-bad/30 bg-bad/8 px-4 py-3 text-sm text-bad" role="alert">{error}</div>}
