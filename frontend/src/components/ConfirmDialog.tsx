@@ -52,8 +52,8 @@ export default function ConfirmDialog({ open, title, description, confirmLabel =
         {children}
         {error && <p role="alert" className="mb-4 text-sm text-bad">{error}</p>}
         <div className="flex justify-end gap-2">
-          <button ref={cancelRef} type="button" className={`${buttonBase} border-line bg-panel text-muted hover:text-ink`} onClick={onClose} disabled={submitting}>Cancel</button>
-          <button type="button" className={cx(buttonBase, dangerous ? 'border-bad/35 bg-bad/12 text-bad hover:bg-bad/20' : 'border-accent/35 bg-accent text-white')} onClick={() => void confirm()} disabled={submitting}>{submitting && <span className="size-4 animate-spin rounded-full border-2 border-current/30 border-t-current"/>}{submitting ? 'Working…' : confirmLabel}</button>
+          <button ref={cancelRef} type="button" className={`${buttonBase} border-line bg-panel text-ink hover:text-ink`} onClick={onClose} disabled={submitting}>Cancel</button>
+          <button type="button" className={cx(buttonBase, dangerous ? 'border-bad/35 bg-bad/12 text-bad hover:bg-bad/20' : 'border-accent/35 bg-accent text-on-accent')} onClick={() => void confirm()} disabled={submitting}>{submitting && <span className="size-4 animate-spin rounded-full border-2 border-current/30 border-t-current"/>}{submitting ? 'Working…' : confirmLabel}</button>
         </div>
       </section>
     </Modal>

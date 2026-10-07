@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, ReactNode } from 'react'
 import { GroupedCard, Release, ResultItem, Config } from '../types'
 import { formatBytes, formatEta, sizeDelta, seasonLabel, STATUS_LABEL } from '../utils'
 import * as api from '../api'
-import { cx } from '../styles'
+import { cx, downloadTextTone } from '../styles'
 import Icon from './Icons'
 import { useToast } from './Toast'
 import DownloadsPanel, { DownloadActions, DownloadEntry } from './DownloadsPanel'
@@ -10,6 +10,7 @@ import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 import { releaseIdentity } from '../../../shared/releases'
 import MappingDialog from './MappingDialog'
+import SeasonBadge from './SeasonBadge'
 
 const IconSpinner = () => <span className="block size-[15px] animate-spin rounded-full border-2 border-accent/35 border-t-accent-bright group-disabled/dl:border-ink/30 group-disabled/dl:border-t-ink" aria-hidden="true" />
 
@@ -59,14 +60,14 @@ const PANEL_GLOW_COLOR: Record<string, string> = {
   partial: '[--card-status-color:#fbbf24]',
 }
 const SOURCE_TONE: Record<string, string> = {
-  sonarr: 'border-accent/65 bg-[#0d1c42]/88 text-[#cfe0ff]',
-  radarr: 'border-warn/65 bg-[#3a2806]/88 text-[#ffe6a8]',
+  sonarr: 'border-accent/65 bg-[#0d1c42]/88 text-ink',
+  radarr: 'border-warn/65 bg-[#3a2806]/88 text-ink',
 }
 const STATUS_BADGE: Record<string, string> = {
-  upgrade: 'border-accent/65 bg-[#0d1c42]/88 text-[#cfe0ff]',
-  best: 'border-good/65 bg-[#062e20]/88 text-[#b9f5dd]',
-  missing: 'border-muted/50 bg-[#1e232e]/88 text-[#c3cad6]',
-  partial: 'border-warn/65 bg-[#3a2806]/88 text-[#ffe6a8]',
+  upgrade: 'border-accent/65 bg-[#0d1c42]/88 text-ink',
+  best: 'border-good/65 bg-[#062e20]/88 text-ink',
+  missing: 'border-muted/50 bg-[#1e232e]/88 text-ink',
+  partial: 'border-warn/65 bg-[#3a2806]/88 text-ink',
 }
 const SEASON_TONE: Record<string, string> = {
   upgrade: 'bg-canvas-soft',
@@ -74,17 +75,11 @@ const SEASON_TONE: Record<string, string> = {
   missing: 'bg-[#141518]',
   partial: 'bg-[#19160d]',
 }
-const SEASON_NUMBER_TONE: Record<string, string> = {
-  upgrade: 'border-line-strong bg-accent/15 text-accent-bright',
-  best: 'border-good/35 bg-good/12 text-good',
-  missing: 'border-line-strong bg-accent/15 text-accent-bright',
-  partial: 'border-warn/35 bg-warn/12 text-warn',
-}
 const NOTE_TONE: Record<string, string> = {
   upgrade: 'border-line-strong text-muted',
-  best: 'border-good/35 text-good',
-  missing: 'border-line-strong text-[#9aa5b8]',
-  partial: 'border-warn/35 text-warn',
+  best: 'border-good/35 text-muted',
+  missing: 'border-line-strong text-muted',
+  partial: 'border-warn/35 text-muted',
 }
 const NOTES_SURFACE: Record<string, string> = {
   upgrade: 'bg-canvas-soft',
@@ -93,11 +88,11 @@ const NOTES_SURFACE: Record<string, string> = {
   partial: 'bg-[#19160d]',
 }
 const ICON_BUTTON =
-  'grid size-9 cursor-pointer place-items-center rounded-control border border-line bg-panel-raised text-muted transition-all duration-150 hover:-translate-y-px hover:border-line-strong hover:text-ink'
+  'grid size-9 cursor-pointer place-items-center rounded-control border border-line bg-panel-raised text-ink transition-all duration-150 hover:-translate-y-px hover:border-line-strong hover:text-ink'
 const BADGE_BASE = 'inline-block rounded-[7px] border px-[9px] py-1 text-[12.5px] font-semibold'
-const BADGE = `${BADGE_BASE} border-line bg-panel-raised text-muted`
+const BADGE = `${BADGE_BASE} border-line bg-panel-raised text-ink`
 const SIZE_BASE = 'shrink-0 whitespace-nowrap rounded-md border px-2 py-[3px] text-xs font-bold tabular-nums'
-const SIZE = `${SIZE_BASE} border-line bg-panel-raised text-muted`
+const SIZE = `${SIZE_BASE} border-line bg-panel-raised text-ink`
 
 /**
  * Dual-audio releases get a light blue pill; every other release tag
@@ -106,8 +101,8 @@ const SIZE = `${SIZE_BASE} border-line bg-panel-raised text-muted`
 function tagClass(t: string): string {
   const base = 'max-w-full overflow-hidden rounded-full border px-2 py-0.5 text-[10.5px] font-bold tracking-[0.2px] text-ellipsis whitespace-nowrap'
   return t === 'Dual Audio'
-    ? `${base} border-sky/40 bg-sky/12 text-sky`
-    : `${base} border-purple/40 bg-purple/12 text-purple`
+    ? `${base} border-sky/40 bg-sky/12 text-ink`
+    : `${base} border-purple/40 bg-purple/12 text-ink`
 }
 
 function releaseSurface(tone: string, isBest: boolean): string {
@@ -473,7 +468,7 @@ export default function Card({ compact = false, active, openRequested, onOpened,
         CARD_BASE,
         CARD_TONE[st],
         hiding && 'pointer-events-none !translate-y-1 !scale-[0.98] opacity-0',
-        hidden && 'border-dashed !border-line-strong opacity-60 hover:opacity-85',
+        hidden && 'border-dashed !border-line-strong',
         downloading && 'download-border',
       )}
       style={{ animationDelay: Math.min(index * 40, 400) + 'ms' }}
@@ -504,7 +499,7 @@ export default function Card({ compact = false, active, openRequested, onOpened,
           {group.image && (
             <img className={cx('h-[74px] w-[52px] shrink-0 rounded-lg border border-white/15 object-cover shadow-lg', hidden && 'grayscale')} src={group.image} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = 'none' }} />
           )}
-          <div className="line-clamp-2 min-w-0 flex-1 text-[17px] leading-snug font-extrabold text-white drop-shadow-md" title={group.title}>{group.title}</div>
+          <div className="anime-art-title line-clamp-2 min-w-0 flex-1 text-[17px] leading-snug font-extrabold text-white" title={group.title}>{group.title}</div>
         </div>
       </div>
       <div className="flex h-[156px] shrink-0 flex-col gap-3 p-4">
@@ -519,7 +514,7 @@ export default function Card({ compact = false, active, openRequested, onOpened,
             />
           ) : (
             <div className="flex flex-wrap gap-1.5" aria-label={`${seasonCount} seasons`}>
-              {group.seasons.slice(0, 6).map((season) => <span key={season.key} className={cx('rounded-md border px-2 py-1 text-[10px] font-extrabold', SEASON_NUMBER_TONE[season.status === 'uncovered' ? 'partial' : season.status || st])}>{seasonLabel(season)}</span>)}
+              {group.seasons.slice(0, 6).map((season) => <SeasonBadge key={season.key} season={season} fallback={st} className="rounded-md border px-2 py-1 text-[10px] font-extrabold"/>)}
               {seasonCount > 6 && <span className="rounded-md border border-line px-2 py-1 text-[10px] font-bold text-muted">+{seasonCount - 6}</span>}
             </div>
           )}
@@ -537,9 +532,9 @@ export default function Card({ compact = false, active, openRequested, onOpened,
         <div className={cx('details-backdrop absolute inset-0 bg-black/65', detailsVisible && 'details-backdrop-visible')} />
         <div className={cx('absolute inset-0 flex items-center justify-center p-4 transition-opacity duration-200 ease-out', detailsVisible ? 'opacity-100' : 'opacity-0')} onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
           <aside className={cx('app-scrollbar max-h-full w-full max-w-[864px] overflow-y-auto rounded-2xl border border-line-strong bg-canvas shadow-[0_24px_60px_rgba(0,0,0,.45)]', PANEL_GLOW_COLOR[st], downloading && 'details-download-border')}>
-          <div className="relative h-[230px] overflow-hidden border-b border-line bg-panel bg-cover bg-center" style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}><div className="absolute inset-0 bg-linear-to-t from-canvas via-canvas/55 to-black/15"/><button ref={closeRef} type="button" className="absolute top-4 right-4 z-2 grid size-10 cursor-pointer place-items-center rounded-xl border border-white/15 bg-black/40 text-white backdrop-blur-md hover:bg-black/60" onClick={() => requestClose()} aria-label="Close details"><Icon name="close"/></button><div className="absolute inset-x-5 bottom-5 z-1 flex items-end gap-4">{group.image && <img src={group.image} alt="" className="h-28 w-20 rounded-lg border border-white/15 object-cover shadow-xl"/>}<div className="min-w-0"><span className={cx('mb-2 inline-block rounded-full border px-2.5 py-1 text-[11px] font-extrabold', STATUS_BADGE[st])}>{STATUS_LABEL[group.status]}</span><h2 id={titleId} className="m-0 text-3xl leading-tight font-extrabold text-white">{group.title}</h2></div></div></div>
+          <div className="relative h-[230px] overflow-hidden border-b border-line bg-panel bg-cover bg-center" style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}><div className="absolute inset-0 bg-linear-to-t from-canvas via-canvas/55 to-black/15"/><button ref={closeRef} type="button" className="absolute top-4 right-4 z-2 grid size-10 cursor-pointer place-items-center rounded-xl border border-white/15 bg-black/40 text-white backdrop-blur-md hover:bg-black/60" onClick={() => requestClose()} aria-label="Close details"><Icon name="close"/></button><div className="absolute inset-x-5 bottom-5 z-1 flex items-end gap-4">{group.image && <img src={group.image} alt="" className="h-28 w-20 rounded-lg border border-white/15 object-cover shadow-xl"/>}<div className="min-w-0"><span className={cx('mb-2 inline-block rounded-full border px-2.5 py-1 text-[11px] font-extrabold', STATUS_BADGE[st])}>{STATUS_LABEL[group.status]}</span><h2 id={titleId} className="anime-art-title m-0 text-3xl leading-tight font-extrabold text-white">{group.title}</h2></div></div></div>
           <div className="space-y-4 p-5 max-[600px]:p-4">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">{group.arr_url && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{typeof group.anilist_id === 'number' && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList ↗</a>}<button type="button" className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50" onClick={() => setMappingOpen(true)} disabled={!group.seasons[0]?.library_key} title={!group.seasons[0]?.library_key ? 'Run a new scan to enable manual matching' : undefined}><Icon name="refresh" size={14}/>{group.seasons.some((season) => season.mapping_override) ? 'Change manual match' : 'Correct match'}</button>{group.seasons.some((season) => season.mapping_override) && <span className="rounded-full border border-purple/35 bg-purple/10 px-2 py-1 text-[10px] font-extrabold text-purple">Manual match</span>}<span className="ml-auto">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span></div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">{group.arr_url && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{typeof group.anilist_id === 'number' && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList ↗</a>}<button type="button" className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50" onClick={() => setMappingOpen(true)} disabled={!group.seasons[0]?.library_key} title={!group.seasons[0]?.library_key ? 'Run a new scan to enable manual matching' : undefined}><Icon name="refresh" size={14}/>{group.seasons.some((season) => season.mapping_override) ? 'Change manual match' : 'Correct match'}</button>{group.seasons.some((season) => season.mapping_override) && <span className="rounded-full border border-purple/35 bg-purple/10 px-2 py-1 text-[10px] font-extrabold text-ink">Manual match</span>}<span className="ml-auto">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span></div>
             {group.seasons.map((season) => <Season
               key={season.key}
               r={season}
@@ -676,10 +671,10 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
             {gi > 0 && <div className="my-1 h-px bg-line-strong" role="separator" />}
             {group.part && (
               <div className="flex flex-wrap items-center gap-2 py-0.5">
-                <span className="rounded-full border border-line bg-panel-raised px-2.5 py-[3px] text-[11px] font-extrabold tracking-[0.8px] text-muted uppercase">{group.part}</span>
+                <span className="rounded-full border border-line bg-panel-raised px-2.5 py-[3px] text-[11px] font-extrabold tracking-[0.8px] text-ink uppercase">{group.part}</span>
                 <button
                   type="button"
-                  className={cx('inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-[3px] text-[10px] font-bold transition-colors', r.excluded || r.excluded_parts?.includes(group.part) ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line bg-panel-raised text-muted hover:text-ink')}
+                  className={cx('inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-[3px] text-[10px] font-bold transition-colors', r.excluded || r.excluded_parts?.includes(group.part) ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line bg-panel-raised text-ink hover:text-ink')}
                   title={r.excluded ? 'Restore the season before changing individual cours' : r.excluded_parts?.includes(group.part) ? `Include ${group.part} in bulk downloads and notifications` : `Ignore ${group.part} in bulk downloads and notifications`}
                   disabled={!r.library_key || Boolean(r.excluded) || Boolean(ruleBusy)}
                   onClick={() => onToggleExclusion(group.part, !r.excluded_parts?.includes(group.part))}
@@ -768,7 +763,7 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
                         {isBest ? 'Best' : 'Alt'}
                       </span>
                       <div className="flex min-w-0 flex-1 flex-row items-center gap-1.5">
-                        <span className={cx(BADGE_BASE, 'w-fit max-w-full shrink-0 overflow-hidden text-ellipsis whitespace-nowrap font-extrabold', isBest ? 'border-good/40 bg-good/14 text-good' : 'border-bad/40 bg-bad/12 text-bad')} title={rel.releaseGroup}>
+                        <span className={cx(BADGE_BASE, 'w-fit max-w-full shrink-0 overflow-hidden text-ellipsis whitespace-nowrap font-extrabold text-ink', isBest ? 'border-good/40 bg-good/14' : 'border-bad/40 bg-bad/12')} title={rel.releaseGroup}>
                           {rel.releaseGroup}
                         </span>
                         {tags.length > 0 && (
@@ -781,7 +776,7 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
                           </div>
                         )}
                       </div>
-                      <span className={cx(SIZE_BASE, isBest ? 'border-good/35 bg-good/10 text-good' : 'border-line bg-panel-raised text-muted')} title="Size of this release">
+                      <span className={cx(SIZE_BASE, 'text-ink', isBest ? 'border-good/35 bg-good/10' : 'border-line bg-panel-raised')} title="Size of this release">
                         {formatBytes(rel.size)}
                       </span>
                       {delta && (
@@ -791,11 +786,11 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
                       )}
                       <button
                         className={cx(
-                          'group/dl ml-auto grid size-8 shrink-0 cursor-pointer place-items-center rounded-control border text-sm font-extrabold transition-all duration-150 hover:-translate-y-px disabled:opacity-55',
+                          'group/dl ml-auto grid size-8 shrink-0 cursor-pointer place-items-center rounded-control border text-sm font-extrabold transition-all duration-150 hover:-translate-y-px',
                           owned || complete
                             ? 'cursor-default border-good/50 bg-good/18 text-good hover:border-good hover:bg-good/22'
                             : disabled
-                              ? 'cursor-not-allowed border-line bg-panel-raised text-muted-dim hover:translate-y-0 hover:border-line hover:bg-panel-raised'
+                              ? 'cursor-not-allowed border-line bg-panel-raised text-muted-dim opacity-60 hover:translate-y-0 hover:border-line hover:bg-panel-raised'
                               : 'border-good/40 bg-good/12 text-good hover:border-good hover:bg-good/22',
                         )}
                         disabled={disabled}
@@ -819,7 +814,7 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
                           <div className="h-full rounded-full bg-linear-to-r from-accent to-good transition-[width] duration-500" style={{ width: Math.max(pct, 2) + '%' }} />
                         </div>
                         <div className="flex items-center gap-2">
-                          <div className="min-w-0 flex-1 overflow-hidden text-xs font-semibold text-ellipsis whitespace-nowrap text-accent-bright tabular-nums">
+                          <div className={cx('min-w-0 flex-1 overflow-hidden text-xs font-semibold text-ellipsis whitespace-nowrap tabular-nums', downloadTextTone(dlState.phase))}>
                             {dlState.phase === 'sending'
                               ? 'Sending to qBittorrent…'
                               : dlState.phase === 'error' ? 'Download error — check qBittorrent'
@@ -877,10 +872,10 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
       ] : []
 
   return (
-    <div className={cx('flex flex-col gap-[9px] rounded-control border p-3', r.excluded ? 'border-warn/45 opacity-75' : 'border-line', SEASON_TONE[tone])}>
+    <div className={cx('flex flex-col gap-[9px] rounded-control border p-3', r.excluded ? 'border-warn/45' : 'border-line', SEASON_TONE[tone])}>
       <div className="flex flex-wrap items-center gap-2">
-        <span className={cx('min-w-[46px] rounded-full border px-[9px] py-[3px] text-center text-xs font-extrabold tracking-[0.5px]', SEASON_NUMBER_TONE[tone])}>{seasonLabel(r)}</span>
-        <button type="button" className={cx('inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-[3px] text-[10px] font-bold transition-colors', r.excluded ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line bg-panel-raised text-muted hover:text-ink')} title={r.excluded ? `Include ${seasonLabel(r)} in bulk downloads and notifications` : `Ignore ${seasonLabel(r)} in bulk downloads and notifications`} disabled={!r.library_key || Boolean(ruleBusy)} onClick={() => onToggleExclusion('', !r.excluded)}><Icon name="ban" size={12}/>{r.excluded ? 'Ignored' : 'Ignore'}</button>
+        <SeasonBadge season={r} fallback={tone} className="min-w-[46px] rounded-full border px-[9px] py-[3px] text-center text-xs font-extrabold tracking-[0.5px]"/>
+        <button type="button" className={cx('inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-[3px] text-[10px] font-bold transition-colors', r.excluded ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line bg-panel-raised text-ink hover:text-ink')} title={r.excluded ? `Include ${seasonLabel(r)} in bulk downloads and notifications` : `Ignore ${seasonLabel(r)} in bulk downloads and notifications`} disabled={!r.library_key || Boolean(ruleBusy)} onClick={() => onToggleExclusion('', !r.excluded)}><Icon name="ban" size={12}/>{r.excluded ? 'Ignored' : 'Ignore'}</button>
         {displaySeasonHave && <span className="text-[10px] font-bold tracking-[0.08em] text-muted-dim uppercase">Have</span>}
         <div className="flex flex-1 flex-wrap gap-[5px]" title="Release groups you already have">
           {have}

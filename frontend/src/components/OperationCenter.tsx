@@ -39,14 +39,14 @@ export default function OperationCenter({ status, scanCompleted, bulk, onRetrySc
               {status.running ? <span className="size-4 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/> : <Icon name={status.error || status.cancelled ? 'alert' : 'check'} size={17}/>}
             </span>
             <div className="min-w-0 flex-1">
-              <div className={cx('truncate text-xs font-extrabold', status.error && !status.running ? 'text-bad' : scanCompleted && !status.running ? 'text-good' : 'text-accent-bright')}>{status.running ? status.message || 'Scanning library…' : status.webhook_scan.queued ? 'Scan queued' : status.cancelled ? 'Scan cancelled' : status.error ? 'Scan failed' : 'Scan complete'}</div>
+              <div className="truncate text-xs font-extrabold text-ink">{status.running ? status.message || 'Scanning library…' : status.webhook_scan.queued ? 'Scan queued' : status.cancelled ? 'Scan cancelled' : status.error ? 'Scan failed' : 'Scan complete'}</div>
               <div className="mt-0.5 truncate text-[11px] text-muted">{status.running ? (status.total ? `${status.progress}/${status.total} titles · ${progress}%` : 'Preparing scan…') : status.webhook_scan.queued ? `Starts after new ${status.webhook_scan.sources.join(' + ')} entries settle` : status.cancelled ? 'Previous complete results were preserved' : status.error || `Completed ${scanCompleted}`}</div>
             </div>
             {status.running && <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={onCancelScan}>Cancel scan</button>}
             {!status.running && status.error && <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={onRetryScan}><Icon name="refresh" size={15}/>Retry scan</button>}
-            {!status.running && status.error && <button type="button" className={cx(buttonBase, 'border-line bg-panel text-muted hover:text-ink')} onClick={onOpenConfig}><Icon name="settings" size={15}/>Configuration</button>}
+            {!status.running && status.error && <button type="button" className={cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')} onClick={onOpenConfig}><Icon name="settings" size={15}/>Configuration</button>}
             {!status.running && Object.keys(status.source_errors).length > 0 && <button type="button" className={cx(buttonBase, 'border-warn/35 bg-warn/10 text-warn')} onClick={onOpenConfig}>Integration warning</button>}
-            <button type="button" className={cx(buttonBase, 'border-line bg-panel text-muted hover:text-ink')} onClick={onOpenLibrary}>Open library</button>
+            <button type="button" className={cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')} onClick={onOpenLibrary}>Open library</button>
             {!status.running && scanCompleted && <button type="button" className="grid size-8 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onDismissScan} aria-label="Dismiss scan completion"><Icon name="close" size={16}/></button>}
           </div>
           {status.running && <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-canvas"><div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${Math.max(progress, status.total ? 2 : 0)}%` }}/></div>}
@@ -64,7 +64,7 @@ export default function OperationCenter({ status, scanCompleted, bulk, onRetrySc
               <div className="mt-0.5 truncate text-[11px] text-muted">{bulk.message}</div>
             </div>
             {bulk.total > 0 && <span className="rounded-full border border-line bg-panel px-2.5 py-1 text-[11px] font-bold tabular-nums text-muted">{bulk.settled}/{bulk.total}</span>}
-            <button type="button" className={cx(buttonBase, 'border-line bg-panel text-muted hover:text-ink')} onClick={onOpenLibrary}>Open library</button>
+            <button type="button" className={cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')} onClick={onOpenLibrary}>Open library</button>
             {bulk.phase !== 'running' && <button type="button" className="grid size-8 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onDismissBulk} aria-label="Dismiss bulk operation"><Icon name="close" size={16}/></button>}
           </div>
           {bulk.phase === 'running' && bulk.total > 0 && <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-canvas"><div className="h-full rounded-full bg-linear-to-r from-accent to-good transition-[width] duration-500" style={{ width: `${Math.max(bulkProgress, 2)}%` }}/></div>}

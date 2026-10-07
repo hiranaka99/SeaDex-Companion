@@ -28,7 +28,7 @@ function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex items-center gap-3">
       <img src="/favicon.png" alt="" className={cx('rounded-xl border border-line-strong object-cover shadow-[0_8px_24px_rgba(79,140,255,0.16)]', compact ? 'size-9' : 'size-11')} />
-      <div><div className={cx('font-extrabold tracking-tight text-ink', compact ? 'text-base' : 'text-lg')}>SeaDex</div><div className="text-[10px] font-semibold tracking-[0.18em] text-muted-dim uppercase">Companion</div></div>
+      <div><div className={cx('font-extrabold tracking-tight text-ink', compact ? 'text-base' : 'text-lg')}>SeaDex{compact && <span className="ml-2 inline-block rounded-md border border-line-strong bg-panel-raised px-1.5 py-0.5 align-middle text-[10px] font-semibold tracking-normal text-muted" title={`SeaDex Companion ${APP_VERSION}`}>{APP_VERSION}</span>}</div><div className="text-[10px] font-semibold tracking-[0.18em] text-muted-dim uppercase">Companion</div></div>
     </div>
   )
 }
@@ -64,7 +64,7 @@ export default function TopBar({ tab, onTabChange, username, onLogout, collapsed
             <button key={item.id} type="button" title={item.label} className={cx(
               'group flex cursor-pointer items-center gap-3 rounded-xl text-left text-sm font-semibold transition-all duration-300 ease-in-out',
               collapsed ? 'size-10 justify-center' : 'px-3.5 py-3',
-              tab === item.id ? 'bg-accent/12 text-accent-bright' : 'text-muted hover:bg-panel hover:text-ink',
+              tab === item.id ? 'bg-accent/12 text-ink' : 'text-muted hover:bg-panel hover:text-ink',
             )} aria-current={tab === item.id ? 'page' : undefined} onClick={() => onTabChange(item.id)}>
               <Icon name={item.icon} size={19} className={cx('shrink-0 transition-colors', tab === item.id ? 'text-accent-bright' : 'text-muted-dim group-hover:text-ink')} />
               {!collapsed && item.label}
@@ -100,12 +100,12 @@ export default function TopBar({ tab, onTabChange, username, onLogout, collapsed
 
       <header className="fixed inset-x-0 top-0 z-50 hidden h-16 items-center justify-between border-b border-line bg-canvas-soft/95 px-4 backdrop-blur-xl max-[900px]:flex">
         <Brand compact />
-        <div className="flex items-center gap-3"><button type="button" className="grid size-9 cursor-pointer place-items-center rounded-lg border border-line bg-panel text-muted" onClick={onLogout} aria-label="Log out"><Icon name="log-out" size={17} /></button></div>
+        <div className="flex items-center gap-3"><button type="button" className="grid size-9 cursor-pointer place-items-center rounded-lg border border-line bg-panel text-ink" onClick={onLogout} aria-label="Log out"><Icon name="log-out" size={17} /></button></div>
       </header>
 
       <nav className="fixed inset-x-3 bottom-3 z-50 hidden h-16 items-center justify-around rounded-2xl border border-line-strong bg-panel-raised/95 px-2 shadow-card backdrop-blur-xl max-[900px]:flex" aria-label="Mobile navigation">
         {NAV.map((item) => (
-          <button key={item.id} type="button" className={cx('flex min-w-0 flex-1 cursor-pointer flex-col items-center gap-1 rounded-xl px-1 py-2 text-[10px] font-bold transition-colors', tab === item.id ? 'bg-accent/12 text-accent-bright' : 'text-muted')} aria-current={tab === item.id ? 'page' : undefined} onClick={() => onTabChange(item.id)}><Icon name={item.icon} size={19} />{item.label.replace('Configuration', 'Config').replace('Server log', 'Log').replace('Scan history', 'History')}</button>
+          <button key={item.id} type="button" className={cx('flex min-w-0 flex-1 cursor-pointer flex-col items-center gap-1 rounded-xl px-1 py-2 text-[10px] font-bold transition-colors', tab === item.id ? 'bg-accent/12 text-ink' : 'text-muted')} aria-current={tab === item.id ? 'page' : undefined} onClick={() => onTabChange(item.id)}><Icon name={item.icon} size={19} />{item.label.replace('Configuration', 'Config').replace('Server log', 'Log').replace('Scan history', 'History')}</button>
         ))}
       </nav>
     </>

@@ -32,12 +32,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {createPortal(<div className="pointer-events-none fixed top-4 right-4 z-[100] flex w-[min(380px,calc(100vw-2rem))] flex-col gap-2 max-[900px]:top-auto max-[900px]:bottom-24" aria-live="polite" aria-atomic="true">
         {items.map((item) => (
           <div key={item.id} role={item.tone === 'error' ? 'alert' : 'status'} className={cx(
-            'pointer-events-auto flex animate-rise items-start gap-3 rounded-xl border bg-panel-raised/95 px-4 py-3 text-sm shadow-card backdrop-blur-xl',
-            item.tone === 'success' && 'border-good/35 text-good',
-            item.tone === 'error' && 'border-bad/35 text-bad',
-            item.tone === 'info' && 'border-accent/35 text-ink',
+            'pointer-events-auto flex animate-rise items-start gap-3 rounded-xl border bg-panel-raised/95 px-4 py-3 text-sm text-ink shadow-card backdrop-blur-xl',
+            item.tone === 'success' && 'border-good/35',
+            item.tone === 'error' && 'border-bad/35',
+            item.tone === 'info' && 'border-accent/35',
           )}>
-            <Icon name={item.tone === 'success' ? 'check' : item.tone === 'error' ? 'alert' : 'sparkles'} size={18} className="mt-0.5 shrink-0" />
+            <Icon name={item.tone === 'success' ? 'check' : item.tone === 'error' ? 'alert' : 'sparkles'} size={18} className={cx('mt-0.5 shrink-0', item.tone === 'success' ? 'text-good' : item.tone === 'error' ? 'text-bad' : 'text-accent-bright')} />
             <span className="min-w-0 flex-1">{item.message}</span>
             <button type="button" className="pointer-events-auto cursor-pointer text-muted hover:text-ink" onClick={() => setItems((current) => current.filter((currentItem) => currentItem.id !== item.id))} aria-label="Dismiss notification"><Icon name="close" size={16} /></button>
           </div>
