@@ -56,6 +56,10 @@ data/
 .impeccable/config.local.json
 frontend/.impeccable/config.local.json
 
+# Local product and design guidance
+/PRODUCT.md
+/DESIGN.md
+
 # ---------------------------------------------------------------------------
 # Misc / server output
 # ---------------------------------------------------------------------------
