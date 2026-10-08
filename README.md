@@ -19,7 +19,7 @@ SeaDex Companion is a self-hosted web UI that compares your **Sonarr** and **Rad
 - Bulk download estimates deduplicate shared torrents and selected files, skip existing hashes, and check qBittorrent download-disk space where supported
 - Download monitoring, pause, resume, cancellation, and removal
 - Search and filtering by title, release group, source, and status
-- Compact library table, matching-review status, and aired-episode missing counts
+- Matching-review status and aired-episode missing counts
 - Manual AniList corrections and season/cour exclusions
 - Interval, daily, or weekly scans with timezone and missed-run controls
 - Sonarr and Radarr webhooks for incremental scans when titles are added

@@ -136,10 +136,10 @@ try {
   await wait(`document.querySelector('h1')?.textContent === 'Anime library' && document.body.textContent.includes('Unmatched anime')`)
   assert.ok(await evaluate(`[...document.querySelectorAll('[title="SeaDex Companion v1.6"]')].some(element => element.textContent.trim() === 'v1.6')`), 'The app displays version v1.6')
   assert.ok(await evaluate(`document.body.textContent.includes('Match needs review')`))
-  await click('Table')
-  assert.equal(await evaluate(`document.querySelector('tbody').rows.length`), 2)
-  await capture('library-table')
-  console.log('PASS compact library and distinct match status')
+  assert.equal(await evaluate(`document.querySelectorAll('[aria-label="Library results"] article').length`), 2)
+  assert.ok(await evaluate(`!document.querySelector('[aria-label="Library view"]') && !document.querySelector('[aria-label="Library results"] table')`), 'Library uses cards without a view switcher')
+  await capture('library-cards')
+  console.log('PASS card library and distinct match status')
 
   await click('Bulk download')
   await evaluate(`document.querySelector('dialog[open] button[aria-expanded]').click()`)
@@ -215,7 +215,7 @@ try {
   console.log('PASS history opens current details and nested modal keyboard handling')
 
   progressMode = 'error'
-  await click('Cards')
+  await evaluate(`location.reload()`)
   await wait(`document.querySelector('[aria-label="Active downloads"]')?.textContent.includes('Download error')`)
   progressMode = 'complete'
   await wait(`!document.querySelector('[aria-label="Active downloads"]')`)
@@ -271,9 +271,10 @@ try {
   fixtureHistory = [{ id: 'scan-pages', run_at: '2026-10-02 12:00:00', trigger: 'manual', counts: { upgrade: 1 }, changes: [{ key: 'older-key', title: historyTarget.title, arr: historyTarget.arr, season: historyTarget.season, type: 'upgrade', from: 'best', to: 'upgrade' }] }]
   progressMode = 'absent'
   revision++
-  await evaluate(`localStorage.setItem('seadex-library-view', 'cards'); location.hash = 'anime'; location.reload()`)
+  await evaluate(`localStorage.setItem('seadex-library-view', 'table'); location.hash = 'anime'; location.reload()`)
   await wait(`document.querySelector('[aria-label="Library page"]')`)
   assert.equal(await evaluate(`document.querySelectorAll('[aria-label="Library results"] article').length`), 60, 'Large collections have bounded mounted cards')
+  assert.ok(await evaluate(`!document.querySelector('[aria-label="Library results"] table') && !document.querySelector('[aria-label="Library view"]')`), 'An old table preference still opens the card library')
   await click('Next')
   await wait(`document.querySelector('[aria-label="Library page"]').value === '1'`)
   assert.ok(await evaluate(`document.querySelector('[aria-label="Library results"]').textContent.includes('Collection title 0060')`))
@@ -293,11 +294,10 @@ try {
   await wait(`document.querySelectorAll('[aria-label="Library results"] article').length === 1`)
   assert.ok(await evaluate(`!document.querySelector('[aria-label="Library pages"]')`), 'Search spans all pages and resets pagination')
   await click('Clear filters')
-  await click('Table')
-  await wait(`document.querySelector('tbody')?.rows.length === 60`)
+  await wait(`document.querySelectorAll('[aria-label="Library results"] article').length === 60`)
   await click('Next')
   await wait(`document.querySelector('[aria-label="Library page"]').value === '1'`)
-  assert.equal(await evaluate(`document.querySelector('tbody').rows.length`), 60)
+  assert.equal(await evaluate(`document.querySelectorAll('[aria-label="Library results"] article').length`), 60)
   console.log('PASS bounded library pages, full-library search/bulk scope, and off-page history fallback navigation')
   fixtureResults = null
   fixtureHistory = null
@@ -335,15 +335,12 @@ try {
   assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] label')].find(label=>label.textContent.includes('Also delete')).querySelector('input').checked`), 'Bulk cancellation continues to preserve files by default')
   await capture('follow-up-mobile-bulk-cancel')
   await key('Escape')
-  await click('View & filters')
+  await click('Filters & sort')
   await evaluate(`(() => { const source=document.querySelector('select[aria-label="Source"]'); source.value='Sonarr'; source.dispatchEvent(new Event('change',{bubbles:true})) })()`)
-  await evaluate(`[...document.querySelectorAll('button')].find(button=>button.textContent.includes('View & filters')).click()`)
+  await evaluate(`[...document.querySelectorAll('button')].find(button=>button.textContent.includes('Filters & sort')).click()`)
   assert.ok(await evaluate(`document.querySelector('[aria-label="Active library filters"]').textContent.includes('Sonarr')`), 'Collapsed filters retain visible source state')
   await click('Clear filters')
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
-  await click('View & filters')
-  await click('Cards')
-  await click('View & filters')
   await evaluate(`document.documentElement.style.fontSize='32px'`)
   await pause(250)
   assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth`), 'Enlarged text does not overflow the document')
@@ -397,7 +394,7 @@ try {
   example.owned_by_part = { 'Cour 1': [longGroup], 'Cour 2': [] }
   example.have_by_part = { 'Cour 1': [longGroup], 'Cour 2': [] }
   progressMode = 'absent'
-  await evaluate(`localStorage.setItem('seadex-library-view', 'cards'); location.hash = 'anime'; location.reload()`)
+  await evaluate(`location.hash = 'anime'; location.reload()`)
   await wait(`document.body.textContent.includes(${JSON.stringify(example.title)})`)
   const uiEvidence = []
   for (const [width, height] of [[1440, 1000], [900, 900], [390, 844], [320, 700]]) {
