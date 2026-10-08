@@ -28,7 +28,6 @@ function HideActionIcon({ hidden }: { hidden: boolean }) {
 }
 
 interface CardProps {
-  compact?: boolean
   active: boolean
   openRequested?: boolean
   onOpened?: () => void
@@ -112,7 +111,7 @@ function releaseSurface(tone: string, isBest: boolean): string {
   return isBest ? 'bg-good/5' : 'bg-panel'
 }
 
-export default function Card({ compact = false, active, openRequested, onOpened, group, index, config, hidden = false, onToggle, onRulesChanged, onRescan }: CardProps) {
+export default function Card({ active, openRequested, onOpened, group, index, config, hidden = false, onToggle, onRulesChanged, onRescan }: CardProps) {
   const [hiding, setHiding] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [detailsVisible, setDetailsVisible] = useState(false)
@@ -455,15 +454,7 @@ export default function Card({ compact = false, active, openRequested, onOpened,
   }
 
   return <>
-    {compact ? <tr className="border-b border-line bg-panel hover:bg-panel-raised">
-      <th scope="row" className="max-w-64 px-4 py-3 text-left"><button type="button" className="cursor-pointer text-sm font-bold text-accent-bright hover:underline" onClick={handleOpenDetails}>{group.title}</button><span className="mt-1 block text-xs font-normal text-muted">{group.seasons.map(seasonLabel).join(', ')}</span>{group.seasons.some(season => (season.missing_episode_count || 0) > 0) && <span className="mt-1 block text-xs font-normal text-warn">{group.seasons.reduce((sum, season) => sum + (season.missing_episode_count || 0), 0)} episodes missing</span>}</th>
-      <td className="px-4 py-3 text-xs">{group.arr}</td>
-      <td className="px-4 py-3 text-xs font-bold">{STATUS_LABEL[group.status]}</td>
-      <td className="max-w-56 px-4 py-3 text-xs">{[...new Set(group.seasons.flatMap(season => season.have))].join(', ') || '—'}</td>
-      <td className="max-w-56 px-4 py-3 text-xs">{[...new Set(group.seasons.map(season => season.best_group).filter(Boolean))].join(', ') || '—'}</td>
-      <td className="whitespace-nowrap px-4 py-3 text-xs tabular-nums">{formatBytes(group.seasons.reduce((sum, season) => sum + season.local_size, 0)) || '—'} → {formatBytes(group.seasons.reduce((sum, season) => sum + season.best_size, 0)) || '—'}<span className="mt-1 block text-muted">{delta > 0 ? '+' : ''}{formatBytes(delta) || 'No size change'}</span></td>
-      <td className="px-4 py-3"><button className={ICON_BUTTON} type="button" onClick={handleHide} disabled={hiding} aria-label={(hidden ? 'Show ' : 'Hide ') + group.title}><HideActionIcon hidden={hidden}/></button></td>
-    </tr> : <article
+    <article
       className={cx(
         CARD_BASE,
         CARD_TONE[st],
@@ -504,7 +495,7 @@ export default function Card({ compact = false, active, openRequested, onOpened,
           <div className="anime-art-title line-clamp-2 min-w-0 flex-1 text-[1.0625rem] leading-snug font-bold text-white" title={group.title}>{group.title}</div>
         </div>
       </div>
-      <div className={cx('flex shrink-0 flex-col gap-3 p-4', activeDownloads.length ? 'min-h-[156px]' : 'min-h-[128px]')}>
+      <div className={cx('flex flex-1 flex-col gap-3 p-4', activeDownloads.length ? 'min-h-[156px]' : 'min-h-[128px]')}>
         <div className="min-h-0 flex-1">
           {activeDownloads.length > 0 ? (
             <DownloadsPanel
@@ -521,14 +512,18 @@ export default function Card({ compact = false, active, openRequested, onOpened,
             </div>
           )}
         </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-line pt-3">
-          {delta !== 0 ? <span className={cx('text-xs font-extrabold tabular-nums', 'text-muted')}>{delta > 0 ? '+' : ''}{formatBytes(delta)} <span className="font-medium text-muted-dim">change</span></span> : <span className="text-xs text-muted-dim">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span>}
-          {group.seasons.some(season => (season.missing_episode_count || 0) > 0) && <span className="text-xs text-warn">{group.seasons.reduce((sum, season) => sum + (season.missing_episode_count || 0), 0)} episodes missing</span>}
-          <button className="touch-target ml-auto inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-accent-bright transition-colors hover:bg-accent/10" type="button" onClick={handleOpenDetails}>Details <Icon name="chevron-right" size={15}/></button>
-          <button className={cx(ICON_BUTTON, 'touch-target group/hide size-8 disabled:cursor-wait', hidden && 'border-warn/35 bg-warn/10 text-warn')} type="button" title={hidden ? 'Show this card' : 'Hide this card'} aria-label={(hidden ? 'Show ' : 'Hide ') + group.title} onClick={handleHide} disabled={hiding}><HideActionIcon hidden={hidden}/></button>
+        <div className="flex shrink-0 items-center gap-2 border-t border-line pt-3">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 wrap-anywhere">
+            {delta !== 0 ? <span className={cx('text-xs font-extrabold tabular-nums', 'text-muted')}>{delta > 0 ? '+' : ''}{formatBytes(delta)} <span className="font-medium text-muted-dim">change</span></span> : <span className="text-xs text-muted-dim">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span>}
+            {group.seasons.some(season => (season.missing_episode_count || 0) > 0) && <span className="text-xs text-warn">{group.seasons.reduce((sum, season) => sum + (season.missing_episode_count || 0), 0)} episodes missing</span>}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button className="touch-target inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold text-accent-bright transition-colors hover:bg-accent/10" type="button" onClick={handleOpenDetails}>Details <Icon name="chevron-right" size={15}/></button>
+            <button className={cx(ICON_BUTTON, 'touch-target group/hide size-8 shrink-0 disabled:cursor-wait', hidden && 'border-warn/35 bg-warn/10 text-warn')} type="button" title={hidden ? 'Show this card' : 'Hide this card'} aria-label={(hidden ? 'Show ' : 'Hide ') + group.title} onClick={handleHide} disabled={hiding}><HideActionIcon hidden={hidden}/></button>
+          </div>
         </div>
       </div>
-    </article>}
+    </article>
     {detailsOpen && (
       <Modal open={detailsOpen} labelledBy={titleId} onClose={requestClose} className="bg-transparent p-0">
         <div className={cx('details-backdrop absolute inset-0 bg-black/65', detailsVisible && 'details-backdrop-visible')} />
