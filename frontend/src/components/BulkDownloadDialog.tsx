@@ -95,6 +95,7 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [view, setView] = useState<ViewId>('ready')
   const cancelRef = useRef<HTMLButtonElement>(null)
+  const diskRef = useRef<HTMLElement>(null)
   const [preflight, setPreflight] = useState<{ signature: string; result: DownloadPreflight } | null>(null)
   const [preflightError, setPreflightError] = useState<{ signature: string; message: string } | null>(null)
   const [retry, setRetry] = useState(0)
@@ -176,42 +177,18 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-good/12 text-good"><Icon name="download" size={19}/></span>
           <div className="min-w-0 flex-1">
             <h2 id="bulk-download-title" className="m-0 text-lg font-extrabold">Review bulk downloads</h2>
-            <p className="mt-1 mb-0 text-sm text-muted">{outcome?.inflight ? 'Sending torrents to qBittorrent — titles turn green when added, red when metadata fetching fails…' : outcome ? 'Green titles were added to qBittorrent; red titles failed to fetch metadata and were removed.' : 'Pick the best release for each title; those with several options need a choice before you can download.'}</p>
+            <p className="mt-1 mb-0 text-sm text-muted">{outcome?.inflight ? 'Sending torrents to qBittorrent. Each title shows whether it was added, is pending, or failed.' : outcome ? 'Added titles are marked green; failed titles are marked red. Review any error details before trying again.' : 'Pick the best release for each title; those with several options need a choice before you can download.'}</p>
           </div>
-          <button type="button" className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onClose} disabled={busy} aria-label="Close"><Icon name="close" size={18}/></button>
+          <button type="button" className="grid touch-target size-9 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onClose} disabled={busy} aria-label="Close"><Icon name="close" size={18}/></button>
         </header>
 
-        <div className="app-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+        <div className="app-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto p-5 max-[600px]:p-4">
           <div className="flex flex-wrap gap-2 text-xs font-bold">
             <button type="button" className={cx('cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'ready' ? 'border-good/60 bg-good/25 text-ink' : 'border-good/30 bg-good/10 text-ink hover:bg-good/18')} onClick={() => setView('ready')} aria-pressed={view === 'ready'}>{review.ready.length} ready</button>
             {review.blocked.length > 0 && <button type="button" className={cx('cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'unavailable' ? 'border-warn/60 bg-warn/25 text-ink' : 'border-warn/30 bg-warn/10 text-ink hover:bg-warn/18')} onClick={() => setView('unavailable')} aria-pressed={view === 'unavailable'}>{review.blocked.length} unavailable</button>}
             {review.ready.length > 0 && <div className="ml-auto flex gap-2"><button type="button" className="cursor-pointer rounded-full border border-accent/50 bg-accent/15 px-3 py-1.5 font-extrabold text-accent-bright transition-colors hover:bg-accent/25" onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, true])))}>Check all</button><button type="button" className="cursor-pointer rounded-full border border-line-strong bg-panel px-3 py-1.5 text-ink transition-colors hover:border-ink/25 hover:bg-canvas-soft" onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, false])))}>Uncheck all</button></div>}
           </div>
 
-          {view === 'ready' && review.ready.length > 0 && <>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-              <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">Selections</span><strong className="text-sm text-ink">{selections.length}</strong></div>
-              <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">New torrents</span><strong className="text-sm text-ink">{estimate.new_torrents}</strong></div>
-              <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">New download size</span><strong className="text-sm text-ink" data-testid="bulk-download-size">{checking ? 'Checking…' : sizeText}</strong></div>
-              <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">File scope</span><strong className="text-sm text-ink">{estimate.selected_file_count > 0 ? `${estimate.selected_file_count} files${estimate.whole_torrents ? ` + ${estimate.whole_torrents} whole` : ''}` : `${estimate.whole_torrents} whole torrents`}</strong></div>
-              <div className="rounded-lg border border-line bg-canvas-soft p-3"><span className="block text-[10px] font-bold text-muted uppercase">Already in qBit</span><strong className={cx('text-sm', checkError ? 'text-warn' : 'text-ink')}>{checking || checkError ? 'Unknown' : estimate.existing_torrents}</strong></div>
-            </div>
-            {!outcome && <section className="space-y-2 rounded-xl border border-line bg-canvas-soft p-3 text-xs" aria-label="Download disk space" aria-live="polite">
-              <h3 className="m-0 text-xs font-bold">Disk space</h3>
-              {checking && <p className="m-0 text-muted">Checking qBittorrent download paths and existing torrents…</p>}
-              {checkError && <p className="m-0 text-warn">Check unavailable: {checkError}. Existing torrents and available space could not be verified.</p>}
-              {currentPreflight?.disk_space.map((check, index) => <div key={index} className={cx('break-words', check.sufficient === false ? 'text-bad' : check.sufficient === true ? 'text-muted' : 'text-warn')}>
-                <span className="font-bold">{check.path || 'Download path unavailable'}</span>: {check.free_bytes === null ? 'Free space unavailable' : `${formatBytes(check.free_bytes) || '0 B'} free`} · {formatBytes(check.required_bytes) || '0 B'} needed{check.unknown_torrents ? ' + unverified sizes' : ''}
-                {check.sufficient === false && <span className="block font-bold">Not enough space for these downloads.</span>}
-                {check.reason && <span className="block">{check.reason}</span>}
-              </div>)}
-              {currentPreflight && !estimate.new_torrents && <p className="m-0 text-muted">No new torrents to add. Existing torrents are kept unchanged.</p>}
-              {(estimate.unknown_torrents > 0 || estimate.approximate_torrents > 0) && <p className="m-0 text-warn">Some saved releases lack file sizes. Run a new scan for a more accurate estimate.</p>}
-              <p className="m-0 text-muted">Shared torrents and files are counted once. Existing torrents are skipped. Space is a snapshot; other downloads, torrent overhead, and library imports may need additional room.</p>
-              <button type="button" className="cursor-pointer font-bold text-accent-bright disabled:opacity-50" disabled={checking || busy} onClick={() => setRetry(current => current + 1)}>Refresh check</button>
-              {lowSpace && <label className="flex items-center gap-2 text-warn"><input type="checkbox" checked={acceptSpaceWarning} onChange={event => setAcceptSpaceWarning(event.target.checked)}/>Continue despite the disk space warning</label>}
-            </section>}
-          </>}
           {view === 'ready' && (
             <section>
               <h3 className="mb-3 text-xs font-extrabold tracking-[0.12em] text-good uppercase">Ready to download</h3>
@@ -229,13 +206,13 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
                       const status = groupStatus(group)
                       return (
                         <label key={group.id} className={cx('flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', status === 'success' && 'border-good/50 bg-good/8', status === 'failure' && 'border-bad/50 bg-bad/8', status === 'pending' && 'border-accent/45 bg-accent/8', !status && (enabled[group.id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft text-muted'))}>
-                          <input type="checkbox" className="size-3.5 shrink-0 accent-blue-500" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} />
+                          <input type="checkbox" className="size-3.5 shrink-0 accent-accent" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} />
                           {status === 'success' && <Icon name="check" size={13} className="text-good"/>}
                           {status === 'failure' && <Icon name="alert" size={13} className="text-bad"/>}
                           {status === 'pending' && <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/>}
                           <span className={cx('font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : 'text-ink')}>{group.result.title}</span>
-                          <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-ink">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
-                          {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-[10px] font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
+                          <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-xs font-extrabold text-ink">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
+                          {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                           <span className="ml-auto flex items-center gap-1.5 tabular-nums" title={`${release.releaseGroup} · ${release.tracker}`}>
                             <span className="text-muted" title="Current local size">{formatBytes(localSize) || '—'}</span>
                             <span className="text-muted-dim">→</span>
@@ -256,18 +233,18 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
                     return (
                       <div key={group.id} className={cx('overflow-hidden rounded-lg border transition-colors', status === 'success' ? 'border-good/50 bg-good/8' : status === 'failure' ? 'border-bad/50 bg-bad/8' : status === 'pending' ? 'border-accent/45 bg-accent/8' : isPending ? 'border-warn/55 bg-warn/8' : 'border-line bg-panel')}>
                         <div className="flex items-center gap-2 px-3 py-2">
-                          <input type="checkbox" className="size-3.5 shrink-0 accent-blue-500" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} aria-label="Include this title" />
-                          <button type="button" className="flex min-w-0 flex-1 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 text-left text-xs" onClick={() => setExpanded((current) => ({ ...current, [group.id]: !isExpanded }))} aria-expanded={isExpanded}>
+                          <label className="touch-target grid size-8 shrink-0 cursor-pointer place-items-center rounded-lg hover:bg-panel-raised"><input type="checkbox" className="size-4 accent-accent" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} aria-label={`Include ${group.result.title} · ${seasonLabel(group.result)}${group.part ? ` · ${group.part}` : ''}`} /></label>
+                          <button type="button" className="flex min-h-11 min-w-0 flex-1 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 text-left text-xs" onClick={() => setExpanded((current) => ({ ...current, [group.id]: !isExpanded }))} aria-expanded={isExpanded}>
                             {status === 'success' && <Icon name="check" size={13} className="text-good"/>}
                             {status === 'failure' && <Icon name="alert" size={13} className="text-bad"/>}
                             {status === 'pending' && <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/>}
                             <span className={cx('font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : 'text-ink')}>{group.result.title}</span>
-                            <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-ink">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
-                            {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-[10px] font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
+                            <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-xs font-extrabold text-ink">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
+                            {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                             {chosen ? (
-                              <span className="inline-flex items-center gap-1 rounded-full border border-good/40 bg-good/10 px-2 py-0.5 text-[10px] font-extrabold text-good"><Icon name="check" size={12}/>Selected</span>
+                              <span className="inline-flex items-center gap-1 rounded-full border border-good/40 bg-good/10 px-2 py-0.5 text-xs font-extrabold text-good"><Icon name="check" size={12}/>Selected</span>
                             ) : (
-                              <span className={cx('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-extrabold', enabled[group.id] !== false ? 'border-warn/45 bg-warn/15 text-warn' : 'border-line-strong bg-canvas-soft text-muted')}><Icon name="alert" size={12}/>Choose 1 of {group.options.length}</span>
+                              <span className={cx('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-extrabold', enabled[group.id] !== false ? 'border-warn/45 bg-warn/15 text-warn' : 'border-line-strong bg-canvas-soft text-muted')}><Icon name="alert" size={12}/>Choose 1 of {group.options.length}</span>
                             )}
                             <span className="ml-auto flex items-center gap-1.5">
                               {chosenOption && (
@@ -287,10 +264,10 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
                                 const checked = chosenIndex === index
                                 return (
                                   <label key={index} className={cx('flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 transition-colors', checked ? 'border-accent bg-accent/10' : 'border-line bg-panel hover:border-line-strong')}>
-                                    <input type="radio" name={group.id} className="mt-0.5 accent-blue-500" checked={checked} onChange={() => setSelected((current) => ({ ...current, [group.id]: index }))} />
+                                    <input type="radio" name={group.id} className="mt-0.5 accent-accent" checked={checked} onChange={() => setSelected((current) => ({ ...current, [group.id]: index }))} />
                                     <span className="min-w-0 flex-1">
-                                      <span className="block truncate text-sm font-bold text-ink" title={release.releaseGroup}>{release.releaseGroup}</span>
-                                      <span className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted"><span>{release.tracker}</span><span className="font-bold text-ink">{formatBytes(release.size) || 'Unknown size'}</span></span>
+                                      <span className="block text-sm font-bold wrap-anywhere text-ink" title={release.releaseGroup}>{release.releaseGroup}</span>
+                                      <span className="mt-1 flex flex-wrap gap-x-2 text-xs text-muted"><span>{release.tracker}</span><span className="font-bold text-ink">{formatBytes(release.size) || 'Unknown size'}</span></span>
                                     </span>
                                   </label>
                                 )
@@ -307,6 +284,30 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
             </section>
           )}
 
+          {view === 'ready' && review.ready.length > 0 && <>
+            <dl className="m-0 grid grid-cols-2 gap-x-4 gap-y-2 border-y border-line py-3 sm:grid-cols-5">
+              <div><dt className="text-xs text-muted">Selections</dt><dd className="m-0 text-sm font-bold tabular-nums">{selections.length}</dd></div>
+              <div><dt className="text-xs text-muted">New torrents</dt><dd className="m-0 text-sm font-bold tabular-nums">{estimate.new_torrents}</dd></div>
+              <div><dt className="text-xs text-muted">New download size</dt><dd className="m-0 text-sm font-bold tabular-nums" data-testid="bulk-download-size">{checking ? 'Checking…' : sizeText}</dd></div>
+              <div><dt className="text-xs text-muted">File scope</dt><dd className="m-0 text-sm font-bold tabular-nums">{estimate.selected_file_count > 0 ? `${estimate.selected_file_count} file${estimate.selected_file_count === 1 ? '' : 's'}${estimate.whole_torrents ? ` + ${estimate.whole_torrents} whole` : ''}` : `${estimate.whole_torrents} whole torrent${estimate.whole_torrents === 1 ? '' : 's'}`}</dd></div>
+              <div className="col-span-2 flex items-baseline gap-2 sm:col-span-1 sm:block"><dt className="text-xs text-muted">Already in qBittorrent</dt><dd className={cx('m-0 text-sm font-bold tabular-nums', checkError ? 'text-warn' : 'text-ink')}>{checking || checkError ? 'Unknown' : estimate.existing_torrents}</dd></div>
+            </dl>
+            {!outcome && <section ref={diskRef} className="space-y-2 rounded-xl border border-line bg-canvas-soft p-3 text-xs" aria-label="Download disk space" aria-live="polite">
+              <h3 className="m-0 text-xs font-bold">Disk space</h3>
+              {checking && <p className="m-0 text-muted">Checking qBittorrent download paths and existing torrents…</p>}
+              {checkError && <p className="m-0 text-warn">Check unavailable: {checkError}. Existing torrents and available space could not be verified.</p>}
+              {currentPreflight?.disk_space.map((check, index) => <div key={index} className={cx('break-words', check.sufficient === false ? 'text-bad' : check.sufficient === true ? 'text-muted' : 'text-warn')}>
+                <span className="font-bold">{check.path || 'Download path unavailable'}</span>: {check.free_bytes === null ? 'Free space unavailable' : `${formatBytes(check.free_bytes) || '0 B'} free`} · {formatBytes(check.required_bytes) || '0 B'} needed{check.unknown_torrents ? ' + unverified sizes' : ''}
+                {check.sufficient === false && <span className="block font-bold">Not enough space for these downloads.</span>}
+                {check.reason && <span className="block">{check.reason}</span>}
+              </div>)}
+              {currentPreflight && !estimate.new_torrents && <p className="m-0 text-muted">No new torrents to add. Existing torrents are kept unchanged.</p>}
+              {(estimate.unknown_torrents > 0 || estimate.approximate_torrents > 0) && <p className="m-0 text-warn">Some saved releases lack file sizes. Run a new scan for a more accurate estimate.</p>}
+              <details className="text-muted"><summary className="min-h-6 cursor-pointer font-bold text-ink">Estimate details and limitations</summary><p className="mt-2 mb-0 leading-relaxed">Shared torrents and files are counted once. Existing torrents are skipped. Space is a snapshot; other downloads, torrent overhead, and library imports may need additional room.</p></details>
+              <button type="button" className="touch-target cursor-pointer rounded-lg px-2 py-1 font-bold text-accent-bright hover:bg-accent/10 disabled:opacity-50" disabled={checking || busy} onClick={() => setRetry(current => current + 1)}>Refresh check</button>
+              {lowSpace && <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-warn/30 bg-warn/8 p-3 text-warn"><input type="checkbox" checked={acceptSpaceWarning} onChange={event => setAcceptSpaceWarning(event.target.checked)}/>Continue despite the disk space warning</label>}
+            </section>}
+          </>}
           {view === 'unavailable' && (
             <section>
               <h3 className="mb-3 text-xs font-extrabold tracking-[0.12em] text-warn uppercase">Unavailable from private indexers</h3>
@@ -316,8 +317,8 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
                   return (
                     <div key={group.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warn/25 bg-warn/6 px-3 py-2 text-xs">
                       <span className="font-semibold text-ink">{group.result.title}</span>
-                      <span className="rounded border border-warn/25 px-1.5 py-0.5 text-[10px] font-extrabold text-warn">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
-                      {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-[10px] font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
+                      <span className="rounded border border-warn/25 px-1.5 py-0.5 text-xs font-extrabold text-warn">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
+                      {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                       <span className="ml-auto min-w-0 truncate text-muted" title={group.options.map(({ release }) => release.releaseGroup).join(' · ')}>{group.options.length ? `Private: ${group.options.map(({ release }) => release.releaseGroup).join(' · ')}` : 'No public magnet available'}</span>
                     </div>
                   )
@@ -330,6 +331,7 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
         <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-panel px-5 py-4">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
             {pendingChoices > 0 && <span className="inline-flex items-center gap-1 font-bold text-warn"><Icon name="alert" size={13}/>Choose a release for {pendingChoices} title{pendingChoices === 1 ? '' : 's'} first</span>}
+            {!outcome && lowSpace && !acceptSpaceWarning && <button type="button" className="touch-target cursor-pointer rounded-lg px-2 py-1 font-bold text-warn underline hover:bg-warn/10" onClick={() => diskRef.current?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.focus()}>Review disk space warning</button>}
           </span>
           <div className="flex gap-2">
             {outcome?.inflight ? (

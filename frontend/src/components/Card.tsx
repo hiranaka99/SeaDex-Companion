@@ -89,7 +89,7 @@ const NOTES_SURFACE: Record<string, string> = {
 }
 const ICON_BUTTON =
   'grid size-9 cursor-pointer place-items-center rounded-control border border-line bg-panel-raised text-ink transition-all duration-150 hover:-translate-y-px hover:border-line-strong hover:text-ink'
-const BADGE_BASE = 'inline-block rounded-[7px] border px-[9px] py-1 text-[12.5px] font-semibold'
+const BADGE_BASE = 'inline-block rounded-[7px] border px-[9px] py-1 text-xs font-semibold'
 const BADGE = `${BADGE_BASE} border-line bg-panel-raised text-ink`
 const SIZE_BASE = 'shrink-0 whitespace-nowrap rounded-md border px-2 py-[3px] text-xs font-bold tabular-nums'
 const SIZE = `${SIZE_BASE} border-line bg-panel-raised text-ink`
@@ -475,35 +475,37 @@ export default function Card({ compact = false, active, openRequested, onOpened,
     >
       <div
         className={cx(
-          "relative aspect-[16/8] min-h-[145px] border-b border-line bg-panel-raised bg-cover bg-[center_20%] after:absolute after:inset-0 after:bg-[linear-gradient(180deg,rgba(11,14,20,.08)_20%,rgba(11,14,20,.88)_100%)] after:content-['']",
+          "relative flex min-h-44 flex-col border-b border-line bg-panel-raised after:absolute after:inset-0 after:bg-[linear-gradient(180deg,rgba(11,14,20,.08)_20%,rgba(11,14,20,.88)_100%)] after:content-['']",
           st === 'missing' && 'grayscale',
           hidden && 'grayscale-70',
         )}
-        style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}
       >
+        {group.banner && <img src={group.banner} alt="" loading={index < 4 ? 'eager' : 'lazy'} decoding="async" className="absolute inset-0 h-full w-full object-cover object-[center_20%]" onError={event => { event.currentTarget.style.display = 'none' }}/>}
+        <div className="relative z-2 flex shrink-0 flex-wrap items-start justify-between gap-2 p-3">
         {group.arr_url ? (
           <a
-            className={cx('group/source absolute top-3 left-3 z-2 inline-flex cursor-pointer items-center gap-1 rounded-full border px-2.5 py-[5px] text-[11.5px] font-extrabold tracking-[0.5px] no-underline backdrop-blur-[6px] transition-[transform,filter] duration-150 hover:-translate-y-px hover:brightness-118 hover:no-underline', SOURCE_TONE[srcClass])}
+            className={cx('group/source touch-target inline-flex max-w-full cursor-pointer items-center justify-center gap-1 rounded-full border px-2.5 py-[5px] text-xs font-semibold tracking-[0.5px] no-underline backdrop-blur-[6px] transition-[transform,filter] duration-150 hover:-translate-y-px hover:brightness-118 hover:no-underline', SOURCE_TONE[srcClass])}
             href={group.arr_url}
             target="_blank"
             rel="noopener"
             title={'Open in ' + group.arr}
           >
-            {group.arr} <span className="text-[11px] transition-transform duration-150 group-hover/source:translate-x-0.5 group-hover/source:-translate-y-0.5">↗</span>
+            {group.arr} <span className="text-xs transition-transform duration-150 group-hover/source:translate-x-0.5 group-hover/source:-translate-y-0.5">↗</span>
           </a>
         ) : (
-          <span className={cx('absolute top-3 left-3 z-2 rounded-full border px-2.5 py-[5px] text-[11.5px] font-extrabold tracking-[0.5px] backdrop-blur-[6px]', SOURCE_TONE[srcClass])}>{group.arr}</span>
+          <span className={cx('max-w-full rounded-full border px-2.5 py-[5px] text-xs font-semibold tracking-[0.5px] backdrop-blur-[6px]', SOURCE_TONE[srcClass])}>{group.arr}</span>
         )}
-        <span className={cx('absolute top-3 right-3 z-2 rounded-full border px-2.5 py-[5px] text-[11px] font-extrabold backdrop-blur-md', STATUS_BADGE[st])}>{STATUS_LABEL[group.status]}</span>
-        <div className="absolute inset-x-4 bottom-3 z-2 flex items-end gap-3">
+        <span className={cx('max-w-full rounded-full border px-2.5 py-[5px] text-xs font-semibold backdrop-blur-md wrap-anywhere', STATUS_BADGE[st])}>{STATUS_LABEL[group.status]}</span>
+        </div>
+        <div className="relative z-2 mt-auto flex shrink-0 items-end gap-3 px-4 pt-4 pb-3">
           {group.image && (
             <img className={cx('h-[74px] w-[52px] shrink-0 rounded-lg border border-white/15 object-cover shadow-lg', hidden && 'grayscale')} src={group.image} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = 'none' }} />
           )}
-          <div className="anime-art-title line-clamp-2 min-w-0 flex-1 text-[17px] leading-snug font-extrabold text-white" title={group.title}>{group.title}</div>
+          <div className="anime-art-title line-clamp-2 min-w-0 flex-1 text-[1.0625rem] leading-snug font-bold text-white" title={group.title}>{group.title}</div>
         </div>
       </div>
-      <div className="flex h-[156px] shrink-0 flex-col gap-3 p-4">
-        <div className="min-h-0 flex-1 overflow-hidden">
+      <div className={cx('flex shrink-0 flex-col gap-3 p-4', activeDownloads.length ? 'min-h-[156px]' : 'min-h-[128px]')}>
+        <div className="min-h-0 flex-1">
           {activeDownloads.length > 0 ? (
             <DownloadsPanel
               downloads={activeDownloads}
@@ -514,16 +516,16 @@ export default function Card({ compact = false, active, openRequested, onOpened,
             />
           ) : (
             <div className="flex flex-wrap gap-1.5" aria-label={`${seasonCount} seasons`}>
-              {group.seasons.slice(0, 6).map((season) => <SeasonBadge key={season.key} season={season} fallback={st} className="rounded-md border px-2 py-1 text-[10px] font-extrabold"/>)}
-              {seasonCount > 6 && <span className="rounded-md border border-line px-2 py-1 text-[10px] font-bold text-muted">+{seasonCount - 6}</span>}
+              {group.seasons.slice(0, 6).map((season) => <SeasonBadge key={season.key} season={season} fallback={st} className="rounded-md border px-2 py-1 text-xs font-extrabold"/>)}
+              {seasonCount > 6 && <span className="rounded-md border border-line px-2 py-1 text-xs font-bold text-muted">+{seasonCount - 6}</span>}
             </div>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-2 border-t border-line pt-3">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-line pt-3">
           {delta !== 0 ? <span className={cx('text-xs font-extrabold tabular-nums', 'text-muted')}>{delta > 0 ? '+' : ''}{formatBytes(delta)} <span className="font-medium text-muted-dim">change</span></span> : <span className="text-xs text-muted-dim">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span>}
           {group.seasons.some(season => (season.missing_episode_count || 0) > 0) && <span className="text-xs text-warn">{group.seasons.reduce((sum, season) => sum + (season.missing_episode_count || 0), 0)} episodes missing</span>}
-          <button className="ml-auto inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold text-accent-bright transition-colors hover:bg-accent/10" type="button" onClick={handleOpenDetails}>Details <Icon name="chevron-right" size={15}/></button>
-          <button className={cx(ICON_BUTTON, 'group/hide size-8 disabled:cursor-wait', hidden && 'border-warn/35 bg-warn/10 text-warn')} type="button" title={hidden ? 'Show this card' : 'Hide this card'} aria-label={(hidden ? 'Show ' : 'Hide ') + group.title} onClick={handleHide} disabled={hiding}><HideActionIcon hidden={hidden}/></button>
+          <button className="touch-target ml-auto inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-accent-bright transition-colors hover:bg-accent/10" type="button" onClick={handleOpenDetails}>Details <Icon name="chevron-right" size={15}/></button>
+          <button className={cx(ICON_BUTTON, 'touch-target group/hide size-8 disabled:cursor-wait', hidden && 'border-warn/35 bg-warn/10 text-warn')} type="button" title={hidden ? 'Show this card' : 'Hide this card'} aria-label={(hidden ? 'Show ' : 'Hide ') + group.title} onClick={handleHide} disabled={hiding}><HideActionIcon hidden={hidden}/></button>
         </div>
       </div>
     </article>}
@@ -532,9 +534,9 @@ export default function Card({ compact = false, active, openRequested, onOpened,
         <div className={cx('details-backdrop absolute inset-0 bg-black/65', detailsVisible && 'details-backdrop-visible')} />
         <div className={cx('absolute inset-0 flex items-center justify-center p-4 transition-opacity duration-200 ease-out', detailsVisible ? 'opacity-100' : 'opacity-0')} onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
           <aside className={cx('app-scrollbar max-h-full w-full max-w-[864px] overflow-y-auto rounded-2xl border border-line-strong bg-canvas shadow-[0_24px_60px_rgba(0,0,0,.45)]', PANEL_GLOW_COLOR[st], downloading && 'details-download-border')}>
-          <div className="relative h-[230px] overflow-hidden border-b border-line bg-panel bg-cover bg-center" style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}><div className="absolute inset-0 bg-linear-to-t from-canvas via-canvas/55 to-black/15"/><button ref={closeRef} type="button" className="absolute top-4 right-4 z-2 grid size-10 cursor-pointer place-items-center rounded-xl border border-white/15 bg-black/40 text-white backdrop-blur-md hover:bg-black/60" onClick={() => requestClose()} aria-label="Close details"><Icon name="close"/></button><div className="absolute inset-x-5 bottom-5 z-1 flex items-end gap-4">{group.image && <img src={group.image} alt="" className="h-28 w-20 rounded-lg border border-white/15 object-cover shadow-xl"/>}<div className="min-w-0"><span className={cx('mb-2 inline-block rounded-full border px-2.5 py-1 text-[11px] font-extrabold', STATUS_BADGE[st])}>{STATUS_LABEL[group.status]}</span><h2 id={titleId} className="anime-art-title m-0 text-3xl leading-tight font-extrabold text-white">{group.title}</h2></div></div></div>
+          <div className="relative min-h-[230px] overflow-hidden border-b border-line bg-panel bg-cover bg-center" style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}><div className="absolute inset-0 bg-linear-to-t from-canvas via-canvas/55 to-black/15"/><button ref={closeRef} type="button" className="absolute top-4 right-4 z-2 grid touch-target size-10 cursor-pointer place-items-center rounded-xl border border-white/15 bg-black/40 text-white backdrop-blur-md hover:bg-black/60" onClick={() => requestClose()} aria-label="Close details"><Icon name="close"/></button><div className="relative z-1 flex items-end gap-4 px-5 pt-24 pb-5">{group.image && <img src={group.image} alt="" className="h-28 w-20 rounded-lg border border-white/15 object-cover shadow-xl"/>}<div className="min-w-0"><span className={cx('mb-2 inline-block rounded-full border px-2.5 py-1 text-xs font-extrabold', STATUS_BADGE[st])}>{STATUS_LABEL[group.status]}</span><h2 id={titleId} className="anime-art-title m-0 text-3xl leading-tight font-extrabold text-white wrap-anywhere max-[600px]:text-2xl">{group.title}</h2></div></div></div>
           <div className="space-y-4 p-5 max-[600px]:p-4">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">{group.arr_url && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{typeof group.anilist_id === 'number' && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList ↗</a>}<button type="button" className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50" onClick={() => setMappingOpen(true)} disabled={!group.seasons[0]?.library_key} title={!group.seasons[0]?.library_key ? 'Run a new scan to enable manual matching' : undefined}><Icon name="refresh" size={14}/>{group.seasons.some((season) => season.mapping_override) ? 'Change manual match' : 'Correct match'}</button>{group.seasons.some((season) => season.mapping_override) && <span className="rounded-full border border-purple/35 bg-purple/10 px-2 py-1 text-[10px] font-extrabold text-ink">Manual match</span>}<span className="ml-auto">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span></div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">{group.arr_url && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{typeof group.anilist_id === 'number' && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList ↗</a>}<button type="button" className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50" onClick={() => setMappingOpen(true)} disabled={!group.seasons[0]?.library_key} title={!group.seasons[0]?.library_key ? 'Run a new scan to enable manual matching' : undefined}><Icon name="refresh" size={14}/>{group.seasons.some((season) => season.mapping_override) ? 'Change manual match' : 'Correct match'}</button>{group.seasons.some((season) => season.mapping_override) && <span className="rounded-full border border-purple/35 bg-purple/10 px-2 py-1 text-xs font-extrabold text-ink">Manual match</span>}<span className="ml-auto">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span></div>
             {group.seasons.map((season) => <Season
               key={season.key}
               r={season}
@@ -564,7 +566,7 @@ export default function Card({ compact = false, active, openRequested, onOpened,
       onClose={() => { setRemoveTarget(null); setDeleteFiles(false) }}
     >
       <label className="mb-5 flex cursor-pointer items-center gap-3 rounded-xl border border-bad/25 bg-bad/7 p-3 text-sm text-ink">
-        <input type="checkbox" className="size-4 accent-red-500" checked={deleteFiles} onChange={(event) => setDeleteFiles(event.target.checked)} />
+        <input type="checkbox" className="size-4 accent-bad" checked={deleteFiles} onChange={(event) => setDeleteFiles(event.target.checked)} />
         <span><span className="block font-bold text-bad">Also delete downloaded files</span><span className="mt-0.5 block text-xs text-muted">This cannot be undone.</span></span>
       </label>
     </ConfirmDialog>
@@ -671,17 +673,17 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
             {gi > 0 && <div className="my-1 h-px bg-line-strong" role="separator" />}
             {group.part && (
               <div className="flex flex-wrap items-center gap-2 py-0.5">
-                <span className="rounded-full border border-line bg-panel-raised px-2.5 py-[3px] text-[11px] font-extrabold tracking-[0.8px] text-ink uppercase">{group.part}</span>
+                <span className="rounded-full border border-line bg-panel-raised px-2.5 py-[3px] text-xs font-extrabold tracking-[0.8px] text-ink uppercase">{group.part}</span>
                 <button
                   type="button"
-                  className={cx('inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-[3px] text-[10px] font-bold transition-colors', r.excluded || r.excluded_parts?.includes(group.part) ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line bg-panel-raised text-ink hover:text-ink')}
+                  className={cx('touch-target inline-flex cursor-pointer items-center justify-center gap-1 rounded-full border px-2 py-[3px] text-xs font-bold transition-colors', r.excluded || r.excluded_parts?.includes(group.part) ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line bg-panel-raised text-ink hover:text-ink')}
                   title={r.excluded ? 'Restore the season before changing individual cours' : r.excluded_parts?.includes(group.part) ? `Include ${group.part} in bulk downloads and notifications` : `Ignore ${group.part} in bulk downloads and notifications`}
                   disabled={!r.library_key || Boolean(r.excluded) || Boolean(ruleBusy)}
                   onClick={() => onToggleExclusion(group.part, !r.excluded_parts?.includes(group.part))}
                 ><Icon name="ban" size={12}/>{r.excluded || r.excluded_parts?.includes(group.part) ? 'Ignored' : 'Ignore'}</button>
-                {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).length > 0 && <span className="text-[10px] font-bold tracking-[0.08em] text-muted-dim uppercase">Have</span>}
-                {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).map((releaseGroup) => <span key={releaseGroup} className={cx(BADGE, 'py-[3px] text-[11px]')} title={`Owned in ${group.part}`}>{releaseGroup}</span>)}
-                {r.precise_part_ownership && !(r.have_by_part?.[group.part] || []).length && <span className="text-[11px] text-muted-dim">No matching files owned</span>}
+                {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).length > 0 && <span className="text-xs font-bold tracking-[0.08em] text-muted-dim uppercase">Have</span>}
+                {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).map((releaseGroup) => <span key={releaseGroup} className={cx(BADGE, 'py-[3px] text-xs')} title={`Owned in ${group.part}`}>{releaseGroup}</span>)}
+                {r.precise_part_ownership && !(r.have_by_part?.[group.part] || []).length && <span className="text-xs text-muted-dim">No matching files owned</span>}
                 {((r.local_size_by_part?.[group.part] || 0) > 0 || (r.urls || []).some((source) => source.label === group.part)) && (
                   <div className="ml-auto flex items-center gap-2">
                     {(r.local_size_by_part?.[group.part] || 0) > 0 && (
@@ -753,21 +755,21 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
                   <div key={`${rel.part || ''}-${rel.releaseGroup}`} className="flex flex-col gap-1.5">
                     <div
                       className={cx(
-                        'flex items-center gap-2 rounded-lg border px-[9px] py-[7px]',
+                        'release-row flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2',
                         inClient ? 'border-accent' : isBest ? 'border-good/35' : 'border-bad/28',
                         releaseSurface(tone, isBest),
                         inClient && 'shadow-[0_0_0_1px_rgba(79,140,255,0.15),0_4px_14px_rgba(79,140,255,0.12)]',
                       )}
                     >
-                      <span className={cx('w-[34px] shrink-0 text-[10px] font-extrabold tracking-[0.8px] uppercase', isBest ? 'text-good' : 'text-bad')} title={rel.part || undefined}>
+                      <span className={cx('w-[2.125rem] shrink-0 text-xs font-bold tracking-[0.8px] uppercase', isBest ? 'text-good' : 'text-bad')} title={rel.part || undefined}>
                         {isBest ? 'Best' : 'Alt'}
                       </span>
-                      <div className="flex min-w-0 flex-1 flex-row items-center gap-1.5">
-                        <span className={cx(BADGE_BASE, 'w-fit max-w-full shrink-0 overflow-hidden text-ellipsis whitespace-nowrap font-extrabold text-ink', isBest ? 'border-good/40 bg-good/14' : 'border-bad/40 bg-bad/12')} title={rel.releaseGroup}>
+                      <div className="release-identity flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+                        <span className="max-w-full whitespace-normal text-sm font-semibold text-ink wrap-anywhere" title={rel.releaseGroup}>
                           {rel.releaseGroup}
                         </span>
                         {tags.length > 0 && (
-                          <div className="flex min-w-0 flex-1 flex-col items-start gap-1.5">
+                          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                             {tags.map((t) => (
                               <span key={t} className={tagClass(t)}>
                                 {t}
@@ -776,17 +778,17 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
                           </div>
                         )}
                       </div>
-                      <span className={cx(SIZE_BASE, 'text-ink', isBest ? 'border-good/35 bg-good/10' : 'border-line bg-panel-raised')} title="Size of this release">
+                      <span className={cx(SIZE_BASE, 'release-size text-ink', isBest ? 'border-good/35 bg-good/10' : 'border-line bg-panel-raised')} title="Size of this release">
                         {formatBytes(rel.size)}
                       </span>
                       {delta && (
-                        <span className="whitespace-nowrap text-[11.5px] font-semibold text-muted-dim" title="Difference: release size minus your local size">
+                        <span className="whitespace-nowrap text-xs font-semibold text-muted-dim" title="Difference: release size minus your local size">
                           {delta}
                         </span>
                       )}
                       <button
                         className={cx(
-                          'group/dl ml-auto grid size-8 shrink-0 cursor-pointer place-items-center rounded-control border text-sm font-extrabold transition-all duration-150 hover:-translate-y-px',
+                          'touch-target group/dl ml-auto grid size-8 shrink-0 cursor-pointer place-items-center rounded-control border text-sm font-extrabold transition-all duration-150 hover:-translate-y-px',
                           owned || complete
                             ? 'cursor-default border-good/50 bg-good/18 text-good hover:border-good hover:bg-good/22'
                             : disabled
@@ -795,6 +797,7 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
                         )}
                         disabled={disabled}
                         title={btnTitle}
+                        aria-label={`${btnTitle} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`}
                         onClick={() => !disabled && onDownload(index)}
                       >
                         {owned || complete ? (
@@ -875,8 +878,8 @@ function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResu
     <div className={cx('flex flex-col gap-[9px] rounded-control border p-3', r.excluded ? 'border-warn/45' : 'border-line', SEASON_TONE[tone])}>
       <div className="flex flex-wrap items-center gap-2">
         <SeasonBadge season={r} fallback={tone} className="min-w-[46px] rounded-full border px-[9px] py-[3px] text-center text-xs font-extrabold tracking-[0.5px]"/>
-        <button type="button" className={cx('inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-[3px] text-[10px] font-bold transition-colors', r.excluded ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line bg-panel-raised text-ink hover:text-ink')} title={r.excluded ? `Include ${seasonLabel(r)} in bulk downloads and notifications` : `Ignore ${seasonLabel(r)} in bulk downloads and notifications`} disabled={!r.library_key || Boolean(ruleBusy)} onClick={() => onToggleExclusion('', !r.excluded)}><Icon name="ban" size={12}/>{r.excluded ? 'Ignored' : 'Ignore'}</button>
-        {displaySeasonHave && <span className="text-[10px] font-bold tracking-[0.08em] text-muted-dim uppercase">Have</span>}
+        <button type="button" className={cx('inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-[3px] text-xs font-bold transition-colors', r.excluded ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line bg-panel-raised text-ink hover:text-ink')} title={r.excluded ? `Include ${seasonLabel(r)} in bulk downloads and notifications` : `Ignore ${seasonLabel(r)} in bulk downloads and notifications`} disabled={!r.library_key || Boolean(ruleBusy)} onClick={() => onToggleExclusion('', !r.excluded)}><Icon name="ban" size={12}/>{r.excluded ? 'Ignored' : 'Ignore'}</button>
+        {displaySeasonHave && <span className="text-xs font-bold tracking-[0.08em] text-muted-dim uppercase">Have</span>}
         <div className="flex flex-1 flex-wrap gap-[5px]" title="Release groups you already have">
           {have}
         </div>

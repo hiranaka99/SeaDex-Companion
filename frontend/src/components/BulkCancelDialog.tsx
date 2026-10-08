@@ -56,13 +56,13 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
   return (
     <Modal open={open} labelledBy="bulk-cancel-title" busy={busy} onClose={onClose}>
       <section className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" aria-busy={busy || loading}>
-        <header className="flex items-start gap-3 border-b border-line px-5 py-4">
+        <header className="flex flex-wrap items-start gap-x-3 gap-y-2 border-b border-line px-5 py-4">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-bad/12 text-bad"><Icon name="trash" size={19}/></span>
           <div className="min-w-0 flex-1">
             <h2 id="bulk-cancel-title" className="m-0 text-lg font-extrabold">Cancel bulk downloads</h2>
-            <p className="mt-1 mb-0 text-sm text-muted">Remove the incomplete torrents that SeaDex Companion added to qBittorrent. By default the downloaded files are kept, and torrents you added manually are left untouched.</p>
           </div>
-          <button type="button" className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onClose} disabled={busy} aria-label="Close"><Icon name="close" size={18}/></button>
+          <button type="button" className="grid touch-target size-9 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onClose} disabled={busy} aria-label="Close"><Icon name="close" size={18}/></button>
+          <p className="m-0 basis-full text-sm text-muted">Remove incomplete torrents added by SeaDex Companion. Files are kept unless you choose to delete them; manually added torrents are untouched.</p>
         </header>
 
         <div className="app-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
@@ -73,20 +73,20 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
           ) : downloads.length > 0 ? (
             <>
               <div className="flex flex-wrap gap-2 text-xs font-bold">
-                <button type="button" className={cx('cursor-pointer rounded-full border px-3 py-1.5 transition-colors', allChecked ? 'border-line-strong bg-panel text-ink hover:bg-canvas-soft hover:border-ink/25' : 'border-bad/50 bg-bad/15 font-extrabold text-bad hover:bg-bad/25')} disabled={busy} title={allChecked ? 'Uncheck every active download' : 'Check every active download'} onClick={() => setEnabled(Object.fromEntries(downloads.map((item) => [`${item.key}\0${item.release}`, !allChecked])))}>{allChecked ? 'Uncheck all' : 'Check all'}</button>
+                <button type="button" className={cx('touch-target cursor-pointer rounded-full border px-3 py-1.5 transition-colors', allChecked ? 'border-line-strong bg-panel text-ink hover:bg-canvas-soft hover:border-ink/25' : 'border-bad/50 bg-bad/15 font-extrabold text-bad hover:bg-bad/25')} disabled={busy} title={allChecked ? 'Uncheck every active download' : 'Check every active download'} onClick={() => setEnabled(Object.fromEntries(downloads.map((item) => [`${item.key}\0${item.release}`, !allChecked])))}>{allChecked ? 'Uncheck all' : 'Check all'}</button>
               </div>
               <div className="space-y-1.5">
                 {downloads.map((item) => {
                   const id = `${item.key}\0${item.release}`
                   return (
                     <label key={id} className={cx('flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', enabled[id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft text-muted')}>
-                      <input type="checkbox" disabled={busy} className="size-3.5 shrink-0 accent-red-500" checked={enabled[id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [id]: event.target.checked }))} />
-                      <span className="font-semibold text-ink">{item.title}</span>
-                      <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-[10px] font-extrabold text-ink">{item.season == null ? 'Movie' : `S${String(item.season).padStart(2, '0')}`}{item.part ? ` · ${item.part}` : ''}</span>
-                      <span className="ml-auto flex items-center gap-1.5 tabular-nums" title={`${item.release_group} · ${item.tracker}`}>
-                        <span className="text-muted" title="Release group">{item.release_group}</span>
-                        <span className="font-bold text-ink">{formatBytes(item.size) || 'Unknown'}</span>
-                        {item.hashes.length > 1 && <span className="rounded border border-line px-1.5 py-0.5 text-[10px] font-bold text-muted">{item.hashes.length} torrents</span>}
+                      <input type="checkbox" disabled={busy} className="size-3.5 shrink-0 accent-bad" checked={enabled[id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [id]: event.target.checked }))} />
+                      <span className="min-w-0 flex-1 font-semibold text-ink wrap-anywhere">{item.title}</span>
+                      <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-xs font-extrabold text-ink">{item.season == null ? 'Movie' : `S${String(item.season).padStart(2, '0')}`}{item.part ? ` · ${item.part}` : ''}</span>
+                      <span className="flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1 tabular-nums" title={`${item.release_group} · ${item.tracker}`}>
+                        <span className="min-w-0 basis-full text-muted wrap-anywhere" title="Release group">{item.release_group}</span>
+                        <span className="font-semibold text-ink">{formatBytes(item.size) || 'Unknown'}</span>
+                        {item.hashes.length > 1 && <span className="rounded border border-line px-1.5 py-0.5 text-xs font-bold text-muted">{item.hashes.length} torrents</span>}
                       </span>
                     </label>
                   )
@@ -99,7 +99,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
 
           {downloads.length > 0 && (
             <label className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-bad/35 bg-bad/6 px-3.5 py-3 text-xs transition-colors hover:border-bad/55">
-              <input type="checkbox" className="size-4 shrink-0 accent-red-500" checked={deleteFiles} onChange={(event) => setDeleteFiles(event.target.checked)} disabled={busy} />
+              <input type="checkbox" className="size-4 shrink-0 accent-bad" checked={deleteFiles} onChange={(event) => setDeleteFiles(event.target.checked)} disabled={busy} />
               <span className="min-w-0">
                 <span className={cx('block font-extrabold', deleteFiles ? 'text-bad' : 'text-ink')}>Also delete the downloaded files</span>
                 <span className="mt-0.5 block text-muted">The partially downloaded files of the selected torrents will be removed from disk. This cannot be undone.</span>
