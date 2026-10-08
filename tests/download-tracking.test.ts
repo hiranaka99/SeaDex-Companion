@@ -83,11 +83,7 @@ after(async () => {
   if (dir) rmSync(dir, { recursive: true, force: true })
 })
 
-test('downloads and cancellation include orphaned and legacy app-owned torrents', async () => {
-  const downloads = await (await request('/api/downloads')).json()
-  assert.equal(downloads.downloads.length, 3)
-  assert.equal(downloads.downloads.find((item: { hash: string }) => item.hash === hashes[0]).title, 'Original anime')
-  assert.equal(downloads.downloads.find((item: { hash: string }) => item.hash === hashes[1]).title, 'Torrent 1')
+test('cancellation includes orphaned and legacy app-owned torrents', async () => {
   const cancelable = await (await request('/api/download_bulk/cancelable')).json()
   assert.equal(cancelable.downloads.length, 2)
   assert.deepEqual(cancelable.downloads.map((item: { key: string }) => item.key).sort(), hashes.slice(0, 2).map(hash => `torrent:${hash}`))
@@ -114,14 +110,6 @@ test('qBittorrent passwords preserve intentional leading and trailing spaces whe
     assert.equal((await request('/api/config/test', { service: 'qbittorrent', config: {} })).status, 200)
     assert.equal(loginPasswords.at(-1), password)
   } finally { await request('/api/config', { qbittorrent_pass: 'test' }) }
-})
-
-test('tracked controls reject manually added torrents and pause by stable hash', async () => {
-  const count = actions.length
-  assert.equal((await request('/api/downloads/control', { hash: hashes[3], action: 'remove', delete_files: true })).status, 404)
-  assert.equal(actions.length, count)
-  assert.equal((await request('/api/downloads/control', { hash: hashes[1], action: 'pause' })).status, 200)
-  assert.equal(actions.at(-1)!.body.get('hashes'), hashes[1])
 })
 
 test('changed release identities are rejected before any qBittorrent action', async () => {
@@ -208,7 +196,6 @@ test('bulk adding a partially existing release only adds the missing torrent wit
   const additions = actions.slice(count).filter(action => action.path === '/api/v2/torrents/add')
   assert.equal(additions.length, 1)
   assert.ok(additions[0].body.get('urls')!.includes('f'.repeat(40)))
-  assert.equal((await request('/api/downloads/control', { hash: hashes[3], action: 'pause' })).status, 404)
 })
 
 test('progress deduplicates hashes, waits for missing batch torrents, and preserves errors or incomplete downloads', async () => {
@@ -217,7 +204,8 @@ test('progress deduplicates hashes, waits for missing batch torrents, and preser
   const originalTorrents = structuredClone(torrents)
   const fixture = (info_hashes: string[]) => writeFileSync(file, JSON.stringify({ results: [{ key: 'progress-test', title: 'Progress', arr: 'Sonarr', releases: [{ ...release, info_hashes }] }], last_run: '2026-10-02 12:00:00' }))
   const progress = async () => (await request('/api/download_progress?key=progress-test&release=0')).json()
-  const invalidate = () => request('/api/downloads/control', { hash: hashes[0], action: 'pause' })
+  let invalidationUser = 'test'
+  const invalidate = async () => { invalidationUser = invalidationUser === 'test' ? 'invalidate' : 'test'; await request('/api/config', { qbittorrent_user: invalidationUser }) }
   try {
     fixture([hashes[2], hashes[2]])
     let result = await progress()

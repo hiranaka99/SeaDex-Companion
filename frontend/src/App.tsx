@@ -7,7 +7,6 @@ import AuthPage from './components/AuthPage'
 import ConfirmDialog from './components/ConfirmDialog'
 import OperationCenter, { BulkOperationState } from './components/OperationCenter'
 import HistoryTab from './components/HistoryTab'
-import DownloadsTab from './components/DownloadsTab'
 import { useToast } from './components/Toast'
 import { TabId, Status, ResultItem, Config, AuthState } from './types'
 import * as api from './api'
@@ -44,7 +43,7 @@ function readCollapsed(): boolean {
 
 function readTab(): TabId {
   const value = window.location.hash.slice(1)
-  return ['anime', 'history', 'config', 'log', 'downloads'].includes(value) ? value as TabId : 'anime'
+  return ['anime', 'history', 'config', 'log'].includes(value) ? value as TabId : 'anime'
 }
 
 function AuthenticatedApp({ username, onLogout, onAccountUpdated }: AuthenticatedAppProps) {
@@ -276,7 +275,6 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
         </div>
         {historyVisited.current && <div hidden={tab !== 'history'}><HistoryTab active={tab === 'history'} results={results} onOpenResult={openHistoryResult} /></div>}
         {configVisited.current && <div hidden={tab !== 'config'}><ConfigTab active={tab === 'config'} footerTarget={configFooterTarget} loadError={configError} onRetry={() => void loadConfig()} config={config} status={status} username={username} onRunScan={handleScan} onAccountUpdated={onAccountUpdated} onSaved={saved => { api.invalidateDownloadProgress(); setConfig(saved) }} onScannedDataCleared={handleScannedDataCleared} /></div>}
-        {tab === 'downloads' && <DownloadsTab />}
         {tab === 'log' && <LogTab active={tab === 'log'} />}
         </div>
         </div>

@@ -1,6 +1,6 @@
 export type CardStatus = 'upgrade' | 'best' | 'missing' | 'partial' | 'review'
 
-export type TabId = 'anime' | 'history' | 'config' | 'log' | 'downloads'
+export type TabId = 'anime' | 'history' | 'config' | 'log'
 
 export interface AuthState {
   setup_required: boolean
