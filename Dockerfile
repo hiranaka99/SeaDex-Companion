@@ -54,6 +54,8 @@ COPY --from=backend /app/dist ./dist
 COPY --from=backend /app/node_modules ./node_modules
 COPY --from=frontend /app/static ./static
 COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+# Windows checkouts can contain CRLF; Linux requires an LF-only shebang.
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh
 
 # Config, encryption key and cache live in /app/data (mount a volume here to persist).
 ENV DATA_DIR=/app/data
