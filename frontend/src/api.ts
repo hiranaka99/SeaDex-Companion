@@ -284,20 +284,3 @@ export async function bulkDownloads(action: 'start' | 'cancel', selections: Bulk
   window.dispatchEvent(new CustomEvent(DOWNLOADS_CHANGED_EVENT, { detail: { action, targets: result.targets } }))
   return result
 }
-
-export interface TrackedDownload extends DownloadProgress {
-  paused?: boolean
-  hash: string
-  title: string
-  name: string
-  season: number | null
-  part: string
-  releaseGroup: string
-}
-
-export const getTrackedDownloads = () => api<{ downloads: TrackedDownload[] }>('/api/downloads')
-export const controlTrackedDownload = (hash: string, action: DownloadAction, deleteFiles = false) =>
-  api<{ ok: boolean }>('/api/downloads/control', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ hash, action, delete_files: deleteFiles }),
-  })

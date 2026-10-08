@@ -703,30 +703,6 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return sendJson(response, 200, { ok: true, downloads })
   }
 
-  if (method === 'GET' && path === '/api/downloads') {
-    const owned = ownedTorrentsSnapshot()
-    const records = loadDownloadRecords()
-    const index = indexResultReleases()
-    const torrents = owned.length ? await qbGetTorrents(loadConfig(), owned) : []
-    return sendJson(response, 200, { downloads: torrents.map(torrent => ({
-      ...trackedDownloadInfo(torrent, records, index), hash: String(torrent.hash).toLowerCase(),
-      ...summarizeTorrentProgress([torrent]), name: String(torrent.name || ''),
-      paused: ['pausedDL', 'pausedUP', 'stoppedDL', 'stoppedUP'].includes(String(torrent.state)),
-    })) })
-  }
-
-  if (method === 'POST' && path === '/api/downloads/control') {
-    const data = await readJson(request)
-    const hash = String(data.hash || '').toLowerCase()
-    const action = String(data.action || '')
-    if (!ownedTorrentsSnapshot().includes(hash)) return sendJson(response, 404, { error: 'This torrent is not tracked by SeaDex Companion' })
-    if (action !== 'pause' && action !== 'resume' && action !== 'remove') return sendJson(response, 400, { error: 'Unknown torrent action' })
-    await qbControlTorrents(loadConfig(), [hash], action, data.delete_files === true)
-    if (action === 'remove') forgetOwnedTorrents([hash])
-    log('INFO', `Tracked torrent ${action}: ${hash} (delete files: ${action === 'remove' && data.delete_files === true})`)
-    return sendJson(response, 200, { ok: true })
-  }
-
   if (method === 'GET' && path === '/api/download_progress/all') {
     try {
       const torrents = await qbGetTorrents(loadConfig())

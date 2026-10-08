@@ -21,7 +21,6 @@ let statusFailure = false
 let configFailure = false
 let logFailure = false
 let saveDelay = 0
-let removeFailure = false
 let progressMode = 'downloading'
 let authMode = 'authenticated'
 let fixtureResults = null
@@ -33,9 +32,7 @@ const originalRelease = structuredClone(example.releases[0])
 const progressFor = rel => ({ ok: true, found: true, state: progressMode, progress: progressMode === 'complete' ? 1 : 0.5, downloaded: progressMode === 'complete' ? 200 : 100, total_size: 200, speed: 10, identity: JSON.stringify([rel.part || '', rel.releaseGroup, rel.tracker, [...rel.info_hashes].sort(), [...rel.selected_files].sort()]) })
 let preflightMode = 'low'
 const saved = []
-const transfers = []
 const errors = []
-let fixtureDownloads = [{ hash: 'c'.repeat(40), title: 'Legacy download', name: 'Old recommendation.mkv', season: 1, part: '', releaseGroup: 'Old group', progress: 0.5, downloaded: 100, total_size: 200, speed: 0, state: 'downloading', found: true, ok: true }]
 const server = createServer(async (req, res) => {
   const path = new URL(req.url, 'http://localhost').pathname
   if (path.startsWith('/api/')) {
@@ -65,16 +62,11 @@ const server = createServer(async (req, res) => {
       else response = { torrents: [], new_bytes: bytes, new_torrents: selected && !existing ? 1 : 0, existing_torrents: existing ? 1 : 0, unknown_torrents: 0, approximate_torrents: 0, selected_file_count: selected && !existing ? body.selections[0].release === 1 ? 2 : 1 : 0, whole_torrents: 0, disk_space: selected && !existing ? [{ path: '/downloads', categories: ['sonarr-anime'], required_bytes: bytes, unknown_torrents: 0, free_bytes: preflightMode === 'unavailable' ? null : preflightMode === 'low' ? 100 : 1000, sufficient: preflightMode === 'unavailable' ? null : preflightMode !== 'low', reason: preflightMode === 'unavailable' ? 'Client cannot report space for this path.' : undefined }] : [] }
     }
     else if (path === '/api/download_bulk/status') response = { ok: true, finished: true, pending: [], added: [], failures: [] }
-    else if (path === '/api/update-check') response = { current: '1.5.0', latest: null, url: null }
+    else if (path === '/api/update-check') response = { current: '1.6.0', latest: null, url: null }
     else if (path === '/api/scanned-data') response = { results: 2, cache_entries: 1, last_run: null, cache_valid: true, results_valid: true }
     else if (path === '/api/history') response = { scans: fixtureHistory || [{ id: 'scan-1', run_at: '2026-10-02 12:00:00', trigger: 'manual', counts: { upgrade: 1 }, changes: [{ key: example.key, title: example.title, arr: 'Sonarr', season: 1, type: 'upgrade', from: 'best', to: 'upgrade', best_group: 'Example' }] }] }
     else if (path === '/api/download_bulk/cancelable') response = { ok: true, downloads: cancelableDownloads }
     else if (path === '/api/anilist/search') response = { results: [{ id: 1, title: 'Example anime', year: 2026, format: 'TV', episodes: 12, cover: null }] }
-    else if (path === '/api/downloads') response = { downloads: fixtureDownloads }
-    else if (path === '/api/downloads/control') {
-      if (removeFailure && body.action === 'remove') { res.statusCode = 503; response = { error: 'Fixture removal unavailable' } }
-      else { transfers.push(body); fixtureDownloads = body.action === 'remove' ? fixtureDownloads.filter(download => download.hash !== body.hash) : fixtureDownloads.map(download => ({ ...download, state: body.action === 'pause' ? 'paused' : 'downloading' })); response = { ok: true } }
-    }
     else { res.statusCode = 404; response = { error: 'Unknown fixture route: ' + path } }
     res.end(JSON.stringify(response))
     return
@@ -142,7 +134,7 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
   if (!process.env.UI_REVIEW_ONLY) {
   await wait(`document.querySelector('h1')?.textContent === 'Anime library' && document.body.textContent.includes('Unmatched anime')`)
-  assert.ok(await evaluate(`[...document.querySelectorAll('[title="SeaDex Companion v1.5"]')].some(element => element.textContent.trim() === 'v1.5')`), 'The app displays version v1.5')
+  assert.ok(await evaluate(`[...document.querySelectorAll('[title="SeaDex Companion v1.6"]')].some(element => element.textContent.trim() === 'v1.6')`), 'The app displays version v1.6')
   assert.ok(await evaluate(`document.body.textContent.includes('Match needs review')`))
   await click('Table')
   assert.equal(await evaluate(`document.querySelector('tbody').rows.length`), 2)
@@ -245,30 +237,12 @@ try {
   assert.ok(await evaluate(`!document.body.textContent.includes('Could not update logs')`))
   console.log('PASS visible log failure and recovery')
 
-  await click('Downloads')
-  await wait(`document.body.textContent.includes('Legacy download')`)
-  await capture('downloads')
-  await evaluate(`document.querySelector('button[aria-label="Pause Legacy download"]').click()`)
-  await wait(`document.querySelector('button[aria-label="Resume Legacy download"]')`)
-  await evaluate(`document.querySelector('button[aria-label="Remove Legacy download"]').click()`)
-  removeFailure = true
-  await click('Remove torrent')
-  await wait(`document.querySelector('dialog[open] section > p[role=alert]')?.textContent.includes('Fixture removal unavailable')`)
-  await click('Cancel')
-  removeFailure = false
-  await evaluate(`document.querySelector('button[aria-label="Remove Legacy download"]').click()`)
-  assert.ok(await evaluate(`!document.querySelector('dialog[open] section > p[role=alert]')`), 'Reopened confirmation clears the previous error')
-  await click('Remove torrent')
-  await wait(`document.body.textContent.includes('No app-added torrents')`)
-  assert.equal(transfers.at(-1).delete_files, false)
-  console.log('PASS stable download controls and file-preserving removal')
-
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
   await evaluate(`location.hash = 'anime'`)
   await pause(300)
   assert.ok(await evaluate(`document.querySelector('nav[aria-label="Mobile navigation"]').getBoundingClientRect().width <= 390`))
   assert.ok(await evaluate(`document.documentElement.scrollWidth <= 390`), 'Mobile page has no horizontal overflow')
-  assert.ok(await evaluate(`[...document.querySelectorAll('header [title="SeaDex Companion v1.5"]')].some(element => element.getClientRects().length && element.textContent.trim() === 'v1.5')`), 'The mobile header displays version v1.5')
+  assert.ok(await evaluate(`[...document.querySelectorAll('header [title="SeaDex Companion v1.6"]')].some(element => element.getClientRects().length && element.textContent.trim() === 'v1.6')`), 'The mobile header displays version v1.6')
   await capture('mobile-library')
   statusFailure = true
   await pause(10_500)
@@ -423,13 +397,12 @@ try {
   example.owned_by_part = { 'Cour 1': [longGroup], 'Cour 2': [] }
   example.have_by_part = { 'Cour 1': [longGroup], 'Cour 2': [] }
   progressMode = 'absent'
-  fixtureDownloads = [{ hash: 'c'.repeat(40), title: 'Legacy download', name: 'Old recommendation with a longer filename.mkv', season: 1, part: '', releaseGroup: 'Old group', progress: 0.5, downloaded: 100, total_size: 200, speed: 0, state: 'downloading', found: true, ok: true }]
   await evaluate(`localStorage.setItem('seadex-library-view', 'cards'); location.hash = 'anime'; location.reload()`)
   await wait(`document.body.textContent.includes(${JSON.stringify(example.title)})`)
   const uiEvidence = []
   for (const [width, height] of [[1440, 1000], [900, 900], [390, 844], [320, 700]]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 901 })
-    for (const route of ['anime', 'history', 'downloads', 'config', 'log']) {
+    for (const route of ['anime', 'history', 'config', 'log']) {
       await evaluate(`location.hash = ${JSON.stringify(route)}`)
       await pause(350)
       assert.ok(await evaluate(`document.documentElement.scrollWidth <= ${width}`), `${route} fits ${width}px viewport`)
