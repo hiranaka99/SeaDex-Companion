@@ -50,11 +50,8 @@ user_rules.json
 logs/
 data/
 
-# Impeccable project settings are source, not application runtime config.
-!.impeccable/config.json
-!frontend/.impeccable/live/config.json
-.impeccable/config.local.json
-frontend/.impeccable/config.local.json
+# Impeccable settings and artifacts stay local at every project level.
+.impeccable/
 
 # Local product and design guidance
 /PRODUCT.md
