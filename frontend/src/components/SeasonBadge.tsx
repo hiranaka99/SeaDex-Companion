@@ -1,6 +1,8 @@
+import { useId } from 'react'
 import type { ResultItem } from '../types'
 import { seasonLabel } from '../utils'
 import { cx } from '../styles'
+import Icon from './Icons'
 
 const TONES: Record<string, { classes: string; color: string; label: string }> = {
   upgrade: { classes: 'border-line-strong bg-accent/15', color: 'var(--color-accent-bright)', label: 'Upgradable' },
@@ -11,6 +13,7 @@ const TONES: Record<string, { classes: string; color: string; label: string }> =
 }
 
 export default function SeasonBadge({ season, fallback, className }: { season: ResultItem; fallback: string; className: string }) {
+  const explanationId = useId()
   const releases = season.releases || []
   const status = season.status === 'uncovered' || season.status === 'review' ? 'partial' : season.status || fallback
   const defaultTone = TONES[status] || TONES.upgrade
@@ -35,8 +38,7 @@ export default function SeasonBadge({ season, fallback, className }: { season: R
     ? parts.map((part, index) => `${part}: ${tones[index].label}`).join('; ')
     : tone.label
 
-  const badgeClass = cx(className, 'text-ink')
-  if (!mixed) return <span className={cx(badgeClass, tone.classes)} title={title}>{seasonLabel(season)}</span>
+  const badgeClass = cx(className, 'min-h-8 min-w-11 cursor-pointer text-ink transition-colors hover:brightness-125')
 
   // Hard stops give each cour an equal segment, in cour order from left to right.
   const gradient = (opacity: number) => `linear-gradient(to right, ${tones.map((partTone, index) => {
@@ -45,8 +47,14 @@ export default function SeasonBadge({ season, fallback, className }: { season: R
   }).join(', ')})`
 
   return (
-    <span className={cx(badgeClass, 'border-transparent')} title={title} style={{ background: `${gradient(12)} padding-box, linear-gradient(var(--color-canvas-soft), var(--color-canvas-soft)) padding-box, ${gradient(35)} border-box` }}>
-      {seasonLabel(season)}
-    </span>
+    <>
+      <button type="button" popoverTarget={explanationId} className={cx(badgeClass, mixed ? 'border-transparent' : tone.classes)} title={title} aria-label={`${seasonLabel(season)}: ${title}. Show season status`} style={mixed ? { background: `${gradient(12)} padding-box, linear-gradient(var(--color-canvas-soft), var(--color-canvas-soft)) padding-box, ${gradient(35)} border-box` } : undefined}>
+        {seasonLabel(season)}
+      </button>
+      <div id={explanationId} popover="auto" role="region" aria-label={`${seasonLabel(season)} status`} className="m-auto w-[calc(100%_-_2rem)] max-w-sm rounded-card border border-line-strong bg-panel-raised p-4 text-ink shadow-card">
+        <div className="mb-3 flex items-center justify-between gap-3"><h3 className="m-0 text-sm font-bold">{seasonLabel(season)} status</h3><button type="button" popoverTarget={explanationId} popoverTargetAction="hide" aria-label="Close season status" className="grid size-11 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink"><Icon name="close" size={18}/></button></div>
+        {split ? <ul className="m-0 space-y-2 pl-5 text-sm">{parts.map((part, index) => <li key={part}><strong>{part || 'Season'}:</strong> {tones[index].label}</li>)}</ul> : <p className="m-0 text-sm">{title}</p>}
+      </div>
+    </>
   )
 }

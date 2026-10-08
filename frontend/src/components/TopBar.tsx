@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import * as api from '../api'
 import { TabId } from '../types'
 import { cx } from '../styles'
@@ -26,15 +26,44 @@ interface Props {
 
 function Brand({ compact = false }: { compact?: boolean }) {
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex min-w-0 items-center gap-3">
       <img src="/favicon.png" alt="" className={cx('rounded-xl border border-line-strong object-cover shadow-[0_8px_24px_rgba(79,140,255,0.16)]', compact ? 'size-9' : 'size-11')} />
-      <div><div className={cx('font-extrabold tracking-tight text-ink', compact ? 'text-base' : 'text-lg')}>SeaDex{compact && <span className="ml-2 inline-block rounded-md border border-line-strong bg-panel-raised px-1.5 py-0.5 align-middle text-[10px] font-semibold tracking-normal text-muted" title={`SeaDex Companion ${APP_VERSION}`}>{APP_VERSION}</span>}</div><div className="text-[10px] font-semibold tracking-[0.18em] text-muted-dim uppercase">Companion</div></div>
+      <div className="min-w-0"><div className={cx('font-extrabold tracking-tight text-ink', compact ? 'text-base' : 'text-lg')}>SeaDex{compact && <span className="ml-2 inline-block rounded-md border border-line-strong bg-panel-raised px-1.5 py-0.5 align-middle text-[10px] font-semibold tracking-normal text-muted" title={`SeaDex Companion ${APP_VERSION}`}>{APP_VERSION}</span>}</div><div className="text-[10px] font-semibold tracking-[0.18em] text-muted-dim uppercase">Companion</div></div>
     </div>
   )
 }
 
 export default function TopBar({ tab, onTabChange, username, onLogout, collapsed, onToggleCollapsed }: Props) {
   const [update, setUpdate] = useState<{ latest: string; url: string } | null>(null)
+  const mobileHeaderRef = useRef<HTMLElement>(null)
+  const mobileNavRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    // Reserve the rendered chrome height, including user text size and safe areas.
+    const updateInsets = () => {
+      const header = mobileHeaderRef.current?.getBoundingClientRect()
+      const nav = mobileNavRef.current?.getBoundingClientRect()
+      if (!header?.height || !nav?.height) { delete document.documentElement.dataset.mobileSpaceLimited; return }
+      const clearance = Math.ceil(nav.height + Math.max(0, window.innerHeight - nav.bottom) + 12)
+      document.documentElement.style.setProperty('--mobile-header-height', `${Math.ceil(header.height)}px`)
+      document.documentElement.style.setProperty('--mobile-navigation-space', `${clearance}px`)
+      // A tall toolbar should scroll away when enlarged text or a keyboard
+      // leaves little space between the fixed navigation surfaces.
+      document.documentElement.toggleAttribute('data-mobile-space-limited', header.height + clearance > window.innerHeight * .3)
+    }
+    const observer = new ResizeObserver(updateInsets)
+    if (mobileHeaderRef.current) observer.observe(mobileHeaderRef.current)
+    if (mobileNavRef.current) observer.observe(mobileNavRef.current)
+    window.addEventListener('resize', updateInsets)
+    updateInsets()
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', updateInsets)
+      document.documentElement.style.removeProperty('--mobile-header-height')
+      document.documentElement.style.removeProperty('--mobile-navigation-space')
+      document.documentElement.removeAttribute('data-mobile-space-limited')
+    }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -78,7 +107,7 @@ export default function TopBar({ tab, onTabChange, username, onLogout, collapsed
               <div className={cx('flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.14em]', update ? 'text-accent-bright' : 'text-muted-dim')} title={update ? `SeaDex Companion ${APP_VERSION} installed — v${update.latest} available` : `SeaDex Companion ${APP_VERSION}`}>{APP_VERSION}{update && <span className="size-1.5 rounded-full bg-accent-bright" aria-label="Update available"/>}</div>
               <div className="flex w-full flex-col items-center gap-2 border-t border-line pt-4">
                 <span className="grid size-9 place-items-center rounded-full bg-panel-raised text-muted" title={username}><Icon name="user" size={17} /></span>
-                <button type="button" onClick={onLogout} aria-label="Log out" title="Log out" className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-bad/10 hover:text-bad"><Icon name="log-out" size={18} /></button>
+                <button type="button" onClick={onLogout} aria-label="Log out" title="Log out" className="touch-target grid size-9 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-bad/10 hover:text-bad"><Icon name="log-out" size={18} /></button>
               </div>
             </div>
           ) : (
@@ -91,21 +120,21 @@ export default function TopBar({ tab, onTabChange, username, onLogout, collapsed
               <div className="flex items-center gap-2.5 border-t border-line pt-4">
                 <span className="grid size-9 shrink-0 place-items-center rounded-full bg-panel-raised text-muted"><Icon name="user" size={17} /></span>
                 <div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold text-ink" title={username}>{username}</div><div className="text-[11px] text-muted-dim">Administrator</div></div>
-                <button type="button" className="grid size-9 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-bad/10 hover:text-bad" onClick={onLogout} aria-label="Log out" title="Log out"><Icon name="log-out" size={18} /></button>
+                <button type="button" className="touch-target grid size-9 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-bad/10 hover:text-bad" onClick={onLogout} aria-label="Log out" title="Log out"><Icon name="log-out" size={18} /></button>
               </div>
             </div>
           )}
         </div>
       </aside>
 
-      <header className="fixed inset-x-0 top-0 z-50 hidden h-16 items-center justify-between border-b border-line bg-canvas-soft/95 px-4 backdrop-blur-xl max-[900px]:flex">
+      <header ref={mobileHeaderRef} className="mobile-header fixed inset-x-0 top-0 z-50 hidden min-h-16 items-center justify-between gap-3 border-b border-line bg-canvas-soft/95 px-4 py-2 backdrop-blur-xl max-[900px]:flex">
         <Brand compact />
-        <div className="flex items-center gap-3"><button type="button" className="grid size-9 cursor-pointer place-items-center rounded-lg border border-line bg-panel text-ink" onClick={onLogout} aria-label="Log out"><Icon name="log-out" size={17} /></button></div>
+        <div className="flex items-center gap-3"><button type="button" className="touch-target grid size-9 shrink-0 cursor-pointer place-items-center rounded-lg border border-line bg-panel text-ink" onClick={onLogout} aria-label="Log out"><Icon name="log-out" size={17} /></button></div>
       </header>
 
-      <nav className="fixed inset-x-3 bottom-3 z-50 hidden h-16 items-center justify-around rounded-2xl border border-line-strong bg-panel-raised/95 px-2 shadow-card backdrop-blur-xl max-[900px]:flex" aria-label="Mobile navigation">
+      <nav ref={mobileNavRef} className="mobile-navigation app-scrollbar fixed inset-x-3 bottom-3 z-50 hidden min-h-16 items-center rounded-2xl border border-line-strong bg-panel-raised/95 px-2 py-1 shadow-card backdrop-blur-xl max-[900px]:flex" aria-label="Mobile navigation">
         {NAV.map((item) => (
-          <button key={item.id} type="button" className={cx('flex min-w-0 flex-1 cursor-pointer flex-col items-center gap-1 rounded-xl px-1 py-2 text-[10px] font-bold transition-colors', tab === item.id ? 'bg-accent/12 text-ink' : 'text-muted')} aria-current={tab === item.id ? 'page' : undefined} onClick={() => onTabChange(item.id)}><Icon name={item.icon} size={19} />{item.label.replace('Configuration', 'Config').replace('Server log', 'Log').replace('Scan history', 'History')}</button>
+          <button key={item.id} type="button" className={cx('touch-target flex min-w-max flex-1 cursor-pointer flex-col items-center gap-1 rounded-xl px-1 py-2 text-xs font-semibold transition-colors', tab === item.id ? 'bg-accent/12 text-ink' : 'text-muted')} aria-current={tab === item.id ? 'page' : undefined} onClick={() => onTabChange(item.id)}><Icon name={item.icon} size={19} />{item.label.replace('Configuration', 'Config').replace('Server log', 'Log').replace('Scan history', 'History')}</button>
         ))}
       </nav>
     </>

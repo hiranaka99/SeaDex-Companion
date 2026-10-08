@@ -23,6 +23,12 @@ let logFailure = false
 let saveDelay = 0
 let removeFailure = false
 let progressMode = 'downloading'
+let authMode = 'authenticated'
+let fixtureResults = null
+let fixtureHistory = null
+let fixtureLogs = ['2026-10-02 12:00:00 [INFO] First log entry']
+let statusOverrides = {}
+let cancelableDownloads = []
 const originalRelease = structuredClone(example.releases[0])
 const progressFor = rel => ({ ok: true, found: true, state: progressMode, progress: progressMode === 'complete' ? 1 : 0.5, downloaded: progressMode === 'complete' ? 200 : 100, total_size: 200, speed: 10, identity: JSON.stringify([rel.part || '', rel.releaseGroup, rel.tracker, [...rel.info_hashes].sort(), [...rel.selected_files].sort()]) })
 let preflightMode = 'low'
@@ -39,18 +45,18 @@ const server = createServer(async (req, res) => {
     for await (const chunk of req) chunks.push(chunk)
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {}
     let response = {}
-    if (path === '/api/auth/status') response = { setup_required: false, authenticated: true, username: 'Tester' }
+    if (path === '/api/auth/status') response = { setup_required: authMode === 'setup', authenticated: authMode === 'authenticated', username: authMode === 'authenticated' ? 'Tester' : null }
     else if (path === '/api/config') {
       if (configFailure) { res.statusCode = 503; response = { error: 'Fixture configuration unavailable' } }
       else { if (req.method === 'POST') { await new Promise(resolve => setTimeout(resolve, saveDelay)); saved.push(body); config = { ...config, ...body } }; response = config }
     }
     else if (path === '/api/status') {
       if (statusFailure) { res.statusCode = 503; response = { error: 'Fixture server unavailable' } }
-      else response = { results_revision: String(revision), running: false, progress: 0, total: 0, message: 'Idle', error: null, cancelled: false, trigger: null, source_errors: {}, last_run: '2026-10-02 12:00:00', next_check: null, webhook_scan: { queued: false, due_at: null, sources: [] } }
+      else response = { results_revision: String(revision), running: false, progress: 0, total: 0, message: 'Idle', error: null, cancelled: false, trigger: null, source_errors: {}, last_run: '2026-10-02 12:00:00', next_check: null, webhook_scan: { queued: false, due_at: null, sources: [] }, ...statusOverrides }
     }
-    else if (path === '/api/results') { resultRequests++; response = { results: [example, { ...example, key: 'Sonarr:item2:1:missing', library_key: 'Sonarr:item2', group_id: null, title: 'Unmatched anime', status: 'missing', match_status: 'unmatched', anilist_id: null, best_group: null, releases: [] }], last_run: '2026-10-02 12:00:00' } }
+    else if (path === '/api/results') { resultRequests++; response = { results: fixtureResults || [example, { ...example, key: 'Sonarr:item2:1:missing', library_key: 'Sonarr:item2', group_id: null, title: 'Unmatched anime', status: 'missing', match_status: 'unmatched', anilist_id: null, best_group: null, releases: [] }], last_run: '2026-10-02 12:00:00' } }
     else if (path === '/api/download_progress/all') response = { ok: true, downloads: progressMode === 'absent' ? {} : { [example.key + '\0' + 0]: progressFor(progressMode === 'downloading' ? originalRelease : example.releases[0]) } }
-    else if (path === '/api/logs') { if (logFailure) { res.statusCode = 503; response = { error: 'Fixture log unavailable' } } else response = { lines: ['2026-10-02 12:00:00 [INFO] First log entry'] } }
+    else if (path === '/api/logs') { if (logFailure) { res.statusCode = 503; response = { error: 'Fixture log unavailable' } } else response = { lines: fixtureLogs } }
     else if (path === '/api/download_bulk/preflight') {
       const selected = body.selections.length > 0
       const existing = preflightMode === 'existing' && selected
@@ -59,9 +65,10 @@ const server = createServer(async (req, res) => {
       else response = { torrents: [], new_bytes: bytes, new_torrents: selected && !existing ? 1 : 0, existing_torrents: existing ? 1 : 0, unknown_torrents: 0, approximate_torrents: 0, selected_file_count: selected && !existing ? body.selections[0].release === 1 ? 2 : 1 : 0, whole_torrents: 0, disk_space: selected && !existing ? [{ path: '/downloads', categories: ['sonarr-anime'], required_bytes: bytes, unknown_torrents: 0, free_bytes: preflightMode === 'unavailable' ? null : preflightMode === 'low' ? 100 : 1000, sufficient: preflightMode === 'unavailable' ? null : preflightMode !== 'low', reason: preflightMode === 'unavailable' ? 'Client cannot report space for this path.' : undefined }] : [] }
     }
     else if (path === '/api/download_bulk/status') response = { ok: true, finished: true, pending: [], added: [], failures: [] }
-    else if (path === '/api/update-check') response = { current: '1.4.0', latest: null, url: null }
+    else if (path === '/api/update-check') response = { current: '1.5.0', latest: null, url: null }
     else if (path === '/api/scanned-data') response = { results: 2, cache_entries: 1, last_run: null, cache_valid: true, results_valid: true }
-    else if (path === '/api/history') response = { scans: [{ id: 'scan-1', run_at: '2026-10-02 12:00:00', trigger: 'manual', counts: { upgrade: 1 }, changes: [{ key: example.key, title: example.title, arr: 'Sonarr', season: 1, type: 'upgrade', from: 'best', to: 'upgrade', best_group: 'Example' }] }] }
+    else if (path === '/api/history') response = { scans: fixtureHistory || [{ id: 'scan-1', run_at: '2026-10-02 12:00:00', trigger: 'manual', counts: { upgrade: 1 }, changes: [{ key: example.key, title: example.title, arr: 'Sonarr', season: 1, type: 'upgrade', from: 'best', to: 'upgrade', best_group: 'Example' }] }] }
+    else if (path === '/api/download_bulk/cancelable') response = { ok: true, downloads: cancelableDownloads }
     else if (path === '/api/anilist/search') response = { results: [{ id: 1, title: 'Example anime', year: 2026, format: 'TV', episodes: 12, cover: null }] }
     else if (path === '/api/downloads') response = { downloads: fixtureDownloads }
     else if (path === '/api/downloads/control') {
@@ -106,9 +113,10 @@ const click = async text => {
   await pause(100)
 }
 const fill = (selector, value) => evaluate(`(() => { const input = document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)}); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true })); })()`)
-const key = async key => { await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: key === 'Tab' ? 9 : 27 }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: key === 'Tab' ? 9 : 27 }); await pause(60) }
+const key = async key => { const keyCode = key === 'Tab' ? 9 : key === 'Enter' ? 13 : 27; await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: keyCode, text: key === 'Enter' ? '\r' : undefined }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: keyCode }); await pause(60) }
 const capture = async name => {
   if (!process.env.SCREENSHOT_DIR) return
+  await pause(250)
   mkdirSync(process.env.SCREENSHOT_DIR, { recursive: true })
   const screenshot = await send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(process.env.SCREENSHOT_DIR, name + '.png'), Buffer.from(screenshot.data, 'base64'))
@@ -132,8 +140,9 @@ try {
   const navigation = await send('Page.navigate', { url: base })
   if (navigation.errorText) throw new Error(navigation.errorText)
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  if (!process.env.UI_REVIEW_ONLY) {
   await wait(`document.querySelector('h1')?.textContent === 'Anime library' && document.body.textContent.includes('Unmatched anime')`)
-  assert.ok(await evaluate(`[...document.querySelectorAll('[title="SeaDex Companion v1.4"]')].some(element => element.textContent.trim() === 'v1.4')`), 'The app displays version v1.4')
+  assert.ok(await evaluate(`[...document.querySelectorAll('[title="SeaDex Companion v1.5"]')].some(element => element.textContent.trim() === 'v1.5')`), 'The app displays version v1.5')
   assert.ok(await evaluate(`document.body.textContent.includes('Match needs review')`))
   await click('Table')
   assert.equal(await evaluate(`document.querySelector('tbody').rows.length`), 2)
@@ -202,7 +211,7 @@ try {
   await click('Scan history')
   await click('Example anime')
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('Correct match')`)
-  assert.ok(await evaluate(`!document.querySelector('dialog[open] button[aria-label="Pause torrent"]')`), 'A changed release must not inherit the previous torrent state')
+  assert.ok(await evaluate(`!document.querySelector('dialog[open] button[aria-label^="Pause torrent"]')`), 'A changed release must not inherit the previous torrent state')
   await click('Correct match')
   await wait(`document.querySelectorAll('dialog[open]').length === 2`)
   await key('Tab')
@@ -259,7 +268,7 @@ try {
   await pause(300)
   assert.ok(await evaluate(`document.querySelector('nav[aria-label="Mobile navigation"]').getBoundingClientRect().width <= 390`))
   assert.ok(await evaluate(`document.documentElement.scrollWidth <= 390`), 'Mobile page has no horizontal overflow')
-  assert.ok(await evaluate(`[...document.querySelectorAll('header [title="SeaDex Companion v1.4"]')].some(element => element.getClientRects().length && element.textContent.trim() === 'v1.4')`), 'The mobile header displays version v1.4')
+  assert.ok(await evaluate(`[...document.querySelectorAll('header [title="SeaDex Companion v1.5"]')].some(element => element.getClientRects().length && element.textContent.trim() === 'v1.5')`), 'The mobile header displays version v1.5')
   await capture('mobile-library')
   statusFailure = true
   await pause(10_500)
@@ -279,6 +288,214 @@ try {
   await click('Retry')
   await wait(`document.querySelector('input[name=sonarr_url]')`)
   console.log('PASS configuration loading failure and retry')
+  }
+
+  // Follow-up improvements: verify behavior as well as inner geometry.
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false })
+  fixtureResults = Array.from({ length: 1000 }, (_, index) => ({ ...example, key: `Sonarr:${index}:1`, library_key: `Sonarr:item${index}`, group_id: index + 1, anilist_id: index + 1, title: `Collection title ${String(index).padStart(4, '0')}`, releases: [release('Example', 'd')] }))
+  const historyTarget = fixtureResults[999]
+  fixtureHistory = [{ id: 'scan-pages', run_at: '2026-10-02 12:00:00', trigger: 'manual', counts: { upgrade: 1 }, changes: [{ key: 'older-key', title: historyTarget.title, arr: historyTarget.arr, season: historyTarget.season, type: 'upgrade', from: 'best', to: 'upgrade' }] }]
+  progressMode = 'absent'
+  revision++
+  await evaluate(`localStorage.setItem('seadex-library-view', 'cards'); location.hash = 'anime'; location.reload()`)
+  await wait(`document.querySelector('[aria-label="Library page"]')`)
+  assert.equal(await evaluate(`document.querySelectorAll('[aria-label="Library results"] article').length`), 60, 'Large collections have bounded mounted cards')
+  await click('Next')
+  await wait(`document.querySelector('[aria-label="Library page"]').value === '1'`)
+  assert.ok(await evaluate(`document.querySelector('[aria-label="Library results"]').textContent.includes('Collection title 0060')`))
+  await click('Bulk download')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Collection title 0999')`)
+  assert.ok(await evaluate(`document.querySelectorAll('dialog[open] input[type=checkbox]').length >= 1000`), 'Bulk review still includes the full collection')
+  await key('Escape')
+  await click('Scan history')
+  await wait(`document.body?.textContent.includes('Collection title 0999')`)
+  await click('Collection title 0999')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Collection title 0999')`)
+  assert.equal(await evaluate(`document.querySelector('[aria-label="Library page"]').value`), '16', 'History fallback lookup opens an off-page title')
+  await key('Escape')
+  await wait(`!document.querySelector('dialog[open]')`)
+  assert.equal(await evaluate(`document.querySelector('[aria-label="Library page"]').value`), '16', 'History destination remains on its page after closing')
+  await fill('input[type=search]', '0999')
+  await wait(`document.querySelectorAll('[aria-label="Library results"] article').length === 1`)
+  assert.ok(await evaluate(`!document.querySelector('[aria-label="Library pages"]')`), 'Search spans all pages and resets pagination')
+  await click('Clear filters')
+  await click('Table')
+  await wait(`document.querySelector('tbody')?.rows.length === 60`)
+  await click('Next')
+  await wait(`document.querySelector('[aria-label="Library page"]').value === '1'`)
+  assert.equal(await evaluate(`document.querySelector('tbody').rows.length`), 60)
+  console.log('PASS bounded library pages, full-library search/bulk scope, and off-page history fallback navigation')
+  fixtureResults = null
+  fixtureHistory = null
+  fixtureLogs = Array.from({ length: 100 }, (_, index) => `2026-10-02 12:00:00 [INFO] Log entry ${index}`)
+  revision++
+  await evaluate(`location.hash = 'log'; location.reload()`)
+  await wait(`document.querySelector('pre')?.textContent.includes('Log entry 99')`)
+  await evaluate(`document.querySelector('.log-scrollbar').scrollTop = 0`)
+  await wait(`document.querySelector('button[aria-pressed]') && [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Follow live output')?.getAttribute('aria-pressed') === 'false'`)
+  fixtureLogs.push('2026-10-02 12:00:01 [INFO] New log entry')
+  await wait(`document.querySelector('pre')?.textContent.includes('New log entry')`)
+  assert.equal(await evaluate(`document.querySelector('.log-scrollbar').scrollTop`), 0, 'New output preserves the reader position')
+  await click('Follow live output')
+  await wait(`document.querySelector('.log-scrollbar').scrollTop > 0`)
+  fixtureLogs.shift()
+  fixtureLogs.push('2026-10-02 12:00:02 [INFO] Rolling log entry')
+  await wait(`document.querySelector('pre')?.textContent.includes('Rolling log entry')`)
+  assert.ok(await evaluate(`(() => { const box = document.querySelector('.log-scrollbar'); return box.scrollHeight - box.clientHeight - box.scrollTop < 2 })()`), 'Following works when the capped line count stays unchanged')
+  await send('Emulation.setDeviceMetricsOverride', { width: 844, height: 390, deviceScaleFactor: 1, mobile: true })
+  await pause(250)
+  assert.ok(await evaluate(`(() => { const box=document.querySelector('.log-scrollbar').getBoundingClientRect(); const nav=document.querySelector('[aria-label="Mobile navigation"]').getBoundingClientRect(); return box.height > 60 && box.bottom < nav.top })()`), 'Landscape log has a usable scroll region above navigation')
+  await capture('follow-up-landscape-log')
+  await evaluate(`location.hash = 'config'`)
+  await wait(`document.querySelector('input[name=sonarr_url]')`)
+  await capture('follow-up-landscape-config')
+  console.log('PASS paused/resumed log following, capped log rollover, and short-height log layout')
+
+  await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 700, deviceScaleFactor: 1, mobile: true })
+  await evaluate(`location.hash = 'anime'`)
+  await wait(`document.querySelector('h1')?.textContent === 'Anime library'`)
+  cancelableDownloads = [{ key: example.key, release: 0, title: '取消対象の長いアニメ名'.repeat(3), season: 1, part: '', release_group: 'VeryLongUnbrokenReleaseGroupName'.repeat(5), tracker: 'Nyaa', size: 200, hashes: ['d'.repeat(40)] }]
+  await click('Bulk cancel')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('VeryLongUnbroken')`)
+  assert.ok(await evaluate(`(() => { const body=document.querySelector('dialog[open] .app-scrollbar'); return body.scrollWidth <= body.clientWidth + 1 })()`), 'Cancellation metadata wraps without inner horizontal scrolling')
+  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] label')].find(label=>label.textContent.includes('Also delete')).querySelector('input').checked`), 'Bulk cancellation continues to preserve files by default')
+  await capture('follow-up-mobile-bulk-cancel')
+  await key('Escape')
+  await click('View & filters')
+  await evaluate(`(() => { const source=document.querySelector('select[aria-label="Source"]'); source.value='Sonarr'; source.dispatchEvent(new Event('change',{bubbles:true})) })()`)
+  await evaluate(`[...document.querySelectorAll('button')].find(button=>button.textContent.includes('View & filters')).click()`)
+  assert.ok(await evaluate(`document.querySelector('[aria-label="Active library filters"]').textContent.includes('Sonarr')`), 'Collapsed filters retain visible source state')
+  await click('Clear filters')
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+  await click('View & filters')
+  await click('Cards')
+  await click('View & filters')
+  await evaluate(`document.documentElement.style.fontSize='32px'`)
+  await pause(250)
+  assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth`), 'Enlarged text does not overflow the document')
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('.library-toolbar')).position`), 'relative', 'Tall library controls scroll away when enlarged chrome limits the reading area')
+  assert.ok(await evaluate(`(() => { const actions=document.querySelector('.library-actions'); return actions.scrollWidth <= actions.clientWidth + 1 })()`), 'Enlarged primary actions do not create implicit overflowing grid columns')
+  assert.ok(await evaluate(`(() => { const nav=document.querySelector('[aria-label="Mobile navigation"]'); const labels=[...nav.querySelectorAll('button')].map(button=>button.getBoundingClientRect()); return labels.every((label,index)=>!index || label.left >= labels[index-1].right-1) })()`), 'Enlarged navigation labels do not collide')
+  assert.ok(await evaluate(`[...document.querySelectorAll('[aria-label="Mobile navigation"] button')].every(button=>button.scrollWidth<=button.clientWidth+1)`), 'Navigation hit areas contain the enlarged labels')
+  await capture('follow-up-mobile-enlarged-text')
+  await evaluate(`document.querySelector('article').scrollIntoView({block:'center'})`)
+  await capture('follow-up-mobile-enlarged-card')
+  assert.ok(await evaluate(`[...document.querySelectorAll('article')].every(card=>card.scrollWidth<=card.clientWidth+1)`), 'Enlarged card metadata and controls stay within their card')
+  await evaluate(`(() => { const card=[...document.querySelectorAll('article')].find(card=>card.textContent.includes(${JSON.stringify(example.title)})); const button=[...card.querySelectorAll('button')].find(button=>button.textContent.trim()==='Details'); button.focus(); button.click() })()`)
+  await wait(`document.querySelector('.release-identity')`)
+  assert.ok(await evaluate(`[...document.querySelectorAll('.release-identity')].every(row=>row.scrollWidth<=row.clientWidth+1)`), 'Release identities remain readable with enlarged text')
+  await evaluate(`document.querySelector('.release-row').scrollIntoView({block:'center'})`)
+  await capture('follow-up-mobile-enlarged-details')
+  await key('Escape')
+  await wait(`!document.querySelector('dialog[open]')`)
+  await evaluate(`location.hash='config'`)
+  await wait(`document.querySelector('input[name=sonarr_url]')`)
+  await capture('follow-up-mobile-enlarged-config')
+  assert.ok(await evaluate(`document.documentElement.scrollWidth<=innerWidth`), 'Configuration fits the enlarged-text viewport')
+  await evaluate(`document.documentElement.style.fontSize=''`)
+  statusOverrides = { error: 'Sonarr request failed: ' + 'A library path could not be reached. Check the integration URL and API key. '.repeat(10) }
+  await evaluate(`location.hash='config'; location.reload()`)
+  await wait(`document.querySelector('[aria-label="Application operations"] details')`)
+  assert.ok(await evaluate(`!document.querySelector('[aria-label="Application operations"] details').open`), 'Full diagnostics start collapsed')
+  await evaluate(`document.querySelector('[aria-label="Application operations"] summary').click()`)
+  await pause(100)
+  assert.ok(await evaluate(`(() => { const panel=document.querySelector('.operation-center'); const details=panel.querySelector('.operation-diagnostics'); return getComputedStyle(panel).position === 'relative' && details.clientHeight <= innerHeight*.3+1 && details.textContent.includes('Sonarr request failed') })()`), 'Expanded diagnostics are bounded and leave the sticky layer')
+  await capture('follow-up-expanded-diagnostics')
+  await evaluate(`document.querySelector('main > .app-scrollbar').scrollTop=10000`)
+  assert.ok(await evaluate(`document.querySelector('.operation-center').getBoundingClientRect().bottom < 100`), 'Users can scroll past errors to integration settings')
+  statusOverrides = {}
+  fixtureLogs = ['2026-10-02 12:00:00 [INFO] First log entry']
+  await evaluate(`location.hash='anime'; location.reload()`)
+  await wait(`document.querySelector('h1')?.textContent === 'Anime library'`)
+  console.log('PASS long cancellation metadata, file-preserving defaults, visible filter state, enlarged navigation, and bounded recovery diagnostics')
+
+  // Long real-world release names expose internal flex clipping even when the
+  // document itself has no horizontal overflow. All actions remain fixture-only.
+  const longGroup = 'A release group with a long name and 日本語 characters'
+  example.title = 'Example anime with a longer collection title'
+  example.releases = [
+    { ...release(longGroup, 'd'), part: 'Cour 1', dual_audio: true, tags: ['HEVC', 'BD'] },
+    { ...release(longGroup + ' second cour', 'e'), part: 'Cour 2', dual_audio: true, tags: ['HEVC', 'BD'] },
+    { ...release('Another public option', 'f'), part: 'Cour 2' },
+  ]
+  example.have = [longGroup]
+  example.precise_part_ownership = true
+  example.owned_by_part = { 'Cour 1': [longGroup], 'Cour 2': [] }
+  example.have_by_part = { 'Cour 1': [longGroup], 'Cour 2': [] }
+  progressMode = 'absent'
+  fixtureDownloads = [{ hash: 'c'.repeat(40), title: 'Legacy download', name: 'Old recommendation with a longer filename.mkv', season: 1, part: '', releaseGroup: 'Old group', progress: 0.5, downloaded: 100, total_size: 200, speed: 0, state: 'downloading', found: true, ok: true }]
+  await evaluate(`localStorage.setItem('seadex-library-view', 'cards'); location.hash = 'anime'; location.reload()`)
+  await wait(`document.body.textContent.includes(${JSON.stringify(example.title)})`)
+  const uiEvidence = []
+  for (const [width, height] of [[1440, 1000], [900, 900], [390, 844], [320, 700]]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 901 })
+    for (const route of ['anime', 'history', 'downloads', 'config', 'log']) {
+      await evaluate(`location.hash = ${JSON.stringify(route)}`)
+      await pause(350)
+      assert.ok(await evaluate(`document.documentElement.scrollWidth <= ${width}`), `${route} fits ${width}px viewport`)
+      await evaluate(`document.querySelector('main > .app-scrollbar').scrollTop = 0`)
+      await capture(`review-${width}-${route}`)
+      if (route === 'config') {
+        const geometry = await evaluate(`(() => { const pane = document.querySelector('main > .app-scrollbar').getBoundingClientRect(); const save = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Save configuration').getBoundingClientRect(); const nav = document.querySelector('nav[aria-label="Mobile navigation"]'); return { paneBottom: pane.bottom, saveTop: save.top, saveBottom: save.bottom, navTop: nav.getClientRects().length ? nav.getBoundingClientRect().top : null } })()`)
+        assert.ok(geometry.saveTop >= geometry.paneBottom, 'Save controls never overlay the scrolling configuration')
+        if (geometry.navTop !== null) assert.ok(geometry.saveBottom < geometry.navTop, 'Save controls clear mobile navigation')
+        uiEvidence.push({ width, route, geometry })
+        await evaluate(`document.querySelector('main > .app-scrollbar').scrollTop = 100000`)
+        await capture(`review-${width}-config-end`)
+      }
+    }
+    await evaluate(`location.hash = 'anime'`)
+    await pause(200)
+    await evaluate(`document.querySelector('main > .app-scrollbar').scrollTop = 0`)
+    const badgeSelector = 'button[popovertarget][aria-label*="Cour 1"]'
+    await evaluate(`document.querySelector(${JSON.stringify(badgeSelector)}).focus()`)
+    await key('Enter')
+    await wait(`document.querySelector('[popover]:popover-open')`)
+    assert.ok(await evaluate(`document.querySelector('[popover]:popover-open').textContent.includes('Cour 1') && document.querySelector('[popover]:popover-open').textContent.includes('Cour 2')`), 'Season status explains both cours through the keyboard')
+    await capture(`review-${width}-season-status`)
+    await key('Escape')
+    assert.ok(await evaluate(`!document.querySelector('[popover]:popover-open')`), 'Season explanation dismisses with Escape')
+    await evaluate(`(() => { const card = [...document.querySelectorAll('article')].find(card => card.textContent.includes(${JSON.stringify(example.title)})); [...card.querySelectorAll('button')].find(button => button.textContent.trim() === 'Details').click() })()`)
+    await wait(`document.querySelector('.release-identity')`)
+    const releaseGeometry = await evaluate(`(() => { const identities = [...document.querySelectorAll('.release-identity')]; return identities.map(identity => ({ width: identity.clientWidth, scrollWidth: identity.scrollWidth, groupWidth: identity.querySelector('span').clientWidth, groupScrollWidth: identity.querySelector('span').scrollWidth, tagWidths: [...identity.querySelectorAll('div > span')].map(tag => tag.getBoundingClientRect().width) })) })()`)
+    for (const row of releaseGeometry) {
+      assert.ok(row.width > 0 && row.scrollWidth <= row.width + 1, 'Release identity is not clipped')
+      assert.ok(row.groupScrollWidth <= row.groupWidth + 1, 'Release group remains fully readable')
+      assert.ok(row.tagWidths.every(width => width > 24), 'Release tags retain readable width')
+    }
+    uiEvidence.push({ width, route: 'release-details', releaseGeometry })
+    await capture(`review-${width}-details`)
+    await evaluate(`document.querySelector('.release-row').scrollIntoView({ block: 'center' })`)
+    await capture(`review-${width}-details-releases`)
+    await click('Correct match')
+    await wait(`document.querySelectorAll('dialog[open]').length === 2`)
+    assert.ok(await evaluate(`document.querySelector('dialog[open] label input[placeholder="Anime title"]').labels.length > 0`), 'Mapping search has a persistent label')
+    await key('Tab')
+    assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open]')].at(-1).contains(document.activeElement)`))
+    await capture(`review-${width}-mapping`)
+    await key('Escape')
+    await key('Escape')
+    await click('Bulk download')
+    await wait(`document.querySelector('dialog[open] input[type=checkbox]')`)
+    await wait(`!document.querySelector('dialog[open]')?.textContent.includes('Checking…')`)
+    await capture(`review-${width}-bulk`)
+    await evaluate(`document.querySelector('dialog[open] button[aria-expanded]').click()`)
+    await wait(`document.querySelector('dialog[open] input[type=radio]')`)
+    await capture(`review-${width}-bulk-expanded`)
+    await key('Escape')
+  }
+  console.log('PASS responsive configuration clearance, long release identities, season explanations, and nested mapping at 320/390/900/1440px')
+  if (process.env.SCREENSHOT_DIR) writeFileSync(join(process.env.SCREENSHOT_DIR, 'ui-evidence.json'), JSON.stringify(uiEvidence, null, 2))
+  for (const mode of ['login', 'setup']) {
+    authMode = mode
+    await evaluate(`location.reload()`)
+    await wait(`document.querySelector('input[name=password]')`)
+    await capture(`review-320-${mode}`)
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false })
+    await capture(`review-1440-${mode}`)
+    await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 700, deviceScaleFactor: 1, mobile: true })
+  }
+  assert.deepEqual(errors, [], 'No unhandled browser exceptions in responsive review')
 } catch (error) {
   console.error(error)
   if (ws?.readyState === WebSocket.OPEN) console.error(await evaluate(`({ text: document.body?.innerText, url: location.href })`).catch(() => null))

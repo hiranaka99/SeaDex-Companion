@@ -67,6 +67,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   const [bulkOperation, setBulkOperation] = useState<BulkOperationState | null>(null)
   const [scanCompleted, setScanCompleted] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<boolean>(readCollapsed)
+  const [configFooterTarget, setConfigFooterTarget] = useState<HTMLDivElement | null>(null)
   const toast = useToast()
 
   const toggleCollapsed = useCallback(() => {
@@ -236,8 +237,9 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
       />
-      <main className="app-scrollbar overflow-y-auto px-8 pb-14 max-[1200px]:px-6 max-[900px]:px-4 max-[900px]:pb-24">
-        <div className="pt-7 max-[900px]:pt-20">
+      <main className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+        <div className={`app-scroll-pane app-scrollbar min-h-0 flex-1 overflow-y-auto px-8 max-[1200px]:px-6 max-[900px]:px-4 ${tab === 'config' ? 'pb-4' : 'pb-14 mobile-content-clearance'} ${tab === 'log' ? 'log-main-pane' : ''}`}>
+        <div className={`app-content pt-7 ${tab === 'log' ? 'flex h-full min-h-0 flex-col' : ''}`}>
         <OperationCenter
           status={status}
           scanCompleted={scanCompleted}
@@ -249,7 +251,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
           onDismissBulk={() => setBulkOperation(null)}
           onDismissScan={() => setScanCompleted(null)}
         />
-        <div className="mb-4 flex flex-wrap items-center gap-3 text-xs text-muted" role={statusError ? 'alert' : undefined}>
+        <div className="connection-status mb-4 flex shrink-0 flex-wrap items-center gap-3 text-xs text-muted" role={statusError ? 'alert' : undefined}>
           {statusError ? <><span className="text-bad">Connection lost: {statusError}. Displayed data may be outdated.</span><button className="cursor-pointer font-bold text-accent-bright" onClick={() => { if (pollTimer.current) window.clearTimeout(pollTimer.current); void pollStatus(++pollGeneration.current) }}>Retry connection</button></> : lastStatusUpdate && <span>Updated {lastStatusUpdate.toLocaleTimeString()}</span>}
         </div>
         <div hidden={tab !== 'anime'}>
@@ -273,10 +275,12 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
           />
         </div>
         {historyVisited.current && <div hidden={tab !== 'history'}><HistoryTab active={tab === 'history'} results={results} onOpenResult={openHistoryResult} /></div>}
-        {configVisited.current && <div hidden={tab !== 'config'}><ConfigTab active={tab === 'config'} loadError={configError} onRetry={() => void loadConfig()} config={config} status={status} username={username} onRunScan={handleScan} onAccountUpdated={onAccountUpdated} onSaved={saved => { api.invalidateDownloadProgress(); setConfig(saved) }} onScannedDataCleared={handleScannedDataCleared} /></div>}
+        {configVisited.current && <div hidden={tab !== 'config'}><ConfigTab active={tab === 'config'} footerTarget={configFooterTarget} loadError={configError} onRetry={() => void loadConfig()} config={config} status={status} username={username} onRunScan={handleScan} onAccountUpdated={onAccountUpdated} onSaved={saved => { api.invalidateDownloadProgress(); setConfig(saved) }} onScannedDataCleared={handleScannedDataCleared} /></div>}
         {tab === 'downloads' && <DownloadsTab />}
         {tab === 'log' && <LogTab active={tab === 'log'} />}
         </div>
+        </div>
+        <div ref={setConfigFooterTarget} hidden={tab !== 'config' || !config} className="configuration-footer shrink-0 border-t border-line bg-canvas px-8 py-4 max-[1200px]:px-6 max-[900px]:px-4" />
       </main>
     </div>
   )
