@@ -171,6 +171,31 @@ try {
   await capture('library-cards')
   console.log('PASS card library and distinct match status')
 
+  await evaluate(`(() => { const button = document.querySelector('button[aria-label="Details for Example anime"]'); button.focus(); button.click() })()`)
+  await wait(`document.querySelector('.anime-details-body .release-row')`)
+  assert.ok(await evaluate(`document.querySelector('.release-row').textContent.includes('1 selected file · 120 B')`), 'Details use selected-file bytes rather than the full 200 B release')
+  assert.ok(await evaluate(`document.querySelector('.release-row').textContent.includes('Season release') && document.querySelector('.release-row').textContent.includes('200 B')`), 'Season release size remains separately labelled')
+  await evaluate(`document.querySelector('.release-row details').querySelector('summary').click()`)
+  assert.ok(await evaluate(`document.querySelector('.release-row ul').textContent.includes('01.mkv')`), 'Selected filenames can be inspected before download')
+  await wait(`document.querySelector('.release-row [role=progressbar][aria-label][aria-valuenow]')`)
+  await key('Escape')
+  await wait(`!document.querySelector('dialog[open]')`)
+  await wait(`document.activeElement.getAttribute('aria-label') === 'Details for Example anime'`)
+  assert.equal(await evaluate(`document.activeElement.getAttribute('aria-label')`), 'Details for Example anime', 'Closing details restores focus')
+  const savedFileMetadata = example.releases[0].torrent_files
+  delete example.releases[0].torrent_files
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
+  await evaluate(`document.querySelector('button[aria-label="Details for Example anime"]').click()`)
+  await wait(`document.querySelector('.release-row')`)
+  assert.ok(await evaluate(`document.querySelector('.release-row').textContent.includes('1 selected file · size unavailable')`), 'Missing file metadata never presents the full-release fallback as selected-file bytes')
+  await key('Escape')
+  await wait(`!document.querySelector('dialog[open]')`)
+  example.releases[0].torrent_files = savedFileMetadata
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
+  console.log('PASS details file scope, missing-metadata uncertainty, progress semantics, and focus restoration')
+
   await click('Bulk download')
   await evaluate(`document.querySelector('dialog[open] button[aria-expanded]').click()`)
   await wait(`document.querySelector('dialog[open] input[type=radio]')`)
@@ -445,7 +470,7 @@ try {
   await pause(200)
   const mobileFirstCard = await evaluate(`document.querySelector('[aria-label="Library results"] article').getBoundingClientRect().top`)
   assert.ok(mobileFirstCard < 460, 'Mobile chrome leaves useful room for the first card: ' + mobileFirstCard)
-  assert.ok(await evaluate(`[...document.querySelectorAll('.library-actions > button, .library-toolbar button, article button[popovertarget]')].filter(button => button.getClientRects().length).every(button => button.getBoundingClientRect().height >= 44)`), 'Primary mobile actions, filters, and season chips have 44px targets')
+  assert.ok(await evaluate(`[...document.querySelectorAll('.library-actions > button, .library-toolbar button')].filter(button => button.getClientRects().length).every(button => button.getBoundingClientRect().height >= 44)`), 'Primary mobile actions and filters have 44px targets')
   await capture('priorities-mobile-library')
   console.log('PASS bounded library pages, full-library search/bulk scope, and off-page history fallback navigation')
   fixtureResults = null
@@ -566,14 +591,11 @@ try {
     await evaluate(`location.hash = 'anime'`)
     await pause(200)
     await evaluate(`document.querySelector('main > .app-scrollbar').scrollTop = 0`)
-    const badgeSelector = 'button[popovertarget][aria-label*="Cour 1"]'
-    await evaluate(`document.querySelector(${JSON.stringify(badgeSelector)}).focus()`)
-    await key('Enter')
-    await wait(`document.querySelector('[popover]:popover-open')`)
-    assert.ok(await evaluate(`document.querySelector('[popover]:popover-open').textContent.includes('Cour 1') && document.querySelector('[popover]:popover-open').textContent.includes('Cour 2')`), 'Season status explains both cours through the keyboard')
-    await capture(`review-${width}-season-status`)
-    await key('Escape')
-    assert.ok(await evaluate(`!document.querySelector('[popover]:popover-open')`), 'Season explanation dismisses with Escape')
+    const badgeSelector = '.library-card-seasons .season-badge[title*="Cour 1"]'
+    assert.ok(await evaluate(`(() => { const badge = document.querySelector(${JSON.stringify(badgeSelector)}); return badge && badge.tagName === 'SPAN' && !badge.querySelector('svg') && !badge.hasAttribute('tabindex') && badge.textContent.includes('Cour 1') && badge.textContent.includes('Cour 2') })()`), 'Season pills retain accessible cour statuses without icons or an interactive control')
+    await evaluate(`document.querySelector(${JSON.stringify(badgeSelector)}).click()`)
+    assert.ok(await evaluate(`!document.querySelector('.season-status-popover, .season-badge[popovertarget]') && !document.querySelector('[popover]:popover-open')`), 'Season pills do not open a popover')
+    await capture(`review-${width}-season-pills`)
     await evaluate(`(() => { const card = [...document.querySelectorAll('article')].find(card => card.textContent.includes(${JSON.stringify(example.title)})); [...card.querySelectorAll('button')].find(button => button.textContent.trim() === 'Details').click() })()`)
     await wait(`document.querySelector('.release-identity')`)
     const releaseGeometry = await evaluate(`(() => { const identities = [...document.querySelectorAll('.release-identity')]; return identities.map(identity => ({ width: identity.clientWidth, scrollWidth: identity.scrollWidth, groupWidth: identity.querySelector('span').clientWidth, groupScrollWidth: identity.querySelector('span').scrollWidth, tagWidths: [...identity.querySelectorAll('div > span')].map(tag => tag.getBoundingClientRect().width) })) })()`)
@@ -585,6 +607,7 @@ try {
     uiEvidence.push({ width, route: 'release-details', releaseGeometry })
     await capture(`review-${width}-details`)
     await evaluate(`document.querySelector('.release-row').scrollIntoView({ block: 'center' })`)
+    assert.ok(await evaluate(`(() => { const button=document.querySelector('dialog[open] button[aria-label="Close details"]'); const box=button.getBoundingClientRect(); return box.top >= 0 && box.bottom <= innerHeight && box.height >= 44 })()`), 'Details retain a visible, reachable close control after scrolling')
     await capture(`review-${width}-details-releases`)
     await click('Correct match')
     await wait(`document.querySelectorAll('dialog[open]').length === 2`)
@@ -603,7 +626,7 @@ try {
     await capture(`review-${width}-bulk-expanded`)
     await key('Escape')
   }
-  console.log('PASS responsive configuration clearance, long release identities, season explanations, and nested mapping at 320/390/900/1440px')
+  console.log('PASS responsive configuration clearance, long release identities, noninteractive season pills, and nested mapping at 320/390/900/1440px')
   if (process.env.SCREENSHOT_DIR) writeFileSync(join(process.env.SCREENSHOT_DIR, 'ui-evidence.json'), JSON.stringify(uiEvidence, null, 2))
   for (const mode of ['login', 'setup']) {
     authMode = mode
