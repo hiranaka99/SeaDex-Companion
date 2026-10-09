@@ -17,6 +17,7 @@ SeaDex Companion is a self-hosted web UI that compares your **Sonarr** and **Rad
 - Current-size versus target-size comparison
 - One-click or bulk downloads through qBittorrent, limited to missing episodes when possible
 - Bulk download estimates deduplicate shared torrents and selected files, skip existing hashes, and check qBittorrent download-disk space where supported
+- Bulk review follows your library filters, with an explicit entire-library scope and background batch progress
 - Download monitoring, pause, resume, cancellation, and removal
 - Search and filtering by title, release group, source, and status
 - Matching-review status and aired-episode missing counts
@@ -25,6 +26,7 @@ SeaDex Companion is a self-hosted web UI that compares your **Sonarr** and **Rad
 - Sonarr and Radarr webhooks for incremental scans when titles are added
 - Scan history, change feed, Discord notifications, and live server logs
 - Password-protected UI, Argon2ID password hashing, session revocation, and AES-256-GCM credential encryption
+- Guided connection setup and mobile layouts with larger touch controls
 
 ## Quick start
 
@@ -84,11 +86,13 @@ docker compose pull && docker compose up -d
 
 All integrations are configured in the WebUI; no integration credentials need to be passed through Docker.
 
-1. Add a Sonarr URL and API key, a Radarr URL and API key, or both.
+1. Use the connection checklist to add and test a Sonarr URL and API key or a Radarr URL and API key. Use **Show all settings** to configure both.
 2. Add qBittorrent credentials to enable downloads.
 3. Optionally add a Discord webhook for upgrade notifications.
 4. Test each configured integration, save, and select **Scan library**.
-5. Configure automatic scans under **Configuration → Automation**.
+5. Configure automatic scans under **Configuration → Automation & webhooks**.
+
+Bulk review defaults to the current library results across all matching pages. Choose **Entire library** to review titles outside your search, source, and status filters; hidden titles start unchecked. Release rows show the group, tracker, quality, audio, and tags before submission. After submitting, selections are fixed and **Continue in background** lets you use other tabs while the batch runs. **Review batch** reopens the most recent submitted review in the same session; operation progress and failure details can also be recovered after a reload.
 
 Bulk download review shows the size of new torrents and checks free space on qBittorrent's download paths. Existing torrents are skipped without changing their files or ownership. Low-space warnings require acknowledgement before sending downloads. Older clients may only report space for their default save path; other paths are shown as unavailable. Run a new scan after updating to populate the per-torrent file sizes used by accurate estimates. Estimates do not reserve space or include torrent overhead and library-import copies.
 

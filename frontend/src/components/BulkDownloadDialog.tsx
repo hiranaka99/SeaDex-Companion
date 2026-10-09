@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { ResultItem, Release } from '../types'
 import { formatBytes, resultGroupKey, seasonLabel } from '../utils'
 import { buttonBase, cx } from '../styles'
@@ -75,6 +75,7 @@ export interface BulkOutcome {
 interface Props {
   open: boolean
   results: ResultItem[]
+  scopeControl: ReactNode
   hiddenKeys: Set<string>
   busy: boolean
   outcome?: BulkOutcome | null
@@ -86,10 +87,19 @@ function hiddenKey(result: ResultItem): string {
   return String(resultGroupKey(result))
 }
 
-export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, outcome, onConfirm, onClose }: Props) {
+function ReleaseSummary({ release }: { release: Release }) {
+  const tags = [...new Set([release.quality, ...(release.dual_audio ? ['Dual Audio'] : []), ...(release.tags || [])].filter(Boolean))]
+  return <span className="block min-w-0 text-xs text-muted wrap-anywhere"><strong className="font-semibold text-ink">{release.releaseGroup}</strong> · {release.tracker}{tags.length > 0 && ` · ${tags.join(' · ')}`}</span>
+}
+
+function OutcomeLabel({ status }: { status: 'success' | 'failure' | 'pending' | null }) {
+  return status ? <span className="basis-full text-xs font-semibold">{status === 'success' ? 'Added to qBittorrent' : status === 'failure' ? 'Could not be added — review the operation error details' : 'Waiting for qBittorrent'}</span> : null
+}
+
+export default function BulkDownloadDialog({ open, results, scopeControl, hiddenKeys, busy, outcome, onConfirm, onClose }: Props) {
   // Review a fixed snapshot until the dialog closes. The server checks release
   // identities before adding anything if recommendations change meanwhile.
-  const review = useMemo(() => buildReview(results), [open])
+  const review = useMemo(() => buildReview(results), [results])
   const [selected, setSelected] = useState<Record<string, number>>({})
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -101,8 +111,9 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
   const [retry, setRetry] = useState(0)
   const [acceptSpaceWarning, setAcceptSpaceWarning] = useState(false)
   const enabledGroups = useMemo(() => review.ready.filter(group => enabled[group.id] !== false), [review, enabled])
-  const selectedOptions = useMemo(() => enabledGroups.map(group => group.options.find(option => option.index === selected[group.id]) || group.options[0]), [enabledGroups, selected])
-  const selections = useMemo(() => enabledGroups.map((group, index) => ({ key: group.result.key, release: selectedOptions[index].index, identity: releaseIdentity(selectedOptions[index].release) })), [enabledGroups, selectedOptions])
+  const selectedGroups = useMemo(() => enabledGroups.filter(group => selected[group.id] !== undefined), [enabledGroups, selected])
+  const selectedOptions = useMemo(() => selectedGroups.map(group => group.options.find(option => option.index === selected[group.id]) || group.options[0]), [selectedGroups, selected])
+  const selections = useMemo(() => selectedGroups.map((group, index) => ({ key: group.result.key, release: selectedOptions[index].index, identity: releaseIdentity(selectedOptions[index].release) })), [selectedGroups, selectedOptions])
   const signature = JSON.stringify(selections)
 
   useEffect(() => {
@@ -120,18 +131,19 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
   }, [open, signature, retry, busy, outcome])
 
   useEffect(() => {
-    if (!open) return
+    if (!open || busy || outcome) return
     // Only single-option groups get an automatic pick. Multi-option groups stay
     // pending (collapsed + highlighted) until the user actively chooses one.
     setSelected(Object.fromEntries(review.ready.filter((group) => group.options.length === 1).map((group) => [group.id, group.options[0].index])))
     setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, !hiddenKeys.has(hiddenKey(group.result))])))
     setExpanded({})
-    setView(review.ready.length ? 'ready' : 'unavailable')
+    setView(review.ready.length || !review.blocked.length ? 'ready' : 'unavailable')
     cancelRef.current?.focus()
-  }, [open])
+  }, [open, review])
 
 
   if (!open) return null
+  const locked = busy || Boolean(outcome)
 
   const currentPreflight = preflight?.signature === signature ? preflight.result : null
   const checkError = preflightError?.signature === signature ? preflightError.message : null
@@ -157,7 +169,7 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
   // when it was sent to qBittorrent, and a "working" state while it is still
   // waiting on metadata.
   const groupStatus = (group: ReviewGroup): 'success' | 'failure' | 'pending' | null => {
-    if (!outcome) return null
+    if (!outcome || enabled[group.id] === false || selected[group.id] === undefined) return null
     const index = selected[group.id] ?? group.options[0].index
     const release = group.options.find(({ index: optionIndex }) => optionIndex === index)?.release || group.options[0].release
     const hashes = (release.info_hashes || []).map((hash) => String(hash).toLowerCase())
@@ -171,28 +183,31 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
     : null
 
   return (
-    <Modal open={open} labelledBy="bulk-download-title" busy={busy} onClose={onClose}>
+    <Modal open={open} labelledBy="bulk-download-title" onClose={onClose}>
       <section className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" aria-busy={busy}>
         <header className="flex items-start gap-3 border-b border-line px-5 py-4">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-good/12 text-good"><Icon name="download" size={19}/></span>
           <div className="min-w-0 flex-1">
             <h2 id="bulk-download-title" className="m-0 text-lg font-extrabold">Review bulk downloads</h2>
-            <p className="mt-1 mb-0 text-sm text-muted">{outcome?.inflight ? 'Sending torrents to qBittorrent. Each title shows whether it was added, is pending, or failed.' : outcome ? 'Added titles are marked green; failed titles are marked red. Review any error details before trying again.' : 'Pick the best release for each title; those with several options need a choice before you can download.'}</p>
+            <p className="mt-1 mb-0 text-sm text-muted">{outcome?.inflight ? 'Sending your fixed selection to qBittorrent. Closing this review keeps the batch running in the background.' : outcome ? 'Review the submitted selection and each outcome below. Operation Center shows the batch results and any error details.' : 'Choose a best release for each season or cour you want to upgrade.'}</p>
           </div>
-          <button type="button" className="grid touch-target size-9 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onClose} disabled={busy} aria-label="Close"><Icon name="close" size={18}/></button>
+          <button type="button" className="grid touch-target size-9 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onClose} aria-label={busy ? 'Continue batch in background' : 'Close'}><Icon name="close" size={18}/></button>
         </header>
 
         <div className="app-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto p-5 max-[600px]:p-4">
+          {scopeControl}
           <div className="flex flex-wrap gap-2 text-xs font-bold">
-            <button type="button" className={cx('cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'ready' ? 'border-good/60 bg-good/25 text-ink' : 'border-good/30 bg-good/10 text-ink hover:bg-good/18')} onClick={() => setView('ready')} aria-pressed={view === 'ready'}>{review.ready.length} ready</button>
-            {review.blocked.length > 0 && <button type="button" className={cx('cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'unavailable' ? 'border-warn/60 bg-warn/25 text-ink' : 'border-warn/30 bg-warn/10 text-ink hover:bg-warn/18')} onClick={() => setView('unavailable')} aria-pressed={view === 'unavailable'}>{review.blocked.length} unavailable</button>}
-            {review.ready.length > 0 && <div className="ml-auto flex gap-2"><button type="button" className="cursor-pointer rounded-full border border-accent/50 bg-accent/15 px-3 py-1.5 font-extrabold text-accent-bright transition-colors hover:bg-accent/25" onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, true])))}>Check all</button><button type="button" className="cursor-pointer rounded-full border border-line-strong bg-panel px-3 py-1.5 text-ink transition-colors hover:border-ink/25 hover:bg-canvas-soft" onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, false])))}>Uncheck all</button></div>}
+            <button type="button" className={cx('touch-target cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'ready' ? 'border-good/60 bg-good/25 text-ink' : 'border-good/30 bg-good/10 text-ink hover:bg-good/18')} onClick={() => setView('ready')} aria-pressed={view === 'ready'}>{review.ready.length} eligible</button>
+            {review.blocked.length > 0 && <button type="button" className={cx('touch-target cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'unavailable' ? 'border-warn/60 bg-warn/25 text-ink' : 'border-warn/30 bg-warn/10 text-ink hover:bg-warn/18')} onClick={() => setView('unavailable')} aria-pressed={view === 'unavailable'}>{review.blocked.length} unavailable</button>}
+            {review.ready.length > 0 && <div className="ml-auto flex gap-2"><button type="button" className="touch-target cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 rounded-full border border-accent/50 bg-accent/15 px-3 py-1.5 font-extrabold text-accent-bright transition-colors hover:bg-accent/25" disabled={locked} onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, true])))}>Check all</button><button type="button" className="touch-target cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 rounded-full border border-line-strong bg-panel px-3 py-1.5 text-ink transition-colors hover:border-ink/25 hover:bg-canvas-soft" disabled={locked} onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, false])))}>Uncheck all</button></div>}
           </div>
 
           {view === 'ready' && (
             <section>
-              <h3 className="mb-3 text-xs font-extrabold tracking-[0.12em] text-good uppercase">Ready to download</h3>
-              {automaticCount > 0 && <p className="m-0 mb-3 text-xs text-muted"><Icon name="check" size={14} className="mr-1.5 inline text-good"/>{automaticCount} title{automaticCount === 1 ? '' : 's'} with a single public best option will be selected automatically.</p>}
+              <h3 className="mb-2 text-sm font-bold text-ink">Eligible upgrades</h3>
+              {!outcome && <p className="mb-3 text-xs text-muted" role="status">{selections.length} ready to send{pendingChoices > 0 && ` · ${pendingChoices} need a release choice`}. Each selection covers a movie, season, or cour.</p>}
+              {!outcome && <details className="mb-3 text-xs text-muted"><summary className="touch-target w-fit cursor-pointer font-semibold text-accent-bright">How to choose between best releases</summary><p className="mt-2 mb-0 leading-relaxed">SeaDex marks these releases as best. Options may differ in release group, source, or audio. Compare their tags and notes; file size alone does not explain the recommendation.</p></details>}
+              {!outcome && automaticCount > 0 && <p className="m-0 mb-3 text-xs text-muted"><Icon name="check" size={14} className="mr-1.5 inline text-good"/>{automaticCount} selection{automaticCount === 1 ? '' : 's'} with a single public best option selected automatically.</p>}
               {readySorted.length ? (
                 <div className="space-y-1.5">
                   {readySorted.map((group) => {
@@ -205,8 +220,8 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
                       const delta = release.size && localSize ? release.size - localSize : null
                       const status = groupStatus(group)
                       return (
-                        <label key={group.id} className={cx('flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', status === 'success' && 'border-good/50 bg-good/8', status === 'failure' && 'border-bad/50 bg-bad/8', status === 'pending' && 'border-accent/45 bg-accent/8', !status && (enabled[group.id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft text-muted'))}>
-                          <input type="checkbox" className="size-3.5 shrink-0 accent-accent" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} />
+                        <label key={group.id} className={cx('flex min-h-11 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', locked ? 'cursor-default' : 'cursor-pointer', status === 'success' && 'border-good/50 bg-good/8', status === 'failure' && 'border-bad/50 bg-bad/8', status === 'pending' && 'border-accent/45 bg-accent/8', !status && (enabled[group.id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft text-muted'))}>
+                          <input type="checkbox" disabled={locked} className="size-3.5 shrink-0 accent-accent" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} />
                           {status === 'success' && <Icon name="check" size={13} className="text-good"/>}
                           {status === 'failure' && <Icon name="alert" size={13} className="text-bad"/>}
                           {status === 'pending' && <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/>}
@@ -219,6 +234,8 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
                             <span className="font-bold text-ink" title="Selected best release size">{formatBytes(release.size) || 'Unknown'}</span>
                             {delta !== null && delta !== 0 && <span className="text-muted-dim">({delta > 0 ? '+' : '−'}{formatBytes(Math.abs(delta))})</span>}
                           </span>
+                          <span className="basis-full"><ReleaseSummary release={release}/></span>
+                          <OutcomeLabel status={status}/>
                         </label>
                       )
                     }
@@ -233,7 +250,7 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
                     return (
                       <div key={group.id} className={cx('overflow-hidden rounded-lg border transition-colors', status === 'success' ? 'border-good/50 bg-good/8' : status === 'failure' ? 'border-bad/50 bg-bad/8' : status === 'pending' ? 'border-accent/45 bg-accent/8' : isPending ? 'border-warn/55 bg-warn/8' : 'border-line bg-panel')}>
                         <div className="flex items-center gap-2 px-3 py-2">
-                          <label className="touch-target grid size-8 shrink-0 cursor-pointer place-items-center rounded-lg hover:bg-panel-raised"><input type="checkbox" className="size-4 accent-accent" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} aria-label={`Include ${group.result.title} · ${seasonLabel(group.result)}${group.part ? ` · ${group.part}` : ''}`} /></label>
+                          <label className="touch-target grid size-8 shrink-0 cursor-pointer place-items-center rounded-lg hover:bg-panel-raised"><input type="checkbox" disabled={locked} className="size-4 accent-accent" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} aria-label={`Include ${group.result.title} · ${seasonLabel(group.result)}${group.part ? ` · ${group.part}` : ''}`} /></label>
                           <button type="button" className="flex min-h-11 min-w-0 flex-1 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 text-left text-xs" onClick={() => setExpanded((current) => ({ ...current, [group.id]: !isExpanded }))} aria-expanded={isExpanded}>
                             {status === 'success' && <Icon name="check" size={13} className="text-good"/>}
                             {status === 'failure' && <Icon name="alert" size={13} className="text-bad"/>}
@@ -246,6 +263,8 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
                             ) : (
                               <span className={cx('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-extrabold', enabled[group.id] !== false ? 'border-warn/45 bg-warn/15 text-warn' : 'border-line-strong bg-canvas-soft text-muted')}><Icon name="alert" size={12}/>Choose 1 of {group.options.length}</span>
                             )}
+                            {chosenOption && <span className="basis-full"><ReleaseSummary release={chosenOption.release}/></span>}
+                            <OutcomeLabel status={status}/>
                             <span className="ml-auto flex items-center gap-1.5">
                               {chosenOption && (
                                 <span className="flex items-center gap-1.5 tabular-nums" title={`${chosenOption.release.releaseGroup} · ${chosenOption.release.tracker}`}>
@@ -263,30 +282,30 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
                               {group.options.map(({ index, release }) => {
                                 const checked = chosenIndex === index
                                 return (
-                                  <label key={index} className={cx('flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 transition-colors', checked ? 'border-accent bg-accent/10' : 'border-line bg-panel hover:border-line-strong')}>
-                                    <input type="radio" name={group.id} className="mt-0.5 accent-accent" checked={checked} onChange={() => setSelected((current) => ({ ...current, [group.id]: index }))} />
+                                  <label key={index} className={cx('flex items-start gap-2.5 rounded-lg border p-3 transition-colors', locked ? 'cursor-default' : 'cursor-pointer', checked ? 'border-accent bg-accent/10' : 'border-line bg-panel hover:border-line-strong')}>
+                                    <input type="radio" disabled={locked} name={group.id} className="mt-0.5 accent-accent" checked={checked} onChange={() => setSelected((current) => ({ ...current, [group.id]: index }))} />
                                     <span className="min-w-0 flex-1">
-                                      <span className="block text-sm font-bold wrap-anywhere text-ink" title={release.releaseGroup}>{release.releaseGroup}</span>
-                                      <span className="mt-1 flex flex-wrap gap-x-2 text-xs text-muted"><span>{release.tracker}</span><span className="font-bold text-ink">{formatBytes(release.size) || 'Unknown size'}</span></span>
+                                      <ReleaseSummary release={release}/>
+                                      <span className="mt-1 block text-xs font-bold text-ink">{formatBytes(release.size) || 'Unknown size'}</span>
                                     </span>
                                   </label>
                                 )
                               })}
                             </div>
-                            <div className="mt-2.5 whitespace-pre-line break-words rounded-lg border border-line bg-panel/70 px-3 py-2 text-xs leading-relaxed text-muted"><span className="font-bold text-ink">Note:</span> {group.result.notes && group.result.notes !== '-' ? group.result.notes : 'No release note provided.'}</div>
+                            <div className="mt-2.5 whitespace-pre-line break-words text-xs leading-relaxed text-muted"><span className="font-bold text-ink">Note:</span> {group.result.notes_by_part?.[group.part] || (group.result.notes && group.result.notes !== '-' ? group.result.notes : 'No release note provided.')}</div>
                           </div>
                         )}
                       </div>
                     )
                   })}
                 </div>
-              ) : <p className="m-0 text-xs text-muted">Nothing ready to download.</p>}
+              ) : <p className="m-0 text-xs text-muted">No eligible upgrades in this scope. Change the review scope to check other library titles.</p>}
             </section>
           )}
 
           {view === 'ready' && review.ready.length > 0 && <>
             <dl className="m-0 grid grid-cols-2 gap-x-4 gap-y-2 border-y border-line py-3 sm:grid-cols-5">
-              <div><dt className="text-xs text-muted">Selections</dt><dd className="m-0 text-sm font-bold tabular-nums">{selections.length}</dd></div>
+              <div><dt className="text-xs text-muted">Selected releases</dt><dd className="m-0 text-sm font-bold tabular-nums">{selections.length}</dd></div>
               <div><dt className="text-xs text-muted">New torrents</dt><dd className="m-0 text-sm font-bold tabular-nums">{estimate.new_torrents}</dd></div>
               <div><dt className="text-xs text-muted">New download size</dt><dd className="m-0 text-sm font-bold tabular-nums" data-testid="bulk-download-size">{checking ? 'Checking…' : sizeText}</dd></div>
               <div><dt className="text-xs text-muted">File scope</dt><dd className="m-0 text-sm font-bold tabular-nums">{estimate.selected_file_count > 0 ? `${estimate.selected_file_count} file${estimate.selected_file_count === 1 ? '' : 's'}${estimate.whole_torrents ? ` + ${estimate.whole_torrents} whole` : ''}` : `${estimate.whole_torrents} whole torrent${estimate.whole_torrents === 1 ? '' : 's'}`}</dd></div>
@@ -330,18 +349,16 @@ export default function BulkDownloadDialog({ open, results, hiddenKeys, busy, ou
 
         <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-panel px-5 py-4">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
-            {pendingChoices > 0 && <span className="inline-flex items-center gap-1 font-bold text-warn"><Icon name="alert" size={13}/>Choose a release for {pendingChoices} title{pendingChoices === 1 ? '' : 's'} first</span>}
+            {!outcome && pendingChoices > 0 && <span className="inline-flex items-center gap-1 font-bold text-warn"><Icon name="alert" size={13}/>Resolve {pendingChoices} release choice{pendingChoices === 1 ? '' : 's'} first</span>}
             {!outcome && lowSpace && !acceptSpaceWarning && <button type="button" className="touch-target cursor-pointer rounded-lg px-2 py-1 font-bold text-warn underline hover:bg-warn/10" onClick={() => diskRef.current?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.focus()}>Review disk space warning</button>}
           </span>
           <div className="flex gap-2">
             {outcome?.inflight ? (
-              <button type="button" className={cx(buttonBase, 'cursor-not-allowed border-accent/35 bg-accent/12 text-accent-bright')} disabled>
-                <span className="size-4 animate-spin rounded-full border-2 border-accent/35 border-t-accent"/>Sending… {inflightProgress ? `${inflightProgress.settled}/${inflightProgress.total}` : ''}
-              </button>
+              <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted" role="status">Sending… {inflightProgress ? `${inflightProgress.settled}/${inflightProgress.total} torrents` : ''}</span><button type="button" className={cx(buttonBase, 'border-accent/35 bg-accent/12 text-accent-bright')} onClick={onClose}>Continue in background</button></div>
             ) : (
               <>
                 <button ref={cancelRef} type="button" className={cx(buttonBase, 'border-line bg-panel-raised text-ink hover:text-ink')} onClick={onClose} disabled={busy}>{outcome ? 'Close' : 'Cancel'}</button>
-                {!outcome && <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/12 text-good hover:bg-good/20')} onClick={() => onConfirm(selections)} disabled={busy || checking || selections.length === 0 || pendingChoices > 0 || estimate.new_torrents === 0 || Boolean(lowSpace && !acceptSpaceWarning)}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}Download {estimate.new_torrents || ''}</button>}
+                {!outcome && <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/12 text-good hover:bg-good/20')} onClick={() => onConfirm(selections)} disabled={busy || checking || selections.length === 0 || pendingChoices > 0 || estimate.new_torrents === 0 || Boolean(lowSpace && !acceptSpaceWarning)}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}Download {estimate.new_torrents} torrent{estimate.new_torrents === 1 ? '' : 's'}</button>}
               </>
             )}
           </div>

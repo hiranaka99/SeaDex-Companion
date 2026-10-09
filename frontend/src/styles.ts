@@ -9,7 +9,7 @@ export const subtitle = 'm-0 text-[13.5px] text-muted'
 export const actions = 'flex items-center gap-2.5'
 
 export const buttonBase =
-  'inline-flex cursor-pointer items-center gap-2 whitespace-normal rounded-control border px-4 py-2.5 text-sm font-semibold transition-all duration-150 [&_svg]:shrink-0 disabled:cursor-not-allowed disabled:opacity-60'
+  'touch-target inline-flex cursor-pointer items-center gap-2 whitespace-normal rounded-control border px-4 py-2.5 text-sm font-semibold transition-all duration-150 [&_svg]:shrink-0 disabled:cursor-not-allowed disabled:opacity-60'
 
 export const buttonPrimary =
   `${buttonBase} border-transparent bg-linear-to-b from-accent-bright to-accent text-on-accent shadow-[0_6px_18px_rgba(79,140,255,0.35)] enabled:hover:-translate-y-px enabled:hover:shadow-[0_10px_24px_rgba(79,140,255,0.45)]`

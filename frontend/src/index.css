@@ -93,6 +93,10 @@
 .log-main-pane { overflow-y: hidden; }
 .operation-center { flex-shrink: 0; }
 .operation-center:has(details[open]) { position: relative; top: auto; }
+
+/* Preserve native open/closed arrows while keeping section metadata aligned. */
+.configuration-disclosures > details > summary { display: list-item; }
+.configuration-disclosures > details > summary > span { float: right; margin-left: .75rem; }
 .operation-diagnostics { max-height: min(12rem, 30dvh); }
 .library-results { scroll-margin-top: 1rem; }
 
@@ -119,8 +123,10 @@
 }
 
 @media (max-width: 600px) {
-  .library-actions { grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); }
-  .library-actions > :first-child { grid-column: 1 / -1; }
+  .library-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+  .connection-status:not([role]) { display: none; }
+  .library-more-actions > summary::-webkit-details-marker { display: none; }
+  .configuration-footer { padding-top: .5rem; }
   .modal-shell > section > header { max-height: 40dvh; overflow-y: auto; padding-inline: clamp(12px, 5vw, 20px); }
   .modal-shell > section > header h2 { overflow-wrap: anywhere; }
 }

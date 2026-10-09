@@ -64,6 +64,8 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   const [statusError, setStatusError] = useState('')
   const [lastStatusUpdate, setLastStatusUpdate] = useState<Date | null>(null)
   const [bulkOperation, setBulkOperation] = useState<BulkOperationState | null>(null)
+  const [bulkReviewAvailable, setBulkReviewAvailable] = useState(false)
+  const [bulkReviewRequest, setBulkReviewRequest] = useState(0)
   const [scanCompleted, setScanCompleted] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<boolean>(readCollapsed)
   const [configFooterTarget, setConfigFooterTarget] = useState<HTMLDivElement | null>(null)
@@ -168,7 +170,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
         const settled = batch.added.length + batch.failures.length
         if (!batch.finished || observing) {
           observing = true
-          setBulkOperation({ action: 'start', phase: batch.finished ? batch.failures.length ? 'warning' : 'success' : 'running', settled, total: settled + batch.pending.length, added: batch.added.length, failed: batch.failures.length, message: `${batch.added.length} added · ${batch.pending.length} pending · ${batch.failures.length} failed` })
+          setBulkOperation({ action: 'start', phase: batch.finished ? batch.failures.length ? 'warning' : 'success' : 'running', settled, total: settled + batch.pending.length, added: batch.added.length, failed: batch.failures.length, failures: batch.failures, message: `${batch.added.length} added · ${batch.pending.length} pending · ${batch.failures.length} failed` })
           if (!batch.finished) timer = window.setTimeout(recoverBulk, 3000)
         }
       } catch { if (active) timer = window.setTimeout(recoverBulk, 3000) }
@@ -190,6 +192,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   }, [loadConfig, loadResults, pollStatus])
 
   const handleScan = async () => {
+    if (status.running || bulkOperation?.phase === 'running') return
     try {
       setScanCompleted(null)
       const r = await api.startScan()
@@ -248,6 +251,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
           onOpenLibrary={() => changeTab('anime')}
           onOpenConfig={() => changeTab('config')}
           onDismissBulk={() => setBulkOperation(null)}
+          onReviewBulk={bulkReviewAvailable ? () => { changeTab('anime'); setBulkReviewRequest(value => value + 1) } : undefined}
           onDismissScan={() => setScanCompleted(null)}
         />
         <div className="connection-status mb-4 flex shrink-0 flex-wrap items-center gap-3 text-xs text-muted" role={statusError ? 'alert' : undefined}>
@@ -259,6 +263,8 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
             openResultKey={openResultKey}
             onResultOpened={() => setOpenResultKey(null)}
             bulkOperationActive={bulkOperation?.phase === 'running'}
+            bulkReviewRequest={bulkReviewRequest}
+            onBulkReviewReset={() => setBulkReviewAvailable(false)}
             results={results}
             config={config}
             status={status}
@@ -268,13 +274,13 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
             loadError={resultsError}
             onReloadResults={() => void loadResults()}
             onOpenConfig={() => changeTab('config')}
-            onBulkOperationChange={setBulkOperation}
+            onBulkOperationChange={operation => { setBulkOperation(operation); setBulkReviewAvailable(operation.action === 'start') }}
             operationsVisible={status.running || Boolean(status.error) || Boolean(scanCompleted) || Boolean(bulkOperation)}
             onResultsChanged={async () => { await loadResults() }}
           />
         </div>
         {historyVisited.current && <div hidden={tab !== 'history'}><HistoryTab active={tab === 'history'} results={results} onOpenResult={openHistoryResult} /></div>}
-        {configVisited.current && <div hidden={tab !== 'config'}><ConfigTab active={tab === 'config'} footerTarget={configFooterTarget} loadError={configError} onRetry={() => void loadConfig()} config={config} status={status} username={username} onRunScan={handleScan} onAccountUpdated={onAccountUpdated} onSaved={saved => { api.invalidateDownloadProgress(); setConfig(saved) }} onScannedDataCleared={handleScannedDataCleared} /></div>}
+        {configVisited.current && <div hidden={tab !== 'config'}><ConfigTab active={tab === 'config'} scanDisabled={status.running || bulkOperation?.phase === 'running'} footerTarget={configFooterTarget} loadError={configError} onRetry={() => void loadConfig()} config={config} status={status} username={username} onRunScan={handleScan} onAccountUpdated={onAccountUpdated} onSaved={saved => { api.invalidateDownloadProgress(); setConfig(saved) }} onScannedDataCleared={handleScannedDataCleared} /></div>}
         {tab === 'log' && <LogTab active={tab === 'log'} />}
         </div>
         </div>

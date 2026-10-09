@@ -10,6 +10,7 @@ export interface BulkOperationState {
   added: number
   failed: number
   message: string
+  failures?: { label: string; error: string }[]
 }
 
 interface Props {
@@ -22,9 +23,10 @@ interface Props {
   onOpenConfig: () => void
   onDismissBulk: () => void
   onDismissScan: () => void
+  onReviewBulk?: () => void
 }
 
-export default function OperationCenter({ status, scanCompleted, bulk, onRetryScan, onCancelScan, onOpenLibrary, onOpenConfig, onDismissBulk, onDismissScan }: Props) {
+export default function OperationCenter({ status, scanCompleted, bulk, onRetryScan, onCancelScan, onOpenLibrary, onOpenConfig, onDismissBulk, onDismissScan, onReviewBulk }: Props) {
   const scanVisible = status.running || Boolean(status.error) || status.cancelled || Boolean(scanCompleted) || status.webhook_scan.queued
   if (!scanVisible && !bulk) return null
   const progress = status.total ? Math.min(100, Math.round(status.progress / status.total * 100)) : 0
@@ -67,10 +69,10 @@ export default function OperationCenter({ status, scanCompleted, bulk, onRetrySc
               <div className="mt-1 whitespace-pre-wrap text-xs text-muted wrap-anywhere">{bulk.phase === 'error' ? 'Review the error details before retrying.' : bulk.message}</div>
             </div>
             {bulk.total > 0 && <span className="rounded-full border border-line bg-panel px-2.5 py-1 text-xs font-bold tabular-nums text-muted">{bulk.settled}/{bulk.total}</span>}
-            <button type="button" className={cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')} onClick={onOpenLibrary}>Open library</button>
+            <button type="button" className={cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')} onClick={onReviewBulk || onOpenLibrary}>{onReviewBulk ? 'Review batch' : 'Open library'}</button>
             {bulk.phase !== 'running' && <button type="button" className="touch-target grid size-8 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onDismissBulk} aria-label="Dismiss bulk operation"><Icon name="close" size={16}/></button>}
           </div>
-          {bulk.phase === 'error' && <details className="mt-3 border-t border-bad/25 pt-2 text-xs"><summary className="touch-target w-fit cursor-pointer rounded-md py-1 font-semibold text-ink">Error details</summary><div className="operation-diagnostics app-scrollbar mt-2 overflow-y-auto whitespace-pre-wrap text-muted wrap-anywhere" tabIndex={0} role="region" aria-label="Bulk operation error details">{bulk.message}</div></details>}
+          {(bulk.phase === 'error' || Boolean(bulk.failures?.length)) && <details className="mt-3 border-t border-bad/25 pt-2 text-xs"><summary className="touch-target w-fit cursor-pointer rounded-md py-1 font-semibold text-ink">Error details</summary><div className="operation-diagnostics app-scrollbar mt-2 overflow-y-auto whitespace-pre-wrap text-muted wrap-anywhere" tabIndex={0} role="region" aria-label="Bulk operation error details">{bulk.failures?.length ? <ul className="m-0 space-y-2 pl-4">{bulk.failures.map((failure, index) => <li key={index}><strong className="text-ink">{failure.label}</strong>: {failure.error}</li>)}</ul> : bulk.message}</div></details>}
           {bulk.phase === 'running' && bulk.total > 0 && <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-canvas"><div className="h-full rounded-full bg-linear-to-r from-accent to-good transition-[width] duration-500" style={{ width: `${Math.max(bulkProgress, 2)}%` }}/></div>}
         </div>
       )}

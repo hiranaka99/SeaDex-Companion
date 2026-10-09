@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { ReactNode, useEffect, useRef, useState } from 'react'
 import { formatBytes } from '../utils'
 import { buttonBase, cx } from '../styles'
 import Icon from './Icons'
@@ -8,12 +8,15 @@ import Modal from './Modal'
 interface Props {
   open: boolean
   busy: boolean
+  scopeControl: ReactNode
+  resultKeys?: Set<string>
   onConfirm: (selections: BulkDownloadTarget[], deleteFiles: boolean) => void
   onClose: () => void
 }
 
-export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Props) {
-  const [downloads, setDownloads] = useState<CancelableDownload[]>([])
+export default function BulkCancelDialog({ open, busy, scopeControl, resultKeys, onConfirm, onClose }: Props) {
+  const [allDownloads, setDownloads] = useState<CancelableDownload[]>([])
+  const downloads = resultKeys ? allDownloads.filter(download => resultKeys.has(download.key)) : allDownloads
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})
@@ -51,7 +54,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
   const enabledItems = downloads.filter((item) => enabled[`${item.key}\0${item.release}`] !== false)
   const allChecked = downloads.length > 0 && enabledItems.length === downloads.length
   const selections = enabledItems.map((item) => ({ key: item.key, release: item.release }))
-  const selectedTorrents = enabledItems.reduce((total, item) => total + item.hashes.length, 0)
+  const selectedTorrents = new Set(enabledItems.flatMap(item => item.hashes.map(hash => hash.toLowerCase()))).size
 
   return (
     <Modal open={open} labelledBy="bulk-cancel-title" busy={busy} onClose={onClose}>
@@ -66,6 +69,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
         </header>
 
         <div className="app-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+          {scopeControl}
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted"><span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/>Loading active downloads…</div>
           ) : error ? (
@@ -79,7 +83,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
                 {downloads.map((item) => {
                   const id = `${item.key}\0${item.release}`
                   return (
-                    <label key={id} className={cx('flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', enabled[id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft text-muted')}>
+                    <label key={id} className={cx('flex min-h-11 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', enabled[id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft text-muted')}>
                       <input type="checkbox" disabled={busy} className="size-3.5 shrink-0 accent-bad" checked={enabled[id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [id]: event.target.checked }))} />
                       <span className="min-w-0 flex-1 font-semibold text-ink wrap-anywhere">{item.title}</span>
                       <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-xs font-extrabold text-ink">{item.season == null ? 'Movie' : `S${String(item.season).padStart(2, '0')}`}{item.part ? ` · ${item.part}` : ''}</span>
@@ -94,7 +98,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
               </div>
             </>
           ) : (
-            <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted"><Icon name="check" size={26} className="text-good"/>No incomplete torrents added by the app are currently in qBittorrent.</div>
+            <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted"><Icon name="check" size={26} className="text-good"/>No incomplete app-managed downloads in this scope. Choose All tracked downloads to include titles outside these results.</div>
           )}
 
           {downloads.length > 0 && (
@@ -114,7 +118,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
           </span>
           <div className="flex gap-2">
             <button ref={cancelRef} type="button" className={cx(buttonBase, 'border-line bg-panel-raised text-ink hover:text-ink')} onClick={onClose} disabled={busy}>Keep</button>
-            <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/12 text-bad hover:bg-bad/20')} onClick={() => onConfirm(selections, deleteFiles)} disabled={busy || selections.length === 0}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}Cancel {selections.length || ''}</button>
+            <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/12 text-bad hover:bg-bad/20')} onClick={() => onConfirm(selections, deleteFiles)} disabled={busy || selections.length === 0}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}Remove {selectedTorrents || ''} torrent{selectedTorrents === 1 ? '' : 's'}</button>
           </div>
         </footer>
       </section>
