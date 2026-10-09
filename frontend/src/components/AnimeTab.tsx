@@ -49,11 +49,13 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   const [search, setSearch] = useState('')
   const [arr, setArr] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
+  const [coverageFilter, setCoverageFilter] = useState('')
   const [sort, setSort] = useState('recommended')
   const [optionsOpen, setOptionsOpen] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
   const [page, setPage] = useState(0)
   const resultsRef = useRef<HTMLDivElement>(null)
+  const moreActionsRef = useRef<HTMLDetailsElement>(null)
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
   const hiddenKeysRef = useRef(hiddenKeys)
   const hiddenRequests = useRef(new Map<string, Promise<unknown>>())
@@ -67,14 +69,23 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   const reviewKeys = useMemo(() => new Set(reviewResults.map(result => result.key)), [reviewResults])
   const toast = useToast()
 
-  useEffect(() => { if (!openResultKey) setPage(0) }, [search, arr, statusFilter, sort, showHidden])
+  useEffect(() => { if (!openResultKey) setPage(0) }, [search, arr, statusFilter, coverageFilter, sort, showHidden])
+
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      const menu = moreActionsRef.current
+      if (menu?.open && !menu.contains(event.target as Node)) menu.open = false
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    return () => document.removeEventListener('pointerdown', closeOutside)
+  }, [])
 
   useEffect(() => { if (!active) setBulkConfirm(null) }, [active])
   useEffect(() => { if (bulkReviewRequest) setBulkConfirm('start') }, [bulkReviewRequest])
   useEffect(() => {
     if (!openResultKey) return
     const group = groupResults(results).find(group => group.seasons.some(season => season.key === openResultKey))
-    if (group) { setSearch(''); setArr(''); setStatusFilter(''); setShowHidden(hiddenKeys.has(cardKey(group))) }
+    if (group) { setSearch(''); setArr(''); setStatusFilter(''); setCoverageFilter(''); setShowHidden(hiddenKeys.has(cardKey(group))) }
     else { toast.show('This title is no longer in the current library', 'info'); onResultOpened() }
   }, [openResultKey])
 
@@ -88,7 +99,12 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
     const haystack = `${group.title} ${group.seasons.map(season => `${season.title} ${season.best_group || ''} ${season.have.join(' ')} ${seasonLabel(season)}`).join(' ')}`
     return haystack.toLowerCase().includes(search.trim().toLowerCase())
   }), [allGroups, hiddenKeys, showHidden, arr, search])
-  const counts = useMemo(() => Object.fromEntries(['upgrade', 'partial', 'missing', 'best', 'review'].map(status => [status, scopeGroups.filter(group => status === 'upgrade' ? hasCardUpgrade(group) : group.status === status).length])), [scopeGroups])
+  const coverageGroups = useMemo(() => scopeGroups.filter(group => !coverageFilter || group.status === coverageFilter), [scopeGroups, coverageFilter])
+  const counts = useMemo(() => ({
+    upgrade: coverageGroups.filter(hasCardUpgrade).length,
+    review: coverageGroups.filter(group => group.status === 'review').length,
+    episodes: coverageGroups.filter(group => group.seasons.some(season => (season.missing_episode_count || 0) > 0)).length,
+  }), [coverageGroups])
 
   const setCardHidden = async (key: string, hidden: boolean, offerUndo = false): Promise<boolean> => {
     const wasHidden = hiddenKeysRef.current.has(key)
@@ -125,7 +141,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   const toggleHidden = (key: string) => setCardHidden(key, !hiddenKeysRef.current.has(key), true)
 
   const groups = useMemo(() => {
-    const filtered = scopeGroups.filter(group => statusFilter === 'episodes'
+    const filtered = coverageGroups.filter(group => statusFilter === 'episodes'
       ? group.seasons.some(season => (season.missing_episode_count || 0) > 0)
       : statusFilter === 'upgrade' ? hasCardUpgrade(group) : !statusFilter || group.status === statusFilter)
     const rank: Record<string, number> = { review: 0, upgrade: 1, partial: 2, missing: 3, best: 4 }
@@ -135,7 +151,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
       return rank[a.status] - rank[b.status] || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
     })
     return filtered
-  }, [scopeGroups, statusFilter, sort])
+  }, [coverageGroups, statusFilter, sort])
 
   const pageCount = Math.max(1, Math.ceil(groups.length / PAGE_SIZE))
   const requestedIndex = openResultKey ? groups.findIndex(group => group.seasons.some(season => season.key === openResultKey)) : -1
@@ -174,17 +190,20 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
       ? `Every ${config.scan_schedule.interval_minutes >= 60 ? `${Math.floor(config.scan_schedule.interval_minutes / 60)}h ${config.scan_schedule.interval_minutes % 60 ? `${config.scan_schedule.interval_minutes % 60}m` : ''}`.trim() : `${config.scan_schedule.interval_minutes}m`}`
       : `${config.scan_schedule.mode === 'daily' ? 'Daily' : config.scan_schedule.weekdays.map((day) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ')} at ${config.scan_schedule.times.join(', ')} ${config.scan_schedule.timezone}`
     : null
-  const clearFilters = () => { setSearch(''); setArr(''); setStatusFilter(''); setSort('recommended'); setShowHidden(false) }
-  const statusFilters: { value: string; label: string; count: number; tone: string; icon: IconName }[] = [
-    { value: '', label: 'All', count: scopeGroups.length, tone: 'text-ink', icon: 'library' },
-    { value: 'review', label: 'Match needs review', count: counts.review, tone: 'text-warn', icon: 'search' },
-    { value: 'episodes', label: 'Episodes missing', count: scopeGroups.filter(group => group.seasons.some(season => (season.missing_episode_count || 0) > 0)).length, tone: 'text-warn', icon: 'alert' },
-    { value: 'upgrade', label: 'Upgradable', count: counts.upgrade, tone: 'text-accent-bright', icon: 'sparkles' },
-    { value: 'partial', label: 'Partially on SeaDex', count: counts.partial, tone: 'text-warn', icon: 'alert' },
-    { value: 'missing', label: 'Not on SeaDex', count: counts.missing, tone: 'text-muted', icon: 'alert' },
-    { value: 'best', label: 'Best quality', count: counts.best, tone: 'text-good', icon: 'check' },
+  const clearFilters = () => { setSearch(''); setArr(''); setStatusFilter(''); setCoverageFilter(''); setSort('recommended'); setShowHidden(false) }
+  const coverageFilters = [
+    { value: '', label: 'All coverage states' },
+    { value: 'partial', label: 'Partially on SeaDex' },
+    { value: 'missing', label: 'Not on SeaDex' },
+    { value: 'best', label: 'Best quality' },
   ]
-  const activeOptions = [arr, showHidden ? 'Hidden only' : '', sort === 'title' ? 'Title A–Z' : sort === 'size' ? 'Largest size change' : ''].filter(Boolean)
+  const statusFilters: { value: string; label: string; count: number; tone: string; icon: IconName }[] = [
+    { value: '', label: 'All', count: coverageGroups.length, tone: 'text-ink', icon: 'library' },
+    { value: 'upgrade', label: 'Upgradable', count: counts.upgrade, tone: 'text-accent-bright', icon: 'arrow-up' },
+    { value: 'review', label: 'Match needs review', count: counts.review, tone: 'text-warn', icon: 'search' },
+    { value: 'episodes', label: 'Episodes missing', count: counts.episodes, tone: 'text-warn', icon: 'alert' },
+  ]
+  const activeOptions = [arr, coverageFilter ? coverageFilters.find(filter => filter.value === coverageFilter)?.label : '', showHidden ? 'Hidden only' : '', sort === 'title' ? 'Title A–Z' : sort === 'size' ? 'Largest size change' : ''].filter(Boolean)
   const activeFilters = [search.trim() ? `Search: ${search.trim()}` : '', ...activeOptions, statusFilter ? statusFilters.find(filter => filter.value === statusFilter)?.label : ''].filter(Boolean)
   const openBulkReview = (action: 'start' | 'cancel') => {
     onBulkReviewReset()
@@ -303,35 +322,38 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
       <header className="app-page-header mb-5 flex flex-wrap items-start justify-between gap-4 max-[600px]:mb-4 max-[600px]:gap-3">
         <div><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted max-[600px]:hidden"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}</span>{autoCheckLabel !== null && <span title={scheduleDescription || undefined}>{scheduleDescription} · next in ~{autoCheckLabel}</span>}{status.webhook_scan.queued && <span className="text-accent-bright">Webhook scan queued</span>}</div></div>
         <div className="library-actions flex flex-wrap items-center gap-2 max-[600px]:w-full">
-          <button className={cx(buttonPrimary, 'justify-center wrap-anywhere max-[600px]:px-2 max-[600px]:text-xs')} onClick={onScan} disabled={!libraryConfigured || status.running || bulkBusy !== null || bulkOperationActive}>{status.running ? <span className="size-4 animate-spin rounded-full border-2 border-current/30 border-t-current"/> : <Icon name="play" size={17}/>}<span>{status.running ? 'Scanning…' : 'Scan library'}</span></button>
-          <button type="button" className={cx(buttonBase, 'justify-center wrap-anywhere border-good/35 bg-good/10 text-good hover:bg-good/18 max-[600px]:px-2 max-[600px]:text-xs')} onClick={() => openBulkReview('start')} disabled={status.running || bulkBusy !== null || bulkOperationActive || upgradeSeasonCount === 0}><Icon name="download" size={17}/><span>Bulk download</span></button>
-          <button type="button" className={cx(buttonBase, 'justify-center border-bad/35 bg-bad/10 text-bad hover:bg-bad/18 max-[600px]:hidden')} onClick={() => openBulkReview('cancel')} disabled={status.running || bulkBusy !== null || bulkOperationActive}><Icon name="trash" size={17}/><span>Bulk cancel</span></button>
-          <details className="library-more-actions relative min-[601px]:hidden"><summary className="touch-target grid size-11 cursor-pointer list-none place-items-center rounded-control border border-line bg-panel text-muted"><Icon name="chevron-right" size={18} className="rotate-90"/><span className="sr-only">More library actions</span></summary><div className="absolute top-full right-0 z-30 mt-2 min-w-44 rounded-control border border-line-strong bg-panel-raised p-2 shadow-card"><button type="button" className={cx(buttonBase, 'w-full border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={event => { openBulkReview('cancel'); event.currentTarget.closest('details')?.removeAttribute('open') }} disabled={status.running || bulkBusy !== null || bulkOperationActive}><Icon name="trash" size={17}/>Bulk cancel</button></div></details>
+          <button type="button" className={cx(buttonBase, 'library-scan-button justify-center wrap-anywhere max-[600px]:text-xs')} onClick={onScan} disabled={!libraryConfigured || status.running || bulkBusy !== null || bulkOperationActive}>{status.running ? <span className="size-4 animate-spin rounded-full border-2 border-current/30 border-t-current"/> : <Icon name="play" size={17}/>}<span>{status.running ? 'Scanning…' : 'Scan library'}</span></button>
+          <button type="button" className={cx(buttonBase, 'library-bulk-button justify-center wrap-anywhere border-line bg-panel text-ink hover:bg-panel-raised max-[600px]:text-xs')} onClick={() => openBulkReview('start')} disabled={status.running || bulkBusy !== null || bulkOperationActive || upgradeSeasonCount === 0}><Icon name="download" size={17}/><span>Bulk download</span></button>
+          <details ref={moreActionsRef} className="library-more-actions relative shrink-0" onKeyDown={event => { if (event.key === 'Escape') { event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); event.stopPropagation() } }}><summary className="touch-target grid size-11 cursor-pointer list-none place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink"><Icon name="more" size={18}/><span className="sr-only">More library actions</span></summary><div className="absolute top-full right-0 z-30 mt-2 min-w-44 rounded-control bg-panel-raised p-2 shadow-card"><button type="button" className="touch-target inline-flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm text-bad hover:bg-bad/10 disabled:cursor-not-allowed disabled:opacity-50" onClick={event => { openBulkReview('cancel'); event.currentTarget.closest('details')?.removeAttribute('open') }} disabled={status.running || bulkBusy !== null || bulkOperationActive}><Icon name="trash" size={17}/>Bulk cancel</button></div></details>
         </div>
       </header>
 
       {loadError && <div className="mb-5 flex flex-wrap items-center gap-2.5 rounded-xl border border-bad/30 bg-bad/8 px-4 py-3 text-sm text-bad" role="alert"><Icon name="alert" size={18} className="shrink-0"/><span className="min-w-0 flex-1">Could not load scanned results: {loadError}</span><button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={onReloadResults}><Icon name="refresh" size={15}/>Retry</button><button type="button" className={cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')} onClick={onOpenConfig}>Open Config</button></div>}
 
-      <div className={cx('library-toolbar z-20 mb-5 max-[600px]:mb-3 rounded-2xl border border-line bg-canvas/92 p-3 shadow-[0_12px_28px_rgba(0,0,0,.22)] backdrop-blur-xl', operationsVisible ? 'relative' : 'sticky top-0')}>
-        <div className="flex flex-wrap items-center gap-2.5">
+
+      <div className={cx('library-toolbar library-toolbar-refined z-20 mb-5 max-[600px]:mb-3 rounded-2xl border border-line', operationsVisible ? 'relative' : 'sticky top-0')}>
+        <div className="toolbar-controls flex flex-wrap items-center gap-2.5">
           <label className="relative min-w-0 flex-1 max-[600px]:basis-full"><span className="sr-only">Search anime</span><Icon name="search" size={17} className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-muted-dim"/><input type="search" className={cx(control, 'w-full pl-10')} placeholder="Search titles and release groups" value={search} onChange={(event) => setSearch(event.target.value)}/></label>
           <select aria-label="Filter by status" className={cx(control, 'hidden min-w-0 flex-1 max-[600px]:block')} value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>{statusFilters.map(filter => <option key={filter.value} value={filter.value}>{filter.label} ({filter.count})</option>)}</select>
           <button type="button" className={cx(buttonBase, 'justify-center border-line bg-panel px-3 text-xs text-ink min-[601px]:hidden')} aria-expanded={optionsOpen} aria-controls="library-options" onClick={() => setOptionsOpen(value => !value)}><Icon name="filter" size={16}/><span>Filters & sort{activeOptions.length > 0 && ` (${activeOptions.length})`}</span></button>
           <div id="library-options" className={cx('w-full min-w-0 flex-wrap items-center gap-2.5 [&>select]:min-w-0 [&>select]:max-w-full min-[601px]:contents', optionsOpen ? 'flex' : 'hidden')}>
-          <p className="m-0 w-full text-xs text-muted min-[601px]:hidden">{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}{autoCheckLabel !== null && ` · ${scheduleDescription} · next in ~${autoCheckLabel}`}</p>
+          {autoCheckLabel !== null && <p className="m-0 w-full text-xs text-muted min-[601px]:hidden">{scheduleDescription} · next in ~{autoCheckLabel}</p>}
           <select aria-label="Source" className={cx(control, 'cursor-pointer')} value={arr} onChange={(event) => setArr(event.target.value)}><option value="">All sources</option><option value="Sonarr">Sonarr</option><option value="Radarr">Radarr</option></select>
+          <select aria-label="Coverage status" className={cx(control, 'cursor-pointer')} value={coverageFilter} onChange={event => setCoverageFilter(event.target.value)}>{coverageFilters.map(filter => <option key={filter.value} value={filter.value}>{filter.label}</option>)}</select>
           <select aria-label="Sort library" className={cx(control, 'cursor-pointer')} value={sort} onChange={(event) => setSort(event.target.value)}><option value="recommended">Recommended order</option><option value="title">Title A–Z</option><option value="size">Largest size change</option></select>
-          <button type="button" className={cx('inline-flex cursor-pointer items-center gap-2 rounded-control border px-3.5 py-2.5 text-sm font-semibold transition-colors', showHidden ? 'border-warn/35 bg-warn/10 text-warn' : 'border-line bg-panel text-ink hover:text-ink')} aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}><Icon name={showHidden ? 'eye-off' : 'eye'} size={17}/>{showHidden ? 'Hidden only' : 'Show hidden only'}</button>
+          <button type="button" className={cx('touch-target inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors', showHidden ? 'bg-warn/10 text-warn' : 'text-muted hover:bg-panel hover:text-ink')} aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}><Icon name="eye-off" size={17}/>{showHidden ? 'Hidden only' : 'Show hidden only'}</button>
           </div>
         </div>
-        <div className="mt-3 hidden flex-wrap min-[601px]:flex items-center gap-1" aria-label="Filter by status">
-          {statusFilters.map((filter) => <button key={filter.value} type="button" className={cx('touch-target inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-colors', statusFilter === filter.value ? 'bg-accent/14 text-ink' : 'text-muted hover:bg-panel hover:text-ink')} aria-pressed={statusFilter === filter.value} onClick={() => setStatusFilter(filter.value)}><Icon name={filter.icon} size={15} className={cx('shrink-0', filter.tone)}/><span>{filter.label}</span><span className="text-xs tabular-nums text-muted">{filter.count}</span></button>)}
+        <div className="mt-3 hidden flex-wrap min-[601px]:flex items-center gap-1" role="group" aria-label="Filter by status">
+          {statusFilters.map((filter) => <button key={filter.value} type="button" className={cx('toolbar-status-filter touch-target inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-colors', statusFilter === filter.value ? 'bg-accent/14 text-ink' : 'text-muted hover:bg-panel hover:text-ink')} aria-pressed={statusFilter === filter.value} onClick={() => setStatusFilter(filter.value)}><Icon name={filter.icon} size={15} className={cx('shrink-0', filter.tone)}/><span>{filter.label}</span><span className="toolbar-status-count text-xs tabular-nums text-muted">{filter.count}</span></button>)}
           <div className="ml-auto flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-2 text-xs text-muted-dim"><span>{groups.length} shown</span>{totalDelta !== 0 && <LibrarySizeChange delta={totalDelta}/>}</div>
         </div>
+        {statusFilter === 'upgrade' && <p className="mt-2 mb-0 text-xs text-muted">Includes partially covered titles with available upgrades.</p>}
         <div className="mt-2 hidden flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted max-[600px]:flex"><span>{groups.length} shown</span><span className="library-scan-freshness">{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}</span>{totalDelta !== 0 && <LibrarySizeChange delta={totalDelta}/>}</div>
         <p className="sr-only" role="status" aria-atomic="true">{groups.length} matching titles{activeFilters.length ? ` · ${activeFilters.join(' · ')}` : ''}</p>
         {activeFilters.length > 0 && <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line pt-2 text-xs text-muted" aria-label="Active library filters"><span className="min-w-0 flex-1 wrap-anywhere">{activeFilters.join(' · ')}</span><button type="button" className="touch-target cursor-pointer rounded-md px-2 py-1 font-semibold text-accent-bright hover:underline" onClick={clearFilters}>Clear filters</button></div>}
       </div>
+
 
       {(loading || (status.running && results.length === 0)) && <SkeletonCards/>}
       {!loading && results.length > 0 && groups.length > 0 && <div ref={resultsRef} className="library-results" tabIndex={-1} role="region" aria-label="Library results">

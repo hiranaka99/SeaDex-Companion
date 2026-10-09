@@ -12,6 +12,7 @@ const browserPath = process.env.BROWSER_PATH || 'C:/Program Files (x86)/Microsof
 if (!existsSync(browserPath)) throw new Error('Set BROWSER_PATH to a Chromium browser executable to run these checks')
 const profile = mkdtempSync(join(tmpdir(), 'seadex-browser-'))
 const root = resolve('static')
+const appVersion = `v${JSON.parse(readFileSync('frontend/package.json', 'utf8')).version.replace(/\.0$/, '')}`
 const release = (group, hash) => ({ kind: 'best', releaseGroup: group, tracker: 'Nyaa', quality: '1080p', tags: [], size: 200, info_hashes: [hash.repeat(40)], downloadable: true, selected_files: hash === 'a' ? ['01.mkv'] : ['01.mkv', '02.mkv'], torrent_files: [{ hash: hash.repeat(40), files: [{ name: '01.mkv', length: 120 }, { name: '02.mkv', length: 80 }] }] })
 const example = { key: 'Sonarr:1:1:Example', group_id: 1, library_key: 'Sonarr:item1', title: 'Example anime', arr: 'Sonarr', season: 1, status: 'upgrade', match_status: 'matched', have: ['Old group'], local_size: 100, best_size: 200, best_group: 'Example', anilist_id: 1, image: null, banner: null, url: null, notes: null, arr_url: null, releases: [release('Example', 'a'), release('Alternative', 'b')] }
 let config = { sonarr_url: 'http://sonarr.local', sonarr_key: '', sonarr_key_configured: true, radarr_url: '', radarr_key: '', radarr_key_configured: false, sonarr_category: 'sonarr-anime', radarr_category: '', qbittorrent_url: 'http://qbit.local', qbittorrent_user: 'test', qbittorrent_pass: '', qbittorrent_pass_configured: true, webhook: '', webhook_configured: false, notify_enabled: false, hidden: [], scan_schedule: { enabled: false, mode: 'interval', interval_minutes: 60, times: ['03:00'], weekdays: [0], timezone: 'UTC', missed_run: 'skip' } }
@@ -163,7 +164,7 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
   if (!process.env.UI_REVIEW_ONLY) {
   await wait(`document.querySelector('h1')?.textContent === 'Anime library' && document.body.textContent.includes('Unmatched anime')`)
-  assert.ok(await evaluate(`[...document.querySelectorAll('[title="SeaDex Companion v1.7"]')].some(element => element.textContent.trim() === 'v1.7')`), 'The app displays version v1.7')
+  assert.ok(await evaluate(`[...document.querySelectorAll(${JSON.stringify(`[title="SeaDex Companion ${appVersion}"]`)})].some(element => element.textContent.trim() === ${JSON.stringify(appVersion)})`), `The app displays version ${appVersion}`)
   assert.ok(await evaluate(`document.body.textContent.includes('Match needs review')`))
   assert.equal(await evaluate(`document.querySelectorAll('[aria-label="Library results"] article').length`), 2)
   assert.ok(await evaluate(`!document.querySelector('[aria-label="Library view"]') && !document.querySelector('[aria-label="Library results"] table')`), 'Library uses cards without a view switcher')
@@ -271,7 +272,7 @@ try {
   await pause(300)
   assert.ok(await evaluate(`document.querySelector('nav[aria-label="Mobile navigation"]').getBoundingClientRect().width <= 390`))
   assert.ok(await evaluate(`document.documentElement.scrollWidth <= 390`), 'Mobile page has no horizontal overflow')
-  assert.ok(await evaluate(`[...document.querySelectorAll('header [title="SeaDex Companion v1.7"]')].some(element => element.getClientRects().length && element.textContent.trim() === 'v1.7')`), 'The mobile header displays version v1.7')
+  assert.ok(await evaluate(`[...document.querySelectorAll(${JSON.stringify(`header [title="SeaDex Companion ${appVersion}"]`)})].some(element => element.getClientRects().length && element.textContent.trim() === ${JSON.stringify(appVersion)})`), `The mobile header displays version ${appVersion}`)
   await capture('mobile-library')
   statusFailure = true
   await pause(10_500)

@@ -4,9 +4,10 @@ export type IconName =
   | 'alert' | 'ban' | 'bell' | 'check' | 'chevron-left' | 'chevron-right' | 'clock' | 'close' | 'download'
   | 'eye' | 'eye-off' | 'filter' | 'hard-drive' | 'library' | 'log-out' | 'logs'
   | 'pause' | 'play' | 'refresh' | 'search' | 'server' | 'settings' | 'sparkles' | 'trash' | 'user'
-  | 'webhook' | 'arrow-up' | 'minus' | 'info'
+  | 'webhook' | 'arrow-up' | 'minus' | 'info' | 'more'
 
 const paths: Record<IconName, ReactElement> = {
+  more: <><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></>,
   'arrow-up': <><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></>,
   minus: <path d="M5 12h14"/>,
   info: <><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></>,

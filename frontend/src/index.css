@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: Manrope;
+  src: url('/fonts/manrope-variable.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+}
+
 @theme {
   --color-canvas: #0b0e14;
   --color-canvas-soft: #0f131c;
@@ -23,7 +31,7 @@
   --radius-card: 14px;
   --radius-control: 10px;
   --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.35);
-  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-sans: Manrope, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
   --animate-rise: rise 0.4s ease both;
   --animate-pulse-ring: pulse-ring 1.4s infinite;
@@ -99,6 +107,53 @@
 .configuration-disclosures > details > summary > span { float: right; margin-left: .75rem; }
 .operation-diagnostics { max-height: min(12rem, 30dvh); }
 .library-results { scroll-margin-top: 1rem; }
+.library-toolbar-refined {
+  padding: 10px;
+  background: var(--color-canvas-soft);
+  box-shadow: none;
+  backdrop-filter: none;
+  border-color: var(--color-line-strong);
+}
+.library-toolbar-refined .toolbar-controls input,
+.library-toolbar-refined .toolbar-controls select {
+  border-color: color-mix(in srgb, var(--color-muted-dim) 35%, transparent);
+  background: var(--color-panel);
+}
+.library-toolbar-refined .toolbar-controls input:focus,
+.library-toolbar-refined .toolbar-controls select:focus { border-color: var(--color-accent); }
+.library-toolbar-refined .toolbar-status-filter { border: 1px solid transparent; border-radius: 8px; }
+.library-toolbar-refined .toolbar-status-filter[aria-pressed="true"] {
+  border-color: var(--color-accent-bright);
+  background: var(--color-panel);
+}
+.library-toolbar-refined .toolbar-status-count { font-weight: 700; }
+.library-scan-button {
+  min-height: 44px;
+  padding: 10px 16px;
+  gap: 8px;
+  border-color: var(--color-accent-bright);
+  background: var(--color-panel);
+  color: var(--color-accent-bright);
+  box-shadow: none;
+}
+.library-scan-button:enabled:hover {
+  background: var(--color-canvas-soft);
+  border-color: var(--color-ink);
+  color: var(--color-ink);
+  transform: none;
+}
+.library-scan-button:enabled:active { background: var(--color-panel-raised); }
+
+.library-card-readable .anime-art-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.45;
+  letter-spacing: -.012em;
+}
+.library-card-readable .library-card-status { flex-wrap: wrap; font-size: .7875rem; font-weight: 500; line-height: 1.5; margin-top: 16px; }
+.library-card-upgrade-summary { line-height: 1.5; }
+.library-card-readable .library-card-seasons > button { font-size: .73125rem; font-weight: 700; }
+.library-card-readable footer .text-xs { font-size: .73125rem; line-height: 1.5; }
 
 /* Artwork keeps a 2:3 poster frame; season controls grow in their own row. */
 .library-card-body {
@@ -147,13 +202,14 @@
   background: rgb(11 14 20 / 78%);
 }
 
-/* Reflow text when its reading area becomes too narrow relative to font size.
-   Poster and banner artwork keep their fixed frames instead of stretching. */
-@container library-art (max-width: 15em) {
-  .library-card-poster { grid-column: 1 / -1; width: 130px; justify-self: center; }
-  .library-card-info { grid-column: 1 / -1; height: auto; min-height: 195px; background: var(--color-canvas-soft); }
-  .library-card-copy { position: relative; overflow-y: visible; }
-  .library-card-banner { height: 195px; }
+/* Keep both artwork frames fixed, but give narrow/enlarged text the whole row. */
+@container library-art (max-width: 19em) {
+  .library-card-poster { grid-column: 1; grid-row: 1; width: 130px; }
+  .library-card-info { display: contents; }
+  .library-card-banner { position: relative; grid-column: 2; grid-row: 1; height: 195px; z-index: 0; border-radius: var(--radius-lg); }
+  .library-card-info::before { position: relative; grid-column: 2; grid-row: 1; z-index: 1; border-radius: var(--radius-lg); }
+  .library-card-copy { position: relative; grid-column: 1 / -1; grid-row: 2; inset: auto; overflow-y: visible; padding: 0; }
+  .library-card-readable .library-card-status { margin-top: 10px; }
 }
 
 @media (max-width: 900px) {
@@ -180,9 +236,10 @@
 
 @media (max-width: 600px) {
   .library-card-body { gap: 12px; padding: 12px; }
-  .library-card-copy { padding: 12px; }
   .library-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-  .library-actions > button { flex: 1 1 max-content; max-width: 100%; padding-inline: 6px; overflow-wrap: normal; }
+  .library-actions > button { flex: 1 1 7em; min-width: 0; padding-inline: 6px; overflow-wrap: normal; }
+  .library-actions > button span { min-width: 0; }
+  .library-more-actions { flex: 0 0 44px; }
   .connection-status:not([role]) { display: none; }
   .library-more-actions > summary::-webkit-details-marker { display: none; }
   .bulk-download-footer { padding-inline: 12px; }
@@ -224,9 +281,7 @@
 }
 
 .anime-art-title {
-  -webkit-text-stroke: 2px #000;
-  paint-order: stroke fill;
-  text-shadow: 0 2px 6px rgb(0 0 0 / 65%);
+  text-shadow: 0 1px 3px rgb(0 0 0 / 45%);
 }
 
 /* Remove the native increment/decrement arrows on number inputs */
@@ -238,59 +293,6 @@
 .no-spinner::-webkit-inner-spin-button {
   -webkit-appearance: none;
   margin: 0;
-}
-
-@property --border-angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
-}
-
-.download-border {
-  border: 2px solid transparent;
-  background:
-    linear-gradient(var(--color-panel), var(--color-panel)) padding-box,
-    conic-gradient(
-      from var(--border-angle),
-      transparent 0deg,
-      transparent 75deg,
-      var(--card-status-color) 125deg,
-      #fff 172deg,
-      transparent 180deg,
-      transparent 255deg,
-      var(--card-status-color) 305deg,
-      #fff 352deg,
-      transparent 360deg
-    ) border-box;
-  box-shadow: 0 0 24px -4px var(--card-status-color);
-  animation: card-border-spin 2.6s linear infinite;
-}
-
-.download-border:hover {
-  border: 2px solid transparent;
-  box-shadow: 0 0 30px -2px var(--card-status-color);
-}
-
-/* Same glowing conic border as .download-border, but kept on the details
-   panel (which has its own canvas background and scrolls). */
-.details-download-border {
-  border: 2px solid transparent;
-  background:
-    linear-gradient(var(--color-canvas), var(--color-canvas)) padding-box,
-    conic-gradient(
-      from var(--border-angle),
-      transparent 0deg,
-      transparent 75deg,
-      var(--card-status-color) 125deg,
-      #fff 172deg,
-      transparent 180deg,
-      transparent 255deg,
-      var(--card-status-color) 305deg,
-      #fff 352deg,
-      transparent 360deg
-    ) border-box;
-  box-shadow: 0 0 26px -4px var(--card-status-color);
-  animation: card-border-spin 2.6s linear infinite;
 }
 
 .details-backdrop {
@@ -340,10 +342,6 @@
   0% { box-shadow: 0 0 0 0 rgba(79, 140, 255, 0.5); }
   70% { box-shadow: 0 0 0 8px rgba(79, 140, 255, 0); }
   100% { box-shadow: 0 0 0 0 rgba(79, 140, 255, 0); }
-}
-
-@keyframes card-border-spin {
-  to { --border-angle: 360deg; }
 }
 
 @keyframes slide-in {
