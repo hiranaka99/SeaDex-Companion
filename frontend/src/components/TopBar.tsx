@@ -26,7 +26,7 @@ interface Props {
 function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex min-w-0 items-center gap-3">
-      <img src="/favicon.png" alt="" className={cx('rounded-xl border border-line-strong object-cover shadow-[0_8px_24px_rgba(79,140,255,0.16)]', compact ? 'size-9' : 'size-11')} />
+      <img src="/favicon.png" alt="" className={cx('rounded-lg border border-line-strong object-cover', compact ? 'size-9' : 'size-11')} />
       <div className="min-w-0"><div className={cx('font-extrabold tracking-tight text-ink', compact ? 'text-base' : 'text-lg')}>SeaDex{compact && <span className="ml-2 inline-block rounded-md border border-line-strong bg-panel-raised px-1.5 py-0.5 align-middle text-[10px] font-semibold tracking-normal text-muted" title={`SeaDex Companion ${APP_VERSION}`}>{APP_VERSION}</span>}</div><div className="text-[10px] font-semibold tracking-[0.18em] text-muted-dim uppercase">Companion</div></div>
     </div>
   )
@@ -77,7 +77,7 @@ export default function TopBar({ tab, onTabChange, username, onLogout, collapsed
       <aside className={cx('flex h-dvh flex-col border-r border-line bg-canvas-soft py-5 max-[900px]:hidden', collapsed ? 'items-center px-3' : 'px-4')}>
         {collapsed ? (
           <button type="button" onClick={onToggleCollapsed} aria-label="Expand sidebar" title="Expand sidebar" className="relative mx-auto grid size-11 animate-fade cursor-pointer place-items-center rounded-xl transition-transform duration-300 hover:scale-105">
-            <img src="/favicon.png" alt="" className="size-9 rounded-xl border border-line-strong object-cover shadow-[0_8px_24px_rgba(79,140,255,0.16)]" />
+            <img src="/favicon.png" alt="" className="size-9 rounded-lg border border-line-strong object-cover" />
             <span className="absolute -bottom-1 -right-1 grid size-5 place-items-center rounded-full border border-line-strong bg-panel-raised text-muted shadow-card"><Icon name="chevron-right" size={12} /></span>
           </button>
         ) : (

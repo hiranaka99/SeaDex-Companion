@@ -51,8 +51,8 @@ function EntryRow({ entry, busy, onPause, onResume, onRemove }: { entry: Downloa
         <span className="shrink-0 rounded-md border border-line bg-panel-raised px-1.5 py-0.5 text-xs font-extrabold text-ink">{entry.season}</span>
         <span className="ml-auto inline-flex items-center gap-1.5"><DownloadActions entry={entry} busy={busy} onPause={onPause} onResume={onResume} onRemove={onRemove}/></span>
       </div>
-      <div className="h-1.5 overflow-hidden rounded-full border border-line bg-panel-raised">
-        <div className="h-full rounded-full bg-linear-to-r from-accent to-good transition-[width] duration-500" style={{ width: Math.max(pct, 2) + '%' }} />
+      <div role="progressbar" aria-label={`Download progress · ${entry.season} · ${entry.releaseGroup}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={entry.phase === 'sending' ? undefined : pct} aria-valuetext={entry.phase === 'sending' ? 'Sending to qBittorrent' : `${pct.toFixed(1)}%${entry.phase === 'paused' ? ' · paused' : entry.phase === 'error' ? ' · download error' : ''}`} className="h-1.5 overflow-hidden rounded-full bg-panel-raised">
+        <div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: pct + '%' }} />
       </div>
       <div className="flex flex-wrap items-center gap-1.5 pb-px text-xs leading-snug tabular-nums">
         <span className={cx('shrink-0 font-semibold', downloadTextTone(entry.phase))}>{entry.phase === 'error' ? 'Download error' : entry.phase === 'sending' ? 'Sending…' : entry.phase === 'paused' ? `Paused · ${pct.toFixed(1)}%` : pct.toFixed(1) + '%'}</span>
