@@ -1,20 +1,19 @@
-import { useEffect, useId, useRef, useState, ReactNode } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { GroupedCard, Release, ResultItem, Config } from '../types'
-import { formatBytes, formatEta, sizeDelta, seasonLabel, STATUS_LABEL, cardSizeDelta, isSeasonUpgradable } from '../utils'
+import { seasonLabel, STATUS_LABEL, cardSizeDelta, isSeasonUpgradable } from '../utils'
 import * as api from '../api'
-import { cx, downloadTextTone } from '../styles'
+import { buttonBase, cx } from '../styles'
 import Icon, { IconName } from './Icons'
 import BrandLogo from './BrandLogo'
 import { useToast } from './Toast'
-import DownloadsPanel, { DownloadActions, DownloadEntry } from './DownloadsPanel'
+import DownloadsPanel, { DownloadEntry } from './DownloadsPanel'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 import { releaseIdentity } from '../../../shared/releases'
 import MappingDialog from './MappingDialog'
 import SeasonBadge from './SeasonBadge'
 import LibrarySizeChange from './LibrarySizeChange'
-
-const IconSpinner = () => <span className="block size-[15px] animate-spin rounded-full border-2 border-accent/35 border-t-accent-bright group-disabled/dl:border-ink/30 group-disabled/dl:border-t-ink" aria-hidden="true" />
+import ReleaseDetails, { type DetailsDownloadState } from './ReleaseDetails'
 
 function HideActionIcon({ hidden }: { hidden: boolean }) {
   return <Icon name={hidden ? 'eye' : 'eye-off'} size={18} />
@@ -40,7 +39,7 @@ const CARD_BASE =
 const CARD_STATUS: Record<string, { icon: IconName; color: string }> = {
   upgrade: { icon: 'arrow-up', color: 'text-accent-bright' },
   best: { icon: 'check', color: 'text-good' },
-  missing: { icon: 'library', color: 'text-muted' },
+  missing: { icon: 'minus', color: 'text-muted' },
   partial: { icon: 'alert', color: 'text-warn' },
   review: { icon: 'alert', color: 'text-warn' },
 }
@@ -50,49 +49,8 @@ const STATUS_BADGE: Record<string, string> = {
   missing: 'border-muted/50 bg-[#1e232e]/88 text-ink',
   partial: 'border-warn/65 bg-[#3a2806]/88 text-ink',
 }
-const SEASON_TONE: Record<string, string> = {
-  upgrade: 'bg-canvas-soft',
-  best: 'bg-[#0a1712]',
-  missing: 'bg-[#141518]',
-  partial: 'bg-[#19160d]',
-}
-const NOTE_TONE: Record<string, string> = {
-  upgrade: 'border-line-strong text-muted',
-  best: 'border-good/35 text-muted',
-  missing: 'border-line-strong text-muted',
-  partial: 'border-warn/35 text-muted',
-}
-const NOTES_SURFACE: Record<string, string> = {
-  upgrade: 'bg-canvas-soft',
-  best: 'bg-[#0a1712]',
-  missing: 'bg-[#141518]',
-  partial: 'bg-[#19160d]',
-}
 const ICON_BUTTON =
   'grid size-9 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-panel-raised hover:text-ink'
-const BADGE_BASE = 'inline-block rounded-[7px] border px-[9px] py-1 text-xs font-semibold'
-const BADGE = `${BADGE_BASE} border-line bg-panel-raised text-ink`
-const SIZE_BASE = 'shrink-0 whitespace-nowrap rounded-md border px-2 py-[3px] text-xs font-bold tabular-nums'
-const SIZE = `${SIZE_BASE} border-line bg-panel-raised text-ink`
-
-/**
- * Dual-audio releases get a light blue pill; every other release tag
- * (quality flags, broken files, ...) gets a purple pill.
- */
-function tagClass(t: string): string {
-  const base = 'max-w-full rounded-md border px-2 py-0.5 text-xs font-semibold wrap-anywhere'
-  return t === 'Dual Audio'
-    ? `${base} border-sky/40 bg-sky/12 text-ink`
-    : `${base} border-purple/40 bg-purple/12 text-ink`
-}
-
-function releaseSurface(tone: string, isBest: boolean): string {
-  if (tone === 'best') return isBest ? 'bg-good/14' : 'bg-[#10241b]'
-  if (tone === 'partial') return isBest ? 'bg-warn/12' : 'bg-[#282216]'
-  if (tone === 'missing') return 'bg-[#1f2024]'
-  return isBest ? 'bg-good/5' : 'bg-panel'
-}
-
 export default function Card({ active, openRequested, onOpened, group, index, config, hidden = false, onToggle, onRulesChanged, onRescan }: CardProps) {
   const [hiding, setHiding] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -441,6 +399,11 @@ export default function Card({ active, openRequested, onOpened, group, index, co
     onRescan()
   }
 
+  const statusBadge = <div className="library-status-badge" data-library-status={group.status}>
+    <span className="library-status-label"><Icon name={CARD_STATUS[group.status].icon} size={14} className="shrink-0"/><span>{STATUS_LABEL[group.status]}</span></span>
+    {group.status === 'partial' && upgradableSeasonCount > 0 && <span className="library-status-upgrades"><Icon name="arrow-up" size={13} className="shrink-0"/><span>{upgradableSeasonCount} {group.arr === 'Radarr' ? (upgradableSeasonCount === 1 ? 'movie' : 'movies') : (upgradableSeasonCount === 1 ? 'season' : 'seasons')} upgradable</span></span>}
+  </div>
+
   return <>
     <article
       className={cx(
@@ -456,14 +419,10 @@ export default function Card({ active, openRequested, onOpened, group, index, co
         </div>
         <div className="library-card-info">
         {group.banner && <img src={group.banner} alt="" loading={index < 4 ? 'eager' : 'lazy'} decoding="async" className="library-card-banner" onError={event => { event.currentTarget.style.display = 'none' }}/>}
-        <div ref={copyRef} className="library-card-copy app-scrollbar" tabIndex={copyOverflows ? 0 : undefined} role={copyOverflows ? 'group' : undefined} aria-label={copyOverflows ? `${group.title}: scroll to read the full title and status` : undefined}>
+        <div ref={copyRef} className="library-card-copy app-scrollbar" tabIndex={copyOverflows ? 0 : undefined} role={copyOverflows ? 'group' : undefined} aria-label={copyOverflows ? `${group.title}: scroll to read the full title` : undefined}>
         <h2 className="anime-art-title relative m-0 text-lg leading-snug font-bold text-white wrap-anywhere" title={group.title}>{group.title}</h2>
-        <div className="library-card-status relative mt-3 flex items-start gap-1.5 text-xs leading-4 font-medium text-ink">
-          <Icon name={CARD_STATUS[group.status].icon} size={14} className={cx('mt-px shrink-0', CARD_STATUS[group.status].color)}/>
-          <span className="min-w-0 wrap-anywhere">{STATUS_LABEL[group.status]}</span>
         </div>
-        {group.status === 'partial' && upgradableSeasonCount > 0 && <p className="library-card-upgrade-summary relative mt-2 mb-0 flex items-start gap-1.5 text-xs text-accent-bright"><Icon name="arrow-up" size={14} className="mt-px shrink-0"/><span>{upgradableSeasonCount} {group.arr === 'Radarr' ? (upgradableSeasonCount === 1 ? 'movie' : 'movies') : (upgradableSeasonCount === 1 ? 'season' : 'seasons')} upgradable</span></p>}
-        </div>
+        <div className="library-status-banner app-scrollbar">{statusBadge}</div>
         </div>
       </div>
         <div className="library-card-seasons flex flex-wrap gap-1.5 px-3.5 pb-3.5 max-[600px]:px-3 max-[600px]:pb-3" aria-label={`${seasonCount} seasons`}>
@@ -503,18 +462,24 @@ export default function Card({ active, openRequested, onOpened, group, index, co
         </footer>
     </article>
     {detailsOpen && (
-      <Modal open={detailsOpen} labelledBy={titleId} onClose={requestClose} className="bg-transparent p-0">
+      <Modal open={detailsOpen} labelledBy={titleId} onClose={requestClose} className="overflow-clip bg-transparent p-0">
         <div className={cx('details-backdrop absolute inset-0 bg-black/65', detailsVisible && 'details-backdrop-visible')} />
-        <div className={cx('absolute inset-0 flex items-center justify-center p-4 transition-opacity duration-200 ease-out', detailsVisible ? 'opacity-100' : 'opacity-0')} onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
-          <aside className="app-scrollbar max-h-full w-full max-w-[864px] overflow-y-auto rounded-2xl bg-canvas shadow-[0_24px_60px_rgba(0,0,0,.45)]">
-          <div className="relative min-h-[230px] overflow-hidden border-b border-line bg-panel bg-cover bg-center" style={group.banner ? { backgroundImage: `url('${group.banner}')` } : undefined}><div className="absolute inset-0 bg-linear-to-t from-canvas via-canvas/55 to-black/15"/><button ref={closeRef} type="button" className="absolute top-4 right-4 z-2 grid touch-target size-10 cursor-pointer place-items-center rounded-xl border border-white/15 bg-black/40 text-white backdrop-blur-md hover:bg-black/60" onClick={() => requestClose()} aria-label="Close details"><Icon name="close"/></button><div className="relative z-1 flex items-end gap-4 px-5 pt-24 pb-5">{group.image && <img src={group.image} alt="" className="h-28 w-20 rounded-lg border border-white/15 object-cover shadow-xl"/>}<div className="min-w-0"><span className={cx('mb-2 inline-block rounded-full border px-2.5 py-1 text-xs font-extrabold', STATUS_BADGE[st])}>{STATUS_LABEL[group.status]}</span><h2 id={titleId} className="anime-art-title m-0 text-3xl leading-tight font-extrabold text-white wrap-anywhere max-[600px]:text-2xl">{group.title}</h2></div></div></div>
-          <div className="space-y-4 p-5 max-[600px]:p-4">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted">{group.arr_url && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{typeof group.anilist_id === 'number' && <a className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold hover:no-underline" href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList ↗</a>}<button type="button" className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 font-bold text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-50" onClick={() => setMappingOpen(true)} disabled={!group.seasons[0]?.library_key} title={!group.seasons[0]?.library_key ? 'Run a new scan to enable manual matching' : undefined}><Icon name="refresh" size={14}/>{group.seasons.some((season) => season.mapping_override) ? 'Change manual match' : 'Correct match'}</button>{group.seasons.some((season) => season.mapping_override) && <span className="rounded-full border border-purple/35 bg-purple/10 px-2 py-1 text-xs font-extrabold text-ink">Manual match</span>}<span className="ml-auto">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span></div>
+        <div className={cx('absolute inset-0 flex items-center justify-center overflow-clip p-4 transition-opacity duration-200 ease-out', detailsVisible ? 'opacity-100' : 'opacity-0')} onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}>
+          <aside className="flex max-h-[calc(100dvh-2rem)] min-h-0 w-full max-w-[864px] flex-col overflow-hidden rounded-2xl bg-canvas shadow-[0_24px_60px_rgba(0,0,0,.45)]">
+          <header className="anime-details-header flex shrink-0 items-center gap-3 border-b border-line px-5 py-4 max-[600px]:px-4">
+            {group.image && <img src={group.image} alt="" className="h-14 w-10 shrink-0 rounded-md object-cover max-[600px]:hidden"/>}
+            <div className="min-w-0 flex-1"><h2 id={titleId} className="m-0 text-2xl leading-tight font-extrabold tracking-tight wrap-anywhere max-[600px]:text-xl">{group.title}</h2><p className="mt-1 mb-0 text-xs text-muted">{group.arr} · {seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}<span className="min-[601px]:hidden"> · {STATUS_LABEL[group.status]}</span></p></div>
+            <span className={cx('shrink-0 rounded-full border px-2.5 py-1 text-xs font-bold max-[600px]:hidden', STATUS_BADGE[st])}>{STATUS_LABEL[group.status]}</span>
+            <button ref={closeRef} type="button" className="grid size-11 shrink-0 cursor-pointer place-items-center rounded-control border border-line-strong bg-panel text-ink hover:bg-panel-raised" onClick={requestClose} aria-label="Close details"><Icon name="close"/></button>
+          </header>
+          <div className="anime-details-body app-scrollbar min-h-0 overflow-y-auto overscroll-contain">
+            {group.banner && <div className="relative h-40 shrink-0 overflow-hidden bg-panel bg-cover bg-center max-[600px]:h-28" style={{ backgroundImage: `url('${group.banner}')` }}><div className="absolute inset-0 bg-linear-to-t from-canvas via-canvas/20 to-transparent"/></div>}
+            <div className="space-y-6 p-5 max-[600px]:p-4">
+            <nav className="flex flex-wrap items-center gap-2 text-xs" aria-label="Anime links">{group.arr_url && <a className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised hover:no-underline')} href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{typeof group.anilist_id === 'number' && <a className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised hover:no-underline')} href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList <Icon name="chevron-right" size={14}/></a>}<button type="button" className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-muted hover:bg-panel-raised hover:text-ink')} onClick={() => setMappingOpen(true)} disabled={!group.seasons[0]?.library_key} title={!group.seasons[0]?.library_key ? 'Run a new scan to enable manual matching' : undefined}><Icon name="refresh" size={14}/>{group.seasons.some((season) => season.mapping_override) ? 'Change manual match' : 'Correct match'}</button>{group.seasons.some((season) => season.mapping_override) && <span className="rounded-full border border-purple/35 bg-purple/10 px-2 py-1 text-xs font-bold text-ink">Manual match</span>}</nav>
             {group.seasons.map((season) => <Season
               key={season.key}
               r={season}
               config={config}
-              tone={st}
               dl={dlBySeason[season.key] || {}}
               busyDownload={busyDownload}
               onDownload={(release) => void handleDownload(season.key, release)}
@@ -524,6 +489,7 @@ export default function Card({ active, openRequested, onOpened, group, index, co
               ruleBusy={ruleBusy}
               onToggleExclusion={(part, excluded) => void toggleExclusion(season, part, excluded)}
             />)}
+          </div>
           </div>
           </aside>
         </div>
@@ -535,7 +501,7 @@ export default function Card({ active, openRequested, onOpened, group, index, co
       description="The torrent will be removed from qBittorrent. Its downloaded files are kept unless you choose to delete them below."
       confirmLabel="Remove torrent"
       dangerous
-      onConfirm={async () => { if (removeTarget && !await handleDownloadAction(removeTarget, 'remove', deleteFiles)) throw new Error('Could not remove this torrent. Please retry or open Downloads to manage it.') }}
+      onConfirm={async () => { if (removeTarget && !await handleDownloadAction(removeTarget, 'remove', deleteFiles)) throw new Error('Could not remove this torrent. Please retry or open qBittorrent to manage it.') }}
       onClose={() => { setRemoveTarget(null); setDeleteFiles(false) }}
     >
       <label className="mb-5 flex cursor-pointer items-center gap-3 rounded-xl border border-bad/25 bg-bad/7 p-3 text-sm text-ink">
@@ -550,7 +516,6 @@ export default function Card({ active, openRequested, onOpened, group, index, co
 interface SeasonProps {
   r: ResultItem
   config: Config | null
-  tone: string
   dl: Record<number, DlState>
   busyDownload: string | null
   onDownload: (release: number) => void
@@ -567,13 +532,7 @@ interface DisplayRelease {
 }
 
 /** Live download state for one release row (keyed by its release index). */
-interface DlState {
-  phase: 'idle' | 'sending' | 'downloading' | 'paused' | 'complete' | 'error'
-  progress: number // 0..1
-  downloaded: number
-  total_size: number
-  speed: number
-}
+type DlState = DetailsDownloadState
 
 const IDLE_DL: DlState = {
   phase: 'idle',
@@ -621,263 +580,51 @@ function groupByCour(releases: DisplayRelease[]): { part: string; items: Display
   return groups
 }
 
-function Season({ r, config, tone, dl, busyDownload, onDownload, onPause, onResume, onRemove, ruleBusy, onToggleExclusion }: SeasonProps) {
-  const st = r.status || 'upgrade'
-
-  let middle: ReactNode
-  if (st === 'missing') {
-    middle = <div className={cx('rounded-lg border border-dashed bg-panel px-3 py-2.5 text-center text-[13px]', NOTE_TONE[tone])}>{r.match_status === 'unmatched' || !r.anilist_id ? 'AniList match needs review. Use Correct match to choose the right anime.' : 'Not listed on releases.moe'}</div>
-  } else if (st === 'uncovered') {
-    middle = <div className={cx('rounded-lg border border-dashed bg-panel px-3 py-2.5 text-center text-[13px]', NOTE_TONE[tone])}>This season is not covered on releases.moe</div>
-  } else {
-    const displayReleases = uniqueReleases(r.releases || [])
-    const courGroups = groupByCour(displayReleases)
-    middle = (
-      <>
-        {r.unavailable_parts && r.unavailable_parts.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-warn/35 bg-warn/8 px-3 py-2 text-xs text-warn" role="status">
-            <Icon name="alert" size={15} className="shrink-0"/>
-            <span className="font-extrabold">Unavailable:</span>
-            {r.unavailable_parts.map((part) => <span key={`${part.label}:${part.reason}`} className="rounded-full border border-warn/30 bg-warn/8 px-2 py-0.5" title={part.reason}>{part.label} · {part.reason}</span>)}
-          </div>
-        )}
-        {courGroups.map((group, gi) => (
-          <div key={group.part || 'all'} className="flex flex-col gap-1.5">
-            {gi > 0 && <div className="my-1 h-px bg-line-strong" role="separator" />}
-            {group.part && (
-              <div className="flex flex-wrap items-center gap-2 py-0.5">
-                <span className="rounded-full border border-line bg-panel-raised px-2.5 py-[3px] text-xs font-extrabold tracking-[0.8px] text-ink uppercase">{group.part}</span>
-                <button
-                  type="button"
-                  className={cx('touch-target inline-flex cursor-pointer items-center justify-center gap-1 rounded-full border px-2 py-[3px] text-xs font-bold transition-colors', r.excluded || r.excluded_parts?.includes(group.part) ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line bg-panel-raised text-ink hover:text-ink')}
-                  title={r.excluded ? 'Restore the season before changing individual cours' : r.excluded_parts?.includes(group.part) ? `Include ${group.part} in bulk downloads and notifications` : `Ignore ${group.part} in bulk downloads and notifications`}
-                  disabled={!r.library_key || Boolean(r.excluded) || Boolean(ruleBusy)}
-                  onClick={() => onToggleExclusion(group.part, !r.excluded_parts?.includes(group.part))}
-                ><Icon name="ban" size={12}/>{r.excluded || r.excluded_parts?.includes(group.part) ? 'Ignored' : 'Ignore'}</button>
-                {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).length > 0 && <span className="text-xs font-bold tracking-[0.08em] text-muted-dim uppercase">Have</span>}
-                {r.precise_part_ownership && (r.have_by_part?.[group.part] || []).map((releaseGroup) => <span key={releaseGroup} className={cx(BADGE, 'py-[3px] text-xs')} title={`Owned in ${group.part}`}>{releaseGroup}</span>)}
-                {r.precise_part_ownership && !(r.have_by_part?.[group.part] || []).length && <span className="text-xs text-muted-dim">No matching files owned</span>}
-                {((r.local_size_by_part?.[group.part] || 0) > 0 || (r.urls || []).some((source) => source.label === group.part)) && (
-                  <div className="ml-auto flex items-center gap-2">
-                    {(r.local_size_by_part?.[group.part] || 0) > 0 && (
-                      <span className={SIZE} title={`Size of your current files in ${group.part}`}>
-                        {formatBytes(r.local_size_by_part?.[group.part] || 0)}
-                      </span>
-                    )}
-                    {(r.urls || []).filter((source) => source.label === group.part).map((source) => (
-                      <a
-                        className="group/link inline-flex items-center gap-1 text-[12px] font-bold text-accent-bright hover:no-underline"
-                        href={source.url}
-                        target="_blank"
-                        rel="noopener"
-                        title={`Open ${group.part} on SeaDex`}
-                        key={source.url}
-                      >
-                        SeaDex <span className="transition-transform duration-150 group-hover/link:translate-x-[2px] group-hover/link:-translate-y-[2px]">↗</span>
-                      </a>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="flex flex-col gap-1.5">
-              {group.items.map(({ rel, index }) => {
-                const isBest = rel.kind === 'best'
-                const localSize = rel.part ? (r.local_size_by_part?.[group.part] || 0) : r.local_size
-                const delta = sizeDelta(rel.size, localSize)
-                const ownedGroups = r.precise_part_ownership
-                  ? (r.owned_by_part?.[group.part] || [])
-                  : r.have
-                const owned = ownedGroups.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
-                const cat = (config ? String((config as any)[((r.arr || '').toLowerCase() + '_category')] || '') : '').trim()
-                const dlState = dl[index] || IDLE_DL
-                const sending = dlState.phase === 'sending' || dlState.phase === 'downloading'
-                const inClient = sending || dlState.phase === 'paused' || dlState.phase === 'error'
-                const complete = dlState.phase === 'complete'
-                const activeEntry: DownloadEntry | null = inClient ? {
-                  id: `${r.key}\u0000${index}`,
-                  season: seasonLabel(r),
-                  releaseGroup: rel.releaseGroup,
-                  seasonKey: r.key,
-                  release: index,
-                  identity: releaseIdentity(rel),
-                  phase: dlState.phase as DownloadEntry['phase'],
-                  progress: dlState.progress,
-                  downloaded: dlState.downloaded,
-                  total_size: dlState.total_size,
-                  speed: dlState.speed,
-                } : null
-                const disabled = owned || complete || !rel.downloadable || inClient
-                const btnTitle = owned
-                  ? 'You already have this release'
-                  : complete
-                  ? 'Download completed in qBittorrent'
-                  : inClient
-                  ? dlState.phase === 'error' ? 'qBittorrent reported a download error' : dlState.phase === 'paused' ? 'Paused in qBittorrent' : 'Downloading…'
-                  : rel.downloadable
-                  ? 'Send this release to qBittorrent (category: ' + (cat || r.arr) + ')'
-                  : 'No magnet available (private tracker)'
-                const pct = Math.min(100, Math.round(dlState.progress * 1000) / 10)
-                // releases.moe marks dual-audio releases with a separate flag
-                // (not part of the quality "tags" list), so surface it here too.
-                const tags = [
-                  ...(rel.dual_audio ? ['Dual Audio'] : []),
-                  ...(rel.tags || []),
-                ]
-                return (
-                  <div key={`${rel.part || ''}-${rel.releaseGroup}`} className="flex flex-col gap-1.5">
-                    <div
-                      className={cx(
-                        'release-row flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2',
-                        inClient ? 'border-accent' : isBest ? 'border-good/35' : 'border-bad/28',
-                        releaseSurface(tone, isBest),
-                        inClient && 'shadow-[0_0_0_1px_rgba(79,140,255,0.15),0_4px_14px_rgba(79,140,255,0.12)]',
-                      )}
-                    >
-                      <span className={cx('w-[2.125rem] shrink-0 text-xs font-bold tracking-[0.8px] uppercase', isBest ? 'text-good' : 'text-bad')} title={rel.part || undefined}>
-                        {isBest ? 'Best' : 'Alt'}
-                      </span>
-                      <div className="release-identity flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-                        <span className="max-w-full whitespace-normal text-sm font-semibold text-ink wrap-anywhere" title={rel.releaseGroup}>
-                          {rel.releaseGroup}
-                        </span>
-                        {tags.length > 0 && (
-                          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                            {tags.map((t) => (
-                              <span key={t} className={tagClass(t)}>
-                                {t}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      <span className={cx(SIZE_BASE, 'release-size text-ink', isBest ? 'border-good/35 bg-good/10' : 'border-line bg-panel-raised')} title="Size of this release">
-                        {formatBytes(rel.size)}
-                      </span>
-                      {delta && (
-                        <span className="whitespace-nowrap text-xs font-semibold text-muted-dim" title="Difference: release size minus your local size">
-                          {delta}
-                        </span>
-                      )}
-                      <button
-                        className={cx(
-                          'touch-target group/dl ml-auto grid size-8 shrink-0 cursor-pointer place-items-center rounded-control border text-sm font-extrabold transition-all duration-150 hover:-translate-y-px',
-                          owned || complete
-                            ? 'cursor-default border-good/50 bg-good/18 text-good hover:border-good hover:bg-good/22'
-                            : disabled
-                              ? 'cursor-not-allowed border-line bg-panel-raised text-muted-dim opacity-60 hover:translate-y-0 hover:border-line hover:bg-panel-raised'
-                              : 'border-good/40 bg-good/12 text-good hover:border-good hover:bg-good/22',
-                        )}
-                        disabled={disabled}
-                        title={btnTitle}
-                        aria-label={`${btnTitle} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`}
-                        onClick={() => !disabled && onDownload(index)}
-                      >
-                        {owned || complete ? (
-                          <Icon name="check" size={18} />
-                        ) : sending ? (
-                          <IconSpinner />
-                        ) : dlState.phase === 'paused' ? (
-                          <Icon name="pause" size={18} />
-                        ) : (
-                          <Icon name="download" size={18} />
-                        )}
-                      </button>
-                    </div>
-                    {inClient && (
-                      <div className="flex flex-col gap-[5px] rounded-lg border border-line bg-accent/7 px-2.5 pt-2 pb-[9px]">
-                        <div className="h-2 overflow-hidden rounded-full border border-line bg-panel-raised">
-                          <div className="h-full rounded-full bg-linear-to-r from-accent to-good transition-[width] duration-500" style={{ width: Math.max(pct, 2) + '%' }} />
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className={cx('min-w-0 flex-1 overflow-hidden text-xs font-semibold text-ellipsis whitespace-nowrap tabular-nums', downloadTextTone(dlState.phase))}>
-                            {dlState.phase === 'sending'
-                              ? 'Sending to qBittorrent…'
-                              : dlState.phase === 'error' ? 'Download error — check qBittorrent'
-                              : dlState.phase === 'paused'
-                              ? `Paused · ${pct.toFixed(1)}% · ${formatBytes(dlState.downloaded)} / ${formatBytes(dlState.total_size)}`
-                              : dlState.total_size > 0
-                              ? [
-                                  `${pct.toFixed(1)}% · ${formatBytes(dlState.downloaded)} / ${formatBytes(dlState.total_size)}`,
-                                  dlState.speed > 0 ? formatBytes(dlState.speed) + '/s' : '',
-                                  formatEta(Math.max(0, dlState.total_size - dlState.downloaded), dlState.speed),
-                                ].filter(Boolean).join(' · ')
-                              : 'Waiting for torrent metadata…'}
-                          </div>
-                          {activeEntry && <DownloadActions
-                            entry={activeEntry}
-                            busy={busyDownload !== null}
-                            onPause={() => onPause(activeEntry)}
-                            onResume={() => onResume(activeEntry)}
-                            onRemove={() => onRemove(activeEntry)}
-                          />}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-            {group.part && r.notes_by_part?.[group.part] && r.notes_by_part[group.part] !== '-' && (
-              <div className={cx('[overflow-wrap:anywhere] whitespace-pre-line rounded-lg border border-line px-[11px] py-[9px] text-[13px] text-muted', NOTES_SURFACE[tone])} title={r.notes_by_part[group.part]}>
-                {r.notes_by_part[group.part]}
-              </div>
-            )}
-          </div>
-        ))}
-        {!courGroups.some((group) => group.part) && r.notes && r.notes !== '-' && (
-          <div className={cx('[overflow-wrap:anywhere] whitespace-pre-line rounded-lg border border-line px-[11px] py-[9px] text-[13px] text-muted', NOTES_SURFACE[tone])} title={r.notes}>
-            {r.notes}
-          </div>
-        )}
-      </>
-    )
-  }
-
-  const displaySeasonHave = !r.precise_part_ownership || !r.releases.some((release) => release.part)
-  const have = displaySeasonHave && r.have.length
-    ? r.have.map((x, i) => (
-        <span key={i} className={BADGE} title={x}>
-          {x}
-        </span>
-      ))
-    : displaySeasonHave ? [
-        <span key="none" className={BADGE}>
-          none
-        </span>,
-      ] : []
+function Season({ r, config, dl, busyDownload, onDownload, onPause, onResume, onRemove, ruleBusy, onToggleExclusion }: SeasonProps) {
+  const groups = groupByCour(uniqueReleases(r.releases || []))
+  const split = groups.some(group => group.part)
+  const displaySeasonHave = !r.precise_part_ownership || !split
+  const sources = (r.urls?.length ? r.urls : r.url ? [{ label: 'releases.moe', url: r.url }] : []).filter(source => source.label === 'releases.moe')
+  const seasonName = typeof r.season === 'number' ? 'Season ' + r.season : seasonLabel(r)
+  const ignored = Boolean(r.excluded)
+  const unavailable = r.status === 'missing' || r.status === 'uncovered'
 
   return (
-    <div className={cx('flex flex-col gap-[9px] rounded-control border p-3', r.excluded ? 'border-warn/45' : 'border-line', SEASON_TONE[tone])}>
-      <div className="flex flex-wrap items-center gap-2">
-        <SeasonBadge season={r} fallback={tone} className="min-w-[46px] rounded-full border px-[9px] py-[3px] text-center text-xs font-extrabold tracking-[0.5px]"/>
-        <button type="button" className={cx('inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-[3px] text-xs font-bold transition-colors', r.excluded ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line bg-panel-raised text-ink hover:text-ink')} title={r.excluded ? `Include ${seasonLabel(r)} in bulk downloads and notifications` : `Ignore ${seasonLabel(r)} in bulk downloads and notifications`} disabled={!r.library_key || Boolean(ruleBusy)} onClick={() => onToggleExclusion('', !r.excluded)}><Icon name="ban" size={12}/>{r.excluded ? 'Ignored' : 'Ignore'}</button>
-        {displaySeasonHave && <span className="text-xs font-bold tracking-[0.08em] text-muted-dim uppercase">Have</span>}
-        <div className="flex flex-1 flex-wrap gap-[5px]" title="Release groups you already have">
-          {have}
+    <section className="min-w-0 border-t border-line pt-6 first:border-t-0 first:pt-0" aria-label={seasonName}>
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 basis-44">
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <h3 className="m-0 text-lg font-bold tracking-tight">{seasonName}</h3>
+            <SeasonBadge season={r} fallback={r.status || 'upgrade'} className="rounded-full border px-2 py-1 text-xs font-bold"/>
+          </div>
+          <p className="m-0 text-xs text-muted wrap-anywhere">{displaySeasonHave ? 'Current release: ' + (r.have.length ? r.have.join(', ') : 'None') : 'Split into ' + groups.length + ' cours'}{(r.missing_episode_count || 0) > 0 && <span className="text-warn"> · {r.missing_episode_count} episode{r.missing_episode_count === 1 ? '' : 's'} missing</span>}</p>
         </div>
-        {r.local_size ? (
-          <span className={cx(SIZE, 'ml-auto')} title="Size of your current files">
-            {formatBytes(r.local_size)}
-          </span>
-        ) : null}
-        {(r.urls?.length ? r.urls : r.url ? [{ label: 'releases.moe', url: r.url }] : [])
-          .filter((source) => source.label === 'releases.moe')
-          .map((source, i) => (
-            <a
-              className="group/link inline-flex items-center gap-1.5 text-[13.5px] font-bold text-accent-bright hover:no-underline"
-              href={source.url}
-              target="_blank"
-              rel="noopener"
-              key={`${source.url}-${i}`}
-            >
-              SeaDex{' '}
-              <span className="transition-transform duration-150 group-hover/link:translate-x-[3px] group-hover/link:-translate-y-[3px]">↗</span>
-            </a>
-          ),
-        )}
+        {sources.map(source => <a key={source.url} href={source.url} target="_blank" rel="noopener" className="touch-target inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-accent-bright">SeaDex <Icon name="chevron-right" size={14}/></a>)}
+        <button type="button" className={cx(buttonBase, 'min-h-11 shrink-0 justify-center px-3 text-xs', ignored ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line-strong bg-panel text-ink hover:bg-panel-raised')} aria-pressed={ignored} aria-label={(ignored ? 'Include ' : 'Ignore ') + seasonName + ' in bulk downloads and notifications'} title={!r.library_key ? 'Run a new scan to enable season rules' : 'Bulk downloads and notifications only. Individual downloads remain available.'} disabled={!r.library_key || Boolean(ruleBusy)} onClick={() => onToggleExclusion('', !ignored)}><Icon name="ban" size={15}/>{ignored ? 'Ignored for bulk' : 'Ignore season'}</button>
       </div>
-      {middle}
-    </div>
+
+      {unavailable ? <p className="m-0 rounded-lg border border-dashed border-line-strong bg-panel px-4 py-3 text-sm text-muted">{r.status === 'uncovered' ? 'This season is not covered on releases.moe' : r.match_status === 'unmatched' || !r.anilist_id ? 'AniList match needs review. Use Correct match to choose the right anime.' : 'Not listed on releases.moe'}</p> : <>
+        {!!r.unavailable_parts?.length && <div className="mb-4 flex flex-wrap items-start gap-2 rounded-lg border border-warn/35 bg-warn/8 px-3 py-2 text-xs text-warn" role="status"><Icon name="alert" size={15}/><div className="min-w-0 flex-1"><strong>Unavailable:</strong> {r.unavailable_parts.map(part => <span key={part.label + ':' + part.reason} className="block wrap-anywhere">{part.label} · {part.reason}</span>)}</div></div>}
+        {groups.length === 0 && <p className="m-0 text-sm text-muted">No release details are available. Run a new library scan to refresh this title.</p>}
+        {groups.map((group, groupIndex) => {
+          const partIgnored = ignored || Boolean(r.excluded_parts?.includes(group.part))
+          const owned = r.precise_part_ownership ? r.have_by_part?.[group.part] || [] : []
+          const partSources = (r.urls || []).filter(source => source.label === group.part)
+          return <div key={group.part || 'all'} className={cx('min-w-0', groupIndex > 0 && 'mt-5 border-t border-line pt-5')}>
+            {group.part && <div className="mb-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0 flex-1"><h4 className="m-0 text-sm font-bold">{group.part}</h4>{r.precise_part_ownership && <p className="mt-1 mb-0 text-xs text-muted wrap-anywhere">{owned.length ? 'Current release: ' + owned.join(', ') : 'No matching files owned'}</p>}</div>
+                <button type="button" className={cx(buttonBase, 'min-h-11 justify-center px-3 text-xs', partIgnored ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line-strong bg-panel text-ink hover:bg-panel-raised')} aria-pressed={partIgnored} aria-label={(partIgnored ? 'Include ' : 'Ignore ') + group.part + ' in bulk downloads and notifications'} disabled={!r.library_key || ignored || Boolean(ruleBusy)} onClick={() => onToggleExclusion(group.part, !partIgnored)}><Icon name="ban" size={15}/>{partIgnored ? 'Ignored for bulk' : 'Ignore cour'}</button>
+              </div>
+              <p className="mt-2 mb-0 text-xs text-muted">{ignored ? 'Restore the season to change individual cour rules.' : 'Cour rules affect bulk downloads and notifications only.'}</p>
+              {partSources.length > 0 && <div className="mt-1 flex flex-wrap gap-2">{partSources.map(source => <a key={source.url} href={source.url} target="_blank" rel="noopener" className="touch-target inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-accent-bright">SeaDex · {group.part}<Icon name="chevron-right" size={14}/></a>)}</div>}
+            </div>}
+            <div className="flex min-w-0 flex-col gap-3">{group.items.map(({ rel, index }) => <ReleaseDetails key={(rel.part || '') + '-' + rel.releaseGroup} result={r} release={rel} index={index} config={config} state={dl[index] || IDLE_DL} busy={busyDownload !== null} onDownload={() => onDownload(index)} onPause={onPause} onResume={onResume} onRemove={onRemove}/>)}</div>
+            {group.part && r.notes_by_part?.[group.part] && r.notes_by_part[group.part] !== '-' && <p className="mt-3 mb-0 whitespace-pre-line text-xs leading-relaxed text-muted wrap-anywhere">{r.notes_by_part[group.part]}</p>}
+          </div>
+        })}
+        {!split && r.notes && r.notes !== '-' && <p className="mt-3 mb-0 whitespace-pre-line text-xs leading-relaxed text-muted wrap-anywhere">{r.notes}</p>}
+      </>}
+    </section>
   )
 }
