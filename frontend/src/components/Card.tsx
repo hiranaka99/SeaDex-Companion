@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, ReactNode } from 'react'
 import { GroupedCard, Release, ResultItem, Config } from '../types'
-import { formatBytes, formatEta, sizeDelta, seasonLabel, STATUS_LABEL } from '../utils'
+import { formatBytes, formatEta, sizeDelta, seasonLabel, STATUS_LABEL, cardSizeDelta } from '../utils'
 import * as api from '../api'
 import { cx, downloadTextTone } from '../styles'
 import Icon, { IconName } from './Icons'
@@ -12,6 +12,7 @@ import Modal from './Modal'
 import { releaseIdentity } from '../../../shared/releases'
 import MappingDialog from './MappingDialog'
 import SeasonBadge from './SeasonBadge'
+import LibrarySizeChange from './LibrarySizeChange'
 
 const IconSpinner = () => <span className="block size-[15px] animate-spin rounded-full border-2 border-accent/35 border-t-accent-bright group-disabled/dl:border-ink/30 group-disabled/dl:border-t-ink" aria-hidden="true" />
 
@@ -131,9 +132,22 @@ export default function Card({ active, openRequested, onOpened, group, index, co
   const closeTimer = useRef<number | null>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
   const titleId = useId()
+  const copyRef = useRef<HTMLDivElement>(null)
+  const [copyOverflows, setCopyOverflows] = useState(false)
   const toast = useToast()
   const srcClass = group.arr === 'Sonarr' ? 'sonarr' : 'radarr'
   const st = group.status === 'review' ? 'partial' : group.status || 'upgrade'
+
+  useEffect(() => {
+    const copy = copyRef.current
+    if (!copy) return
+    const update = () => setCopyOverflows(copy.scrollHeight > copy.clientHeight + 1)
+    const observer = new ResizeObserver(update)
+    observer.observe(copy)
+    Array.from(copy.children).forEach(child => observer.observe(child))
+    update()
+    return () => observer.disconnect()
+  }, [group.title, group.status])
 
   useEffect(() => {
     if (!active) { setDetailsOpen(false); setMappingOpen(false); setRemoveTarget(null) }
@@ -381,10 +395,7 @@ export default function Card({ active, openRequested, onOpened, group, index, co
   }
 
   const seasonCount = group.seasons.length
-  // Total size change if every upgradable season were replaced by its best release.
-  let delta = 0
-  for (const r of group.seasons)
-    if ((r.status || 'upgrade') === 'upgrade') delta += (r.best_size || 0) - (r.local_size || 0)
+  const delta = cardSizeDelta(group)
 
   useEffect(() => {
     return () => {
@@ -475,8 +486,8 @@ export default function Card({ active, openRequested, onOpened, group, index, co
         </div>
         <div className="library-card-info">
         {group.banner && <img src={group.banner} alt="" loading={index < 4 ? 'eager' : 'lazy'} decoding="async" className="library-card-banner" onError={event => { event.currentTarget.style.display = 'none' }}/>}
-        <div className="library-card-copy app-scrollbar">
-        <h2 className="anime-art-title relative m-0 line-clamp-3 text-lg leading-snug font-bold text-white wrap-anywhere" title={group.title}>{group.title}</h2>
+        <div ref={copyRef} className="library-card-copy app-scrollbar" tabIndex={copyOverflows ? 0 : undefined} role={copyOverflows ? 'group' : undefined} aria-label={copyOverflows ? `${group.title}: scroll to read the full title and status` : undefined}>
+        <h2 className="anime-art-title relative m-0 text-lg leading-snug font-bold text-white wrap-anywhere" title={group.title}>{group.title}</h2>
         <div className="library-card-status relative mt-3 flex items-start gap-1.5 text-xs leading-4 font-medium text-ink">
           <Icon name={CARD_STATUS[group.status].icon} size={14} className={cx('mt-px shrink-0', CARD_STATUS[group.status].color)}/>
           <span className="min-w-0 wrap-anywhere">{STATUS_LABEL[group.status]}</span>
@@ -485,7 +496,7 @@ export default function Card({ active, openRequested, onOpened, group, index, co
         </div>
       </div>
         <div className="library-card-seasons flex flex-wrap gap-1.5 px-3.5 pb-3.5 max-[600px]:px-3 max-[600px]:pb-3" aria-label={`${seasonCount} seasons`}>
-          {group.seasons.slice(0, 6).map((season) => <SeasonBadge key={season.key} season={season} fallback={st} className="rounded-md border px-2 py-1 text-xs font-extrabold"/>)}
+          {group.seasons.slice(0, 6).map((season) => <SeasonBadge key={season.key} season={season} fallback={st} animeTitle={group.title} className="rounded-md border px-2 py-1 text-xs font-extrabold"/>)}
           {seasonCount > 6 && <span className="rounded-md border border-line bg-panel-raised px-2 py-1 text-xs font-bold text-muted">+{seasonCount - 6}</span>}
         </div>
       {activeDownloads.length > 0 && <div className="border-t border-line px-3.5 py-3 max-[600px]:px-3">
@@ -499,7 +510,7 @@ export default function Card({ active, openRequested, onOpened, group, index, co
       </div>}
         <footer className="mt-auto flex shrink-0 flex-wrap items-center gap-2 border-t border-line px-3.5 py-3 max-[600px]:px-3">
           <div className="flex min-w-0 grow basis-24 flex-wrap items-center gap-x-2 gap-y-1 wrap-anywhere">
-            {delta !== 0 ? <span className={cx('text-xs font-extrabold tabular-nums', 'text-muted')}>{delta > 0 ? '+' : ''}{formatBytes(delta)} <span className="font-medium text-muted-dim">change</span></span> : <span className="text-xs text-muted-dim">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span>}
+            {delta !== 0 ? <LibrarySizeChange delta={delta} title={group.title}/> : <span className="text-xs text-muted-dim">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span>}
             {group.seasons.some(season => (season.missing_episode_count || 0) > 0) && <span className="text-xs text-warn">{group.seasons.reduce((sum, season) => sum + (season.missing_episode_count || 0), 0)} episodes missing</span>}
           </div>
           <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1">
@@ -515,7 +526,7 @@ export default function Card({ active, openRequested, onOpened, group, index, co
             ) : (
               <span className="library-card-source grid size-8 shrink-0 place-items-center rounded-lg" title={group.arr} role="img" aria-label={`Source: ${group.arr}`}><BrandLogo name={srcClass} size={20}/></span>
             )}
-            <button className="touch-target inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold text-accent-bright transition-colors hover:bg-accent/10" type="button" onClick={handleOpenDetails}>Details <Icon name="chevron-right" size={15}/></button>
+            <button className="touch-target inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold text-accent-bright transition-colors hover:bg-accent/10" type="button" aria-label={`Details for ${group.title}`} onClick={handleOpenDetails}>Details <Icon name="chevron-right" size={15}/></button>
             <button className={cx(ICON_BUTTON, 'touch-target group/hide size-8 shrink-0 disabled:cursor-wait', hidden && 'border-warn/35 bg-warn/10 text-warn')} type="button" title={hidden ? 'Show this card' : 'Hide this card'} aria-label={(hidden ? 'Show ' : 'Hide ') + group.title} onClick={handleHide} disabled={hiding}><HideActionIcon hidden={hidden}/></button>
           </div>
         </footer>

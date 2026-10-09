@@ -102,6 +102,8 @@
 
 /* Artwork keeps a 2:3 poster frame; season controls grow in their own row. */
 .library-card-body {
+  container-type: inline-size;
+  container-name: library-art;
   display: grid;
   grid-template-columns: 130px minmax(0, 1fr);
   gap: 14px;
@@ -128,6 +130,7 @@
   overflow-y: auto;
   padding: 14px;
 }
+
 .library-card-banner {
   position: absolute;
   inset: 0;
@@ -142,6 +145,15 @@
   inset: 0;
   z-index: -1;
   background: rgb(11 14 20 / 78%);
+}
+
+/* Reflow text when its reading area becomes too narrow relative to font size.
+   Poster and banner artwork keep their fixed frames instead of stretching. */
+@container library-art (max-width: 15em) {
+  .library-card-poster { grid-column: 1 / -1; width: 130px; justify-self: center; }
+  .library-card-info { grid-column: 1 / -1; height: auto; min-height: 195px; background: var(--color-canvas-soft); }
+  .library-card-copy { position: relative; overflow-y: visible; }
+  .library-card-banner { height: 195px; }
 }
 
 @media (max-width: 900px) {
@@ -169,12 +181,19 @@
 @media (max-width: 600px) {
   .library-card-body { gap: 12px; padding: 12px; }
   .library-card-copy { padding: 12px; }
-  .library-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+  .library-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .library-actions > button { flex: 1 1 max-content; max-width: 100%; padding-inline: 6px; overflow-wrap: normal; }
   .connection-status:not([role]) { display: none; }
   .library-more-actions > summary::-webkit-details-marker { display: none; }
+  .bulk-download-footer { padding-inline: 12px; }
   .configuration-footer { padding-top: .5rem; }
   .modal-shell > section > header { max-height: 40dvh; overflow-y: auto; padding-inline: clamp(12px, 5vw, 20px); }
-  .modal-shell > section > header h2 { overflow-wrap: anywhere; }
+  .modal-shell > section > header { flex-wrap: wrap; }
+  .modal-shell > section > header > div { flex: 1 1 12ch; }
+  .modal-shell > section > header h2 { overflow-wrap: normal; word-break: normal; }
+  .modal-shell > section > .bulk-download-header > span { width: 44px; height: 44px; }
+  .modal-shell > section > .bulk-download-header > button { order: 1; margin-left: auto; width: 44px; height: 44px; }
+  .modal-shell > section > .bulk-download-header > div { order: 2; flex-basis: 100%; }
 }
 
 @media (max-height: 600px) {
