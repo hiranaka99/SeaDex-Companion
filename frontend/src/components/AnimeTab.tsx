@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ResultItem, Config, Status, GroupedCard } from '../types'
-import { groupResults, formatBytes, seasonLabel } from '../utils'
+import { groupResults, seasonLabel, cardSizeDelta, hasCardUpgrade } from '../utils'
 import Card from './Card'
 import BulkDownloadDialog, { BulkOutcome } from './BulkDownloadDialog'
 import BulkCancelDialog from './BulkCancelDialog'
@@ -9,6 +9,7 @@ import { useToast } from './Toast'
 import * as api from '../api'
 import { buttonBase, buttonPrimary, control, cx } from '../styles'
 import { BulkOperationState } from './OperationCenter'
+import LibrarySizeChange from './LibrarySizeChange'
 import BulkScopeSelector, { BulkScope } from './BulkScopeSelector'
 
 interface Props {
@@ -38,10 +39,6 @@ function cardKey(group: GroupedCard): string {
   return group.anilist_id !== null ? String(group.anilist_id) : `${group.arr}:${group.title}`
 }
 
-function cardDelta(group: GroupedCard): number {
-  return group.seasons.reduce((total, season) => total + (season.status === 'upgrade' || (season.status === 'partial' && season.upgrade_available) ? (season.best_size || 0) - (season.local_size || 0) : 0), 0)
-}
-
 function SkeletonCards() {
   return <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]" aria-label="Loading library">
     {Array.from({ length: 6 }, (_, index) => <div key={index} className="overflow-hidden rounded-card border border-line bg-panel"><div className="library-card-body"><div className="library-card-poster skeleton"/><div className="library-card-info"><div className="flex flex-col gap-3 p-3"><div className="skeleton h-5 w-full rounded-md"/><div className="skeleton h-5 w-2/3 rounded-md"/><div className="skeleton h-4 w-24 rounded-md"/></div></div></div><div className="flex gap-1.5 px-3.5 pb-3.5"><div className="skeleton h-8 w-11 rounded-md"/><div className="skeleton h-8 w-11 rounded-md"/></div><div className="border-t border-line p-3"><div className="skeleton h-9 rounded-lg"/></div></div>)}
@@ -58,6 +55,8 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   const [page, setPage] = useState(0)
   const resultsRef = useRef<HTMLDivElement>(null)
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
+  const hiddenKeysRef = useRef(hiddenKeys)
+  const hiddenRequests = useRef(new Map<string, Promise<unknown>>())
   const [bulkConfirm, setBulkConfirm] = useState<'start' | 'cancel' | null>(null)
   const [bulkBusy, setBulkBusy] = useState<'start' | 'cancel' | null>(null)
   const bulkInFlight = useRef(false)
@@ -80,7 +79,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   }, [openResultKey])
 
   useEffect(() => {
-    if (config?.hidden) setHiddenKeys(new Set(config.hidden))
+    if (config?.hidden) { hiddenKeysRef.current = new Set(config.hidden); setHiddenKeys(hiddenKeysRef.current) }
   }, [config?.hidden])
 
   const allGroups = useMemo(() => groupResults(results), [results])
@@ -89,30 +88,50 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
     const haystack = `${group.title} ${group.seasons.map(season => `${season.title} ${season.best_group || ''} ${season.have.join(' ')} ${seasonLabel(season)}`).join(' ')}`
     return haystack.toLowerCase().includes(search.trim().toLowerCase())
   }), [allGroups, hiddenKeys, showHidden, arr, search])
-  const counts = useMemo(() => Object.fromEntries(['upgrade', 'partial', 'missing', 'best', 'review'].map(status => [status, scopeGroups.filter(group => group.status === status).length])), [scopeGroups])
+  const counts = useMemo(() => Object.fromEntries(['upgrade', 'partial', 'missing', 'best', 'review'].map(status => [status, scopeGroups.filter(group => status === 'upgrade' ? hasCardUpgrade(group) : group.status === status).length])), [scopeGroups])
 
-  const toggleHidden = async (key: string) => {
-    const wasHidden = hiddenKeys.has(key)
-    const next = new Set(hiddenKeys)
-    if (wasHidden) next.delete(key); else next.add(key)
-    setHiddenKeys(next)
+  const setCardHidden = async (key: string, hidden: boolean, offerUndo = false): Promise<boolean> => {
+    const wasHidden = hiddenKeysRef.current.has(key)
+    const update = (value: boolean) => {
+      const next = new Set(hiddenKeysRef.current)
+      if (value) next.add(key); else next.delete(key)
+      hiddenKeysRef.current = next
+      setHiddenKeys(next)
+    }
+    update(hidden)
+    // Serialize writes for each card so a quick Undo cannot finish out of order.
+    const request = (hiddenRequests.current.get(key) || Promise.resolve()).catch(() => {}).then(() => api.setHidden(key, hidden))
+    hiddenRequests.current.set(key, request)
     try {
-      await api.setHidden(key, !wasHidden)
-      toast.show(wasHidden ? 'Card restored to the library' : 'Card hidden from the library', 'success')
+      await request
+      if (hiddenRequests.current.get(key) !== request) return false
+      const title = allGroups.find(group => cardKey(group) === key)?.title || 'Title'
+      toast.show(hidden ? `${title} hidden from the library` : `${title} restored to the library`, 'success', offerUndo ? 12000 : undefined, offerUndo ? {
+        label: 'Undo',
+        onClick: () => { void setCardHidden(key, wasHidden).then(restored => { if (restored) window.requestAnimationFrame(() => {
+          const button = [...document.querySelectorAll<HTMLButtonElement>('button[aria-label]')].find(button => button.getAttribute('aria-label') === `Details for ${title}`)
+          button?.scrollIntoView({ block: 'nearest' }); button?.focus({ preventScroll: true })
+        }) }) },
+      } : undefined)
+      return true
     } catch (error: any) {
-      setHiddenKeys(hiddenKeys)
+      if (hiddenRequests.current.get(key) === request) update(wasHidden)
       toast.show('Could not update hidden cards: ' + error.message, 'error')
+      return false
+    } finally {
+      if (hiddenRequests.current.get(key) === request) hiddenRequests.current.delete(key)
     }
   }
+  const toggleHidden = (key: string) => setCardHidden(key, !hiddenKeysRef.current.has(key), true)
 
   const groups = useMemo(() => {
     const filtered = scopeGroups.filter(group => statusFilter === 'episodes'
       ? group.seasons.some(season => (season.missing_episode_count || 0) > 0)
-      : !statusFilter || group.status === statusFilter)
+      : statusFilter === 'upgrade' ? hasCardUpgrade(group) : !statusFilter || group.status === statusFilter)
     const rank: Record<string, number> = { review: 0, upgrade: 1, partial: 2, missing: 3, best: 4 }
     filtered.sort((a, b) => {
       if (sort === 'title') return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
-      if (sort === 'size') return Math.abs(cardDelta(b)) - Math.abs(cardDelta(a)) || a.title.localeCompare(b.title)
+      if (sort === 'size') return Math.abs(cardSizeDelta(b)) - Math.abs(cardSizeDelta(a)) || a.title.localeCompare(b.title)
       return rank[a.status] - rank[b.status] || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
     })
     return filtered
@@ -134,7 +153,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   }
 
 
-  const totalDelta = groups.reduce((sum, group) => sum + cardDelta(group), 0)
+  const totalDelta = groups.reduce((sum, group) => sum + cardSizeDelta(group), 0)
   const upgradeSeasonCount = useMemo(() => new Set(
     results
       .filter((result) => {
@@ -293,7 +312,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
 
       {loadError && <div className="mb-5 flex flex-wrap items-center gap-2.5 rounded-xl border border-bad/30 bg-bad/8 px-4 py-3 text-sm text-bad" role="alert"><Icon name="alert" size={18} className="shrink-0"/><span className="min-w-0 flex-1">Could not load scanned results: {loadError}</span><button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={onReloadResults}><Icon name="refresh" size={15}/>Retry</button><button type="button" className={cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')} onClick={onOpenConfig}>Open Config</button></div>}
 
-      <div className={cx('library-toolbar z-20 mb-5 rounded-2xl border border-line bg-canvas/92 p-3 shadow-[0_12px_28px_rgba(0,0,0,.22)] backdrop-blur-xl', operationsVisible ? 'relative' : 'sticky top-0')}>
+      <div className={cx('library-toolbar z-20 mb-5 max-[600px]:mb-3 rounded-2xl border border-line bg-canvas/92 p-3 shadow-[0_12px_28px_rgba(0,0,0,.22)] backdrop-blur-xl', operationsVisible ? 'relative' : 'sticky top-0')}>
         <div className="flex flex-wrap items-center gap-2.5">
           <label className="relative min-w-0 flex-1 max-[600px]:basis-full"><span className="sr-only">Search anime</span><Icon name="search" size={17} className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-muted-dim"/><input type="search" className={cx(control, 'w-full pl-10')} placeholder="Search titles and release groups" value={search} onChange={(event) => setSearch(event.target.value)}/></label>
           <select aria-label="Filter by status" className={cx(control, 'hidden min-w-0 flex-1 max-[600px]:block')} value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>{statusFilters.map(filter => <option key={filter.value} value={filter.value}>{filter.label} ({filter.count})</option>)}</select>
@@ -307,9 +326,10 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
         </div>
         <div className="mt-3 hidden flex-wrap min-[601px]:flex items-center gap-1" aria-label="Filter by status">
           {statusFilters.map((filter) => <button key={filter.value} type="button" className={cx('touch-target inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-colors', statusFilter === filter.value ? 'bg-accent/14 text-ink' : 'text-muted hover:bg-panel hover:text-ink')} aria-pressed={statusFilter === filter.value} onClick={() => setStatusFilter(filter.value)}><Icon name={filter.icon} size={15} className={cx('shrink-0', filter.tone)}/><span>{filter.label}</span><span className="text-xs tabular-nums text-muted">{filter.count}</span></button>)}
-          <span className="ml-auto shrink-0 px-2 text-xs text-muted-dim">{groups.length} shown{totalDelta !== 0 && ` · ${(totalDelta > 0 ? '+' : '') + formatBytes(totalDelta)}`}</span>
+          <div className="ml-auto flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-2 text-xs text-muted-dim"><span>{groups.length} shown</span>{totalDelta !== 0 && <LibrarySizeChange delta={totalDelta}/>}</div>
         </div>
-        <p className="mt-2 mb-0 hidden text-xs text-muted max-[600px]:block">{groups.length} shown{totalDelta !== 0 && ` · ${(totalDelta > 0 ? '+' : '') + formatBytes(totalDelta)}`}</p>
+        <div className="mt-2 hidden flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted max-[600px]:flex"><span>{groups.length} shown</span><span className="library-scan-freshness">{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}</span>{totalDelta !== 0 && <LibrarySizeChange delta={totalDelta}/>}</div>
+        <p className="sr-only" role="status" aria-atomic="true">{groups.length} matching titles{activeFilters.length ? ` · ${activeFilters.join(' · ')}` : ''}</p>
         {activeFilters.length > 0 && <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line pt-2 text-xs text-muted" aria-label="Active library filters"><span className="min-w-0 flex-1 wrap-anywhere">{activeFilters.join(' · ')}</span><button type="button" className="touch-target cursor-pointer rounded-md px-2 py-1 font-semibold text-accent-bright hover:underline" onClick={clearFilters}>Clear filters</button></div>}
       </div>
 

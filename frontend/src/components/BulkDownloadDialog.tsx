@@ -185,7 +185,7 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
   return (
     <Modal open={open} labelledBy="bulk-download-title" onClose={onClose}>
       <section className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" aria-busy={busy}>
-        <header className="flex items-start gap-3 border-b border-line px-5 py-4">
+        <header className="bulk-download-header flex shrink-0 items-start gap-3 border-b border-line px-5 py-4">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-good/12 text-good"><Icon name="download" size={19}/></span>
           <div className="min-w-0 flex-1">
             <h2 id="bulk-download-title" className="m-0 text-lg font-extrabold">Review bulk downloads</h2>
@@ -347,14 +347,14 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
           )}
         </div>
 
-        <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-panel px-5 py-4">
+        <footer className="bulk-download-footer flex flex-wrap items-center justify-between gap-3 border-t border-line bg-panel px-5 py-4">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
             {!outcome && pendingChoices > 0 && <span className="inline-flex items-center gap-1 font-bold text-warn"><Icon name="alert" size={13}/>Resolve {pendingChoices} release choice{pendingChoices === 1 ? '' : 's'} first</span>}
             {!outcome && lowSpace && !acceptSpaceWarning && <button type="button" className="touch-target cursor-pointer rounded-lg px-2 py-1 font-bold text-warn underline hover:bg-warn/10" onClick={() => diskRef.current?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.focus()}>Review disk space warning</button>}
           </span>
-          <div className="flex gap-2">
+          <div className="ml-auto flex min-w-0 max-w-full flex-wrap justify-end gap-2 [&_button]:max-w-full [&_button]:justify-center [&_button]:wrap-anywhere max-[600px]:[&_button]:px-3">
             {outcome?.inflight ? (
-              <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted" role="status">Sending… {inflightProgress ? `${inflightProgress.settled}/${inflightProgress.total} torrents` : ''}</span><button type="button" className={cx(buttonBase, 'border-accent/35 bg-accent/12 text-accent-bright')} onClick={onClose}>Continue in background</button></div>
+              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2"><span className="text-xs text-muted" role="status">Sending… {inflightProgress ? `${inflightProgress.settled}/${inflightProgress.total} torrents` : ''}</span><button type="button" className={cx(buttonBase, 'border-accent/35 bg-accent/12 text-accent-bright')} onClick={onClose}>Continue in background</button></div>
             ) : (
               <>
                 <button ref={cancelRef} type="button" className={cx(buttonBase, 'border-line bg-panel-raised text-ink hover:text-ink')} onClick={onClose} disabled={busy}>{outcome ? 'Close' : 'Cancel'}</button>

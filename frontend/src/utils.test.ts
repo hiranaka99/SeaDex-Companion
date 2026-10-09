@@ -1,5 +1,5 @@
 import type { GroupedCard, ResultItem } from './types.js'
-import { groupResults, STATUS_LABEL } from './utils.js'
+import { groupResults, STATUS_LABEL, hasCardUpgrade, cardSizeDelta } from './utils.js'
 
 function result(season: number, status: string): ResultItem {
   return {
@@ -74,3 +74,17 @@ expect(noArtCard.image, null, 'cards without any cover stay coverless')
 const unmatchedCard = groupResults([{ ...result(1, 'missing'), anilist_id: null, group_id: null, match_status: 'unmatched' }])[0]
 expect(unmatchedCard.status, 'review', 'unmatched anime need matching review rather than being reported absent from SeaDex')
 expect(STATUS_LABEL.review, 'Match needs review', 'matching review has a distinct label')
+
+const partlyCoveredUpgrade = groupResults([
+  { ...result(1, 'upgrade'), local_size: 100, best_size: 150 }, result(2, 'missing'),
+])[0]
+expect(partlyCoveredUpgrade.status, 'partial', 'coverage remains partial when another season is unlisted')
+expect(hasCardUpgrade(partlyCoveredUpgrade), true, 'partial coverage does not hide an upgradable season')
+const partlyResolvedUpgrade = groupResults([
+  { ...result(1, 'partial'), upgrade_available: true, local_size: 100, best_size: 175 },
+  { ...result(2, 'best'), local_size: 200, best_size: 200 },
+])[0]
+expect(hasCardUpgrade(partlyResolvedUpgrade), true, 'partly resolved seasons expose upgrade availability')
+expect(cardSizeDelta(partlyResolvedUpgrade), 75, 'library totals include the same partial-season upgrade as cards')
+expect(hasCardUpgrade(groupResults([result(1, 'partial')])[0]), false, 'partial coverage alone does not imply an upgrade')
+expect(hasCardUpgrade(groupResults([result(1, 'best'), result(2, 'missing')])[0]), false, 'owned best and unlisted seasons are not upgrade candidates')

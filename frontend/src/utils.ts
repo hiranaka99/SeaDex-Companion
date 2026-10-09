@@ -9,6 +9,20 @@ export const STATUS_LABEL: Record<CardStatus, string> = {
   review: 'Match needs review',
 }
 
+export function isSeasonUpgradable(season: ResultItem): boolean {
+  return season.status === 'upgrade' || (season.status === 'partial' && Boolean(season.upgrade_available))
+}
+
+export function hasCardUpgrade(group: GroupedCard): boolean {
+  return group.seasons.some(isSeasonUpgradable)
+}
+
+/** Potential library growth if every upgradable season used its target release. */
+export function cardSizeDelta(group: GroupedCard): number {
+  return group.seasons.reduce((total, season) => total + (isSeasonUpgradable(season)
+    ? (season.best_size || 0) - (season.local_size || 0) : 0), 0)
+}
+
 export function formatBytes(n: number): string {
   if (!n) return ''
   const sign = n < 0 ? '-' : ''
