@@ -101,7 +101,7 @@ const server = createServer(async (req, res) => {
   }
   const file = resolve(root, path === '/' ? 'index.html' : path.slice(1))
   if (relative(root, file).startsWith('..') || !existsSync(file)) { res.writeHead(404); res.end(); return }
-  res.setHeader('Content-Type', { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png' }[extname(file)] || 'application/octet-stream')
+  res.setHeader('Content-Type', { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml' }[extname(file)] || 'application/octet-stream')
   res.end(readFileSync(file))
 })
 server.listen(0, '127.0.0.1')

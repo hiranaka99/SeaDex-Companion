@@ -3,7 +3,8 @@ import { GroupedCard, Release, ResultItem, Config } from '../types'
 import { formatBytes, formatEta, sizeDelta, seasonLabel, STATUS_LABEL } from '../utils'
 import * as api from '../api'
 import { cx, downloadTextTone } from '../styles'
-import Icon from './Icons'
+import Icon, { IconName } from './Icons'
+import BrandLogo from './BrandLogo'
 import { useToast } from './Toast'
 import DownloadsPanel, { DownloadActions, DownloadEntry } from './DownloadsPanel'
 import ConfirmDialog from './ConfirmDialog'
@@ -58,9 +59,12 @@ const PANEL_GLOW_COLOR: Record<string, string> = {
   missing: '[--card-status-color:#8b97ab]',
   partial: '[--card-status-color:#fbbf24]',
 }
-const SOURCE_TONE: Record<string, string> = {
-  sonarr: 'border-accent/65 bg-[#0d1c42]/88 text-ink',
-  radarr: 'border-warn/65 bg-[#3a2806]/88 text-ink',
+const CARD_STATUS: Record<string, { icon: IconName; color: string }> = {
+  upgrade: { icon: 'sparkles', color: 'text-accent-bright' },
+  best: { icon: 'check', color: 'text-good' },
+  missing: { icon: 'library', color: 'text-muted' },
+  partial: { icon: 'alert', color: 'text-warn' },
+  review: { icon: 'alert', color: 'text-warn' },
 }
 const STATUS_BADGE: Record<string, string> = {
   upgrade: 'border-accent/65 bg-[#0d1c42]/88 text-ink',
@@ -464,40 +468,27 @@ export default function Card({ active, openRequested, onOpened, group, index, co
       )}
       style={{ animationDelay: Math.min(index * 40, 400) + 'ms' }}
     >
-      <div
-        className={cx(
-          "relative flex min-h-44 flex-col border-b border-line bg-panel-raised after:absolute after:inset-0 after:bg-[linear-gradient(180deg,rgba(11,14,20,.08)_20%,rgba(11,14,20,.88)_100%)] after:content-['']",
-          st === 'missing' && 'grayscale',
-          hidden && 'grayscale-70',
-        )}
-      >
-        {group.banner && <img src={group.banner} alt="" loading={index < 4 ? 'eager' : 'lazy'} decoding="async" className="absolute inset-0 h-full w-full object-cover object-[center_20%]" onError={event => { event.currentTarget.style.display = 'none' }}/>}
-        <div className="relative z-2 flex shrink-0 flex-wrap items-start justify-between gap-2 p-3">
-        {group.arr_url ? (
-          <a
-            className={cx('group/source touch-target inline-flex max-w-full cursor-pointer items-center justify-center gap-1 rounded-full border px-2.5 py-[5px] text-xs font-semibold tracking-[0.5px] no-underline backdrop-blur-[6px] transition-[transform,filter] duration-150 hover:-translate-y-px hover:brightness-118 hover:no-underline', SOURCE_TONE[srcClass])}
-            href={group.arr_url}
-            target="_blank"
-            rel="noopener"
-            title={'Open in ' + group.arr}
-          >
-            {group.arr} <span className="text-xs transition-transform duration-150 group-hover/source:translate-x-0.5 group-hover/source:-translate-y-0.5">↗</span>
-          </a>
-        ) : (
-          <span className={cx('max-w-full rounded-full border px-2.5 py-[5px] text-xs font-semibold tracking-[0.5px] backdrop-blur-[6px]', SOURCE_TONE[srcClass])}>{group.arr}</span>
-        )}
-        <span className={cx('max-w-full rounded-full border px-2.5 py-[5px] text-xs font-semibold backdrop-blur-md wrap-anywhere', STATUS_BADGE[st])}>{STATUS_LABEL[group.status]}</span>
+      <div className={cx('library-card-body', st === 'missing' && 'grayscale', hidden && 'grayscale-70')}>
+        <div className="library-card-poster">
+          <span className="absolute inset-0 grid place-items-center text-muted-dim" aria-hidden="true"><Icon name="library" size={32}/></span>
+          {group.image && <img className="absolute inset-0 h-full w-full object-cover" src={group.image} alt="" loading={index < 4 ? 'eager' : 'lazy'} decoding="async" onError={event => { event.currentTarget.style.display = 'none' }}/>}
         </div>
-        <div className="relative z-2 mt-auto flex shrink-0 items-end gap-3 px-4 pt-4 pb-3">
-          {group.image && (
-            <img className={cx('h-[74px] w-[52px] shrink-0 rounded-lg border border-white/15 object-cover shadow-lg', hidden && 'grayscale')} src={group.image} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = 'none' }} />
-          )}
-          <div className="anime-art-title line-clamp-2 min-w-0 flex-1 text-[1.0625rem] leading-snug font-bold text-white" title={group.title}>{group.title}</div>
+        <div className="library-card-info">
+        {group.banner && <img src={group.banner} alt="" loading={index < 4 ? 'eager' : 'lazy'} decoding="async" className="library-card-banner" onError={event => { event.currentTarget.style.display = 'none' }}/>}
+        <div className="library-card-copy app-scrollbar">
+        <h2 className="anime-art-title relative m-0 line-clamp-3 text-lg leading-snug font-bold text-white wrap-anywhere" title={group.title}>{group.title}</h2>
+        <div className="library-card-status relative mt-3 flex items-start gap-1.5 text-xs leading-4 font-medium text-ink">
+          <Icon name={CARD_STATUS[group.status].icon} size={14} className={cx('mt-px shrink-0', CARD_STATUS[group.status].color)}/>
+          <span className="min-w-0 wrap-anywhere">{STATUS_LABEL[group.status]}</span>
+        </div>
+        </div>
         </div>
       </div>
-      <div className={cx('flex flex-1 flex-col gap-3 p-4', activeDownloads.length ? 'min-h-[156px]' : 'min-h-[128px]')}>
-        <div className="min-h-0 flex-1">
-          {activeDownloads.length > 0 ? (
+        <div className="library-card-seasons flex flex-wrap gap-1.5 px-3.5 pb-3.5 max-[600px]:px-3 max-[600px]:pb-3" aria-label={`${seasonCount} seasons`}>
+          {group.seasons.slice(0, 6).map((season) => <SeasonBadge key={season.key} season={season} fallback={st} className="rounded-md border px-2 py-1 text-xs font-extrabold"/>)}
+          {seasonCount > 6 && <span className="rounded-md border border-line bg-panel-raised px-2 py-1 text-xs font-bold text-muted">+{seasonCount - 6}</span>}
+        </div>
+      {activeDownloads.length > 0 && <div className="border-t border-line px-3.5 py-3 max-[600px]:px-3">
             <DownloadsPanel
               downloads={activeDownloads}
               busyId={busyDownload}
@@ -505,24 +496,29 @@ export default function Card({ active, openRequested, onOpened, group, index, co
               onResume={(entry) => void handleDownloadAction(entry, 'resume')}
               onRemove={(entry) => { setDeleteFiles(false); setRemoveTarget(entry) }}
             />
-          ) : (
-            <div className="flex flex-wrap gap-1.5" aria-label={`${seasonCount} seasons`}>
-              {group.seasons.slice(0, 6).map((season) => <SeasonBadge key={season.key} season={season} fallback={st} className="rounded-md border px-2 py-1 text-xs font-extrabold"/>)}
-              {seasonCount > 6 && <span className="rounded-md border border-line px-2 py-1 text-xs font-bold text-muted">+{seasonCount - 6}</span>}
-            </div>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-2 border-t border-line pt-3">
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 wrap-anywhere">
+      </div>}
+        <footer className="mt-auto flex shrink-0 flex-wrap items-center gap-2 border-t border-line px-3.5 py-3 max-[600px]:px-3">
+          <div className="flex min-w-0 grow basis-24 flex-wrap items-center gap-x-2 gap-y-1 wrap-anywhere">
             {delta !== 0 ? <span className={cx('text-xs font-extrabold tabular-nums', 'text-muted')}>{delta > 0 ? '+' : ''}{formatBytes(delta)} <span className="font-medium text-muted-dim">change</span></span> : <span className="text-xs text-muted-dim">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span>}
             {group.seasons.some(season => (season.missing_episode_count || 0) > 0) && <span className="text-xs text-warn">{group.seasons.reduce((sum, season) => sum + (season.missing_episode_count || 0), 0)} episodes missing</span>}
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1">
+            {group.arr_url ? (
+              <a
+                className="library-card-source touch-target grid size-8 shrink-0 place-items-center rounded-lg transition-colors hover:bg-panel-raised"
+                href={group.arr_url}
+                target="_blank"
+                rel="noopener"
+                title={`Open ${group.title} in ${group.arr}`}
+                aria-label={`Open ${group.title} in ${group.arr} (new tab)`}
+              ><BrandLogo name={srcClass} size={20}/></a>
+            ) : (
+              <span className="library-card-source grid size-8 shrink-0 place-items-center rounded-lg" title={group.arr} role="img" aria-label={`Source: ${group.arr}`}><BrandLogo name={srcClass} size={20}/></span>
+            )}
             <button className="touch-target inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold text-accent-bright transition-colors hover:bg-accent/10" type="button" onClick={handleOpenDetails}>Details <Icon name="chevron-right" size={15}/></button>
             <button className={cx(ICON_BUTTON, 'touch-target group/hide size-8 shrink-0 disabled:cursor-wait', hidden && 'border-warn/35 bg-warn/10 text-warn')} type="button" title={hidden ? 'Show this card' : 'Hide this card'} aria-label={(hidden ? 'Show ' : 'Hide ') + group.title} onClick={handleHide} disabled={hiding}><HideActionIcon hidden={hidden}/></button>
           </div>
-        </div>
-      </div>
+        </footer>
     </article>
     {detailsOpen && (
       <Modal open={detailsOpen} labelledBy={titleId} onClose={requestClose} className="bg-transparent p-0">

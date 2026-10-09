@@ -44,7 +44,7 @@ function cardDelta(group: GroupedCard): number {
 
 function SkeletonCards() {
   return <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]" aria-label="Loading library">
-    {Array.from({ length: 6 }, (_, index) => <div key={index} className="overflow-hidden rounded-card border border-line bg-panel"><div className="skeleton h-40"/><div className="space-y-3 p-4"><div className="skeleton h-5 w-3/4 rounded-md"/><div className="flex gap-2"><div className="skeleton h-7 w-20 rounded-full"/><div className="skeleton h-7 w-24 rounded-full"/></div><div className="skeleton h-10 rounded-lg"/></div></div>)}
+    {Array.from({ length: 6 }, (_, index) => <div key={index} className="overflow-hidden rounded-card border border-line bg-panel"><div className="library-card-body"><div className="library-card-poster skeleton"/><div className="library-card-info"><div className="flex flex-col gap-3 p-3"><div className="skeleton h-5 w-full rounded-md"/><div className="skeleton h-5 w-2/3 rounded-md"/><div className="skeleton h-4 w-24 rounded-md"/></div></div></div><div className="flex gap-1.5 px-3.5 pb-3.5"><div className="skeleton h-8 w-11 rounded-md"/><div className="skeleton h-8 w-11 rounded-md"/></div><div className="border-t border-line p-3"><div className="skeleton h-9 rounded-lg"/></div></div>)}
   </div>
 }
 
