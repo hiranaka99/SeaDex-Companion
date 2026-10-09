@@ -28,6 +28,12 @@ let fixtureHistory = null
 let fixtureLogs = ['2026-10-02 12:00:00 [INFO] First log entry']
 let statusOverrides = {}
 let cancelableDownloads = []
+let holdBulk = false
+let failBulk = false
+let finishBulk = null
+let bulkState = { ok: true, finished: true, pending: [], added: [], failures: [] }
+const bulkRequests = []
+const scanRequests = []
 const originalRelease = structuredClone(example.releases[0])
 const progressFor = rel => ({ ok: true, found: true, state: progressMode, progress: progressMode === 'complete' ? 1 : 0.5, downloaded: progressMode === 'complete' ? 200 : 100, total_size: 200, speed: 10, identity: JSON.stringify([rel.part || '', rel.releaseGroup, rel.tracker, [...rel.info_hashes].sort(), [...rel.selected_files].sort()]) })
 let preflightMode = 'low'
@@ -45,7 +51,17 @@ const server = createServer(async (req, res) => {
     if (path === '/api/auth/status') response = { setup_required: authMode === 'setup', authenticated: authMode === 'authenticated', username: authMode === 'authenticated' ? 'Tester' : null }
     else if (path === '/api/config') {
       if (configFailure) { res.statusCode = 503; response = { error: 'Fixture configuration unavailable' } }
-      else { if (req.method === 'POST') { await new Promise(resolve => setTimeout(resolve, saveDelay)); saved.push(body); config = { ...config, ...body } }; response = config }
+      else {
+        if (req.method === 'POST') {
+          await new Promise(resolve => setTimeout(resolve, saveDelay)); saved.push(body); config = { ...config, ...body }
+          for (const name of ['sonarr_key', 'radarr_key', 'qbittorrent_pass', 'webhook']) {
+            if (body[name]) config[name + '_configured'] = true
+            if (body.clear_secrets?.includes(name)) config[name + '_configured'] = false
+            config[name] = ''
+          }
+        }
+        response = config
+      }
     }
     else if (path === '/api/status') {
       if (statusFailure) { res.statusCode = 503; response = { error: 'Fixture server unavailable' } }
@@ -61,8 +77,20 @@ const server = createServer(async (req, res) => {
       if (preflightMode === 'failure') { res.statusCode = 503; response = { error: 'Fixture storage unavailable' } }
       else response = { torrents: [], new_bytes: bytes, new_torrents: selected && !existing ? 1 : 0, existing_torrents: existing ? 1 : 0, unknown_torrents: 0, approximate_torrents: 0, selected_file_count: selected && !existing ? body.selections[0].release === 1 ? 2 : 1 : 0, whole_torrents: 0, disk_space: selected && !existing ? [{ path: '/downloads', categories: ['sonarr-anime'], required_bytes: bytes, unknown_torrents: 0, free_bytes: preflightMode === 'unavailable' ? null : preflightMode === 'low' ? 100 : 1000, sufficient: preflightMode === 'unavailable' ? null : preflightMode !== 'low', reason: preflightMode === 'unavailable' ? 'Client cannot report space for this path.' : undefined }] : [] }
     }
-    else if (path === '/api/download_bulk/status') response = { ok: true, finished: true, pending: [], added: [], failures: [] }
-    else if (path === '/api/update-check') response = { current: '1.6.0', latest: null, url: null }
+    else if (path === '/api/download_bulk/status') response = bulkState
+    else if (path === '/api/download_bulk') {
+      bulkRequests.push(body)
+      const hashes = [...new Set(body.selections.flatMap(selection => (fixtureResults || [example]).find(item => item.key === selection.key)?.releases[selection.release]?.info_hashes || []))]
+      bulkState = { ok: true, finished: false, pending: hashes, added: [], failures: [] }
+      if (holdBulk) await new Promise(resolve => { finishBulk = resolve })
+      const failures = failBulk ? [{ hash: hashes[0], label: 'Radarr movie', error: 'Fixture metadata timeout' }] : []
+      const added = hashes.filter(hash => !failures.some(failure => failure.hash === hash))
+      bulkState = { ok: true, finished: true, pending: [], added, failures }
+      response = { ok: true, count: added.length, targets: body.selections, failures }
+    }
+    else if (path === '/api/config/test') response = { ok: true, message: 'Fixture connection successful' }
+    else if (path === '/api/scan') { scanRequests.push(body); response = { ok: true } }
+    else if (path === '/api/update-check') response = { current: '1.7.0', latest: null, url: null }
     else if (path === '/api/scanned-data') response = { results: 2, cache_entries: 1, last_run: null, cache_valid: true, results_valid: true }
     else if (path === '/api/history') response = { scans: fixtureHistory || [{ id: 'scan-1', run_at: '2026-10-02 12:00:00', trigger: 'manual', counts: { upgrade: 1 }, changes: [{ key: example.key, title: example.title, arr: 'Sonarr', season: 1, type: 'upgrade', from: 'best', to: 'upgrade', best_group: 'Example' }] }] }
     else if (path === '/api/download_bulk/cancelable') response = { ok: true, downloads: cancelableDownloads }
@@ -100,11 +128,12 @@ const wait = async expression => {
   throw new Error('UI did not reach expected state: ' + expression)
 }
 const click = async text => {
-  const found = await evaluate(`(() => { const button = [...document.querySelectorAll('button')].find(button => button.getClientRects().length && button.textContent.trim() === ${JSON.stringify(text)}); if (!button) return false; button.focus(); button.click(); return true })()`)
+  const found = await evaluate(`(() => { if (${JSON.stringify(text)} === 'Bulk cancel') { const menu = document.querySelector('.library-more-actions'); if (menu?.getClientRects().length && !menu.open) menu.querySelector('summary').click() }; const button = [...document.querySelectorAll('button, summary')].find(button => button.getClientRects().length && button.textContent.trim() === ${JSON.stringify(text)}); if (!button) return false; button.focus(); button.click(); return true })()`)
   assert.ok(found, 'Visible button: ' + text)
   await pause(100)
 }
 const fill = (selector, value) => evaluate(`(() => { const input = document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)}); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true })); })()`)
+const select = (selector, value) => evaluate(`(() => { const input = document.querySelector(${JSON.stringify(selector)}); input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('change', { bubbles: true })); })()`)
 const key = async key => { const keyCode = key === 'Tab' ? 9 : key === 'Enter' ? 13 : 27; await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: keyCode, text: key === 'Enter' ? '\r' : undefined }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: keyCode }); await pause(60) }
 const capture = async name => {
   if (!process.env.SCREENSHOT_DIR) return
@@ -134,7 +163,7 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
   if (!process.env.UI_REVIEW_ONLY) {
   await wait(`document.querySelector('h1')?.textContent === 'Anime library' && document.body.textContent.includes('Unmatched anime')`)
-  assert.ok(await evaluate(`[...document.querySelectorAll('[title="SeaDex Companion v1.6"]')].some(element => element.textContent.trim() === 'v1.6')`), 'The app displays version v1.6')
+  assert.ok(await evaluate(`[...document.querySelectorAll('[title="SeaDex Companion v1.7"]')].some(element => element.textContent.trim() === 'v1.7')`), 'The app displays version v1.7')
   assert.ok(await evaluate(`document.body.textContent.includes('Match needs review')`))
   assert.equal(await evaluate(`document.querySelectorAll('[aria-label="Library results"] article').length`), 2)
   assert.ok(await evaluate(`!document.querySelector('[aria-label="Library view"]') && !document.querySelector('[aria-label="Library results"] table')`), 'Library uses cards without a view switcher')
@@ -148,9 +177,9 @@ try {
   await wait(`document.querySelectorAll('dialog[open] input[type=radio]')[1]?.checked`)
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('Not enough space')`)
   assert.equal(await evaluate(`document.querySelector('[data-testid="bulk-download-size"]').textContent`), '200 B')
-  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Download 1').disabled`))
+  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Download 1 torrent').disabled`))
   await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Continue despite')).querySelector('input').click()`)
-  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Download 1').disabled`))
+  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Download 1 torrent').disabled`))
   preflightMode = 'existing'
   await click('Refresh check')
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('No new torrents to add')`)
@@ -158,7 +187,7 @@ try {
   preflightMode = 'unavailable'
   await click('Refresh check')
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('Free space unavailable')`)
-  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Download 1').disabled`))
+  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Download 1 torrent').disabled`))
   preflightMode = 'failure'
   await click('Refresh check')
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('Check unavailable')`)
@@ -242,7 +271,7 @@ try {
   await pause(300)
   assert.ok(await evaluate(`document.querySelector('nav[aria-label="Mobile navigation"]').getBoundingClientRect().width <= 390`))
   assert.ok(await evaluate(`document.documentElement.scrollWidth <= 390`), 'Mobile page has no horizontal overflow')
-  assert.ok(await evaluate(`[...document.querySelectorAll('header [title="SeaDex Companion v1.6"]')].some(element => element.getClientRects().length && element.textContent.trim() === 'v1.6')`), 'The mobile header displays version v1.6')
+  assert.ok(await evaluate(`[...document.querySelectorAll('header [title="SeaDex Companion v1.7"]')].some(element => element.getClientRects().length && element.textContent.trim() === 'v1.7')`), 'The mobile header displays version v1.7')
   await capture('mobile-library')
   statusFailure = true
   await pause(10_500)
@@ -262,6 +291,118 @@ try {
   await click('Retry')
   await wait(`document.querySelector('input[name=sonarr_url]')`)
   console.log('PASS configuration loading failure and retry')
+
+  // Scope, recommendations, and immutable background batches use isolated APIs.
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false })
+  const priorConfig = structuredClone(config)
+  const movie = { ...example, key: 'Radarr:movie:Movie', arr: 'Radarr', title: 'Radarr movie', season: null, group_id: 2, anilist_id: 2, notes: 'Compare the audio and source before choosing.', releases: example.releases.map(rel => ({ ...rel, dual_audio: true, tags: ['BD', 'HEVC'] })) }
+  const hidden = { ...example, key: 'Sonarr:hidden:1', title: 'Hidden upgrade', group_id: 3, anilist_id: 3, releases: [release('Hidden group', 'e')] }
+  fixtureResults = [example, movie, hidden]
+  config.hidden = ['3']
+  preflightMode = 'enough'
+  revision++
+  await evaluate(`location.hash='anime'; location.reload()`)
+  await wait(`document.querySelector('select[aria-label="Source"]')`)
+  await select('select[aria-label="Source"]', 'Radarr')
+  await wait(`document.querySelectorAll('[aria-label="Library results"] article').length === 1`)
+  await click('Bulk download')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('1 eligible')`)
+  assert.equal(await evaluate(`document.querySelector('[aria-label="Bulk action scope"]').value`), 'filtered')
+  assert.ok(await evaluate(`!document.querySelector('dialog[open]').textContent.includes('Hidden upgrade') && !document.querySelector('dialog[open]').textContent.includes('Example anime')`), 'Current review follows the source filter')
+  assert.ok(await evaluate(`document.querySelector('dialog[open]').textContent.includes('0 ready to send')`), 'Unresolved choices are eligible rather than ready')
+  await select('[aria-label="Bulk action scope"]', 'all')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('3 eligible')`)
+  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Hidden upgrade')).querySelector('input').checked === false`), 'Whole-library review keeps hidden titles unchecked')
+  await select('[aria-label="Bulk action scope"]', 'filtered')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('1 eligible')`)
+  await evaluate(`document.querySelector('dialog[open] button[aria-expanded]').click()`)
+  await wait(`document.querySelector('dialog[open] input[type=radio]')`)
+  assert.ok(await evaluate(`document.querySelector('dialog[open]').textContent.includes('Dual Audio') && document.querySelector('dialog[open]').textContent.includes('HEVC') && document.querySelector('dialog[open]').textContent.includes('Compare the audio')`), 'Choices expose release tags and notes')
+  await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].click()`)
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('1 ready to send') && !document.querySelector('dialog[open]')?.textContent.includes('Checking…')`)
+  await capture('priorities-scoped-review')
+  holdBulk = true
+  await click('Download 1 torrent')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Continue in background')`)
+  assert.equal(bulkRequests.length, 1)
+  assert.deepEqual(bulkRequests[0].selections.map(item => [item.key, item.release]), [[movie.key, 1]], 'Submitted selection follows the filtered scope and chosen release')
+  assert.ok(bulkRequests[0].selections[0].identity, 'Submission retains release identity validation')
+  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] input[type=checkbox], dialog[open] input[type=radio]')].every(input => input.disabled) && document.querySelector('[aria-label="Bulk action scope"]').disabled`), 'Submitted selections and scope are immutable')
+  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Check all').disabled`))
+  await capture('priorities-submitted-batch')
+  await click('Continue in background')
+  assert.equal(await evaluate(`document.querySelectorAll('dialog[open]').length`), 0)
+  await click('Configuration')
+  await click('Review batch')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Radarr movie')`)
+  assert.ok(await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].checked`), 'Reopened background review retains the submitted choice')
+  await key('Escape')
+  assert.equal(await evaluate(`document.querySelectorAll('dialog[open]').length`), 0, 'Escape backgrounds an in-flight batch')
+  await click('Review batch')
+  finishBulk()
+  holdBulk = false
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Added to qBittorrent')`)
+  assert.ok(await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].checked && document.querySelectorAll('dialog[open] input[type=radio]')[1].disabled`), 'Completed batch keeps an immutable record')
+  await capture('priorities-completed-batch')
+  await click('Close')
+  failBulk = true
+  await click('Bulk download')
+  await evaluate(`document.querySelector('dialog[open] button[aria-expanded]').click()`)
+  await wait(`document.querySelector('dialog[open] input[type=radio]')`)
+  await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].click()`)
+  await wait(`![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Download 1 torrent')?.disabled`)
+  await click('Download 1 torrent')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Could not be added')`)
+  await capture('priorities-failed-batch')
+  await click('Close')
+  await click('Error details')
+  assert.ok(await evaluate(`document.querySelector('[aria-label="Bulk operation error details"]').textContent.includes('Radarr movie') && document.querySelector('[aria-label="Bulk operation error details"]').textContent.includes('Fixture metadata timeout')`), 'Per-item failure details remain available after closing review')
+  failBulk = false
+  cancelableDownloads = [example, movie].map((item, index) => ({ key: item.key, release: 0, title: item.title, season: item.season, part: '', release_group: 'Example', tracker: 'Nyaa', size: 200, hashes: [(index ? 'b' : 'd').repeat(40)] }))
+  await click('Bulk cancel')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Radarr movie')`)
+  assert.ok(await evaluate(`!document.querySelector('dialog[open]').textContent.includes('Example anime')`), 'Cancellation follows the current result scope')
+  await select('[aria-label="Bulk action scope"]', 'all')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Example anime')`)
+  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Also delete')).querySelector('input').checked`), 'Changing scope preserves the file-preserving default')
+  await key('Escape')
+  console.log('PASS filtered/all-library bulk scope, hidden defaults, recommendation evidence, immutable background batches, and scoped cancellation')
+
+  config = { ...priorConfig, sonarr_url: '', sonarr_key_configured: false, radarr_url: '', radarr_key_configured: false }
+  fixtureResults = []
+  statusOverrides = { last_run: null }
+  await evaluate(`location.hash='config'; location.reload()`)
+  await wait(`document.querySelector('[aria-label="Connection checklist"]')`)
+  assert.ok(await evaluate(`document.querySelector('input[name=sonarr_url]') && !document.querySelector('input[name=radarr_url]')`), 'First setup starts with one library-source decision')
+  await click('Radarr · movies')
+  await fill('input[name=radarr_url]', 'http://fixture-radarr.local')
+  await fill('input[name=radarr_key]', 'fixture-key')
+  await click('Test connection')
+  await wait(`document.querySelector('[aria-label="Connection checklist"]')?.textContent.includes('Connection tested')`)
+  await click('Save configuration')
+  await wait(`document.querySelector('[aria-label="Connection checklist"]')?.textContent.includes('Connection saved')`)
+  assert.ok(await evaluate(`![...document.querySelector('[aria-label="Connection checklist"]').querySelectorAll('button')].find(button => button.textContent.trim() === 'Scan library').disabled`), 'Saved connection enables the first scan')
+  await capture('priorities-setup-ready')
+  await click('Scan library')
+  assert.equal(scanRequests.length, 1)
+  await click('Connection checklist')
+  await click('Show all settings')
+  assert.ok(await evaluate(`Boolean(document.querySelector('input[name=sonarr_url]') && document.querySelector('input[name=radarr_url]'))`), 'Expert configuration remains accessible')
+  const saveCount = saved.length
+  await fill('input[name=qbittorrent_url]', 'not-a-url')
+  await evaluate(`document.querySelector('input[name=qbittorrent_url]').closest('details').open=false`)
+  await click('Save configuration')
+  assert.ok(await evaluate(`document.querySelector('input[name=qbittorrent_url]').closest('details').open`), 'Invalid fields open their collapsed settings section')
+  assert.equal(saved.length, saveCount, 'Invalid hidden inputs cannot submit configuration')
+  await fill('input[name=qbittorrent_url]', priorConfig.qbittorrent_url)
+  config = priorConfig
+  fixtureResults = null
+  statusOverrides = {}
+  cancelableDownloads = []
+  bulkState = { ok: true, finished: true, pending: [], added: [], failures: [] }
+  await evaluate(`location.hash='anime'; location.reload()`)
+  await wait(`document.querySelector('h1')?.textContent === 'Anime library'`)
+  console.log('PASS optional first-run setup, source choice, test/save/scan sequence, and expert settings access')
   }
 
   // Follow-up improvements: verify behavior as well as inner geometry.
@@ -298,6 +439,13 @@ try {
   await click('Next')
   await wait(`document.querySelector('[aria-label="Library page"]').value === '1'`)
   assert.equal(await evaluate(`document.querySelectorAll('[aria-label="Library results"] article').length`), 60)
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+  await evaluate(`document.querySelector('main > .app-scrollbar').scrollTop=0`)
+  await pause(200)
+  const mobileFirstCard = await evaluate(`document.querySelector('[aria-label="Library results"] article').getBoundingClientRect().top`)
+  assert.ok(mobileFirstCard < 460, 'Mobile chrome leaves useful room for the first card: ' + mobileFirstCard)
+  assert.ok(await evaluate(`[...document.querySelectorAll('.library-actions > button, .library-toolbar button, article button[popovertarget]')].filter(button => button.getClientRects().length).every(button => button.getBoundingClientRect().height >= 44)`), 'Primary mobile actions, filters, and season chips have 44px targets')
+  await capture('priorities-mobile-library')
   console.log('PASS bounded library pages, full-library search/bulk scope, and off-page history fallback navigation')
   fixtureResults = null
   fixtureHistory = null
@@ -396,7 +544,7 @@ try {
   progressMode = 'absent'
   await evaluate(`location.hash = 'anime'; location.reload()`)
   await wait(`document.body.textContent.includes(${JSON.stringify(example.title)})`)
-  const uiEvidence = []
+  const uiEvidence = [{ width: 390, route: 'paginated-library', firstCardTop: mobileFirstCard }]
   for (const [width, height] of [[1440, 1000], [900, 900], [390, 844], [320, 700]]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 901 })
     for (const route of ['anime', 'history', 'config', 'log']) {
@@ -472,6 +620,7 @@ try {
   console.error('Browser exceptions:', errors)
   throw error
 } finally {
+  finishBulk?.()
   if (ws?.readyState === WebSocket.OPEN) await send('Browser.close').catch(() => {})
   ws?.close()
   if (browser.exitCode === null) { browser.kill(); await once(browser, 'exit') }

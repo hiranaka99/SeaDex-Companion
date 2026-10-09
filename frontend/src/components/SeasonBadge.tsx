@@ -38,7 +38,7 @@ export default function SeasonBadge({ season, fallback, className }: { season: R
     ? parts.map((part, index) => `${part}: ${tones[index].label}`).join('; ')
     : tone.label
 
-  const badgeClass = cx(className, 'min-h-8 min-w-11 cursor-pointer text-ink transition-colors hover:brightness-125')
+  const badgeClass = cx(className, 'touch-target min-h-8 min-w-11 cursor-pointer text-ink transition-colors hover:brightness-125')
 
   // Hard stops give each cour an equal segment, in cour order from left to right.
   const gradient = (opacity: number) => `linear-gradient(to right, ${tones.map((partTone, index) => {
