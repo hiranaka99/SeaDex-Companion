@@ -292,15 +292,16 @@
   .library-more-actions { flex: 0 0 44px; }
   .connection-status:not([role]) { display: none; }
   .library-more-actions > summary::-webkit-details-marker { display: none; }
-  .bulk-download-footer { padding-inline: 12px; }
+  .bulk-dialog-footer { padding-inline: 12px; }
   .configuration-footer { padding-top: .5rem; }
   .modal-shell > section > header { max-height: 40dvh; overflow-y: auto; padding-inline: clamp(12px, 5vw, 20px); }
   .modal-shell > section > header { flex-wrap: wrap; }
   .modal-shell > section > header > div { flex: 1 1 12ch; }
   .modal-shell > section > header h2 { overflow-wrap: normal; word-break: normal; }
-  .modal-shell > section > .bulk-download-header > span { width: 44px; height: 44px; }
-  .modal-shell > section > .bulk-download-header > button { order: 1; margin-left: auto; width: 44px; height: 44px; }
-  .modal-shell > section > .bulk-download-header > div { order: 2; flex-basis: 100%; }
+  .modal-shell > section > .bulk-dialog-header > span { width: 44px; height: 44px; }
+  .modal-shell > section > .bulk-dialog-header > button { order: 1; margin-left: auto; width: 44px; height: 44px; }
+  .modal-shell > section > .bulk-dialog-header > div { order: 2; flex-basis: 100%; }
+  .modal-shell > section > .bulk-dialog-header > p { order: 3; }
 }
 
 @media (max-height: 600px) {
