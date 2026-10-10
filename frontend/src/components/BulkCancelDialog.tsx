@@ -1,9 +1,10 @@
 import { ReactNode, useEffect, useRef, useState } from 'react'
 import { formatBytes } from '../utils'
-import { buttonBase, cx } from '../styles'
+import { cx } from '../styles'
 import Icon from './Icons'
 import { getCancelableBulkDownloads, BulkDownloadTarget, CancelableDownload } from '../api'
 import Modal from './Modal'
+import { bulkDialog } from './bulk-dialog-styles'
 
 interface Props {
   open: boolean
@@ -58,17 +59,17 @@ export default function BulkCancelDialog({ open, busy, scopeControl, resultKeys,
 
   return (
     <Modal open={open} labelledBy="bulk-cancel-title" busy={busy} onClose={onClose}>
-      <section className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" aria-busy={busy || loading}>
-        <header className="flex flex-wrap items-start gap-x-3 gap-y-2 border-b border-line px-5 py-4">
+      <section className={cx(bulkDialog.shell, 'max-w-2xl')} aria-busy={busy || loading}>
+        <header className={bulkDialog.header}>
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-bad/12 text-bad"><Icon name="trash" size={19}/></span>
           <div className="min-w-0 flex-1">
             <h2 id="bulk-cancel-title" className="m-0 text-lg font-extrabold">Cancel bulk downloads</h2>
           </div>
-          <button type="button" className="grid touch-target size-9 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onClose} disabled={busy} aria-label="Close"><Icon name="close" size={18}/></button>
+          <button type="button" className={bulkDialog.closeButton} onClick={onClose} disabled={busy} aria-label="Close"><Icon name="close" size={18}/></button>
           <p className="m-0 basis-full text-sm text-muted">Remove incomplete torrents added by SeaDex Companion. Files are kept unless you choose to delete them; manually added torrents are untouched.</p>
         </header>
 
-        <div className="app-scrollbar min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+        <div className={bulkDialog.body}>
           {scopeControl}
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted"><span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/>Loading active downloads…</div>
@@ -83,10 +84,10 @@ export default function BulkCancelDialog({ open, busy, scopeControl, resultKeys,
                 {downloads.map((item) => {
                   const id = `${item.key}\0${item.release}`
                   return (
-                    <label key={id} className={cx('flex min-h-11 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', enabled[id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft text-muted')}>
+                    <label key={id} className={cx(bulkDialog.row, 'cursor-pointer', enabled[id] !== false ? bulkDialog.rowSelected : bulkDialog.rowUnchecked)}>
                       <input type="checkbox" disabled={busy} className="size-3.5 shrink-0 accent-bad" checked={enabled[id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [id]: event.target.checked }))} />
                       <span className="min-w-0 flex-1 font-semibold text-ink wrap-anywhere">{item.title}</span>
-                      <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-xs font-extrabold text-ink">{item.season == null ? 'Movie' : `S${String(item.season).padStart(2, '0')}`}{item.part ? ` · ${item.part}` : ''}</span>
+                      <span className={bulkDialog.seasonBadge}>{item.season == null ? 'Movie' : `S${String(item.season).padStart(2, '0')}`}{item.part ? ` · ${item.part}` : ''}</span>
                       <span className="flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1 tabular-nums" title={`${item.release_group} · ${item.tracker}`}>
                         <span className="min-w-0 basis-full text-muted wrap-anywhere" title="Release group">{item.release_group}</span>
                         <span className="font-semibold text-ink">{formatBytes(item.size) || 'Unknown'}</span>
@@ -112,13 +113,13 @@ export default function BulkCancelDialog({ open, busy, scopeControl, resultKeys,
           )}
         </div>
 
-        <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-panel px-5 py-4">
+        <footer className={bulkDialog.footer}>
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
             {selectedTorrents > 0 ? <span><span className="font-bold text-ink">{selectedTorrents}</span> torrent{selectedTorrents === 1 ? '' : 's'} will be removed{deleteFiles ? ' and their downloaded files will be deleted' : ', downloaded files are kept'}.</span> : <span>Nothing selected.</span>}
           </span>
-          <div className="flex gap-2">
-            <button ref={cancelRef} type="button" className={cx(buttonBase, 'border-line bg-panel-raised text-ink hover:text-ink')} onClick={onClose} disabled={busy}>Keep</button>
-            <button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/12 text-bad hover:bg-bad/20')} onClick={() => onConfirm(selections, deleteFiles)} disabled={busy || selections.length === 0}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}Remove {selectedTorrents || ''} torrent{selectedTorrents === 1 ? '' : 's'}</button>
+          <div className={bulkDialog.footerActions}>
+            <button ref={cancelRef} type="button" className={bulkDialog.neutralButton} onClick={onClose} disabled={busy}>Keep</button>
+            <button type="button" className={bulkDialog.removeButton} onClick={() => onConfirm(selections, deleteFiles)} disabled={busy || selections.length === 0}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}Remove {selectedTorrents || ''} torrent{selectedTorrents === 1 ? '' : 's'}</button>
           </div>
         </footer>
       </section>

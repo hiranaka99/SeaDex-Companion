@@ -335,7 +335,7 @@ try {
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('1 eligible')`)
   assert.equal(await evaluate(`document.querySelector('[aria-label="Bulk action scope"]').value`), 'filtered')
   assert.ok(await evaluate(`!document.querySelector('dialog[open]').textContent.includes('Hidden upgrade') && !document.querySelector('dialog[open]').textContent.includes('Example anime')`), 'Current review follows the source filter')
-  assert.ok(await evaluate(`document.querySelector('dialog[open]').textContent.includes('0 ready to send')`), 'Unresolved choices are eligible rather than ready')
+  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim().startsWith('Download ')).disabled`), 'Unresolved release choices prevent submission')
   await select('[aria-label="Bulk action scope"]', 'all')
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('3 eligible')`)
   assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Hidden upgrade')).querySelector('input').checked === false`), 'Whole-library review keeps hidden titles unchecked')
@@ -345,7 +345,7 @@ try {
   await wait(`document.querySelector('dialog[open] input[type=radio]')`)
   assert.ok(await evaluate(`document.querySelector('dialog[open]').textContent.includes('Dual Audio') && document.querySelector('dialog[open]').textContent.includes('HEVC') && document.querySelector('dialog[open]').textContent.includes('Compare the audio')`), 'Choices expose release tags and notes')
   await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].click()`)
-  await wait(`document.querySelector('dialog[open]')?.textContent.includes('1 ready to send') && !document.querySelector('dialog[open]')?.textContent.includes('Checking…')`)
+  await wait(`document.querySelectorAll('dialog[open] input[type=radio]')[1]?.checked && [...document.querySelectorAll('dialog[open] button')].some(button => button.textContent.trim() === 'Download 1 torrent' && !button.disabled)`)
   await capture('priorities-scoped-review')
   holdBulk = true
   await click('Download 1 torrent')

@@ -6,6 +6,7 @@ import Icon from './Icons'
 import * as api from '../api'
 import type { BulkDownloadTarget } from '../api'
 import Modal from './Modal'
+import { bulkDialog } from './bulk-dialog-styles'
 import { releaseIdentity } from '../../../shared/releases'
 import { estimateDownloads, type DownloadPreflight } from '../../../shared/download-estimate'
 
@@ -89,11 +90,11 @@ function hiddenKey(result: ResultItem): string {
 
 function ReleaseSummary({ release }: { release: Release }) {
   const tags = [...new Set([release.quality, ...(release.dual_audio ? ['Dual Audio'] : []), ...(release.tags || [])].filter(Boolean))]
-  return <span className="block min-w-0 text-xs text-muted wrap-anywhere"><strong className="font-semibold text-ink">{release.releaseGroup}</strong> · {release.tracker}{tags.length > 0 && ` · ${tags.join(' · ')}`}</span>
+  return <span className="block min-w-0 text-xs text-ink/75 wrap-anywhere"><strong className="font-semibold text-ink">{release.releaseGroup}</strong> · {release.tracker}{tags.length > 0 && ` · ${tags.join(' · ')}`}</span>
 }
 
 function OutcomeLabel({ status }: { status: 'success' | 'failure' | 'pending' | null }) {
-  return status ? <span className="basis-full text-xs font-semibold">{status === 'success' ? 'Added to qBittorrent' : status === 'failure' ? 'Could not be added — review the operation error details' : 'Waiting for qBittorrent'}</span> : null
+  return status ? <span className={cx('basis-full text-xs font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : 'text-accent-bright')}>{status === 'success' ? 'Added to qBittorrent' : status === 'failure' ? 'Could not be added — review the operation error details' : 'Waiting for qBittorrent'}</span> : null
 }
 
 export default function BulkDownloadDialog({ open, results, scopeControl, hiddenKeys, busy, outcome, onConfirm, onClose }: Props) {
@@ -150,8 +151,10 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
   const checking = !currentPreflight && !checkError && !outcome
   const estimate = currentPreflight || estimateDownloads(selectedOptions.map(option => ({ release: option.release, category: '' })))
   const lowSpace = currentPreflight?.disk_space.some(check => check.sufficient === false)
+  const unverifiedSpace = Boolean(checkError || estimate.unknown_torrents || estimate.approximate_torrents || (currentPreflight && estimate.new_torrents > 0 && (!currentPreflight.disk_space.length || currentPreflight.disk_space.some(check => check.sufficient !== true))))
+  const diskTone = checking ? 'border-accent/35 bg-accent/6' : lowSpace ? 'border-bad/45 bg-bad/6' : unverifiedSpace ? 'border-warn/40 bg-warn/6' : estimate.new_torrents > 0 ? 'border-good/35 bg-good/6' : 'border-line bg-canvas-soft'
+  const diskTextTone = checking ? 'text-accent-bright' : lowSpace ? 'text-bad' : unverifiedSpace ? 'text-warn' : estimate.new_torrents > 0 ? 'text-good' : 'text-muted'
   const sizeText = estimate.unknown_torrents ? `${formatBytes(estimate.new_bytes) || '0 B'} + unknown` : estimate.new_bytes === 0 ? '0 B' : `${estimate.approximate_torrents ? '≈ ' : ''}${formatBytes(estimate.new_bytes)}`
-  const automaticCount = review.ready.filter((group) => group.options.length === 1 && !hiddenKeys.has(hiddenKey(group.result))).length
   const pendingChoices = review.choices.filter((group) => enabled[group.id] !== false && selected[group.id] === undefined).length
   const blockedSorted = [...review.blocked].sort((a, b) =>
     a.result.title.localeCompare(b.result.title, undefined, { sensitivity: 'base' }) ||
@@ -184,17 +187,17 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
 
   return (
     <Modal open={open} labelledBy="bulk-download-title" onClose={onClose}>
-      <section className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-line-strong bg-panel-raised shadow-[0_24px_70px_rgba(0,0,0,.55)]" aria-busy={busy}>
-        <header className="bulk-download-header flex shrink-0 items-start gap-3 border-b border-line px-5 py-4">
+      <section className={cx(bulkDialog.shell, 'max-w-3xl')} aria-busy={busy}>
+        <header className={bulkDialog.header}>
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-good/12 text-good"><Icon name="download" size={19}/></span>
           <div className="min-w-0 flex-1">
             <h2 id="bulk-download-title" className="m-0 text-lg font-extrabold">Review bulk downloads</h2>
-            <p className="mt-1 mb-0 text-sm text-muted">{outcome?.inflight ? 'Sending your fixed selection to qBittorrent. Closing this review keeps the batch running in the background.' : outcome ? 'Review the submitted selection and each outcome below. Operation Center shows the batch results and any error details.' : 'Choose a best release for each season or cour you want to upgrade.'}</p>
           </div>
-          <button type="button" className="grid touch-target size-9 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onClose} aria-label={busy ? 'Continue batch in background' : 'Close'}><Icon name="close" size={18}/></button>
+          <button type="button" className={bulkDialog.closeButton} onClick={onClose} aria-label={busy ? 'Continue batch in background' : 'Close'}><Icon name="close" size={18}/></button>
+          <p className="m-0 basis-full text-sm text-muted">{outcome?.inflight ? 'Sending your fixed selection to qBittorrent. Closing this review keeps the batch running in the background.' : outcome ? 'Review the submitted selection and each outcome below. Operation Center shows the batch results and any error details.' : 'Choose a best release for each season or cour you want to upgrade.'}</p>
         </header>
 
-        <div className="app-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto p-5 max-[600px]:p-4">
+        <div className={bulkDialog.body}>
           {scopeControl}
           <div className="flex flex-wrap gap-2 text-xs font-bold">
             <button type="button" className={cx('touch-target cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'ready' ? 'border-good/60 bg-good/25 text-ink' : 'border-good/30 bg-good/10 text-ink hover:bg-good/18')} onClick={() => setView('ready')} aria-pressed={view === 'ready'}>{review.ready.length} eligible</button>
@@ -204,10 +207,6 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
 
           {view === 'ready' && (
             <section>
-              <h3 className="mb-2 text-sm font-bold text-ink">Eligible upgrades</h3>
-              {!outcome && <p className="mb-3 text-xs text-muted" role="status">{selections.length} ready to send{pendingChoices > 0 && ` · ${pendingChoices} need a release choice`}. Each selection covers a movie, season, or cour.</p>}
-              {!outcome && <details className="mb-3 text-xs text-muted"><summary className="touch-target w-fit cursor-pointer font-semibold text-accent-bright">How to choose between best releases</summary><p className="mt-2 mb-0 leading-relaxed">SeaDex marks these releases as best. Options may differ in release group, source, or audio. Compare their tags and notes; file size alone does not explain the recommendation.</p></details>}
-              {!outcome && automaticCount > 0 && <p className="m-0 mb-3 text-xs text-muted"><Icon name="check" size={14} className="mr-1.5 inline text-good"/>{automaticCount} selection{automaticCount === 1 ? '' : 's'} with a single public best option selected automatically.</p>}
               {readySorted.length ? (
                 <div className="space-y-1.5">
                   {readySorted.map((group) => {
@@ -220,19 +219,19 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                       const delta = release.size && localSize ? release.size - localSize : null
                       const status = groupStatus(group)
                       return (
-                        <label key={group.id} className={cx('flex min-h-11 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs transition-colors', locked ? 'cursor-default' : 'cursor-pointer', status === 'success' && 'border-good/50 bg-good/8', status === 'failure' && 'border-bad/50 bg-bad/8', status === 'pending' && 'border-accent/45 bg-accent/8', !status && (enabled[group.id] !== false ? 'border-line bg-panel hover:border-line-strong' : 'border-line/60 bg-canvas-soft text-muted'))}>
-                          <input type="checkbox" disabled={locked} className="size-3.5 shrink-0 accent-accent" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} />
+                        <label key={group.id} className={cx(bulkDialog.row, locked ? 'cursor-default' : 'cursor-pointer', status === 'success' && 'border-good/50 bg-good/8', status === 'failure' && 'border-bad/50 bg-bad/8', status === 'pending' && 'border-accent/45 bg-accent/8', !status && (enabled[group.id] !== false ? bulkDialog.rowSelected : bulkDialog.rowUnchecked))}>
+                          <input type="checkbox" disabled={locked} className="size-3.5 shrink-0 accent-good" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} />
                           {status === 'success' && <Icon name="check" size={13} className="text-good"/>}
                           {status === 'failure' && <Icon name="alert" size={13} className="text-bad"/>}
                           {status === 'pending' && <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/>}
                           <span className={cx('font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : 'text-ink')}>{group.result.title}</span>
-                          <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-xs font-extrabold text-ink">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
+                          <span className={bulkDialog.seasonBadge}>{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
                           {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                           <span className="ml-auto flex items-center gap-1.5 tabular-nums" title={`${release.releaseGroup} · ${release.tracker}`}>
-                            <span className="text-muted" title="Current local size">{formatBytes(localSize) || '—'}</span>
-                            <span className="text-muted-dim">→</span>
+                            <span className="text-ink/70" title="Current local size">{formatBytes(localSize) || '—'}</span>
+                            <span className="text-ink/60">→</span>
                             <span className="font-bold text-ink" title="Selected best release size">{formatBytes(release.size) || 'Unknown'}</span>
-                            {delta !== null && delta !== 0 && <span className="text-muted-dim">({delta > 0 ? '+' : '−'}{formatBytes(Math.abs(delta))})</span>}
+                            {delta !== null && delta !== 0 && <span className="text-ink/60">({delta > 0 ? '+' : '−'}{formatBytes(Math.abs(delta))})</span>}
                           </span>
                           <span className="basis-full"><ReleaseSummary release={release}/></span>
                           <OutcomeLabel status={status}/>
@@ -248,18 +247,18 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                     const localSize = group.part ? (group.result.local_size_by_part?.[group.part] || 0) : group.result.local_size
                     const status = groupStatus(group)
                     return (
-                      <div key={group.id} className={cx('overflow-hidden rounded-lg border transition-colors', status === 'success' ? 'border-good/50 bg-good/8' : status === 'failure' ? 'border-bad/50 bg-bad/8' : status === 'pending' ? 'border-accent/45 bg-accent/8' : isPending ? 'border-warn/55 bg-warn/8' : 'border-line bg-panel')}>
+                      <div key={group.id} className={cx('overflow-hidden rounded-lg border transition-colors', status === 'success' ? 'border-good/50 bg-good/8' : status === 'failure' ? 'border-bad/50 bg-bad/8' : status === 'pending' ? 'border-accent/45 bg-accent/8' : isPending ? 'border-warn/55 bg-warn/8' : enabled[group.id] !== false ? bulkDialog.rowSelected : bulkDialog.rowUnchecked)}>
                         <div className="flex items-center gap-2 px-3 py-2">
-                          <label className="touch-target grid size-8 shrink-0 cursor-pointer place-items-center rounded-lg hover:bg-panel-raised"><input type="checkbox" disabled={locked} className="size-4 accent-accent" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} aria-label={`Include ${group.result.title} · ${seasonLabel(group.result)}${group.part ? ` · ${group.part}` : ''}`} /></label>
+                          <label className="touch-target grid size-8 shrink-0 cursor-pointer place-items-center rounded-lg hover:bg-panel-raised"><input type="checkbox" disabled={locked} className="size-4 accent-good" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} aria-label={`Include ${group.result.title} · ${seasonLabel(group.result)}${group.part ? ` · ${group.part}` : ''}`} /></label>
                           <button type="button" className="flex min-h-11 min-w-0 flex-1 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 text-left text-xs" onClick={() => setExpanded((current) => ({ ...current, [group.id]: !isExpanded }))} aria-expanded={isExpanded}>
                             {status === 'success' && <Icon name="check" size={13} className="text-good"/>}
                             {status === 'failure' && <Icon name="alert" size={13} className="text-bad"/>}
                             {status === 'pending' && <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/>}
                             <span className={cx('font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : 'text-ink')}>{group.result.title}</span>
-                            <span className="rounded border border-line-strong bg-canvas-soft px-1.5 py-0.5 text-xs font-extrabold text-ink">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
+                            <span className={bulkDialog.seasonBadge}>{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
                             {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                             {chosen ? (
-                              <span className="inline-flex items-center gap-1 rounded-full border border-good/40 bg-good/10 px-2 py-0.5 text-xs font-extrabold text-good"><Icon name="check" size={12}/>Selected</span>
+                              <span className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-xs font-extrabold text-accent-bright"><Icon name="check" size={12}/>Selected</span>
                             ) : (
                               <span className={cx('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-extrabold', enabled[group.id] !== false ? 'border-warn/45 bg-warn/15 text-warn' : 'border-line-strong bg-canvas-soft text-muted')}><Icon name="alert" size={12}/>Choose 1 of {group.options.length}</span>
                             )}
@@ -268,7 +267,7 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                             <span className="ml-auto flex items-center gap-1.5">
                               {chosenOption && (
                                 <span className="flex items-center gap-1.5 tabular-nums" title={`${chosenOption.release.releaseGroup} · ${chosenOption.release.tracker}`}>
-                                  {localSize ? <><span className="text-muted" title="Current local size">{formatBytes(localSize) || '—'}</span><span className="text-muted-dim">→</span></> : null}
+                                  {localSize ? <><span className="text-ink/70" title="Current local size">{formatBytes(localSize) || '—'}</span><span className="text-ink/60">→</span></> : null}
                                   <span className="font-bold text-ink">{formatBytes(chosenOption.release.size) || 'Unknown'}</span>
                                 </span>
                               )}
@@ -292,7 +291,7 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                                 )
                               })}
                             </div>
-                            <div className="mt-2.5 whitespace-pre-line break-words text-xs leading-relaxed text-muted"><span className="font-bold text-ink">Note:</span> {group.result.notes_by_part?.[group.part] || (group.result.notes && group.result.notes !== '-' ? group.result.notes : 'No release note provided.')}</div>
+                            <div className="mt-2.5 whitespace-pre-line break-words text-xs leading-relaxed text-ink/75"><span className="font-bold text-ink">Note:</span> {group.result.notes_by_part?.[group.part] || (group.result.notes && group.result.notes !== '-' ? group.result.notes : 'No release note provided.')}</div>
                           </div>
                         )}
                       </div>
@@ -305,26 +304,31 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
 
           {view === 'ready' && review.ready.length > 0 && <>
             <dl className="m-0 grid grid-cols-2 gap-x-4 gap-y-2 border-y border-line py-3 sm:grid-cols-5">
-              <div><dt className="text-xs text-muted">Selected releases</dt><dd className="m-0 text-sm font-bold tabular-nums">{selections.length}</dd></div>
+              <div><dt className="text-xs text-muted">Selected releases</dt><dd className="m-0 text-sm font-bold text-accent-bright tabular-nums">{selections.length}</dd></div>
               <div><dt className="text-xs text-muted">New torrents</dt><dd className="m-0 text-sm font-bold tabular-nums">{estimate.new_torrents}</dd></div>
-              <div><dt className="text-xs text-muted">New download size</dt><dd className="m-0 text-sm font-bold tabular-nums" data-testid="bulk-download-size">{checking ? 'Checking…' : sizeText}</dd></div>
+              <div><dt className="text-xs text-muted">New download size</dt><dd className={cx('m-0 text-sm font-bold tabular-nums', estimate.unknown_torrents ? 'text-warn' : 'text-accent-bright')} data-testid="bulk-download-size">{checking ? 'Checking…' : sizeText}</dd></div>
               <div><dt className="text-xs text-muted">File scope</dt><dd className="m-0 text-sm font-bold tabular-nums">{estimate.selected_file_count > 0 ? `${estimate.selected_file_count} file${estimate.selected_file_count === 1 ? '' : 's'}${estimate.whole_torrents ? ` + ${estimate.whole_torrents} whole` : ''}` : `${estimate.whole_torrents} whole torrent${estimate.whole_torrents === 1 ? '' : 's'}`}</dd></div>
               <div className="col-span-2 flex items-baseline gap-2 sm:col-span-1 sm:block"><dt className="text-xs text-muted">Already in qBittorrent</dt><dd className={cx('m-0 text-sm font-bold tabular-nums', checkError ? 'text-warn' : 'text-ink')}>{checking || checkError ? 'Unknown' : estimate.existing_torrents}</dd></div>
             </dl>
-            {!outcome && <section ref={diskRef} className="space-y-2 rounded-xl border border-line bg-canvas-soft p-3 text-xs" aria-label="Download disk space" aria-live="polite">
-              <h3 className="m-0 text-xs font-bold">Disk space</h3>
-              {checking && <p className="m-0 text-muted">Checking qBittorrent download paths and existing torrents…</p>}
+            {!outcome && <section ref={diskRef} className={cx('space-y-2 rounded-xl border p-3 text-xs transition-colors', diskTone)} aria-label="Download disk space" aria-live="polite">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="m-0 text-xs font-bold">Disk space</h3>
+                <span className={cx('inline-flex items-center gap-1.5 font-semibold', diskTextTone)}>
+                  {checking ? <span className="size-3 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/> : <Icon name={lowSpace || unverifiedSpace ? 'alert' : 'check'} size={13}/>}
+                  {checking ? 'Checking…' : lowSpace ? 'Low space' : unverifiedSpace ? 'Unverified' : estimate.new_torrents > 0 ? 'Space available' : 'No new torrents'}
+                </span>
+              </div>
+              {checking && <p className="m-0 text-ink/80">Checking qBittorrent download paths and existing torrents…</p>}
               {checkError && <p className="m-0 text-warn">Check unavailable: {checkError}. Existing torrents and available space could not be verified.</p>}
-              {currentPreflight?.disk_space.map((check, index) => <div key={index} className={cx('break-words', check.sufficient === false ? 'text-bad' : check.sufficient === true ? 'text-muted' : 'text-warn')}>
+              {currentPreflight?.disk_space.map((check, index) => <div key={index} className={cx('break-words', check.sufficient === false ? 'text-bad' : check.sufficient === true ? 'text-ink/80' : 'text-warn')}>
                 <span className="font-bold">{check.path || 'Download path unavailable'}</span>: {check.free_bytes === null ? 'Free space unavailable' : `${formatBytes(check.free_bytes) || '0 B'} free`} · {formatBytes(check.required_bytes) || '0 B'} needed{check.unknown_torrents ? ' + unverified sizes' : ''}
                 {check.sufficient === false && <span className="block font-bold">Not enough space for these downloads.</span>}
                 {check.reason && <span className="block">{check.reason}</span>}
               </div>)}
               {currentPreflight && !estimate.new_torrents && <p className="m-0 text-muted">No new torrents to add. Existing torrents are kept unchanged.</p>}
               {(estimate.unknown_torrents > 0 || estimate.approximate_torrents > 0) && <p className="m-0 text-warn">Some saved releases lack file sizes. Run a new scan for a more accurate estimate.</p>}
-              <details className="text-muted"><summary className="min-h-6 cursor-pointer font-bold text-ink">Estimate details and limitations</summary><p className="mt-2 mb-0 leading-relaxed">Shared torrents and files are counted once. Existing torrents are skipped. Space is a snapshot; other downloads, torrent overhead, and library imports may need additional room.</p></details>
               <button type="button" className="touch-target cursor-pointer rounded-lg px-2 py-1 font-bold text-accent-bright hover:bg-accent/10 disabled:opacity-50" disabled={checking || busy} onClick={() => setRetry(current => current + 1)}>Refresh check</button>
-              {lowSpace && <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-warn/30 bg-warn/8 p-3 text-warn"><input type="checkbox" checked={acceptSpaceWarning} onChange={event => setAcceptSpaceWarning(event.target.checked)}/>Continue despite the disk space warning</label>}
+              {lowSpace && <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-warn/40 bg-warn/8 p-3 text-warn"><input type="checkbox" className="size-4 shrink-0 accent-warn" checked={acceptSpaceWarning} onChange={event => setAcceptSpaceWarning(event.target.checked)}/>Continue despite the disk space warning</label>}
             </section>}
           </>}
           {view === 'unavailable' && (
@@ -347,18 +351,18 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
           )}
         </div>
 
-        <footer className="bulk-download-footer flex flex-wrap items-center justify-between gap-3 border-t border-line bg-panel px-5 py-4">
+        <footer className={bulkDialog.footer}>
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
             {!outcome && pendingChoices > 0 && <span className="inline-flex items-center gap-1 font-bold text-warn"><Icon name="alert" size={13}/>Resolve {pendingChoices} release choice{pendingChoices === 1 ? '' : 's'} first</span>}
             {!outcome && lowSpace && !acceptSpaceWarning && <button type="button" className="touch-target cursor-pointer rounded-lg px-2 py-1 font-bold text-warn underline hover:bg-warn/10" onClick={() => diskRef.current?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.focus()}>Review disk space warning</button>}
           </span>
-          <div className="ml-auto flex min-w-0 max-w-full flex-wrap justify-end gap-2 [&_button]:max-w-full [&_button]:justify-center [&_button]:wrap-anywhere max-[600px]:[&_button]:px-3">
+          <div className={bulkDialog.footerActions}>
             {outcome?.inflight ? (
               <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2"><span className="text-xs text-muted" role="status">Sending… {inflightProgress ? `${inflightProgress.settled}/${inflightProgress.total} torrents` : ''}</span><button type="button" className={cx(buttonBase, 'border-accent/35 bg-accent/12 text-accent-bright')} onClick={onClose}>Continue in background</button></div>
             ) : (
               <>
-                <button ref={cancelRef} type="button" className={cx(buttonBase, 'border-line bg-panel-raised text-ink hover:text-ink')} onClick={onClose} disabled={busy}>{outcome ? 'Close' : 'Cancel'}</button>
-                {!outcome && <button type="button" className={cx(buttonBase, 'border-good/35 bg-good/12 text-good hover:bg-good/20')} onClick={() => onConfirm(selections)} disabled={busy || checking || selections.length === 0 || pendingChoices > 0 || estimate.new_torrents === 0 || Boolean(lowSpace && !acceptSpaceWarning)}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}Download {estimate.new_torrents} torrent{estimate.new_torrents === 1 ? '' : 's'}</button>}
+                <button ref={cancelRef} type="button" className={bulkDialog.neutralButton} onClick={onClose} disabled={busy}>{outcome ? 'Close' : 'Cancel'}</button>
+                {!outcome && <button type="button" className={bulkDialog.downloadButton} onClick={() => onConfirm(selections)} disabled={busy || checking || selections.length === 0 || pendingChoices > 0 || estimate.new_torrents === 0 || Boolean(lowSpace && !acceptSpaceWarning)}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}Download {estimate.new_torrents} torrent{estimate.new_torrents === 1 ? '' : 's'}</button>}
               </>
             )}
           </div>

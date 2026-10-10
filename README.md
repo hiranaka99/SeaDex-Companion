@@ -150,11 +150,11 @@ For remote access, prefer a private VPN. If you use a reverse proxy, require HTT
 
 ### Bulk download review
 
-<img width="100%" alt="Bulk download review showing selected releases, torrent count, file scope, and size summary" src="docs/screenshots/bulk-download-review.png" />
+<img width="100%" alt="Bulk download review showing selected season upgrades, download size, and available disk space" src="docs/screenshots/bulk-download-review.png" />
 
 ### Bulk cancellation
 
-<img width="100%" alt="Bulk cancellation review showing no incomplete app-managed downloads" src="docs/screenshots/bulk-cancellation.png" />
+<img width="100%" alt="Bulk cancellation review showing selected app-managed torrents and the optional file-deletion warning" src="docs/screenshots/bulk-cancellation.png" />
 
 
 ### Scan history

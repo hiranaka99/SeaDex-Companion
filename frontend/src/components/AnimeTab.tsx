@@ -212,7 +212,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
     setBulkOutcome(null)
     setBulkConfirm(action)
   }
-  const scopeControl = <BulkScopeSelector value={bulkScope} onChange={setBulkScope} filteredCount={bulkReview ? groupResults(bulkReview.filtered).length : 0} allCount={bulkReview ? groupResults(bulkReview.all).length : 0} description={bulkReview?.description || 'Current library results'} allLabel={bulkConfirm === 'cancel' ? 'All tracked downloads' : undefined} allDescription={bulkConfirm === 'cancel' ? 'All incomplete downloads tracked by SeaDex Companion, regardless of library filters.' : undefined} disabled={bulkBusy !== null || Boolean(bulkOutcome)}/>
+  const scopeControl = <BulkScopeSelector value={bulkScope} onChange={setBulkScope} filteredCount={bulkReview ? groupResults(bulkReview.filtered).length : 0} allCount={bulkReview ? groupResults(bulkReview.all).length : 0} description={bulkReview?.description || 'Current library results'} showDescription={bulkConfirm === 'cancel'} allLabel={bulkConfirm === 'cancel' ? 'All tracked downloads' : undefined} allDescription={bulkConfirm === 'cancel' ? 'All incomplete downloads tracked by SeaDex Companion, regardless of library filters.' : undefined} disabled={bulkBusy !== null || Boolean(bulkOutcome)}/>
 
   const describeBulkFailures = (failures: api.BulkDownloadFailure[]): string => {
     const shown = failures.slice(0, 3).map((failure) => {
