@@ -61,6 +61,9 @@ data/
 # Impeccable settings and artifacts stay local at every project level.
 .impeccable/
 
+# Local Codex hooks
+/.codex/hooks.json
+
 # Local product and design guidance
 /PRODUCT.md
 /DESIGN.md
