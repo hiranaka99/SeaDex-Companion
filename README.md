@@ -3,7 +3,7 @@
 SeaDex Companion is a self-hosted web UI that compares your **Sonarr** and **Radarr** anime libraries with the best releases indexed by [SeaDex](https://releases.moe/). It highlights missing upgrades, explains the match season by season, and can send selected public releases directly to qBittorrent.
 
 <p align="center">
-  <img width="100%" alt="SeaDex Companion library showing anime upgrade status" src="https://github.com/user-attachments/assets/126af5eb-ba68-4b51-ad45-b9d86151522a" />
+  <img width="100%" alt="SeaDex Companion library showing anime upgrade status" src="docs/screenshots/library.png" />
 </p>
 
 > [!WARNING]
@@ -146,15 +146,15 @@ For remote access, prefer a private VPN. If you use a reverse proxy, require HTT
 
 ### Release details
 
-<img width="60%" alt="Anime details showing current files and recommended SeaDex releases" src="https://github.com/user-attachments/assets/cc25a539-4e92-4dd2-959f-358341f3c2c8" />
+<img width="100%" alt="Anime details showing current files and recommended SeaDex releases" src="docs/screenshots/release-details.png" />
 
 ### Bulk download review
 
-<img width="72%" alt="Bulk download review showing selected releases, torrent count, file scope, and size summary" src="docs/screenshots/bulk-download-review.png" />
+<img width="100%" alt="Bulk download review showing selected releases, torrent count, file scope, and size summary" src="docs/screenshots/bulk-download-review.png" />
 
 ### Bulk cancellation
 
-<img width="72%" alt="Bulk cancellation review for incomplete qBittorrent downloads" src="docs/screenshots/bulk-cancellation.png" />
+<img width="100%" alt="Bulk cancellation review showing no incomplete app-managed downloads" src="docs/screenshots/bulk-cancellation.png" />
 
 
 ### Scan history
@@ -163,4 +163,4 @@ For remote access, prefer a private VPN. If you use a reverse proxy, require HTT
 
 ### Sign in
 
-<img width="72%" alt="SeaDex Companion sign-in page" src="docs/screenshots/sign-in.png" />
+<img width="100%" alt="SeaDex Companion sign-in page" src="docs/screenshots/sign-in.png" />
