@@ -34,6 +34,13 @@ SeaDex Companion is a self-hosted web UI that compares your **Sonarr** and **Rad
 
 The published image is available from [Docker Hub](https://hub.docker.com/r/hiranaka/seadex-companion).
 
+The **Publish Docker image** GitHub Actions workflow builds and pushes `linux/amd64` and `linux/arm64` images whenever a GitHub release is published. Add these repository secrets under **Settings → Secrets and variables → Actions**:
+
+- `DOCKERHUB_USERNAME`: the Docker Hub account with push access to `hiranaka/seadex-companion`.
+- `DOCKERHUB_TOKEN`: a Docker Hub access token with write permission for that repository.
+
+Release tags must match both package versions, for example `v1.10.0`. A stable release publishes `:1.10.0`, `:1.10`, and `:latest`; prereleases publish only their full version tag. The workflow runs the server tests and builds the existing Dockerfile before publishing. It can also be run manually from **Actions → Publish Docker image → Run workflow**, with an existing release tag and the prerelease option when appropriate. Publishing an image does not automatically update running containers.
+
 ```bash
 docker run -d \
   --name seadex-companion \
