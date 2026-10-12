@@ -92,6 +92,8 @@ All integrations are configured in the WebUI; no integration credentials need to
 4. Test each configured integration, save, and select **Scan library**.
 5. Configure automatic scans under **Configuration → Automation & webhooks**.
 
+The desktop sign-in screen displays trending anime covers from AniList, shuffled on each visit. The server caches the cover URLs in `DATA_DIR/auth-artwork.json` for 24 hours and refreshes them when the screen next requests artwork. Refreshes time out after six seconds; failed requests have a 30-minute retry cooldown. Bundled covers appear immediately and remain the fallback when AniList, the instance's internet connection, or individual cover images are unavailable. Artwork never blocks signing in. The animation can be paused and respects reduced-motion preferences.
+
 Bulk review defaults to the current library results across all matching pages. Choose **Entire library** to review titles outside your search, source, and status filters; hidden titles start unchecked. Release rows show the group, tracker, quality, audio, and tags before submission. After submitting, selections are fixed and **Continue in background** lets you use other tabs while the batch runs. **Review batch** reopens the most recent submitted review in the same session; operation progress and failure details can also be recovered after a reload.
 
 Bulk download review shows the size of new torrents and checks free space on qBittorrent's download paths. Existing torrents are skipped without changing their files or ownership. Low-space warnings require acknowledgement before sending downloads. Older clients may only report space for their default save path; other paths are shown as unavailable. Run a new scan after updating to populate the per-torrent file sizes used by accurate estimates. Estimates do not reserve space or include torrent overhead and library-import copies.
@@ -113,14 +115,15 @@ npm --prefix frontend install
 npm start
 ```
 
-For live reload, run these in separate terminals:
+For live updates, start the backend and frontend together:
 
 ```bash
 npm run dev
-npm --prefix frontend run dev
 ```
 
-The Vite development server proxies `/api` requests to the backend on port `8080`.
+Open the Vite URL printed in the terminal (normally [http://localhost:5173](http://localhost:5173)). Frontend edits update automatically, and backend edits restart the API server. Vite proxies `/api` requests to the backend on port `8080`; opening port `8080` directly serves the last compiled frontend without live updates. Press Ctrl+C to stop both servers.
+
+To run either server separately, use `npm run dev:server` or `npm run dev:frontend`.
 
 Run `npm test` for backend, HTTP, scheduling, and frontend utility regressions. For browser workflow checks, run `npm run test:browser`. The browser checks use isolated local fixtures and default to Microsoft Edge on Windows; set `BROWSER_PATH` to a Chromium executable on other systems.
 

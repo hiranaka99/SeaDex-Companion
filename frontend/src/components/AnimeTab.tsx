@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ResultItem, Config, Status, GroupedCard } from '../types'
 import { groupResults, seasonLabel, cardSizeDelta, hasCardUpgrade } from '../utils'
 import Card from './Card'
@@ -11,6 +11,7 @@ import { buttonBase, buttonPrimary, control, cx } from '../styles'
 import { BulkOperationState } from './OperationCenter'
 import LibrarySizeChange from './LibrarySizeChange'
 import BulkScopeSelector, { BulkScope } from './BulkScopeSelector'
+import { useLibraryMotion } from '../useLibraryMotion'
 
 interface Props {
   active: boolean
@@ -34,6 +35,9 @@ interface Props {
 }
 
 const PAGE_SIZE = 60
+const TITLE_ORDER = new Intl.Collator(undefined, { sensitivity: 'base' })
+const SIZE_TITLE_ORDER = new Intl.Collator()
+const STATUS_RANK: Record<string, number> = { review: 0, upgrade: 1, partial: 2, missing: 3, best: 4 }
 
 function cardKey(group: GroupedCard): string {
   return group.anilist_id !== null ? String(group.anilist_id) : `${group.arr}:${group.title}`
@@ -55,6 +59,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   const [showHidden, setShowHidden] = useState(false)
   const [page, setPage] = useState(0)
   const resultsRef = useRef<HTMLDivElement>(null)
+  const gridRef = useRef<HTMLDivElement>(null)
   const moreActionsRef = useRef<HTMLDetailsElement>(null)
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
   const hiddenKeysRef = useRef(hiddenKeys)
@@ -67,6 +72,10 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   const [bulkReview, setBulkReview] = useState<{ filtered: ResultItem[]; all: ResultItem[]; description: string } | null>(null)
   const reviewResults = useMemo(() => bulkReview ? bulkScope === 'filtered' ? bulkReview.filtered : bulkReview.all : [], [bulkReview, bulkScope])
   const reviewKeys = useMemo(() => new Set(reviewResults.map(result => result.key)), [reviewResults])
+  const reviewCounts = useMemo(() => bulkReview ? {
+    filtered: groupResults(bulkReview.filtered).length,
+    all: groupResults(bulkReview.all).length,
+  } : { filtered: 0, all: 0 }, [bulkReview])
   const toast = useToast()
 
   useEffect(() => { if (!openResultKey) setPage(0) }, [search, arr, statusFilter, coverageFilter, sort, showHidden])
@@ -94,11 +103,24 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   }, [config?.hidden])
 
   const allGroups = useMemo(() => groupResults(results), [results])
-  const scopeGroups = useMemo(() => allGroups.filter(group => {
+  // Filtering preserves this order, so typing never sorts the collection again.
+  const orderedGroups = useMemo(() => {
+    const ordered = [...allGroups]
+    if (sort === 'size') {
+      const deltas = new Map(allGroups.map(group => [group, Math.abs(cardSizeDelta(group))]))
+      return ordered.sort((a, b) => deltas.get(b)! - deltas.get(a)! || SIZE_TITLE_ORDER.compare(a.title, b.title))
+    }
+    return ordered.sort((a, b) => (sort === 'title' ? 0 : STATUS_RANK[a.status] - STATUS_RANK[b.status]) || TITLE_ORDER.compare(a.title, b.title))
+  }, [allGroups, sort])
+  // Build searchable text once per scan, rather than once per keystroke/filter.
+  const searchText = useMemo(() => new Map(allGroups.map(group => [group,
+    `${group.title} ${group.seasons.map(season => `${season.title} ${season.best_group || ''} ${season.have.join(' ')} ${seasonLabel(season)}`).join(' ')}`.toLowerCase(),
+  ])), [allGroups])
+  const searchQuery = search.trim().toLowerCase()
+  const scopeGroups = useMemo(() => orderedGroups.filter(group => {
     if (hiddenKeys.has(cardKey(group)) !== showHidden || (arr && group.arr !== arr)) return false
-    const haystack = `${group.title} ${group.seasons.map(season => `${season.title} ${season.best_group || ''} ${season.have.join(' ')} ${seasonLabel(season)}`).join(' ')}`
-    return haystack.toLowerCase().includes(search.trim().toLowerCase())
-  }), [allGroups, hiddenKeys, showHidden, arr, search])
+    return !searchQuery || searchText.get(group)!.includes(searchQuery)
+  }), [orderedGroups, hiddenKeys, showHidden, arr, searchText, searchQuery])
   const coverageGroups = useMemo(() => scopeGroups.filter(group => !coverageFilter || group.status === coverageFilter), [scopeGroups, coverageFilter])
   const counts = useMemo(() => ({
     upgrade: coverageGroups.filter(hasCardUpgrade).length,
@@ -106,7 +128,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
     episodes: coverageGroups.filter(group => group.seasons.some(season => (season.missing_episode_count || 0) > 0)).length,
   }), [coverageGroups])
 
-  const setCardHidden = async (key: string, hidden: boolean, offerUndo = false): Promise<boolean> => {
+  const setCardHidden = useCallback(async (key: string, hidden: boolean, offerUndo = false): Promise<boolean> => {
     const wasHidden = hiddenKeysRef.current.has(key)
     const update = (value: boolean) => {
       const next = new Set(hiddenKeysRef.current)
@@ -137,26 +159,22 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
     } finally {
       if (hiddenRequests.current.get(key) === request) hiddenRequests.current.delete(key)
     }
-  }
-  const toggleHidden = (key: string) => setCardHidden(key, !hiddenKeysRef.current.has(key), true)
+  }, [allGroups, toast])
+  const toggleHidden = useCallback((group: GroupedCard) => {
+    const key = cardKey(group)
+    void setCardHidden(key, !hiddenKeysRef.current.has(key), true)
+  }, [setCardHidden])
 
-  const groups = useMemo(() => {
-    const filtered = coverageGroups.filter(group => statusFilter === 'episodes'
+  const groups = useMemo(() => coverageGroups.filter(group => statusFilter === 'episodes'
       ? group.seasons.some(season => (season.missing_episode_count || 0) > 0)
-      : statusFilter === 'upgrade' ? hasCardUpgrade(group) : !statusFilter || group.status === statusFilter)
-    const rank: Record<string, number> = { review: 0, upgrade: 1, partial: 2, missing: 3, best: 4 }
-    filtered.sort((a, b) => {
-      if (sort === 'title') return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
-      if (sort === 'size') return Math.abs(cardSizeDelta(b)) - Math.abs(cardSizeDelta(a)) || a.title.localeCompare(b.title)
-      return rank[a.status] - rank[b.status] || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
-    })
-    return filtered
-  }, [coverageGroups, statusFilter, sort])
+      : statusFilter === 'upgrade' ? hasCardUpgrade(group) : !statusFilter || group.status === statusFilter), [coverageGroups, statusFilter])
 
   const pageCount = Math.max(1, Math.ceil(groups.length / PAGE_SIZE))
   const requestedIndex = openResultKey ? groups.findIndex(group => group.seasons.some(season => season.key === openResultKey)) : -1
   const currentPage = requestedIndex >= 0 ? Math.floor(requestedIndex / PAGE_SIZE) : Math.min(page, pageCount - 1)
-  const visibleGroups = groups.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE)
+  const visibleGroups = useMemo(() => groups.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE), [groups, currentPage])
+  const motionRevision = useMemo(() => JSON.stringify(visibleGroups.map(cardKey)), [visibleGroups])
+  useLibraryMotion(gridRef, motionRevision, active && !loading)
   // Persist a history destination's page before Card clears the open request.
   useLayoutEffect(() => { if (requestedIndex >= 0) setPage(Math.floor(requestedIndex / PAGE_SIZE)) }, [requestedIndex])
   useEffect(() => { setPage(value => Math.min(value, pageCount - 1)) }, [pageCount])
@@ -169,7 +187,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   }
 
 
-  const totalDelta = groups.reduce((sum, group) => sum + cardSizeDelta(group), 0)
+  const totalDelta = useMemo(() => groups.reduce((sum, group) => sum + cardSizeDelta(group), 0), [groups])
   const upgradeSeasonCount = useMemo(() => new Set(
     results
       .filter((result) => {
@@ -212,7 +230,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
     setBulkOutcome(null)
     setBulkConfirm(action)
   }
-  const scopeControl = <BulkScopeSelector value={bulkScope} onChange={setBulkScope} filteredCount={bulkReview ? groupResults(bulkReview.filtered).length : 0} allCount={bulkReview ? groupResults(bulkReview.all).length : 0} description={bulkReview?.description || 'Current library results'} showDescription={bulkConfirm === 'cancel'} allLabel={bulkConfirm === 'cancel' ? 'All tracked downloads' : undefined} allDescription={bulkConfirm === 'cancel' ? 'All incomplete downloads tracked by SeaDex Companion, regardless of library filters.' : undefined} disabled={bulkBusy !== null || Boolean(bulkOutcome)}/>
+  const scopeControl = <BulkScopeSelector value={bulkScope} onChange={setBulkScope} filteredCount={reviewCounts.filtered} allCount={reviewCounts.all} description={bulkReview?.description || 'Current library results'} showDescription={bulkConfirm === 'cancel'} allLabel={bulkConfirm === 'cancel' ? 'All tracked downloads' : undefined} allDescription={bulkConfirm === 'cancel' ? 'All incomplete downloads tracked by SeaDex Companion, regardless of library filters.' : undefined} disabled={bulkBusy !== null || Boolean(bulkOutcome)}/>
 
   const describeBulkFailures = (failures: api.BulkDownloadFailure[]): string => {
     const shown = failures.slice(0, 3).map((failure) => {
@@ -358,7 +376,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
       {(loading || (status.running && results.length === 0)) && <SkeletonCards/>}
       {!loading && results.length > 0 && groups.length > 0 && <div ref={resultsRef} className="library-results" tabIndex={-1} role="region" aria-label="Library results">
         {pageCount > 1 && <nav className="mb-4 flex flex-wrap items-center justify-between gap-2 max-[600px]:justify-end" aria-label="Library pages"><span className="text-xs text-muted max-[600px]:hidden" role="status">{(currentPage * PAGE_SIZE + 1).toLocaleString()}–{Math.min((currentPage + 1) * PAGE_SIZE, groups.length).toLocaleString()} of {groups.length.toLocaleString()} titles</span><div className="flex flex-wrap items-center gap-2"><button type="button" className={cx(buttonBase, 'touch-target border-line bg-panel text-xs text-ink')} disabled={currentPage === 0} onClick={() => changePage(currentPage - 1)}><Icon name="chevron-left" size={15}/><span className="max-[600px]:sr-only">Previous</span></button><select className={cx(control, 'text-xs')} aria-label="Library page" value={currentPage} onChange={event => changePage(Number(event.target.value))}>{Array.from({ length: pageCount }, (_, index) => <option key={index} value={index}>Page {index + 1} of {pageCount}</option>)}</select><button type="button" className={cx(buttonBase, 'touch-target border-line bg-panel text-xs text-ink')} disabled={currentPage >= pageCount - 1} onClick={() => changePage(currentPage + 1)}><span className="max-[600px]:sr-only">Next</span><Icon name="chevron-right" size={15}/></button></div></nav>}
-        <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]">{visibleGroups.map((group, index) => <Card key={cardKey(group)} active={active} openRequested={group.seasons.some(season => season.key === openResultKey)} onOpened={onResultOpened} group={group} index={index} config={config} hidden={hiddenKeys.has(cardKey(group))} onToggle={() => void toggleHidden(cardKey(group))} onRulesChanged={onResultsChanged} onRescan={onScan}/>)}</div>
+        <div ref={gridRef} className="library-grid grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]">{visibleGroups.map((group, index) => <Card key={cardKey(group)} active={active} openRequested={group.seasons.some(season => season.key === openResultKey)} onOpened={onResultOpened} group={group} index={index} config={config} hidden={hiddenKeys.has(cardKey(group))} onToggle={toggleHidden} onRulesChanged={onResultsChanged} onRescan={onScan}/>)}</div>
       </div>}
       {!loading && !loadError && results.length === 0 && !status.running && <div className="rounded-2xl border border-dashed border-line-strong bg-panel/45 px-6 py-16 text-center"><span className="mx-auto mb-4 grid size-14 place-items-center rounded-2xl bg-accent/10 text-accent-bright"><Icon name="library" size={26}/></span><h2 className="mb-2 text-lg font-bold">{libraryConfigured ? 'Your library is ready to be scanned' : 'Connect your library first'}</h2><p className="mx-auto mb-5 max-w-md text-sm text-muted">{libraryConfigured ? 'Compare your Sonarr and Radarr collection with the best releases available on SeaDex.' : 'Configure Sonarr or Radarr before running your first scan.'}</p><div className="flex flex-wrap justify-center gap-2"><button type="button" className={libraryConfigured ? buttonPrimary : cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')} onClick={onScan} disabled={!libraryConfigured}><Icon name="play" size={17}/>Scan library</button><button type="button" className={libraryConfigured ? cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink') : buttonPrimary} onClick={onOpenConfig}><Icon name="settings" size={17}/>Open Config</button></div></div>}
       {!loading && results.length > 0 && groups.length === 0 && <div className="rounded-2xl border border-dashed border-line-strong py-14 text-center"><Icon name="filter" size={26} className="mx-auto mb-3 text-muted-dim"/><h2 className="mb-1 text-lg font-bold">No matching titles</h2><p className="mb-4 text-sm text-muted">Try changing or clearing the active filters.</p><button type="button" className="cursor-pointer text-sm font-bold text-accent-bright" onClick={clearFilters}>Clear filters</button></div>}

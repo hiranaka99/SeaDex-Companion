@@ -18,6 +18,7 @@ const example = { key: 'Sonarr:1:1:Example', group_id: 1, library_key: 'Sonarr:i
 let config = { sonarr_url: 'http://sonarr.local', sonarr_key: '', sonarr_key_configured: true, radarr_url: '', radarr_key: '', radarr_key_configured: false, sonarr_category: 'sonarr-anime', radarr_category: '', qbittorrent_url: 'http://qbit.local', qbittorrent_user: 'test', qbittorrent_pass: '', qbittorrent_pass_configured: true, webhook: '', webhook_configured: false, notify_enabled: false, hidden: [], scan_schedule: { enabled: false, mode: 'interval', interval_minutes: 60, times: ['03:00'], weekdays: [0], timezone: 'UTC', missed_run: 'skip' } }
 let revision = 1
 let resultRequests = 0
+let statusRequests = 0
 let statusFailure = false
 let configFailure = false
 let logFailure = false
@@ -65,6 +66,7 @@ const server = createServer(async (req, res) => {
       }
     }
     else if (path === '/api/status') {
+      statusRequests++
       if (statusFailure) { res.statusCode = 503; response = { error: 'Fixture server unavailable' } }
       else response = { results_revision: String(revision), running: false, progress: 0, total: 0, message: 'Idle', error: null, cancelled: false, trigger: null, source_errors: {}, last_run: '2026-10-02 12:00:00', next_check: null, webhook_scan: { queued: false, due_at: null, sources: [] }, ...statusOverrides }
     }
@@ -129,7 +131,7 @@ const wait = async expression => {
   throw new Error('UI did not reach expected state: ' + expression)
 }
 const click = async text => {
-  const found = await evaluate(`(() => { if (${JSON.stringify(text)} === 'Bulk cancel') { const menu = document.querySelector('.library-more-actions'); if (menu?.getClientRects().length && !menu.open) menu.querySelector('summary').click() }; const button = [...document.querySelectorAll('button, summary')].find(button => button.getClientRects().length && button.textContent.trim() === ${JSON.stringify(text)}); if (!button) return false; button.focus(); button.click(); return true })()`)
+  const found = await evaluate(`(() => { if (${JSON.stringify(text)} === 'Bulk cancel') { const menu = document.querySelector('.library-more-actions'); if (menu?.getClientRects().length && !menu.open) menu.querySelector('summary').click() }; if (['Correct match', 'Change manual match'].includes(${JSON.stringify(text)})) { const management = document.querySelector('dialog[open] .details-management'); if (management && !management.open) management.querySelector('summary').click() }; const button = [...document.querySelectorAll('button, summary')].find(button => button.getClientRects().length && button.textContent.trim() === ${JSON.stringify(text)}); if (!button) return false; button.focus(); button.click(); return true })()`)
   assert.ok(found, 'Visible button: ' + text)
   await pause(100)
 }
@@ -171,6 +173,76 @@ try {
   await capture('library-cards')
   console.log('PASS card library and distinct match status')
 
+  // Observe real browser animation calls while exercising title continuity.
+  await evaluate(`(() => { window.libraryMotionCalls = []; const original = Element.prototype.animate; Element.prototype.animate = function(frames, options) { if (this.matches('article[data-library-key]')) window.libraryMotionCalls.push({ key: this.dataset.libraryKey, frames, options }); return original.call(this, frames, options) }; window.restoreLibraryMotion = () => { Element.prototype.animate = original } })()`)
+  await select('[aria-label="Sort library"]', 'title')
+  await wait(`document.querySelector('.library-grid article h2')?.textContent === 'Example anime'`)
+  assert.ok(await evaluate(`window.libraryMotionCalls.some(call => call.frames[0].transform && call.options.duration <= 300)`), 'Sorting animates existing titles from their old positions')
+  await select('[aria-label="Sort library"]', 'recommended')
+  await select('[aria-label="Sort library"]', 'title')
+  await pause(320)
+  assert.ok(await evaluate(`[...document.querySelectorAll('.library-grid article')].every(card => !card.getAnimations().length && getComputedStyle(card).transform === 'none')`), 'Interrupted reorders settle without lingering transforms')
+  await fill('input[type=search]', 'Example anime')
+  await wait(`document.querySelectorAll('.library-grid article').length === 1`)
+  await pause(320)
+  await evaluate(`(() => { window.libraryGeometryReads = 0; const original = Element.prototype.getBoundingClientRect; Element.prototype.getBoundingClientRect = function() { if (this.matches('.library-grid, article[data-library-key]')) window.libraryGeometryReads++; return original.call(this) }; window.restoreLibraryGeometry = () => { Element.prototype.getBoundingClientRect = original } })()`)
+  await fill('input[type=search]', 'Example anim')
+  await wait(`document.querySelector('.library-toolbar [role=status]').textContent.includes('Search: Example anim')`)
+  await pause(100)
+  assert.equal(await evaluate(`window.libraryGeometryReads`), 0, 'Typing with the same visible titles does not remeasure cards')
+  await evaluate(`window.restoreLibraryGeometry()`)
+  await fill('input[type=search]', '')
+  await wait(`document.querySelectorAll('.library-grid article').length === 2`)
+  await pause(320)
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+  await pause(100)
+  await evaluate(`window.libraryMotionCalls = []`)
+  await select('[aria-label="Sort library"]', 'recommended')
+  await wait(`window.libraryMotionCalls.some(call => call.frames[0].transform)`)
+  await capture('library-motion-mobile')
+  await evaluate(`(() => { window.motionPreferenceApplied = new Promise(resolve => { matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', () => requestAnimationFrame(() => resolve(true)), { once: true }) }); return true })()`)
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] })
+  await evaluate(`window.motionPreferenceApplied`)
+  assert.ok(await evaluate(`[...document.querySelectorAll('.library-grid article')].every(card => !card.getAnimations().length)`), 'Changing the motion preference cancels movement immediately')
+  await evaluate(`window.libraryMotionCalls = []`)
+  await select('[aria-label="Sort library"]', 'title')
+  await wait(`document.querySelector('.library-grid article h2')?.textContent === 'Example anime'`)
+  assert.equal(await evaluate(`window.libraryMotionCalls.length`), 0, 'Reduced motion sorts immediately without spatial animations')
+  await send('Emulation.setEmulatedMedia', { features: [] })
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  await select('[aria-label="Sort library"]', 'recommended')
+  await capture('library-motion-desktop')
+  await evaluate(`window.restoreLibraryMotion()`)
+  console.log('PASS library reorder continuity, rapid interruption, mobile motion, and live reduced-motion preference')
+
+  statusOverrides = { cancelled: true }
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('[aria-label="Dismiss scan cancellation"]')`)
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('.library-toolbar')).position`), 'relative', 'Cancellation notice shares the operations sticky layer')
+  await capture('scan-cancelled-desktop')
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+  assert.ok(await evaluate(`document.querySelector('[aria-label="Dismiss scan cancellation"]').getBoundingClientRect().height >= 44`), 'Cancellation dismiss button has a mobile touch target')
+  await capture('scan-cancelled-mobile')
+  await evaluate(`document.querySelector('[aria-label="Dismiss scan cancellation"]').focus()`)
+  await key('Enter')
+  await wait(`!document.querySelector('[aria-label="Application operations"]')`)
+  const pollsAtDismissal = statusRequests
+  await pause(10500)
+  assert.ok(statusRequests > pollsAtDismissal, 'Server status was polled after dismissal')
+  assert.ok(await evaluate(`!document.querySelector('[aria-label="Application operations"]')`), 'Cancellation stays dismissed across status polls')
+  statusOverrides = { running: true, cancelled: false, message: 'Scanning library' }
+  await click('Scan library')
+  await wait(`document.querySelector('[aria-label="Application operations"]')?.textContent.includes('Scanning library')`)
+  assert.ok(await evaluate(`!document.querySelector('[aria-label="Dismiss scan cancellation"]') && !document.querySelector('[aria-label="Dismiss scan completion"]')`), 'An active scan cannot be dismissed')
+  statusOverrides = { cancelled: true }
+  await wait(`document.querySelector('[aria-label="Dismiss scan cancellation"]')`)
+  assert.ok(await evaluate(`document.querySelector('[aria-label="Application operations"]').textContent.includes('Previous complete results were preserved')`), 'A new cancellation notice reappears with the preserved-results explanation')
+  statusOverrides = {}
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('[aria-label="Library results"] article')`)
+  console.log('PASS keyboard dismissal of scan cancellation, persistence across polling, and new-scan reset')
+
   await evaluate(`(() => { const button = document.querySelector('button[aria-label="Details for Example anime"]'); button.focus(); button.click() })()`)
   await wait(`document.querySelector('.anime-details-body .release-row')`)
   assert.ok(await evaluate(`document.querySelector('.release-row').textContent.includes('1 selected file · 120 B')`), 'Details use selected-file bytes rather than the full 200 B release')
@@ -195,6 +267,40 @@ try {
   await evaluate(`location.reload()`)
   await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
   console.log('PASS details file scope, missing-metadata uncertainty, progress semantics, and focus restoration')
+
+  const progressBeforeDetailsReview = progressMode
+  progressMode = 'absent'
+  fixtureResults = [
+    { ...example, status: 'best', have: ['Example'], releases: [release('Example', 'a')] },
+    { ...example, key: 'Sonarr:1:2:Example', season: 2, notes: 'Fixture recommendation: inspect the source and subtitle choices before downloading.', releases: [release('Example', 'b')] },
+    { ...example, key: 'Radarr:2:0:movie', library_key: 'Radarr:item2', group_id: 2, anilist_id: 2, arr: 'Radarr', season: 0, title: 'Fixture movie', releases: [release('Example', 'b')] },
+  ]
+  revision++
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
+  await evaluate(`document.querySelector('button[aria-label="Details for Example anime"]').click()`)
+  await wait(`document.querySelector('.details-index')`)
+  assert.ok(await evaluate(`document.querySelector('.owned-release-summary') && !document.querySelector('.owned-release-summary').open`), 'Owned releases start summarized')
+  await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 900, deviceScaleFactor: 1, mobile: true })
+  await evaluate(`document.documentElement.style.fontSize='32px'`)
+  await pause(150)
+  assert.ok(await evaluate(`(() => { const body = document.querySelector('.anime-details-body'); return body.scrollWidth <= body.clientWidth + 1 && body.clientHeight >= innerHeight * .35 })()`), 'Enlarged text keeps a usable reading area without horizontal overflow')
+  await evaluate(`document.querySelector('.details-index button').click()`)
+  await wait(`document.activeElement.getAttribute('aria-label') === 'Season 2'`)
+  assert.ok(await evaluate(`document.querySelector('.anime-details-header').getBoundingClientRect().top >= 0`), 'Season navigation keeps the title and close control in view')
+  assert.ok(await evaluate(`(() => { const season = document.activeElement; return Boolean(season.querySelector('.release-notes').compareDocumentPosition(season.querySelector('.release-row')) & Node.DOCUMENT_POSITION_FOLLOWING) && season.querySelector('button[aria-label="Ignore Season 2 in bulk downloads and notifications"]').textContent.includes('Ignore for bulk') })()`), 'Upgrade navigation lands at recommendation evidence and a clear bulk action')
+  await key('Escape')
+  await evaluate(`document.querySelector('button[aria-label="Details for Fixture movie"]').click()`)
+  await wait(`document.querySelector('dialog[open] section[aria-label="Movie"]')`)
+  assert.ok(await evaluate(`document.querySelector('dialog[open]').textContent.includes('Movie release') && !document.querySelector('dialog[open]').textContent.includes('Season 0')`), 'Movie details use movie terminology')
+  await key('Escape')
+  fixtureResults = null
+  progressMode = progressBeforeDetailsReview
+  revision++
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
+  console.log('PASS enlarged-text details, owned summaries, upgrade navigation, recommendation order, bulk scope, and movie terminology')
 
   await click('Bulk download')
   await evaluate(`document.querySelector('dialog[open] button[aria-expanded]').click()`)
@@ -409,8 +515,9 @@ try {
   await wait(`document.querySelector('[aria-label="Connection checklist"]')?.textContent.includes('Connection saved')`)
   assert.ok(await evaluate(`![...document.querySelector('[aria-label="Connection checklist"]').querySelectorAll('button')].find(button => button.textContent.trim() === 'Scan library').disabled`), 'Saved connection enables the first scan')
   await capture('priorities-setup-ready')
+  const scansBeforeSetup = scanRequests.length
   await click('Scan library')
-  assert.equal(scanRequests.length, 1)
+  assert.equal(scanRequests.length, scansBeforeSetup + 1)
   await click('Connection checklist')
   await click('Show all settings')
   assert.ok(await evaluate(`Boolean(document.querySelector('input[name=sonarr_url]') && document.querySelector('input[name=radarr_url]'))`), 'Expert configuration remains accessible')
@@ -457,6 +564,12 @@ try {
   await key('Escape')
   await wait(`!document.querySelector('dialog[open]')`)
   assert.equal(await evaluate(`document.querySelector('[aria-label="Library page"]').value`), '16', 'History destination remains on its page after closing')
+  for (const query of ['  oLD group  ', 'eXample', 's01']) {
+    await fill('input[type=search]', query)
+    await wait(`document.querySelector('[aria-label="Library page"]')?.value === '0'`)
+    assert.equal(await evaluate(`document.querySelectorAll('[aria-label="Library results"] article').length`), 60, 'Search retains ownership, release-group, and season terms: ' + query)
+    assert.ok(await evaluate(`document.querySelector('[aria-label="Library pages"]').textContent.includes((1000).toLocaleString())`), 'Metadata search spans the whole collection')
+  }
   await fill('input[type=search]', '0999')
   await wait(`document.querySelectorAll('[aria-label="Library results"] article').length === 1`)
   assert.ok(await evaluate(`!document.querySelector('[aria-label="Library pages"]')`), 'Search spans all pages and resets pagination')

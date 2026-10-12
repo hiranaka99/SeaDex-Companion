@@ -104,10 +104,10 @@ export default function ReleaseDetails({ result: r, release: rel, index, config,
           {tags.length > 0 && <div className="flex min-w-0 flex-wrap gap-1.5">{tags.map(tag => <span key={tag} className={cx('max-w-full rounded-md border px-2 py-0.5 text-xs font-semibold text-ink wrap-anywhere', tag === 'Dual Audio' ? 'border-sky/40 bg-sky/12' : 'border-purple/40 bg-purple/12')}>{tag}</span>)}</div>}
         </div>
       </div>
-      <dl className="m-0 mb-3 flex flex-wrap gap-x-6 gap-y-2 text-xs">
+      <dl className="release-sizes m-0 mb-3 flex flex-wrap gap-x-6 gap-y-2 text-xs wrap-anywhere">
         <div><dt className="mb-1 text-muted">Current files</dt><dd className="m-0 font-semibold tabular-nums text-ink">{bytesOrUnknown(localSize)}</dd></div>
-        <div><dt className="mb-1 text-muted">{rel.part ? 'Cour release' : r.season !== null ? 'Season release' : 'Release'}</dt><dd className="m-0 font-semibold tabular-nums text-ink">{bytesOrUnknown(rel.size)}</dd></div>
-        <div><dt className="mb-1 text-muted">Release size change</dt><dd className="m-0 font-semibold tabular-nums text-ink">{rel.size > 0 && localSize > 0 ? delta || 'No change' : 'Unavailable'}</dd></div>
+        <div><dt className="mb-1 text-muted">{rel.part ? 'Cour release' : r.arr === 'Radarr' || r.season === 0 ? 'Movie release' : r.season !== null ? 'Season release' : 'Release'}</dt><dd className="m-0 font-semibold tabular-nums text-ink">{bytesOrUnknown(rel.size)}</dd></div>
+        {rel.size > 0 && localSize > 0 && <div><dt className="mb-1 text-muted">Release size change</dt><dd className="m-0 font-semibold tabular-nums text-ink">{delta || 'No change'}</dd></div>}
       </dl>
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
         <div className="min-w-0 flex-1 basis-44">
@@ -115,9 +115,9 @@ export default function ReleaseDetails({ result: r, release: rel, index, config,
           {!rel.downloadable && <p className="mt-1 mb-0 text-xs text-muted">A public magnet is not available for this release.</p>}
           {!owned && !complete && rel.downloadable && !fileScope.exact && <p className="mt-1 mb-0 text-xs text-muted">{fileScope.selected ? 'Selected-file size is unavailable. Release size is shown above.' : fileScope.approximateBytes !== null ? 'Approximate release estimate; file metadata is unavailable.' : 'Download size is unavailable.'}</p>}
         </div>
-        <button type="button" className={cx(buttonBase, 'min-h-11 justify-center px-3 text-xs max-[600px]:w-full', owned || complete ? 'border-good/40 bg-good/12 text-good' : disabled ? 'border-line bg-panel-raised text-muted' : 'border-good/40 bg-good/12 text-good enabled:hover:bg-good/20')} disabled={disabled} title={buttonTitle} aria-label={`${buttonTitle} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`} onClick={onDownload}>
-          {owned || complete ? <Icon name="check" size={17}/> : state.phase === 'sending' || state.phase === 'downloading' ? <span className="size-4 animate-spin rounded-full border-2 border-current/30 border-t-current" aria-hidden="true"/> : <Icon name={state.phase === 'paused' ? 'pause' : 'download'} size={17}/>}{buttonLabel}
-        </button>
+        {!inClient && <button type="button" className={cx(buttonBase, 'release-download-button min-h-11 min-w-0 max-w-full justify-center px-3 text-xs max-[600px]:w-full', owned || complete ? 'border-good/40 bg-good/12 text-good' : disabled ? 'border-line bg-panel-raised text-muted' : 'border-good/40 bg-good/12 text-good enabled:hover:bg-good/20')} disabled={disabled} title={buttonTitle} aria-label={`${buttonTitle} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`} onClick={onDownload}>
+          {owned || complete ? <Icon name="check" size={17}/> : state.phase === 'sending' || state.phase === 'downloading' ? <span className="size-4 animate-spin rounded-full border-2 border-current/30 border-t-current" aria-hidden="true"/> : <Icon name={state.phase === 'paused' ? 'pause' : 'download'} size={17}/>}<span className="min-w-0 wrap-anywhere">{buttonLabel}</span>
+        </button>}
       </div>
       {fileScope.files.length > 0 && !owned && !complete && <details className="mt-3 min-w-0">
         <summary className="touch-target flex min-h-8 cursor-pointer items-center gap-1.5 rounded-md text-xs font-semibold text-accent-bright"><Icon name="chevron-right" size={14}/>{fileScope.selected ? 'View' : 'Inspect'} {fileScope.files.length} {fileScope.selected ? 'selected' : 'release'} file{fileScope.files.length === 1 ? '' : 's'}</summary>
