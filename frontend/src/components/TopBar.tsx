@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import * as api from '../api'
 import { TabId } from '../types'
 import { cx } from '../styles'
@@ -32,10 +32,42 @@ function Brand({ compact = false }: { compact?: boolean }) {
   )
 }
 
-export default function TopBar({ tab, onTabChange, username, onLogout, collapsed, onToggleCollapsed }: Props) {
+function positionSelection(nav: HTMLElement | null, marker: HTMLElement | null) {
+  const active = nav?.querySelector<HTMLButtonElement>('[aria-current="page"]')
+  if (!active || !marker || !active.offsetHeight) return
+  // Read geometry together, then write only changed values. Marker movement
+  // doesn't need a React render or another root commit.
+  const height = `${active.offsetHeight}px`
+  const transform = `translateY(${active.offsetTop}px)`
+  if (marker.style.height !== height) marker.style.height = height
+  if (marker.style.transform !== transform) marker.style.transform = transform
+}
+
+function TopBar({ tab, onTabChange, username, onLogout, collapsed, onToggleCollapsed }: Props) {
   const [update, setUpdate] = useState<{ latest: string; url: string } | null>(null)
   const mobileHeaderRef = useRef<HTMLElement>(null)
   const mobileNavRef = useRef<HTMLElement>(null)
+  const desktopNavRef = useRef<HTMLElement>(null)
+  const selectionRef = useRef<HTMLSpanElement>(null)
+
+  useLayoutEffect(() => {
+    positionSelection(desktopNavRef.current, selectionRef.current)
+  }, [tab])
+
+  useLayoutEffect(() => {
+    const nav = desktopNavRef.current
+    if (!nav) return
+    let previousHeight = -1
+    const observer = new ResizeObserver(([entry]) => {
+      // Width changes every frame during collapse, but fixed icon/label rows
+      // keep their height. Re-measure only for text sizing or breakpoint changes.
+      if (entry.contentRect.height === previousHeight) return
+      previousHeight = entry.contentRect.height
+      positionSelection(nav, selectionRef.current)
+    })
+    observer.observe(nav)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     // Reserve the rendered chrome height, including user text size and safe areas.
@@ -74,7 +106,7 @@ export default function TopBar({ tab, onTabChange, username, onLogout, collapsed
 
   return (
     <>
-      <aside className={cx('flex h-dvh flex-col border-r border-line bg-canvas-soft py-5 max-[900px]:hidden', collapsed ? 'items-center px-3' : 'px-4')}>
+      <aside data-collapsed={collapsed} className="sidebar flex h-dvh min-w-0 flex-col border-r border-line bg-canvas-soft px-4 py-5 max-[900px]:hidden">
         {collapsed ? (
           <button type="button" onClick={onToggleCollapsed} aria-label="Expand sidebar" title="Expand sidebar" className="relative mx-auto grid size-11 animate-fade cursor-pointer place-items-center rounded-xl transition-transform duration-300 hover:scale-105">
             <img src="/favicon.png" alt="" className="size-9 rounded-lg border border-line-strong object-cover" />
@@ -87,15 +119,15 @@ export default function TopBar({ tab, onTabChange, username, onLogout, collapsed
           </div>
         )}
 
-        <nav className="mt-9 flex flex-col gap-1.5" aria-label="Primary navigation">
+        <nav ref={desktopNavRef} className="sidebar-nav relative mt-9 flex flex-col gap-1.5" aria-label="Primary navigation">
+          <span ref={selectionRef} aria-hidden="true" className="sidebar-selection pointer-events-none absolute inset-x-0 rounded-xl bg-accent/12" />
           {NAV.map((item) => (
             <button key={item.id} type="button" title={item.label} className={cx(
-              'group flex cursor-pointer items-center gap-3 rounded-xl text-left text-sm font-semibold transition-all duration-300 ease-in-out',
-              collapsed ? 'size-10 justify-center' : 'px-3.5 py-3',
-              tab === item.id ? 'bg-accent/12 text-ink' : 'text-muted hover:bg-panel hover:text-ink',
-            )} aria-current={tab === item.id ? 'page' : undefined} onClick={() => onTabChange(item.id)}>
-              <Icon name={item.icon} size={19} className={cx('shrink-0 transition-colors', tab === item.id ? 'text-accent-bright' : 'text-muted-dim group-hover:text-ink')} />
-              {!collapsed && item.label}
+              'sidebar-nav-button group relative flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold',
+              tab === item.id ? 'text-ink' : 'text-muted hover:bg-panel hover:text-ink',
+            )} aria-label={item.label} aria-current={tab === item.id ? 'page' : undefined} onClick={() => onTabChange(item.id)}>
+              <Icon name={item.icon} size={19} className={cx('sidebar-nav-icon shrink-0 transition-colors', tab === item.id ? 'text-accent-bright' : 'text-muted-dim group-hover:text-ink')} />
+              <span aria-hidden="true" className="sidebar-nav-label">{item.label}</span>
             </button>
           ))}
         </nav>
@@ -139,3 +171,5 @@ export default function TopBar({ tab, onTabChange, username, onLogout, collapsed
     </>
   )
 }
+
+export default memo(TopBar)

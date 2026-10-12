@@ -15,6 +15,7 @@ auth_sessions.json.tmp
 download_records.json
 download_records.json.tmp
 anilist_cache.json
+auth-artwork.json
 last_results.json
 *.md
 docker-compose.yml

@@ -53,7 +53,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   if (tab === 'config') configVisited.current = true
   if (tab === 'history') historyVisited.current = true
   const [openResultKey, setOpenResultKey] = useState<string | null>(null)
-  const changeTab = (next: TabId) => { if (next !== tab) window.location.hash = next; setTab(next) }
+  const changeTab = useCallback((next: TabId) => { if (next !== tab) window.location.hash = next; setTab(next) }, [tab])
   const [status, setStatus] = useState<Status>(INITIAL_STATUS)
   const [results, setResults] = useState<ResultItem[]>([])
   const [lastRun, setLastRun] = useState<string | null>(null)
@@ -67,6 +67,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   const [bulkReviewAvailable, setBulkReviewAvailable] = useState(false)
   const [bulkReviewRequest, setBulkReviewRequest] = useState(0)
   const [scanCompleted, setScanCompleted] = useState<string | null>(null)
+  const [scanCancelledDismissed, setScanCancelledDismissed] = useState(false)
   const [collapsed, setCollapsed] = useState<boolean>(readCollapsed)
   const [configFooterTarget, setConfigFooterTarget] = useState<HTMLDivElement | null>(null)
   const toast = useToast()
@@ -112,10 +113,14 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
     }
   }, [])
 
+  const handleResultOpened = useCallback(() => setOpenResultKey(null), [])
+  const handleResultsChanged = useCallback(async () => { await loadResults() }, [loadResults])
+
   const pollStatus = useCallback(async (generation: number): Promise<void> => {
     try {
       const st = await api.getStatus()
       if (!mounted.current || generation !== pollGeneration.current) return
+      if (st.running || !st.cancelled) setScanCancelledDismissed(false)
       if (st.running || st.error || st.cancelled) setScanCompleted(null)
       const completedSinceLastPoll = statusInitialized.current && Boolean(st.last_run) && st.last_run !== lastSeenRun.current
       if ((scanWasRunning.current || completedSinceLastPoll) && !st.running && !st.error && !st.cancelled) setScanCompleted(st.last_run || 'just now')
@@ -191,12 +196,13 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
     }
   }, [loadConfig, loadResults, pollStatus])
 
-  const handleScan = async () => {
+  const handleScan = useCallback(async () => {
     if (status.running || bulkOperation?.phase === 'running') return
     try {
       setScanCompleted(null)
       const r = await api.startScan()
       if (!r.ok) throw new Error(r.error || 'Could not start scan')
+      setScanCancelledDismissed(false)
       scanWasRunning.current = true
       setStatus({ ...INITIAL_STATUS, running: true, message: 'Starting scan…' })
       if (pollTimer.current) window.clearTimeout(pollTimer.current)
@@ -206,7 +212,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
     } catch (e: any) {
       toast.show('Could not start scan: ' + e.message, 'error')
     }
-  }
+  }, [status.running, bulkOperation?.phase, pollStatus, toast])
 
   const handleCancelScan = async () => {
     try { await api.cancelScan(); toast.show('Cancelling scan…', 'info') }
@@ -228,7 +234,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
 
   return (
     <div
-      className="grid h-dvh grid-cols-[var(--sidebar)_minmax(0,1fr)] overflow-hidden transition-[grid-template-columns] duration-300 ease-in-out max-[900px]:grid-cols-1"
+      className="app-shell grid h-dvh grid-cols-[var(--sidebar)_minmax(0,1fr)] overflow-hidden max-[900px]:grid-cols-1"
       style={{ ['--sidebar' as string]: `${sidebarWidth}px` }}
     >
       <TopBar
@@ -245,6 +251,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
         <OperationCenter
           status={status}
           scanCompleted={scanCompleted}
+          scanCancelledDismissed={scanCancelledDismissed}
           onCancelScan={() => void handleCancelScan()}
           bulk={bulkOperation}
           onRetryScan={() => void handleScan()}
@@ -252,7 +259,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
           onOpenConfig={() => changeTab('config')}
           onDismissBulk={() => setBulkOperation(null)}
           onReviewBulk={bulkReviewAvailable ? () => { changeTab('anime'); setBulkReviewRequest(value => value + 1) } : undefined}
-          onDismissScan={() => setScanCompleted(null)}
+          onDismissScan={() => { setScanCompleted(null); setScanCancelledDismissed(status.cancelled) }}
         />
         <div className="connection-status mb-4 flex shrink-0 flex-wrap items-center gap-3 text-xs text-muted" role={statusError ? 'alert' : undefined}>
           {statusError ? <><span className="text-bad">Connection lost: {statusError}. Displayed data may be outdated.</span><button className="cursor-pointer font-bold text-accent-bright" onClick={() => { if (pollTimer.current) window.clearTimeout(pollTimer.current); void pollStatus(++pollGeneration.current) }}>Retry connection</button></> : lastStatusUpdate && <span>Updated {lastStatusUpdate.toLocaleTimeString()}</span>}
@@ -261,7 +268,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
           <AnimeTab
             active={tab === 'anime'}
             openResultKey={openResultKey}
-            onResultOpened={() => setOpenResultKey(null)}
+            onResultOpened={handleResultOpened}
             bulkOperationActive={bulkOperation?.phase === 'running'}
             bulkReviewRequest={bulkReviewRequest}
             onBulkReviewReset={() => setBulkReviewAvailable(false)}
@@ -275,8 +282,8 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
             onReloadResults={() => void loadResults()}
             onOpenConfig={() => changeTab('config')}
             onBulkOperationChange={operation => { setBulkOperation(operation); setBulkReviewAvailable(operation.action === 'start') }}
-            operationsVisible={status.running || Boolean(status.error) || Boolean(scanCompleted) || Boolean(bulkOperation)}
-            onResultsChanged={async () => { await loadResults() }}
+            operationsVisible={status.running || Boolean(status.error) || (status.cancelled && !scanCancelledDismissed) || status.webhook_scan.queued || Boolean(scanCompleted) || Boolean(bulkOperation)}
+            onResultsChanged={handleResultsChanged}
           />
         </div>
         {historyVisited.current && <div hidden={tab !== 'history'}><HistoryTab active={tab === 'history'} results={results} onOpenResult={openHistoryResult} /></div>}

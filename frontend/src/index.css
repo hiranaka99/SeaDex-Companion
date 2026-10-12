@@ -93,6 +93,38 @@
 
 .modal-shell::backdrop { background: transparent; }
 
+/* Keep icon anchors steady while the rail reveals its labels. Only the shell
+   reflows; selection motion stays inside the four-item navigation. */
+.app-shell { transition: grid-template-columns 280ms cubic-bezier(0.16, 1, 0.3, 1); }
+.sidebar { --sidebar-ease: cubic-bezier(0.16, 1, 0.3, 1); }
+.sidebar-selection {
+  transition: transform 240ms var(--sidebar-ease);
+}
+.sidebar-nav-button {
+  transition: background-color 120ms ease-out, color 120ms ease-out;
+}
+.sidebar-nav-button:active { background-color: color-mix(in srgb, var(--color-accent) 18%, transparent); }
+.sidebar-nav-label {
+  min-width: 0;
+  white-space: nowrap;
+  opacity: 1;
+  transform: translateX(0);
+  visibility: visible;
+  transition: opacity 160ms ease-out 60ms, transform 240ms var(--sidebar-ease) 40ms, visibility 0ms;
+}
+.sidebar[data-collapsed="true"] .sidebar-nav-label {
+  opacity: 0;
+  transform: translateX(-8px);
+  transition: opacity 120ms ease-out, transform 160ms var(--sidebar-ease), visibility 0ms 160ms;
+  visibility: hidden;
+}
+.sidebar-nav { clip-path: inset(-4px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell, .sidebar-selection, .sidebar-nav-label { transition: none; }
+  .sidebar[data-collapsed="true"] .sidebar-nav-label { transform: none; }
+}
+
 /* Shell clearance follows rendered navigation, including enlarged text. */
 :root {
   --mobile-header-height: calc(4rem + env(safe-area-inset-top, 0px));
@@ -107,7 +139,105 @@
 .configuration-disclosures > details > summary > span { float: right; margin-left: .75rem; }
 .operation-diagnostics { max-height: min(12rem, 30dvh); }
 .library-results { scroll-margin-top: 1rem; }
+
+/* Public entry: a quiet form beside a continuously moving cover wall. */
+.auth-screen { min-height: 100dvh; display: grid; grid-template-columns: minmax(420px, .85fr) minmax(0, 1.15fr); background: var(--color-canvas); }
+.auth-access { min-width: 0; min-height: 100dvh; display: flex; flex-direction: column; align-items: center; padding: 40px clamp(28px, 4vw, 72px); }
+.auth-brand { width: 100%; display: flex; align-items: center; gap: 12px; font-size: 1rem; font-weight: 800; }
+.auth-brand img { flex-shrink: 0; border-radius: 10px; }
+.auth-form-wrap { width: 100%; max-width: 380px; margin-block: auto; padding-block: 56px; }
+.auth-heading { margin-bottom: 32px; }
+.auth-heading h1 { margin: 0; font-size: clamp(2rem, 3vw, 3rem); font-weight: 800; line-height: 1.12; letter-spacing: -.025em; overflow-wrap: anywhere; }
+.auth-heading > p { margin: 16px 0 0; color: var(--color-muted); font-size: 1rem; line-height: 1.6; }
+.auth-form { display: flex; flex-direction: column; gap: 22px; }
+.auth-field { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.auth-field label { font-size: .875rem; font-weight: 600; }
+.auth-field input { width: 100%; min-width: 0; min-height: 48px; font-size: 1rem; }
+.auth-field input:disabled { opacity: .65; }
+.auth-password { position: relative; }
+.auth-password input { padding-right: 52px; }
+.auth-reveal { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 44px; height: 44px; border-radius: 8px; color: var(--color-muted); cursor: pointer; }
+.auth-reveal:hover { color: var(--color-ink); background: var(--color-panel-raised); }
+.auth-field-hint { margin: 0; font-size: .8125rem; color: var(--color-muted); }
+.auth-submit { width: 100%; min-height: 48px; justify-content: space-between; margin-top: 6px; font-size: 1rem; box-shadow: none; background: var(--color-accent-bright); }
+.auth-submit:enabled:hover { box-shadow: none; background: var(--color-accent); }
+.auth-error { margin: 0; padding: 12px; border-radius: 10px; background: rgb(248 113 113 / .1); color: var(--color-bad); font-size: .875rem; overflow-wrap: anywhere; }
+.auth-help { margin-top: 24px; font-size: .875rem; color: var(--color-muted); }
+.auth-help summary { width: fit-content; cursor: pointer; padding-block: 12px; }
+.auth-help p { margin: 8px 0 0; line-height: 1.6; }
+.auth-gallery { position: sticky; top: 0; height: 100dvh; min-width: 0; margin-left: -48px; width: calc(100% + 48px); overflow: hidden; clip-path: polygon(0 0, 100% 0, 100% 100%, min(14dvh, 140px) 100%); background: var(--color-canvas); }
+.auth-art-wall { position: absolute; inset: -100px -50px -100px 32px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; transform-origin: top left; transform: rotate(-8deg); }
+.auth-art-column { min-width: 0; }
+.auth-art-track { animation: auth-art-scroll 80s linear infinite; will-change: transform; }
+.auth-art-column:nth-child(2) .auth-art-track { animation-direction: reverse; animation-duration: 95s; }
+.auth-art-column:nth-child(3) .auth-art-track { animation-duration: 110s; }
+.auth-art-sequence { display: flex; flex-direction: column; gap: 18px; padding-bottom: 18px; }
+.auth-art-sequence img { display: block; width: 100%; height: auto; min-height: 40dvh; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 12px; background: var(--color-canvas); }
+.auth-gallery::after { content: ''; pointer-events: none; position: absolute; inset: 0; background: linear-gradient(to bottom, rgb(11 14 20 / .12) 30%, rgb(11 14 20 / .94) 100%), linear-gradient(to right, rgb(11 14 20 / .55), transparent 30%); }
+.auth-motion-toggle { position: absolute; z-index: 1; right: 28px; bottom: 28px; display: flex; gap: 8px; align-items: center; padding: 12px 16px; border: 1px solid var(--color-line-strong); border-radius: 10px; background: var(--color-canvas); color: var(--color-muted); font-size: .8125rem; cursor: pointer; }
+.auth-motion-toggle:hover { color: var(--color-ink); border-color: var(--color-muted); }
+.auth-art-wall[data-paused="true"] .auth-art-track { animation-play-state: paused; }
+@keyframes auth-art-scroll { from { transform: translateY(0); } to { transform: translateY(-50%); } }
+@media (width < 900px), (width < 50rem) {
+  .auth-screen { grid-template-columns: minmax(0, 1fr); }
+  .auth-access { padding: 24px; }
+  .auth-gallery { display: none; }
+  .auth-brand { max-width: 380px; }
+  .auth-heading h1 { font-size: 1.75rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-art-track { animation: none; will-change: auto; }
+  .auth-motion-toggle { display: none; }
+}
+
+/* Text can enlarge without proportionally inflating every frame and control. */
+.anime-details-frame { padding: 12px; }
+.anime-details-panel { max-height: calc(100dvh - 24px); }
+.anime-details-header { gap: 12px; padding: 16px; max-height: 35dvh; overflow-y: auto; }
+.anime-details-close { width: 44px; height: 44px; min-width: 44px; min-height: 44px; position: sticky; top: 0; }
+.anime-details-banner::after { content: ''; position: absolute; inset: 0; background: linear-gradient(to bottom, rgb(9 13 19 / .86) 0%, rgb(9 13 19 / .86) calc(100% - 64px), rgb(9 13 19 / .2) 100%); }
+.anime-details-art-reveal { height: 64px; }
+.anime-details-content { padding: 16px; }
+.details-index-links { grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr)); }
+.details-index-links button { min-height: 44px; }
+.details-season, .details-cour { scroll-margin-block: 12px; }
+.anime-details-body .release-row { padding: 16px; container-type: inline-size; container-name: release-details; }
+.anime-details-body button, .anime-details-body a, .anime-details-body summary { max-width: 100%; overflow-wrap: anywhere; }
+.anime-details-body .release-sizes > div { min-width: 0; max-width: 100%; }
+.anime-details-body .release-row button { white-space: normal; }
+.anime-details-body .release-notes { margin-bottom: 12px; }
+@container release-details (max-width: 22rem) {
+  .release-row > div:first-child { display: block; }
+  .release-row .release-identity { margin-top: 8px; width: 100%; }
+}
+@media (width < 601px) {
+  .anime-details-header, .anime-details-content, .anime-details-body .release-row { padding: 12px; }
+  .anime-details-art-reveal { display: none; }
+  .anime-details-banner::after { background: rgb(9 13 19 / .86); }
+  .anime-details-body button, .anime-details-body a { min-width: 0; }
+  .anime-details-body .release-download-button { width: 100%; }
+}
+.library-card-readable {
+  transition: opacity 180ms ease-out, clip-path 220ms cubic-bezier(0.16, 1, 0.3, 1), border-color 140ms ease-out;
+}
+.library-card-hiding { clip-path: inset(0 0 100% 0 round 14px); }
+.library-card-readable footer button,
+.library-actions > button,
+.library-toolbar button {
+  transition: color 120ms ease-out, background-color 120ms ease-out, border-color 120ms ease-out, transform 120ms ease-out;
+}
+.library-card-readable footer button:enabled:active,
+.library-actions > button:enabled:active,
+.library-toolbar button:enabled:active { transform: scale(0.97); }
+@media (prefers-reduced-motion: reduce) {
+  .library-card-hiding { clip-path: none; }
+  .library-card-readable footer button:enabled:active,
+  .library-actions > button:enabled:active,
+  .library-toolbar button:enabled:active { transform: none; }
+}
 .library-toolbar-refined {
+  container-name: library-tools;
+  container-type: inline-size;
   padding: 10px;
   background: var(--color-canvas-soft);
   box-shadow: none;
@@ -127,6 +257,20 @@
   background: var(--color-panel);
 }
 .library-toolbar-refined .toolbar-status-count { font-weight: 700; }
+
+/* Search keeps useful reading space before the desktop controls wrap. Query
+   the pane width so the collapsed sidebar and enlarged text work naturally. */
+@media (min-width: 601px) {
+  @container library-tools (max-width: 60rem) {
+    .toolbar-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .toolbar-controls > label { grid-column: 1 / -1; }
+    .toolbar-controls select { width: 100%; }
+    .toolbar-controls button { justify-content: center; }
+  }
+  @container library-tools (max-width: 40rem) {
+    .toolbar-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+}
 .library-scan-button {
   min-height: 44px;
   padding: 10px 16px;
@@ -262,7 +406,7 @@
   .library-status-upgrades > span { overflow-wrap: normal; }
 }
 
-@media (max-width: 900px) {
+@media (width < 900px) {
   .mobile-header {
     padding-top: calc(.5rem + env(safe-area-inset-top, 0px));
     padding-left: max(1rem, env(safe-area-inset-left, 0px));
@@ -315,7 +459,7 @@
   .log-view > header { align-items: center; }
 }
 
-@media (max-width: 900px) and (max-height: 600px) {
+@media (width < 900px) and (max-height: 600px) {
   .mobile-header { min-height: 3.25rem; padding-block: .25rem; padding-top: calc(.25rem + env(safe-area-inset-top, 0px)); }
   .mobile-navigation { min-height: 3rem; bottom: calc(.5rem + env(safe-area-inset-bottom, 0px)); }
   .mobile-navigation button { padding-block: .25rem; }

@@ -41,6 +41,7 @@ before(async () => {
   const staticDir = join(dataDir, 'static')
   mkdirSync(staticDir)
   writeFileSync(join(staticDir, 'index.html'), '<!doctype html><title>Test</title>')
+  writeFileSync(join(dataDir, 'auth-artwork.json'), JSON.stringify({ version: 2, updatedAt: Date.now(), covers: [1, 2, 3].map(id => `https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/${id}.jpg`) }))
   const port = await availablePort()
   baseUrl = `http://127.0.0.1:${port}`
   child = spawn(process.execPath, ['dist/server/index.js'], {
@@ -67,6 +68,13 @@ test('health and application responses carry browser security headers', async ()
     assert.equal(response.headers.get('referrer-policy'), 'no-referrer')
     assert.match(response.headers.get('content-security-policy') || '', /frame-ancestors 'none'/)
   }
+})
+
+test('sign-in artwork is public and contains only cached cover URLs', async () => {
+  const response = await fetch(`${baseUrl}/api/auth/artwork`)
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), { covers: [1, 2, 3].map(id => `https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/${id}.jpg`) })
+  assert.equal(response.headers.get('cache-control'), 'no-store')
 })
 
 test('non-object JSON request bodies are rejected cleanly', async () => {

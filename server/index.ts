@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { nextScanTime } from '../shared/scan-schedule.js'
 import { releaseIdentity } from '../shared/releases.js'
 import { downloadPreflight } from './download-preflight.js'
+import { createAuthArtworkCache } from './auth-artwork.js'
 import {
   DATA_DIR, DEFAULT_CONFIG, STATIC_DIR, applyUserRulesToResults, arrBaseUrl, autocheckState, bulkDownloadBatchStatus, bulkDownloadTargets, cancelScan, checkForUpdates, clearScannedData, exclusionRuleKey, forgetOwnedTorrents,
   finishBulkDownloadBatch, getState, indexResultReleases, loadConfig, loadLastResults, loadScanHistory, loadUserRules, log, normalizeQbStates, normalizeScanSchedule, ownedTorrentsSnapshot,
@@ -24,6 +25,8 @@ const SECURITY_HEADERS: Record<string, string> = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
 }
+
+const authArtwork = createAuthArtworkCache(resolve(DATA_DIR, 'auth-artwork.json'))
 
 function sendJson(response: ServerResponse, status: number, value: unknown, headers: Record<string, string> = {}): void {
   const body = JSON.stringify(value)
@@ -237,6 +240,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (method === 'GET' && path === '/api/auth/status') {
     return sendJson(response, 200, authState(request), { 'Cache-Control': 'no-store' })
+  }
+
+  if (method === 'GET' && path === '/api/auth/artwork') {
+    return sendJson(response, 200, { covers: await authArtwork.get() })
   }
 
   if (method === 'POST' && path === '/api/auth/setup') {

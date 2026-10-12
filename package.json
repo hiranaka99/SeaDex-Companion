@@ -1,13 +1,15 @@
 {
   "name": "seadex-companion",
   "private": true,
-  "version": "1.9.0",
+  "version": "1.10.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "npm run build:server && npm --prefix frontend run build",
     "build:server": "tsc -p tsconfig.json",
-    "dev": "tsx watch server/index.ts",
+    "dev": "concurrently --kill-others --names server,frontend \"npm:dev:server\" \"npm:dev:frontend\"",
+    "dev:server": "tsx watch server/index.ts",
+    "dev:frontend": "npm --prefix frontend run dev",
     "prestart": "npm run build",
     "start": "node dist/server/index.js",
     "test": "npm run build:server && node tests/run-tests.mjs",
@@ -19,6 +21,7 @@
   },
   "devDependencies": {
     "@types/node": "24.13.3",
+    "concurrently": "^10.0.6",
     "tsx": "^4.19.2",
     "typescript": "7.0.2"
   },
