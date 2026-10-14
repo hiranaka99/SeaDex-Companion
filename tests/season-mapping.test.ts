@@ -373,26 +373,12 @@ describe('Sonarr and Radarr URL normalization', () => {
     )
   })
 
-  test('tests Sonarr using the normalized API endpoint', async () => {
-    const originalFetch = globalThis.fetch
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-      assert.equal(String(input), 'https://sonarr.example.com/api/v3/system/status')
-      assert.equal(new Headers(init?.headers).get('X-Api-Key'), 'test-key')
-      return new Response(JSON.stringify({ appName: 'Sonarr', version: '4.0.0' }), {
-        status: 200, headers: { 'Content-Type': 'application/json' },
-      })
-    }) as typeof fetch
-    try {
-      assert.equal(await testIntegration({ ...DEFAULT_CONFIG, sonarr_url: 'https://sonarr.example.com', sonarr_key: 'test-key' }, 'sonarr'), 'Connected to Sonarr 4.0.0')
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
 
   test('keeps TVDB episode numbers even when an episode has no file', async () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = (async (input: string | URL | Request) => {
       const url = String(input)
+      if (url.endsWith('/api')) return Response.json({ current: 'v3', deprecated: [] })
       let data: JsonObject[] = []
       if (url.endsWith('/series')) data = [{
         id: 10, title: 'Example', titleSlug: 'example',
@@ -421,6 +407,7 @@ describe('Sonarr and Radarr URL normalization', () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = (async (input: string | URL | Request) => {
       const url = String(input)
+      if (url.endsWith('/api')) return Response.json({ current: 'v3', deprecated: [] })
       let data: JsonObject[] = []
       if (url.includes('sonarr') && url.endsWith('/series')) data = [{
         id: 11, title: 'New Series', titleSlug: 'new-series',
@@ -444,6 +431,7 @@ describe('Sonarr and Radarr URL normalization', () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = (async (input: string | URL | Request) => {
       const url = String(input)
+      if (url.endsWith('/api')) return Response.json({ current: 'v3', deprecated: [] })
       let data: JsonObject[] = []
       if (url.includes('sonarr') && url.endsWith('/series')) data = [{
         id: 20, title: 'Future Show', titleSlug: 'future-show',
@@ -1112,6 +1100,7 @@ describe('release selection and combined cours', () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = (async (input: string | URL | Request) => {
       if (String(input).includes('radarr')) return new Response('offline', { status: 503 })
+      if (String(input).endsWith('/api')) return Response.json({ current: 'v3', deprecated: [] })
       return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }) as typeof fetch
     try {

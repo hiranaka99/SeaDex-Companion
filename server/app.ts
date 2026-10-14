@@ -64,6 +64,13 @@ export function arrApiUrl(value: unknown): string {
   return base ? `${base}/api/v3` : ''
 }
 
+async function sonarrApiUrl(value: unknown, key: string): Promise<string> {
+  const base = arrBaseUrl(value)
+  const info = await api(`${base}/api`, key, {}, true)
+  if (info.current !== 'v3' && info.current !== 'v5') throw new Error(`Unsupported Sonarr API version: ${String(info.current)}`)
+  return `${base}/api/${info.current}`
+}
+
 interface EncryptedSecretsPayload {
   version: 1
   algorithm: 'aes-256-gcm'
@@ -589,11 +596,25 @@ export function cancelScan(): boolean {
   return true
 }
 
-export async function api(url: string, key?: string, init: RequestInit = {}): Promise<any> {
+export async function api(url: string, key?: string, init: RequestInit = {}, followSameOriginRedirects = false): Promise<any> {
   try {
     const headers = new Headers(init.headers)
     if (key) headers.set('X-Api-Key', key)
-    const response = await fetchWithTimeout(url, { ...init, headers })
+    const request = { ...init, headers }
+    let response = await fetchWithTimeout(url, request)
+    if (followSameOriginRedirects && (!init.method || init.method.toUpperCase() === 'GET')) {
+      const origin = new URL(url).origin
+      for (let hop = 0; hop < 5 && [301, 302, 303, 307, 308].includes(response.status); hop++) {
+        const location = response.headers.get('Location')
+        if (!location) break
+        const target = new URL(location, url)
+        // Never forward an API key to another origin or URL-supplied credentials.
+        if (target.origin !== origin || target.username || target.password) break
+        await response.body?.cancel()
+        url = target.href
+        response = await fetchWithTimeout(url, request)
+      }
+    }
     if (!response.ok) {
       log('ERROR', `API ${url} → HTTP ${response.status}`)
       throw new Error(`HTTP ${response.status}`)
@@ -741,12 +762,13 @@ export async function localItems(config: Config, scope: ScanScope = {}): Promise
   const items: JsonObject[] = []
   const now = Date.now()
   if (config.sonarr_url && config.sonarr_key) {
-    const series = await api(`${arrApiUrl(config.sonarr_url)}/series`, config.sonarr_key) as JsonObject[]
+    const base = await sonarrApiUrl(config.sonarr_url, config.sonarr_key)
+    const series = await api(`${base}/series`, config.sonarr_key, {}, true) as JsonObject[]
     for (const show of series) {
       if (scope.sonarrIds?.length && !scope.sonarrIds.includes(Number(show.id))) continue
       const [episodes, episodeFiles] = await Promise.all([
-        api(`${arrApiUrl(config.sonarr_url)}/episode?seriesId=${show.id}`, config.sonarr_key),
-        api(`${arrApiUrl(config.sonarr_url)}/episodefile?seriesId=${show.id}`, config.sonarr_key),
+        api(`${base}/episode?seriesId=${show.id}`, config.sonarr_key, {}, true),
+        api(`${base}/episodefile?seriesId=${show.id}`, config.sonarr_key, {}, true),
       ]) as [JsonObject[], JsonObject[]]
       const fileGroups = new Map<number, string>()
       const fileSizes = new Map<number, number>()
@@ -1809,10 +1831,12 @@ async function qbLogin(base: string, user: string, password: string): Promise<Qb
 
 export async function testIntegration(config: Config, service: string): Promise<string> {
   if (service === 'sonarr' || service === 'radarr') {
-    const base = arrApiUrl(config[`${service}_url`])
+    const url = config[`${service}_url`]
+    let base = arrApiUrl(url)
     const key = String(config[`${service}_key`] || '')
     if (!base || !key) throw new Error(`${service === 'sonarr' ? 'Sonarr' : 'Radarr'} URL and API key are required`)
-    const status = await api(`${base}/system/status`, key)
+    if (service === 'sonarr') base = await sonarrApiUrl(url, key)
+    const status = await api(`${base}/system/status`, key, {}, service === 'sonarr')
     const name = String(status.appName || status.instanceName || (service === 'sonarr' ? 'Sonarr' : 'Radarr'))
     const version = status.version ? ` ${status.version}` : ''
     return `Connected to ${name}${version}`
