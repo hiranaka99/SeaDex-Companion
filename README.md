@@ -1,6 +1,6 @@
 # SeaDex Companion
 
-SeaDex Companion is a self-hosted web UI that compares your **Sonarr** and **Radarr** anime libraries with the best releases indexed by [SeaDex](https://releases.moe/). It highlights missing upgrades, explains the match season by season, and can send selected public releases directly to qBittorrent.
+SeaDex Companion is a self-hosted web UI that compares your **Sonarr** and **Radarr** anime libraries with the best releases indexed by [SeaDex](https://seadex.moe/). It highlights missing upgrades, explains the match season by season, and can send selected public releases directly to qBittorrent.
 
 <p align="center">
   <img width="100%" alt="SeaDex Companion library showing anime upgrade status" src="docs/screenshots/library.png" />
