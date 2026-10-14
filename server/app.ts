@@ -6,7 +6,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { ChainEntry, ChainPart, Config, JsonObject, ReleaseCandidate, ScanScope, ScanState, ScanTrigger } from './types.js'
 
-export const SEADEX = 'https://releases.moe/api'
+export const SEADEX = 'https://seadex.moe/api'
 export const ANILIST = 'https://graphql.anilist.co'
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
@@ -695,7 +695,7 @@ export async function seadexBest(): Promise<Map<number, JsonObject>> {
     for (const item of data.items as JsonObject[]) {
       const alid = Number(item.alID)
       const torrents = item.expand?.trs || []
-      if (!best.has(alid)) best.set(alid, { url: `https://releases.moe/${alid}/`, notes: item.notes || '-', seasons: {} })
+      if (!best.has(alid)) best.set(alid, { url: `https://seadex.moe/${alid}/`, notes: item.notes || '-', seasons: {} })
       const entry = best.get(alid)!
       // Keep filler/placeholder pages even when SeaDex has no torrents. The
       // scanner can then mark the mapped season as uncovered (with its page
