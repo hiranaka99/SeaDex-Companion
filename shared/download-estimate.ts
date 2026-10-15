@@ -1,3 +1,4 @@
+import { normalizeTorrentPath as normalizePath, planTorrents } from './download-plan.js'
 export interface TorrentFiles {
   hash: string
   files: { name: string; length: number }[]
@@ -44,53 +45,39 @@ export interface DownloadPreflight extends DownloadEstimate {
   disk_space: DiskSpaceCheck[]
 }
 
-const normalizePath = (path: string) => path.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '').toLowerCase()
 const validBytes = (size: unknown): size is number => typeof size === 'number' && Number.isSafeInteger(size) && size >= 0
 
 /** Mirrors bulk add: a hash is added once, file scopes are united, and any whole-torrent request wins. */
 export function estimateDownloads(selections: { release: EstimatableRelease; category: string }[], existingHashes: string[] = []): DownloadEstimate {
   const existing = new Set(existingHashes.map(hash => hash.toLowerCase()))
-  const byHash = new Map<string, { category: string; releases: EstimatableRelease[]; files: Map<string, number>; wanted: Set<string>; whole: boolean; invalidMetadata: boolean }>()
-  for (const { release, category } of selections) {
-    for (const hash of new Set(release.info_hashes.map(hash => hash.toLowerCase()).filter(hash => /^[0-9a-f]{40}$/.test(hash)))) {
-      const entry = byHash.get(hash) || { category, releases: [], files: new Map<string, number>(), wanted: new Set<string>(), whole: false, invalidMetadata: false }
-      entry.releases.push(release)
-      if (!release.selected_files?.length) entry.whole = true
-      else {
-        const catalogs = release.torrent_files || []
-        const allNames = new Set(catalogs.flatMap(metadata => metadata.files.map(file => normalizePath(file.name))))
-        const ownNames = new Set(catalogs.filter(metadata => metadata.hash.toLowerCase() === hash).flatMap(metadata => metadata.files.map(file => normalizePath(file.name))))
-        const completeScope = release.selected_files.every(name => allNames.has(normalizePath(name)))
-        for (const name of release.selected_files) if (!completeScope || ownNames.has(normalizePath(name))) entry.wanted.add(normalizePath(name))
-      }
-      for (const metadata of release.torrent_files || []) {
-        if (metadata.hash.toLowerCase() !== hash) continue
-        if (!metadata.files.length || metadata.files.some(file => !file.name || !validBytes(file.length))) entry.invalidMetadata = true
-        for (const file of metadata.files) {
-          if (file.name && validBytes(file.length)) entry.files.set(normalizePath(file.name), Math.max(entry.files.get(normalizePath(file.name)) || 0, file.length))
-        }
-      }
-      byHash.set(hash, entry)
+  const torrents: EstimatedTorrent[] = planTorrents(selections).map(entry => {
+    const { hash, category } = entry
+    const whole = !entry.selectedFiles
+    const wanted = new Set((entry.selectedFiles || []).map(normalizePath))
+    const files = new Map<string, number>()
+    let invalidMetadata = false
+    for (const release of entry.releases) for (const metadata of release.torrent_files || []) {
+      if (metadata.hash.toLowerCase() !== hash) continue
+      if (!metadata.files.length || metadata.files.some(file => !file.name || !validBytes(file.length))) invalidMetadata = true
+      for (const file of metadata.files) if (file.name && validBytes(file.length)) files.set(normalizePath(file.name), Math.max(files.get(normalizePath(file.name)) || 0, file.length))
     }
-  }
-  const torrents: EstimatedTorrent[] = [...byHash].map(([hash, entry]) => {
     let bytes: number | null = null
     let approximate = false
-    const requested = entry.whole ? [...entry.files.keys()] : [...entry.wanted]
-    if (!entry.invalidMetadata && entry.files.size && requested.length && requested.every(name => entry.files.has(name))) {
-      bytes = requested.reduce((sum, name) => sum + entry.files.get(name)!, 0)
+    const requested = whole ? [...files.keys()] : [...wanted]
+    if (!invalidMetadata && files.size && requested.length && requested.every(name => files.has(name))) {
+      bytes = requested.reduce((sum, name) => sum + files.get(name)!, 0)
     } else {
       // Old saved results have only a release total. Never divide a multi-hash
       // total or sum overlapping scopes: neither reveals each torrent's size.
       const singleHash = entry.releases.every(release => new Set(release.info_hashes.map(hash => hash.toLowerCase())).size === 1)
       const scopes = new Set(entry.releases.map(release => JSON.stringify((release.selected_files || []).map(normalizePath).sort())))
-      const sizes = entry.releases.filter(release => !entry.whole || !release.selected_files?.length).map(release => release.size)
-      if (singleHash && (entry.whole || scopes.size === 1) && sizes.length && sizes.every(size => validBytes(size) && size > 0)) {
+      const sizes = entry.releases.filter(release => !whole || !release.selected_files?.length).map(release => release.size)
+      if (singleHash && (whole || scopes.size === 1) && sizes.length && sizes.every(size => validBytes(size) && size > 0)) {
         bytes = Math.max(...sizes as number[])
         approximate = true
       }
     }
-    return { hash, category: entry.category, bytes, approximate, selected_file_count: entry.whole ? null : entry.wanted.size, existing: existing.has(hash) }
+    return { hash, category, bytes, approximate, selected_file_count: whole ? null : wanted.size, existing: existing.has(hash) }
   })
   const fresh = torrents.filter(torrent => !torrent.existing)
   return {

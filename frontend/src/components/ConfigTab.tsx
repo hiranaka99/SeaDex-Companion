@@ -1,3 +1,4 @@
+import type { ConfigUpdate, SecretConfigKey } from '../../../shared/contracts'
 import { useEffect, useMemo, useRef, useState, useId, FormEvent, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Config, ScanSchedule, ScannedDataInfo, Status } from '../types'
@@ -10,9 +11,11 @@ import { useToast } from './Toast'
 import { buttonBase, buttonPrimary, control, cx } from '../styles'
 
 interface Props { active: boolean; scanDisabled: boolean; footerTarget: HTMLElement | null; loadError: string; onRetry: () => void; config: Config | null; status: Status; username: string; onRunScan: () => void; onAccountUpdated: (username: string) => void; onSaved: (config: Config) => void; onScannedDataCleared: () => void }
+type ConfigDraft = Partial<Omit<Config, 'hidden'>>
+type StringField = 'sonarr_url' | 'sonarr_key' | 'radarr_url' | 'radarr_key' | 'sonarr_category' | 'radarr_category' | 'qbittorrent_url' | 'qbittorrent_user' | 'qbittorrent_pass' | 'webhook'
 interface FieldProps {
-  name: string; type: string; label: string; hint?: string; placeholder?: string; required?: boolean
-  configured?: boolean; onClear?: () => void; form: Record<string, any>; set: (name: string, value: any) => void
+  name: StringField; type: string; label: string; hint?: string; placeholder?: string; required?: boolean
+  configured?: boolean; onClear?: () => void; form: ConfigDraft; set: (name: StringField, value: string) => void
 }
 type Service = 'sonarr' | 'radarr' | 'qbittorrent' | 'discord'
 type ConnectionState = { phase: 'idle' | 'testing' | 'success' | 'error'; message?: string }
@@ -70,16 +73,16 @@ function ScheduleEditor({ schedule, nextCheck, onChange, onRunNow, disabled }: {
 
 export default function ConfigTab({ active, scanDisabled, footerTarget, loadError, onRetry, config, status, username, onRunScan, onAccountUpdated, onSaved, onScannedDataCleared }: Props) {
   const formId = useId()
-  const [form, setForm] = useState<Record<string, any>>({})
+  const [form, setForm] = useState<ConfigDraft>({})
   const savedForm = useRef('')
   const [saving, setSaving] = useState(false)
   const [guidedSetup, setGuidedSetup] = useState(false)
   const [librarySource, setLibrarySource] = useState<'sonarr' | 'radarr'>('sonarr')
   const setupInitialized = useRef(false)
   const automationRef = useRef<HTMLDetailsElement>(null)
-  const [clearedSecrets, setClearedSecrets] = useState<Set<string>>(new Set())
+  const [clearedSecrets, setClearedSecrets] = useState<Set<SecretConfigKey>>(new Set())
   const dirty = Boolean(config && Object.keys(form).length && (JSON.stringify(form) !== savedForm.current || clearedSecrets.size))
-  const [pendingClear, setPendingClear] = useState<string | null>(null)
+  const [pendingClear, setPendingClear] = useState<SecretConfigKey | null>(null)
   const [clearDataOpen, setClearDataOpen] = useState(false)
   const [clearingData, setClearingData] = useState(false)
   const [scannedData, setScannedData] = useState<ScannedDataInfo | null>(null)
@@ -88,7 +91,7 @@ export default function ConfigTab({ active, scanDisabled, footerTarget, loadErro
   const [savingAccount, setSavingAccount] = useState(false)
   const [connections, setConnections] = useState<Record<Service, ConnectionState>>({ sonarr: { phase: 'idle' }, radarr: { phase: 'idle' }, qbittorrent: { phase: 'idle' }, discord: { phase: 'idle' } })
   const toast = useToast()
-  const secretConfiguredFields: Record<string, string> = { sonarr_key: 'sonarr_key_configured', radarr_key: 'radarr_key_configured', qbittorrent_pass: 'qbittorrent_pass_configured', webhook: 'webhook_configured' }
+  const secretConfiguredFields: Record<SecretConfigKey, 'sonarr_key_configured' | 'radarr_key_configured' | 'qbittorrent_pass_configured' | 'webhook_configured'> = { sonarr_key: 'sonarr_key_configured', radarr_key: 'radarr_key_configured', qbittorrent_pass: 'qbittorrent_pass_configured', webhook: 'webhook_configured' }
   const testGeneration = useRef<Record<Service, number>>({ sonarr: 0, radarr: 0, qbittorrent: 0, discord: 0 })
 
   useEffect(() => {
@@ -98,8 +101,7 @@ export default function ConfigTab({ active, scanDisabled, footerTarget, loadErro
       setGuidedSetup(!((config.sonarr_url && config.sonarr_key_configured) || (config.radarr_url && config.radarr_key_configured)))
       if (config.radarr_url && !config.sonarr_url) setLibrarySource('radarr')
     }
-    const next: Record<string, any> = {}
-    for (const key of Object.keys(config)) if (key !== 'hidden') next[key] = (config as any)[key]
+    const { hidden: _hidden, ...next } = config
     next.scan_schedule = { ...config.scan_schedule, times: [...config.scan_schedule.times], weekdays: [...config.scan_schedule.weekdays] }
     savedForm.current = JSON.stringify(next)
     setForm(next); setClearedSecrets(new Set())
@@ -124,17 +126,17 @@ export default function ConfigTab({ active, scanDisabled, footerTarget, loadErro
 
   useEffect(() => { if (!active) { setPendingClear(null); setClearDataOpen(false) } }, [active])
 
-  const set = (name: string, value: unknown) => {
+  const set = <K extends keyof ConfigDraft,>(name: K, value: ConfigDraft[K]) => {
     setForm((current) => ({ ...current, [name]: value }))
     const service: Service | undefined = name.startsWith('sonarr') ? 'sonarr' : name.startsWith('radarr') ? 'radarr' : name.startsWith('qbittorrent') ? 'qbittorrent' : name === 'webhook' ? 'discord' : undefined
     if (service) {
       testGeneration.current[service] += 1
       setConnections((current) => ({ ...current, [service]: { phase: 'idle' } }))
     }
-    if (value && name in secretConfiguredFields) setClearedSecrets((current) => { const next = new Set(current); next.delete(name); return next })
+    if (value && name in secretConfiguredFields) setClearedSecrets((current) => { const next = new Set(current); next.delete(name as SecretConfigKey); return next })
   }
-  const setSchedule = (changes: Partial<ScanSchedule>) => setForm((current) => ({ ...current, scan_schedule: { ...current.scan_schedule, ...changes } }))
-  const clearSecret = (name: string) => { const configuredField = secretConfiguredFields[name]; set(name, ''); setForm((current) => ({ ...current, [configuredField]: false })); setClearedSecrets((current) => new Set(current).add(name)); setPendingClear(null) }
+  const setSchedule = (changes: Partial<ScanSchedule>) => setForm(current => current.scan_schedule ? { ...current, scan_schedule: { ...current.scan_schedule, ...changes } } : current)
+  const clearSecret = (name: SecretConfigKey) => { const configuredField = secretConfiguredFields[name]; set(name, ''); setForm((current) => ({ ...current, [configuredField]: false })); setClearedSecrets((current) => new Set(current).add(name)); setPendingClear(null) }
   const sonarrConfigured = Boolean(String(form.sonarr_url || '').trim() && (String(form.sonarr_key || '').trim() || form.sonarr_key_configured))
   const radarrConfigured = Boolean(String(form.radarr_url || '').trim() && (String(form.radarr_key || '').trim() || form.radarr_key_configured))
   const qbConfigured = Boolean(String(form.qbittorrent_url || '').trim() && String(form.qbittorrent_user || '').trim() && (String(form.qbittorrent_pass || '') || form.qbittorrent_pass_configured))
@@ -161,12 +163,12 @@ export default function ConfigTab({ active, scanDisabled, footerTarget, loadErro
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    const schedule = form.scan_schedule as ScanSchedule
+    const schedule = form.scan_schedule
+    if (!schedule) return
     if (scheduleErrors(schedule).length) { if (automationRef.current) automationRef.current.open = true; toast.show('Fix the automatic scan schedule before saving', 'error'); return }
     setSaving(true)
-    const data: Record<string, any> = {}
-    for (const key of Object.keys(form)) { if (key.endsWith('_configured')) continue; if (key === 'notify_enabled') data[key] = !!form[key]; else data[key] = form[key] || '' }
-    data.clear_secrets = [...clearedSecrets]
+    const { sonarr_key_configured: _sonarr, radarr_key_configured: _radarr, qbittorrent_pass_configured: _qb, webhook_configured: _webhook, ...fields } = form
+    const data: ConfigUpdate = { ...fields, clear_secrets: [...clearedSecrets] }
     try { const saved = await api.saveConfig(data); setClearedSecrets(new Set()); onSaved(saved); toast.show('Configuration saved', 'success') }
     catch (error: any) { toast.show('Could not save configuration: ' + error.message, 'error') }
     finally { setSaving(false) }

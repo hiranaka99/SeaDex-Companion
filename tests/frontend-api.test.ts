@@ -1,6 +1,7 @@
+import { refreshDownloads, subscribeDownloads } from '../frontend/src/download-store.js'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { getAllDownloadProgress, getBulkDownloadPreflight, invalidateDownloadProgress, watchDownloadProgress } from '../frontend/src/api.js'
+import { getAllDownloadProgress, getBulkDownloadPreflight, invalidateDownloadProgress } from '../frontend/src/api.js'
 
 test('progress probes share a request but cannot reuse a stale request after results change', async () => {
   const original = globalThis.fetch
@@ -21,25 +22,21 @@ test('progress probes share a request but cannot reuse a stale request after res
   } finally { globalThis.fetch = original; invalidateDownloadProgress() }
 })
 
-test('multiple progress subscribers for the same release remain independent', async () => {
-  const originalFetch = globalThis.fetch
-  const originalWindow = globalThis.window
-  let tick!: () => void
-  let clears = 0
-  globalThis.window = { setInterval: (callback: () => void) => { tick = callback; return 1 }, clearInterval: () => { clears += 1 } } as unknown as Window & typeof globalThis
+test('download-store subscribers share polling and unsubscribe independently', async () => {
+  const originalFetch = globalThis.fetch, originalWindow = globalThis.window
+  let tick!: () => void, clears = 0
+  globalThis.window = { setTimeout: (callback: () => void) => { tick = callback; return 1 }, clearTimeout: () => { clears += 1 } } as unknown as Window & typeof globalThis
   globalThis.fetch = (async () => Response.json({ ok: true, downloads: {} })) as typeof fetch
   let firstCalls = 0, secondCalls = 0
-  const unsubscribeFirst = watchDownloadProgress('shared-release', () => { firstCalls += 1 })
-  const unsubscribeSecond = watchDownloadProgress('shared-release', () => { secondCalls += 1 })
+  const unsubscribeFirst = subscribeDownloads(() => { firstCalls += 1 })
+  const unsubscribeSecond = subscribeDownloads(() => { secondCalls += 1 })
   try {
-    tick(); await getAllDownloadProgress(); await Promise.resolve()
+    await refreshDownloads(); await new Promise(resolve => setImmediate(resolve))
     assert.equal(firstCalls, 1); assert.equal(secondCalls, 1)
-    unsubscribeFirst()
-    assert.equal(clears, 0)
-    tick(); await getAllDownloadProgress(); await Promise.resolve()
+    unsubscribeFirst(); assert.equal(clears, 0)
+    tick(); await refreshDownloads(); await new Promise(resolve => setImmediate(resolve))
     assert.equal(firstCalls, 1); assert.equal(secondCalls, 2)
-    unsubscribeSecond()
-    assert.equal(clears, 1)
+    unsubscribeSecond(); assert.equal(clears, 1)
   } finally {
     unsubscribeFirst(); unsubscribeSecond()
     globalThis.fetch = originalFetch; globalThis.window = originalWindow; invalidateDownloadProgress()

@@ -1,3 +1,4 @@
+import { useCardDownloads, IDLE_DOWNLOAD } from '../useCardDownloads'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { GroupedCard, Release, ResultItem, Config } from '../types'
 import { seasonLabel, STATUS_LABEL, cardSizeDelta, isSeasonUpgradable } from '../utils'
@@ -9,7 +10,7 @@ import { useToast } from './Toast'
 import DownloadsPanel, { DownloadEntry } from './DownloadsPanel'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
-import { releaseIdentity } from '../../../shared/releases'
+
 import MappingDialog from './MappingDialog'
 import SeasonBadge from './SeasonBadge'
 import LibrarySizeChange from './LibrarySizeChange'
@@ -72,8 +73,6 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
   const [hiding, setHiding] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [detailsVisible, setDetailsVisible] = useState(false)
-  const [busyDownload, setBusyDownload] = useState<string | null>(null)
-  const controllingDownload = useRef(false)
   const [removeTarget, setRemoveTarget] = useState<DownloadEntry | null>(null)
   const [deleteFiles, setDeleteFiles] = useState(false)
   const [mappingOpen, setMappingOpen] = useState(false)
@@ -105,241 +104,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
     if (!active) { setDetailsOpen(false); setMappingOpen(false); setRemoveTarget(null) }
     else if (openRequested) { handleOpenDetails(); onOpened?.() }
   }, [active, openRequested])
-  // Live download state for every release in this card, keyed by season key
-  // then release index. Tracking lives here so progress stays current even
-  // while the details are closed.
-  const [dlBySeason, setDlBySeason] = useState<Record<string, Record<number, DlState>>>({})
-  const dlBySeasonRef = useRef<Record<string, Record<number, DlState>>>({})
-  dlBySeasonRef.current = dlBySeason
-  const unsubscribers = useRef<Record<string, () => void>>({})
-  const downloadGeneration = useRef(0)
-  const downloadSignature = useMemo(() => JSON.stringify(group.seasons.map(season => [season.key, season.have, season.owned_by_part, season.releases.map(releaseIdentity)])) + JSON.stringify([config?.qbittorrent_url, config?.qbittorrent_user, config?.qbittorrent_pass_configured]), [group.seasons, config?.qbittorrent_url, config?.qbittorrent_user, config?.qbittorrent_pass_configured])
-
-  const stopPolling = (seasonKey: string, release: number) => {
-    const idKey = `${seasonKey}\u0000${release}`
-    const unsubscribe = unsubscribers.current[idKey]
-    if (unsubscribe) {
-      unsubscribe()
-      delete unsubscribers.current[idKey]
-    }
-  }
-
-  // Live progress is driven by one shared /api/download_progress/all timer
-  // (see api.watchDownloadProgress) instead of an interval per release, so many
-  // simultaneous downloads cost a single qBittorrent request per tick.
-  const startPolling = (seasonKey: string, release: number) => {
-    const idKey = `${seasonKey}\u0000${release}`
-    if (unsubscribers.current[idKey]) return
-    const generation = downloadGeneration.current
-    unsubscribers.current[idKey] = api.watchDownloadProgress(idKey, (progress) => { if (generation === downloadGeneration.current) applyProgress(seasonKey, release, progress) })
-  }
-
-  const applyProgress = (seasonKey: string, release: number, p: api.DownloadProgress) => {
-    if (!p.ok) return
-    const selected = group.seasons.find(season => season.key === seasonKey)?.releases[release]
-    if (!selected || (p.identity && p.identity !== releaseIdentity(selected))) return
-    // A torrent we just sent ("sending") that is no longer in qBittorrent means
-    // the add failed and qBittorrent removed it (e.g. the magnet metadata fetch
-    // timed out). Reset to idle so the card stops animating instead of waiting
-    // forever on a torrent that will never download.
-    if (!p.found) {
-      stopPolling(seasonKey, release)
-      setDlBySeason((s) => ({ ...s, [seasonKey]: { ...(s[seasonKey] || {}), [release]: IDLE_DL } }))
-      return
-    }
-    const complete = p.state === 'complete'
-    const phase = complete ? 'complete' : p.state === 'error' ? 'error' : p.state === 'paused' ? 'paused' : 'downloading'
-    setDlBySeason((s) => ({
-      ...s,
-      [seasonKey]: {
-        ...(s[seasonKey] || {}),
-        [release]: {
-          phase,
-          progress: p.progress,
-          downloaded: p.downloaded,
-          total_size: p.total_size,
-          speed: p.speed,
-        },
-      },
-    }))
-    startPolling(seasonKey, release)
-  }
-
-  const pollProgress = (seasonKey: string, release: number) => {
-    const generation = downloadGeneration.current
-    api.getDownloadProgress(seasonKey, release)
-      .then((p) => { if (generation === downloadGeneration.current) applyProgress(seasonKey, release, p) })
-      .catch(() => {
-        /* transient network/backend error — keep polling */
-      })
-  }
-
-  // Re-attach to downloads that are already running in qBittorrent (e.g. after
-  // a page reload or server restart): check each downloadable release once and
-  // resume polling for any that are in progress or already complete. The
-  // backend caches the qBittorrent response, so this burst stays cheap.
-  useEffect(() => {
-    downloadGeneration.current += 1
-    setDlBySeason({})
-    dlBySeasonRef.current = {}
-    let active = true
-    api.getAllDownloadProgress().then(({ downloads }) => {
-      if (!active) return
-      for (const season of group.seasons) {
-        // Mirror the Season download-button logic: for split seasons (cours) use
-        // the per-part ownership so a download for one cour is not skipped just
-        // because the same release group is owned for a different cour.
-        const owned = (rel: Release) => {
-          const ownedGroups = season.precise_part_ownership
-            ? (season.owned_by_part?.[rel.part || ''] || [])
-            : season.have
-          return ownedGroups.some((h) => h.toLowerCase() === rel.releaseGroup.toLowerCase())
-        }
-        for (const { rel, index } of uniqueReleases(season.releases || [])) {
-          if (!rel.downloadable || owned(rel)) continue
-          const progress = downloads[`${season.key}\0${index}`]
-          if (progress?.found) applyProgress(season.key, index, progress)
-        }
-      }
-    }).catch(() => {
-      /* qBittorrent may be unconfigured or temporarily unavailable. */
-    })
-    return () => {
-      active = false
-      downloadGeneration.current += 1
-      for (const unsubscribe of Object.values(unsubscribers.current)) unsubscribe()
-      unsubscribers.current = {}
-    }
-    // Reattach whenever release identities, ownership, or the connection changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [downloadSignature, config])
-
-  useEffect(() => {
-    const handleBulkChange = (event: Event) => {
-      const detail = (event as CustomEvent<{ action: 'start' | 'cancel'; targets: api.BulkDownloadTarget[] }>).detail
-      if (!detail?.targets?.length) return
-      const seasonKeys = new Set(group.seasons.map((season) => season.key))
-      const relevant = detail.targets.filter((target) => seasonKeys.has(target.key))
-      if (!relevant.length) return
-
-      if (detail.action === 'cancel') {
-        for (const target of relevant) stopPolling(target.key, target.release)
-        setDlBySeason((current) => {
-          const next = { ...current }
-          for (const target of relevant) {
-            next[target.key] = { ...(next[target.key] || {}), [target.release]: IDLE_DL }
-          }
-          return next
-        })
-        return
-      }
-
-      setDlBySeason((current) => {
-        const next = { ...current }
-        for (const target of relevant) {
-          next[target.key] = { ...(next[target.key] || {}), [target.release]: { ...IDLE_DL, phase: 'sending' } }
-        }
-        return next
-      })
-      for (const target of relevant) {
-        pollProgress(target.key, target.release)
-        startPolling(target.key, target.release)
-      }
-    }
-    window.addEventListener(api.DOWNLOADS_CHANGED_EVENT, handleBulkChange)
-    return () => window.removeEventListener(api.DOWNLOADS_CHANGED_EVENT, handleBulkChange)
-    // Card groups are stable for the life of a scan result.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [group.seasons])
-
-  const handleDownload = async (seasonKey: string, release: number) => {
-    const generation = downloadGeneration.current
-    setDlBySeason((s) => ({
-      ...s,
-      [seasonKey]: { ...(s[seasonKey] || {}), [release]: { ...IDLE_DL, phase: 'sending' } },
-    }))
-    try {
-      const selected = group.seasons.find(season => season.key === seasonKey)?.releases[release]
-      if (!selected) throw new Error('This release is no longer available')
-      const res = await api.download(seasonKey, release, releaseIdentity(selected))
-      if (!res.ok) throw new Error(res.error || 'Download failed')
-      if (generation !== downloadGeneration.current) return
-      pollProgress(seasonKey, release)
-      startPolling(seasonKey, release)
-    } catch (e: any) {
-      if (generation !== downloadGeneration.current) { toast.show('Download failed: ' + e.message, 'error'); return }
-      stopPolling(seasonKey, release)
-      setDlBySeason((s) => ({
-        ...s,
-        [seasonKey]: { ...(s[seasonKey] || {}), [release]: IDLE_DL },
-      }))
-      toast.show('Download failed: ' + e.message, 'error')
-    }
-  }
-
-  const handleDownloadAction = async (entry: DownloadEntry, action: api.DownloadAction, removeFiles = false) => {
-    if (controllingDownload.current) return false
-    controllingDownload.current = true
-    const generation = downloadGeneration.current
-    setBusyDownload(entry.id)
-    try {
-      await api.controlDownload(entry.seasonKey, entry.release, action, removeFiles, entry.identity)
-      if (generation !== downloadGeneration.current) return true
-      if (action === 'remove') {
-        stopPolling(entry.seasonKey, entry.release)
-        setDlBySeason((current) => ({
-          ...current,
-          [entry.seasonKey]: { ...(current[entry.seasonKey] || {}), [entry.release]: IDLE_DL },
-        }))
-        toast.show(removeFiles ? 'Torrent and files removed from qBittorrent' : 'Torrent removed; downloaded files were kept', 'success')
-      } else {
-        setDlBySeason((current) => ({
-          ...current,
-          [entry.seasonKey]: {
-            ...(current[entry.seasonKey] || {}),
-            [entry.release]: {
-              ...(current[entry.seasonKey]?.[entry.release] || IDLE_DL),
-              phase: action === 'pause' ? 'paused' : 'downloading',
-              speed: action === 'pause' ? 0 : current[entry.seasonKey]?.[entry.release]?.speed || 0,
-            },
-          },
-        }))
-        startPolling(entry.seasonKey, entry.release)
-        pollProgress(entry.seasonKey, entry.release)
-      }
-      return true
-    } catch (error: any) {
-      toast.show(`Could not ${action} torrent: ${error.message}`, 'error')
-      return false
-    } finally {
-      controllingDownload.current = false
-      setBusyDownload(null)
-    }
-  }
-
-  const activeDownloads: DownloadEntry[] = []
-  for (const season of group.seasons) {
-    const seasonDl = dlBySeason[season.key]
-    if (!seasonDl) continue
-    const byIndex = new Map(uniqueReleases(season.releases || []).map((x) => [x.index, x.rel]))
-    for (const [releaseIndex, state] of Object.entries(seasonDl)) {
-      if (state.phase !== 'sending' && state.phase !== 'downloading' && state.phase !== 'paused' && state.phase !== 'error') continue
-      const rel = byIndex.get(Number(releaseIndex))
-      activeDownloads.push({
-        id: `${season.key}\u0000${releaseIndex}`,
-        season: seasonLabel(season),
-        releaseGroup: rel?.releaseGroup || 'Unknown release',
-        seasonKey: season.key,
-        release: Number(releaseIndex),
-        identity: rel ? releaseIdentity(rel) : undefined,
-        phase: state.phase,
-        progress: state.progress,
-        downloaded: state.downloaded,
-        total_size: state.total_size,
-        speed: state.speed,
-      })
-    }
-  }
+  const { dlBySeason, activeDownloads, busyDownload, handleDownload, handleDownloadAction } = useCardDownloads(group, toast.show)
 
   const seasonCount = group.seasons.length
   const upgradableSeasonCount = group.seasons.filter(isSeasonUpgradable).length
@@ -425,7 +190,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
     const id = `${titleId}-season-${seasonIndex}`
     const name = detailsSeasonName(season)
     const entries = [{ id, name, status: detailsStatus(season), upgrade: isSeasonUpgradable(season) }]
-    for (const [courIndex, cour] of groupByCour(uniqueReleases(season.releases || [])).entries()) {
+    for (const [courIndex, cour] of groupByCour(indexedReleases(season.releases || [])).entries()) {
       if (!cour.part) continue
       const owned = season.precise_part_ownership ? season.owned_by_part?.[cour.part] || [] : season.have
       const upgrade = isSeasonUpgradable(season) && cour.items.some(({ rel }) => rel.kind === 'best' && rel.downloadable && !owned.some(name => name.toLowerCase() === rel.releaseGroup.toLowerCase()))
@@ -578,32 +343,10 @@ interface DisplayRelease {
 /** Live download state for one release row (keyed by its release index). */
 type DlState = DetailsDownloadState
 
-const IDLE_DL: DlState = {
-  phase: 'idle',
-  progress: 0,
-  downloaded: 0,
-  total_size: 0,
-  speed: 0,
-}
+const IDLE_DL: DlState = IDLE_DOWNLOAD
 
-/**
- * Older cached scan results can still contain one row per tracker.  The
- * backend now removes those duplicates, but deduplicating here as well keeps
- * the card correct until the next scan and preserves the original download
- * index used by the API.
- */
-function uniqueReleases(releases: Release[]): DisplayRelease[] {
-  const selected = new Map<string, DisplayRelease>()
-
-  releases.forEach((rel, index) => {
-    const key = `${rel.part || ''}\u0000${rel.releaseGroup.trim().toLowerCase()}`
-    const current = selected.get(key)
-    if (!current || (rel.downloadable && !current.rel.downloadable)) {
-      selected.set(key, { rel, index })
-    }
-  })
-
-  return [...selected.values()].sort((a, b) => a.index - b.index)
+function indexedReleases(releases: Release[]): DisplayRelease[] {
+  return releases.map((rel, index) => ({ rel, index }))
 }
 
 /**
@@ -625,7 +368,7 @@ function groupByCour(releases: DisplayRelease[]): { part: string; items: Display
 }
 
 function Season({ sectionId, r, config, dl, busyDownload, onDownload, onPause, onResume, onRemove, ruleBusy, onToggleExclusion }: SeasonProps) {
-  const groups = groupByCour(uniqueReleases(r.releases || []))
+  const groups = groupByCour(indexedReleases(r.releases || []))
   const split = groups.some(group => group.part)
   const displaySeasonHave = !r.precise_part_ownership || !split
   const sources = (r.urls?.length ? r.urls : r.url ? [{ label: 'releases.moe', url: r.url }] : []).filter(source => source.label === 'releases.moe')

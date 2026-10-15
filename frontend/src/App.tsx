@@ -165,23 +165,11 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   const openHistoryResult = (key: string) => { setOpenResultKey(key); changeTab('anime') }
 
   useEffect(() => {
-    let active = true
-    let timer = 0
-    let observing = false
-    const recoverBulk = async () => {
-      try {
-        const batch = await api.getBulkDownloadStatus()
-        if (!active) return
-        const settled = batch.added.length + batch.failures.length
-        if (!batch.finished || observing) {
-          observing = true
-          setBulkOperation({ action: 'start', phase: batch.finished ? batch.failures.length ? 'warning' : 'success' : 'running', settled, total: settled + batch.pending.length, added: batch.added.length, failed: batch.failures.length, failures: batch.failures, message: `${batch.added.length} added · ${batch.pending.length} pending · ${batch.failures.length} failed` })
-          if (!batch.finished) timer = window.setTimeout(recoverBulk, 3000)
-        }
-      } catch { if (active) timer = window.setTimeout(recoverBulk, 3000) }
-    }
-    void recoverBulk()
-    return () => { active = false; window.clearTimeout(timer) }
+    return api.watchBulkDownloadStatus(batch => {
+      if (!batch.id) return
+      const settled = batch.added.length + batch.failures.length
+      setBulkOperation({ action: 'start', phase: batch.finished ? batch.failures.length ? 'warning' : 'success' : 'running', settled, total: settled + batch.pending.length, added: batch.added.length, failed: batch.failures.length, failures: batch.failures, message: `${batch.added.length} added · ${batch.pending.length} pending · ${batch.failures.length} failed` })
+    })
   }, [])
 
   useEffect(() => {

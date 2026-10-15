@@ -13,6 +13,7 @@ auth.json
 auth_sessions.json
 auth_sessions.json.tmp
 download_records.json
+download_jobs.json
 download_records.json.tmp
 anilist_cache.json
 auth-artwork.json

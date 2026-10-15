@@ -4,12 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
-import {
-  anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, cancelScan, checkForUpdates, clearScannedData, commonBestRelease, decryptSecretValues, describeResultChange, discordMessageBody, DEFAULT_CONFIG, effectiveSeasonParts,
-  DATA_DIR, encryptSecretValues, getState, loadLocalLibrary, loadStringSet, localItems, localPartOwnership, normalizeQbStates, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig,
-  qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest,
-  resetRuntimeForTests, resetUpdateCheck, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration,
-} from '../server/app.js'
+import { anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, cancelScan, checkForUpdates, clearScannedData, commonBestRelease, decryptSecretValues, describeResultChange, discordMessageBody, DEFAULT_CONFIG, effectiveSeasonParts, DATA_DIR, encryptSecretValues, getState, loadStringSet, localItems, localPartOwnership, normalizeQbStates, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest, resetRuntimeForTests, resetUpdateCheck, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration } from '../server/app.js'
 import { nextScheduledTime, parseReleaseIndex, processAutocheck, processWebhookScans, queueWebhookScan, refreshAutocheckSchedule, resetWebhookScanState, webhookScanState } from '../server/index.js'
 import type { JsonObject, ReleaseCandidate, ScanTrigger } from '../server/types.js'
 
@@ -171,7 +166,7 @@ describe('manual rules and scan history', () => {
 
   test('passes a saved manual AniList ID into title resolution', async () => {
     let receivedOverride: number | undefined
-    await runScan({ sonarr_url: 'http://sonarr/api/v3' }, {
+    await runScan({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr/api/v3' }, {
       seadexBest: (async () => new Map()) as any,
       localItems: (async () => [{ arr: 'Sonarr', id: 10, title: 'Ambiguous', seasons: { 1: { groups: ['Local'], size: 100 } } }]) as any,
       anilistChain: (async (_title: string, _cache: JsonObject, _dependencies: unknown, overrideId?: number) => {
@@ -1028,7 +1023,7 @@ describe('release selection and combined cours', () => {
     const secondItemIsRunning = new Promise<void>((resolve) => { secondItemStarted = resolve })
     const secondItemCanFinish = new Promise<void>((resolve) => { releaseSecondItem = resolve })
     let calls = 0
-    const scan = runScan({ sonarr_url: 'http://sonarr/api/v3' }, {
+    const scan = runScan({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr/api/v3' }, {
       seadexBest: (async () => new Map()) as any,
       localItems: (async () => [
         { arr: 'Sonarr', id: 1, title: 'First', seasons: { 1: { groups: ['A'], size: 100 } } },
@@ -1069,6 +1064,7 @@ describe('release selection and combined cours', () => {
 
   test('preserves prior results when a scan is cancelled', async () => {
     setState({ results: [{ key: 'old', title: 'Preserved' }], last_run: 'before' })
+    const previousResults = getState().results
     let releaseScan!: () => void
     const blocked = new Promise<void>((resolve) => { releaseScan = resolve })
     const scan = runScan(DEFAULT_CONFIG, {
@@ -1079,7 +1075,7 @@ describe('release selection and combined cours', () => {
     releaseScan()
     await scan
     assert.equal(getState().cancelled, true)
-    assert.deepEqual(getState().results, [{ key: 'old', title: 'Preserved' }])
+    assert.deepEqual(getState().results, previousResults)
   })
 
   test('retains unscanned titles during an incremental webhook scan', async () => {
@@ -1238,7 +1234,7 @@ describe('release selection and combined cours', () => {
 })
 
 async function scanWith(best: Map<number, JsonObject>, chain: JsonObject[], items: JsonObject[]): Promise<void> {
-  await runScan({ sonarr_url: 'http://sonarr/api/v3' }, {
+  await runScan({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr/api/v3' }, {
     seadexBest: (async () => best) as any,
     localItems: (async () => items) as any,
     anilistChain: (async () => chain) as any,

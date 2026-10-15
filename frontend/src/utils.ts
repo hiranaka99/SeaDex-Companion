@@ -1,3 +1,4 @@
+import { isSeasonUpgradable } from '../../shared/download-plan.js'
 import type { CardStatus, GroupedCard, ResultItem } from './types.js'
 
 /** Badge text shown on each card banner. */
@@ -9,9 +10,7 @@ export const STATUS_LABEL: Record<CardStatus, string> = {
   review: 'Match needs review',
 }
 
-export function isSeasonUpgradable(season: ResultItem): boolean {
-  return season.status === 'upgrade' || (season.status === 'partial' && Boolean(season.upgrade_available))
-}
+export { isSeasonUpgradable } from '../../shared/download-plan.js'
 
 export function hasCardUpgrade(group: GroupedCard): boolean {
   return group.seasons.some(isSeasonUpgradable)

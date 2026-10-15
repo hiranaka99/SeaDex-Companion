@@ -17,7 +17,7 @@ interface Props {
 
 export default function BulkCancelDialog({ open, busy, scopeControl, resultKeys, onConfirm, onClose }: Props) {
   const [allDownloads, setDownloads] = useState<CancelableDownload[]>([])
-  const downloads = resultKeys ? allDownloads.filter(download => resultKeys.has(download.key)) : allDownloads
+  const downloads = resultKeys ? allDownloads.filter(download => (download.result_keys || []).some(key => resultKeys.has(key))) : allDownloads
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})

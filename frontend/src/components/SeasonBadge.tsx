@@ -1,3 +1,4 @@
+import { releaseOwned } from '../../../shared/download-plan'
 import type { ResultItem } from '../types'
 import { seasonLabel } from '../utils'
 import { cx } from '../styles'
@@ -12,14 +13,9 @@ const TONES: Record<string, { classes: string; color: string; label: string }> =
 
 export default function SeasonBadge({ season, fallback, className, animeTitle = season.title }: { season: ResultItem; fallback: string; className: string; animeTitle?: string }) {
   const releases = season.releases || []
-  const status = season.status === 'uncovered' || season.status === 'review' ? 'partial' : season.status || fallback
+  const status = season.status === 'uncovered' ? 'partial' : season.status || fallback
   const defaultTone = TONES[status] || TONES.upgrade
-  const owns = (release: typeof releases[number]) => {
-    const ownedGroups = season.precise_part_ownership
-      ? (season.owned_by_part?.[release.part || ''] || [])
-      : season.have
-    return ownedGroups.some(group => group.toLowerCase() === release.releaseGroup.toLowerCase())
-  }
+  const owns = (release: typeof releases[number]) => releaseOwned(season, release)
   const parts = [...new Set(releases.map(release => release.part || ''))]
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
   const split = parts.length > 1
