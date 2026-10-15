@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { test } from 'node:test'
 import {
   api, alMedia, autoNotifyNew, autocheckState, CACHE_FILE, CONFIG_FILE, DEFAULT_CONFIG,
@@ -17,6 +17,7 @@ async function preserveFiles(files: string[], action: () => void | Promise<void>
 }
 
 test('log tails retain the first line and complete lines on a byte boundary', async () => {
+  mkdirSync(join(DATA_DIR, 'logs'), { recursive: true })
   await preserveFiles([LOG_FILE], () => {
     writeFileSync(LOG_FILE, 'first\nsecond\nthird\n')
     assert.deepEqual(readLogTail(), ['first', 'second', 'third'])
@@ -42,7 +43,8 @@ test('persisted collections tolerate non-object JSON roots and invalid array ent
     writeFileSync(CONFIG_FILE, JSON.stringify({ hidden: ['valid', null, 5] }))
     assert.deepEqual(loadConfig().hidden, ['valid'])
     writeFileSync(RESULTS_FILE, JSON.stringify({ results: [null, 7, [], { key: 'valid' }], last_run: 3 }))
-    assert.deepEqual(loadLastResults()?.results, [{ key: 'valid' }])
+    assert.deepEqual(loadLastResults()?.results.map(result => result.key), ['valid'])
+    assert.deepEqual(loadLastResults()?.results[0].releases, [])
     assert.equal(loadLastResults()?.last_run, null)
   })
 })

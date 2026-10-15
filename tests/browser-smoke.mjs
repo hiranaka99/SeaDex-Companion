@@ -33,7 +33,7 @@ let cancelableDownloads = []
 let holdBulk = false
 let failBulk = false
 let finishBulk = null
-let bulkState = { ok: true, finished: true, pending: [], added: [], failures: [] }
+let bulkState = { id: null, existing: [], targets: [], ok: true, finished: true, pending: [], added: [], failures: [] }
 const bulkRequests = []
 const scanRequests = []
 const originalRelease = structuredClone(example.releases[0])
@@ -80,16 +80,20 @@ const server = createServer(async (req, res) => {
       if (preflightMode === 'failure') { res.statusCode = 503; response = { error: 'Fixture storage unavailable' } }
       else response = { torrents: [], new_bytes: bytes, new_torrents: selected && !existing ? 1 : 0, existing_torrents: existing ? 1 : 0, unknown_torrents: 0, approximate_torrents: 0, selected_file_count: selected && !existing ? body.selections[0].release === 1 ? 2 : 1 : 0, whole_torrents: 0, disk_space: selected && !existing ? [{ path: '/downloads', categories: ['sonarr-anime'], required_bytes: bytes, unknown_torrents: 0, free_bytes: preflightMode === 'unavailable' ? null : preflightMode === 'low' ? 100 : 1000, sufficient: preflightMode === 'unavailable' ? null : preflightMode !== 'low', reason: preflightMode === 'unavailable' ? 'Client cannot report space for this path.' : undefined }] : [] }
     }
-    else if (path === '/api/download_bulk/status') response = bulkState
-    else if (path === '/api/download_bulk') {
-      bulkRequests.push(body)
+    else if (path === '/api/download_bulk/status' || path.startsWith('/api/download-jobs/')) response = bulkState
+    else if (path === '/api/download_bulk' || path === '/api/download-jobs') {
+      bulkRequests.push({ ...body, action: path === '/api/download-jobs' ? 'start' : body.action })
       const hashes = [...new Set(body.selections.flatMap(selection => (fixtureResults || [example]).find(item => item.key === selection.key)?.releases[selection.release]?.info_hashes || []))]
-      bulkState = { ok: true, finished: false, pending: hashes, added: [], failures: [] }
-      if (holdBulk) await new Promise(resolve => { finishBulk = resolve })
-      const failures = failBulk ? [{ hash: hashes[0], label: 'Radarr movie', error: 'Fixture metadata timeout' }] : []
-      const added = hashes.filter(hash => !failures.some(failure => failure.hash === hash))
-      bulkState = { ok: true, finished: true, pending: [], added, failures }
-      response = { ok: true, count: added.length, targets: body.selections, failures }
+      const id = `fixture-job-${bulkRequests.length}`
+      bulkState = { id, ok: true, finished: false, pending: hashes, added: [], failures: [], existing: [], targets: body.selections }
+      const finish = async () => {
+        if (holdBulk) await new Promise(resolve => { finishBulk = resolve })
+        const failures = failBulk ? [{ hash: hashes[0], label: 'Radarr movie', error: 'Fixture metadata timeout' }] : []
+        const added = hashes.filter(hash => !failures.some(failure => failure.hash === hash))
+        bulkState = { ...bulkState, finished: true, pending: [], added, failures }
+      }
+      if (path === '/api/download-jobs') { response = structuredClone(bulkState); res.statusCode = 202; void finish() }
+      else { await finish(); response = { ok: true, count: bulkState.added.length, targets: body.selections, failures: bulkState.failures } }
     }
     else if (path === '/api/config/test') response = { ok: true, message: 'Fixture connection successful' }
     else if (path === '/api/scan') { scanRequests.push(body); response = { ok: true } }
@@ -490,7 +494,7 @@ try {
   await click('Error details')
   assert.ok(await evaluate(`document.querySelector('[aria-label="Bulk operation error details"]').textContent.includes('Radarr movie') && document.querySelector('[aria-label="Bulk operation error details"]').textContent.includes('Fixture metadata timeout')`), 'Per-item failure details remain available after closing review')
   failBulk = false
-  cancelableDownloads = [example, movie].map((item, index) => ({ key: item.key, release: 0, title: item.title, season: item.season, part: '', release_group: 'Example', tracker: 'Nyaa', size: 200, hashes: [(index ? 'b' : 'd').repeat(40)] }))
+  cancelableDownloads = [example, movie].map((item, index) => ({ key: `torrent:${(index ? 'b' : 'd').repeat(40)}`, result_keys: [item.key], release: 0, title: item.title, season: item.season, part: '', release_group: 'Example', tracker: 'Nyaa', size: 200, hashes: [(index ? 'b' : 'd').repeat(40)] }))
   await click('Bulk cancel')
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('Radarr movie')`)
   assert.ok(await evaluate(`!document.querySelector('dialog[open]').textContent.includes('Example anime')`), 'Cancellation follows the current result scope')
@@ -615,7 +619,7 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 700, deviceScaleFactor: 1, mobile: true })
   await evaluate(`location.hash = 'anime'`)
   await wait(`document.querySelector('h1')?.textContent === 'Anime library'`)
-  cancelableDownloads = [{ key: example.key, release: 0, title: '取消対象の長いアニメ名'.repeat(3), season: 1, part: '', release_group: 'VeryLongUnbrokenReleaseGroupName'.repeat(5), tracker: 'Nyaa', size: 200, hashes: ['d'.repeat(40)] }]
+  cancelableDownloads = [{ key: `torrent:${'d'.repeat(40)}`, result_keys: [example.key], release: 0, title: '取消対象の長いアニメ名'.repeat(3), season: 1, part: '', release_group: 'VeryLongUnbrokenReleaseGroupName'.repeat(5), tracker: 'Nyaa', size: 200, hashes: ['d'.repeat(40)] }]
   await click('Bulk cancel')
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('VeryLongUnbroken')`)
   assert.ok(await evaluate(`(() => { const body=document.querySelector('dialog[open] .app-scrollbar'); return body.scrollWidth <= body.clientWidth + 1 })()`), 'Cancellation metadata wraps without inner horizontal scrolling')

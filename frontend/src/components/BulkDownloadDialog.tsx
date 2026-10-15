@@ -1,3 +1,4 @@
+import { upgradeParts } from '../../../shared/download-plan'
 import { ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { ResultItem, Release } from '../types'
 import { formatBytes, resultGroupKey, seasonLabel } from '../utils'
@@ -32,31 +33,10 @@ function buildReview(results: ResultItem[]): Review {
   const ready: ReviewGroup[] = []
   const blocked: ReviewGroup[] = []
 
-  for (const result of results) {
-    if (result.status !== 'upgrade' && !(result.status === 'partial' && result.upgrade_available)) continue
-    if (result.excluded) continue
-    const excludedParts = new Set(result.excluded_parts || [])
-    const byPart = new Map<string, IndexedRelease[]>()
-    result.releases.forEach((release, index) => {
-      if (release.kind !== 'best') return
-      const part = release.part || ''
-      byPart.set(part, [...(byPart.get(part) || []), { index, release }])
-    })
-    for (const [part, bestReleases] of byPart) {
-      if (excludedParts.has(part)) continue
-      // Skip parts the user already owns at best quality, mirroring the card's
-      // per-part "owned" check (the green "you already have this release" mark).
-      // Without this, a split season that is upgradeable for one cour would also
-      // re-offer the cour the user already has at best quality.
-      const ownedGroups = (result.precise_part_ownership ? (result.owned_by_part?.[part] || []) : result.have).map((g) => g.toLowerCase())
-      const bestGroupNames = new Set(bestReleases.map(({ release }) => release.releaseGroup.toLowerCase()))
-      if ([...bestGroupNames].some((name) => ownedGroups.includes(name))) continue
-
-      const downloadable = bestReleases.filter(({ release }) => release.downloadable && release.info_hashes.length > 0)
-      const group = { id: `${result.key}::${part || 'all'}`, result, part, options: downloadable.length ? downloadable : bestReleases }
-      if (downloadable.length) ready.push(group)
-      else blocked.push(group)
-    }
+  for (const result of results) for (const part of upgradeParts(result)) {
+    const group = { id: `${result.key}::${part.part || 'all'}`, result, part: part.part, options: part.options }
+    if (part.downloadable) ready.push(group)
+    else blocked.push(group)
   }
 
   return { ready, choices: ready.filter((group) => group.options.length > 1), blocked }

@@ -1,9 +1,10 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { writeJsonAtomic } from './persistence.js'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto'
 import { Algorithm, hash, verify } from '@node-rs/argon2'
 import type { IncomingMessage } from 'node:http'
 import { dirname, join } from 'node:path'
-import { DATA_DIR } from './app.js'
+import { DATA_DIR } from './paths.js'
 
 export const AUTH_FILE = join(DATA_DIR, 'auth.json')
 export const AUTH_SESSIONS_FILE = join(DATA_DIR, 'auth_sessions.json')
@@ -73,13 +74,7 @@ function loadSessions(): Map<string, Session> {
 }
 
 function saveSessions(): void {
-  mkdirSync(dirname(AUTH_SESSIONS_FILE), { recursive: true })
-  const temporary = `${AUTH_SESSIONS_FILE}.tmp`
-  const records = [...sessions].map(([token, session]) => ({ token, ...session }))
-  writeFileSync(temporary, JSON.stringify(records), { encoding: 'utf8', mode: 0o600 })
-  chmodSync(temporary, 0o600)
-  renameSync(temporary, AUTH_SESSIONS_FILE)
-  chmodSync(AUTH_SESSIONS_FILE, 0o600)
+  writeJsonAtomic(AUTH_SESSIONS_FILE, [...sessions].map(([token, session]) => ({ token, ...session })), false, 0o600)
 }
 
 const sessions = loadSessions()
@@ -108,14 +103,7 @@ async function createAuthRecord(username: string, password: string): Promise<Aut
   return { version: 2, username, password_hash: await hash(password, ARGON2_OPTIONS) }
 }
 
-function saveAuthRecord(record: AuthRecord): void {
-  mkdirSync(dirname(AUTH_FILE), { recursive: true })
-  const temporary = `${AUTH_FILE}.tmp`
-  writeFileSync(temporary, JSON.stringify(record, null, 2), { encoding: 'utf8', mode: 0o600 })
-  chmodSync(temporary, 0o600)
-  renameSync(temporary, AUTH_FILE)
-  chmodSync(AUTH_FILE, 0o600)
-}
+function saveAuthRecord(record: AuthRecord): void { writeJsonAtomic(AUTH_FILE, record, true, 0o600) }
 
 async function verifyPassword(record: StoredAuthRecord, password: string): Promise<boolean> {
   if (record.version === 2) return verify(record.password_hash, password)

@@ -33,14 +33,16 @@ export default function HistoryTab({ active, results, onOpenResult }: Props) {
   const resultIndex = useMemo(() => {
     const byKey = new Map<string, ResultItem>()
     const byTitle = new Map<string, ResultItem>()
+    const byLibrary = new Map<string, ResultItem>()
     for (const result of results) {
       const identity = JSON.stringify([result.arr, result.title, String(result.season)])
+      if (result.library_key) byLibrary.set(JSON.stringify([result.library_key, result.season]), result)
       if (!byKey.has(result.key)) byKey.set(result.key, result)
       if (!byTitle.has(identity)) byTitle.set(identity, result)
     }
-    return { byKey, byTitle }
+    return { byKey, byTitle, byLibrary }
   }, [results])
-  const currentResult = (change: ScanHistoryChange) => resultIndex.byKey.get(change.key) || resultIndex.byTitle.get(JSON.stringify([change.arr, change.title, String(change.season)]))
+  const currentResult = (change: ScanHistoryChange) => resultIndex.byKey.get(change.key) || (change.library_key ? resultIndex.byLibrary.get(JSON.stringify([change.library_key, change.season])) : undefined) || resultIndex.byTitle.get(JSON.stringify([change.arr, change.title, String(change.season)]))
 
   return <section>
     <header className="app-page-header mb-6 flex flex-wrap items-end justify-between gap-4">

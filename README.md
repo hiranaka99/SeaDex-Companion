@@ -54,6 +54,10 @@ Open [http://localhost:8080](http://localhost:8080), create the administrator ac
 
 The named volume stores configuration, account data, the encryption key, caches, scan results, and logs. The container runs as an unprivileged user and exposes a health check at `/healthz`.
 
+Configuration upgrades read existing `config.json`, `secrets.enc.json`, and torrent ownership files. On startup, configuration and encrypted credentials are migrated into one atomic `config.json` snapshot; the existing encryption key is retained. Download ownership and its title associations are committed together in `owned_torrents.json`. Back up the data directory before upgrading; restore that backup when downgrading to a version using the older storage format.
+
+Bulk downloads run as server-owned jobs with stable IDs. Closing the page does not cancel them. Job status survives reloads; after a server restart, unfinished torrents are reported as interrupted so you can check qBittorrent before retrying. Existing torrents remain untouched.
+
 ### Docker Compose
 
 The included `docker-compose.yml` builds the current source:

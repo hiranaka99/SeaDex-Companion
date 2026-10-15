@@ -17,6 +17,7 @@ const hashes = ['a', 'b', 'c', 'd'].map(letter => letter.repeat(40))
 let torrents = hashes.map((hash, index) => ({ hash, name: `Torrent ${index}`, progress: index === 2 ? 1 : 0.5, size: 100, dlspeed: 10, state: index === 2 ? 'uploading' : 'downloading' }))
 const actions: { path: string; body: URLSearchParams }[] = []
 const loginPasswords: string[] = []
+let heldAdd: Promise<void> | null = null
 const release = { kind: 'best', releaseGroup: 'New group', tracker: 'Nyaa', info_hashes: ['e'.repeat(40)], downloadable: true, size: 500, selected_files: ['01.mkv'], torrent_files: [{ hash: 'e'.repeat(40), files: [{ name: '01.mkv', length: 300 }, { name: 'extra.mkv', length: 200 }] }] }
 const mergedRelease = { kind: 'best', releaseGroup: 'Merged group', tracker: 'Nyaa', info_hashes: [hashes[3], 'f'.repeat(40)], downloadable: true, size: 500, torrent_files: [{ hash: hashes[3], files: [{ name: '02.mkv', length: 100 }] }, { hash: 'f'.repeat(40), files: [{ name: '03.mkv', length: 400 }] }] }
 const legacyRelease = { kind: 'best', releaseGroup: 'Legacy group', tracker: 'Nyaa', info_hashes: ['1'.repeat(40)], downloadable: true, size: 123 }
@@ -45,6 +46,7 @@ before(async () => {
     for await (const chunk of req) chunks.push(Buffer.from(chunk))
     const body = new URLSearchParams(Buffer.concat(chunks).toString())
     actions.push({ path: req.url || '', body })
+    if (req.url === '/api/v2/torrents/add' && heldAdd) await heldAdd
     if (req.url === '/api/v2/torrents/delete') torrents = torrents.filter(torrent => !body.get('hashes')?.split('|').includes(torrent.hash))
     res.end('Ok.')
   })
@@ -240,4 +242,47 @@ test('bulk cancellation uses stable hashes and preserves files by default after 
   assert.equal(actions.at(-1)!.body.get('deleteFiles'), 'false')
   assert.ok(torrents.some(torrent => torrent.hash === hashes[3]))
   assert.ok(torrents.some(torrent => torrent.hash === hashes[2]))
+})
+
+
+test('accepted download jobs survive disconnects, preserve captured associations, and expose status by ID', async () => {
+  const file = join(dir, 'last_results.json')
+  const original = readFileSync(file)
+  const hash = '2'.repeat(40)
+  const selected = { ...release, info_hashes: [hash], selected_files: undefined, torrent_files: undefined }
+  writeFileSync(file, JSON.stringify({ results: [{ key: 'job-result', library_key: 'Sonarr:item99', season: 1, arr: 'Sonarr', title: 'Captured title', status: 'upgrade', releases: [selected] }], last_run: null }))
+  let releaseAdd!: () => void
+  heldAdd = new Promise(resolve => { releaseAdd = resolve })
+  try {
+    const selection = { key: 'job-result', release: 0, identity: releaseIdentity(selected) }
+    const accepted = await request('/api/download-jobs', { selections: [selection] })
+    assert.equal(accepted.status, 202)
+    const job = await accepted.json()
+    assert.equal(typeof job.id, 'string')
+    assert.equal(job.finished, false)
+    assert.equal((await request('/api/download-jobs', { selections: [selection] })).status, 409)
+    // Recommendations may change after acceptance. The executing job owns its snapshot.
+    writeFileSync(file, JSON.stringify({ results: [], last_run: null }))
+    let current = await (await request(`/api/download-jobs/${job.id}`)).json()
+    assert.equal(current.finished, false)
+    assert.deepEqual(current.pending, [hash])
+    releaseAdd(); heldAdd = null
+    for (let attempt = 0; attempt < 100; attempt++) {
+      current = await (await request(`/api/download-jobs/${job.id}`)).json()
+      if (current.finished) break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    assert.equal(current.finished, true)
+    assert.deepEqual(current.added, [hash])
+    const ledger = JSON.parse(readFileSync(join(dir, 'owned_torrents.json'), 'utf8'))
+    assert.equal(ledger.torrents[hash].title, 'Captured title')
+    assert.equal(ledger.torrents[hash].library_key, 'Sonarr:item99')
+    // A new recommendation key still associates with the original download by stable library ID.
+    writeFileSync(file, JSON.stringify({ results: [{ key: 'changed-result', library_key: 'Sonarr:item99', season: 1, arr: 'Sonarr', title: 'Changed title', releases: [] }], last_run: null }))
+    torrents.push({ hash, name: 'raw name', progress: 0.5, size: 100, dlspeed: 0, state: 'downloading' })
+    const downloads = (await (await request('/api/download_bulk/cancelable')).json()).downloads
+    const row = downloads.find((download: { key: string }) => download.key === `torrent:${hash}`)
+    assert.ok(row.result_keys.includes('changed-result'))
+    assert.equal(row.title, 'Captured title')
+  } finally { releaseAdd(); heldAdd = null; torrents = torrents.filter(torrent => torrent.hash !== hash); writeFileSync(file, original) }
 })

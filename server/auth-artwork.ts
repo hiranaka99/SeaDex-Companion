@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { writeJsonAtomic } from './persistence.js'
+import { existsSync, readFileSync } from 'node:fs'
 
 const DAY = 24 * 60 * 60 * 1000
 const RETRY_DELAY = 30 * 60 * 1000
@@ -51,9 +51,7 @@ export function createAuthArtworkCache(cacheFile: string, options: { fetch?: typ
       updatedAt = now()
       retryAt = 0
       try {
-        mkdirSync(dirname(cacheFile), { recursive: true })
-        writeFileSync(cacheFile + '.tmp', JSON.stringify({ version: CACHE_VERSION, updatedAt, covers }), 'utf8')
-        renameSync(cacheFile + '.tmp', cacheFile)
+        writeJsonAtomic(cacheFile, { version: CACHE_VERSION, updatedAt, covers })
       } catch { /* Read-only persistence must not affect sign-in. */ }
       return covers
     } catch {

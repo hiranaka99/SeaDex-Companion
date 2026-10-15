@@ -1,5 +1,5 @@
 import { estimateDownloads, type DiskSpaceCheck, type DownloadPreflight, type EstimatableRelease } from '../shared/download-estimate.js'
-import { qbGetDownloadStorage, qbGetTorrents } from './app.js'
+import { qbGetDownloadStorage, qbGetTorrents } from './qbittorrent.js'
 import type { Config } from './types.js'
 
 export async function downloadPreflight(config: Config, selections: { release: EstimatableRelease; category: string }[]): Promise<DownloadPreflight> {

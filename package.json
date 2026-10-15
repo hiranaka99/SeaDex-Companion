@@ -1,7 +1,7 @@
 {
   "name": "seadex-companion",
   "private": true,
-  "version": "2.0.1",
+  "version": "2.1.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -14,7 +14,8 @@
     "start": "node dist/server/index.js",
     "test": "npm run build:server && node tests/run-tests.mjs",
     "test:browser": "npm --prefix frontend run build && node tests/browser-smoke.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit && npm --prefix frontend run build -- --emptyOutDir=false"
+    "typecheck": "tsc -p tsconfig.json --noEmit && npm --prefix frontend run build -- --emptyOutDir=false",
+    "test:docker": "docker build -t seadex-companion:test . && node tests/docker-smoke.mjs seadex-companion:test"
   },
   "engines": {
     "node": ">=24"

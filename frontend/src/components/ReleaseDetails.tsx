@@ -1,3 +1,4 @@
+import { normalizeTorrentPath as normalizeFile, releaseOwned } from '../../../shared/download-plan'
 import { useMemo } from 'react'
 import type { Config, Release, ResultItem } from '../types'
 import { formatBytes, formatEta, seasonLabel, sizeDelta } from '../utils'
@@ -29,14 +30,13 @@ interface Props {
 }
 
 const bytesOrUnknown = (bytes: number) => bytes > 0 ? formatBytes(bytes) : 'Size unavailable'
-const normalizeFile = (name: string) => name.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '').toLowerCase()
+
 
 export default function ReleaseDetails({ result: r, release: rel, index, config, state, busy, onDownload, onPause, onResume, onRemove }: Props) {
   const isBest = rel.kind === 'best'
   const localSize = rel.part ? r.local_size_by_part?.[rel.part] || 0 : r.local_size
   const delta = sizeDelta(rel.size, localSize)
-  const ownedGroups = r.precise_part_ownership ? r.owned_by_part?.[rel.part || ''] || [] : r.have
-  const owned = ownedGroups.some(group => group.toLowerCase() === rel.releaseGroup.toLowerCase())
+  const owned = releaseOwned(r, rel)
   const inClient = ['sending', 'downloading', 'paused', 'error'].includes(state.phase)
   const complete = state.phase === 'complete'
   const category = (r.arr === 'Sonarr' ? config?.sonarr_category : config?.radarr_category)?.trim() || r.arr

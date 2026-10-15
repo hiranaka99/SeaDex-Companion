@@ -1,31 +1,7 @@
 export type JsonObject = Record<string, any>
 
-export interface ScanSchedule extends JsonObject {
-  enabled: boolean
-  mode: 'interval' | 'daily' | 'weekly'
-  interval_minutes: number
-  times: string[]
-  weekdays: number[]
-  timezone: string
-  missed_run: 'run_once' | 'skip'
-}
-
-export interface Config extends JsonObject {
-  sonarr_url: string
-  sonarr_key: string
-  radarr_url: string
-  radarr_key: string
-  sonarr_category: string
-  radarr_category: string
-  qbittorrent_url: string
-  qbittorrent_user: string
-  qbittorrent_pass: string
-  webhook: string
-  notify_enabled: boolean
-  scan_schedule: ScanSchedule
-  hidden: string[]
-}
-
+export type { Config, ScanSchedule, ResultItem, Release, PublicConfig, ConfigUpdate } from '../shared/contracts.js'
+import type { ResultItem } from '../shared/contracts.js'
 export type ScanTrigger = 'manual' | 'scheduled' | 'sonarr' | 'radarr' | 'sonarr+radarr'
 
 export interface ScanScope {
@@ -38,7 +14,7 @@ export interface ScanState {
   progress: number
   total: number
   message: string
-  results: JsonObject[]
+  results: ResultItem[]
   error: string | null
   last_run: string | null
   cancelled: boolean
@@ -46,7 +22,7 @@ export interface ScanState {
   source_errors: Record<string, string>
 }
 
-export interface ReleaseCandidate extends JsonObject {
+export interface ReleaseCandidate {
   releaseGroup: string
   tracker: string
   quality: string
@@ -61,16 +37,41 @@ export interface ReleaseCandidate extends JsonObject {
   selected_files?: string[]
 }
 
-export interface ChainPart extends JsonObject {
+export interface ChainPart {
   id: number
   episodeCount: number | null
+  episodeNumbers?: number[]
+  title?: string
+  cover?: string
+  banner?: string
 }
 
-export interface ChainEntry extends JsonObject {
+export interface ChainEntry {
   season: number
   id: number
   ids: number[]
   parts: ChainPart[]
+  episodeCount?: number | null
   cover?: string | null
   banner?: string | null
 }
+
+export interface LocalSeason {
+  groups: string[]
+  size: number
+  episode_numbers?: number[]
+  episode_count?: number | null
+  missing_episode_count?: number
+  groups_by_episode?: Record<string, number[]>
+  sizes_by_episode?: Record<string, number>
+}
+export interface LocalItem {
+  arr: 'Sonarr' | 'Radarr'
+  id: number
+  title: string
+  slug?: string
+  seasons: Record<number, LocalSeason>
+}
+export interface SeaDexSlot { candidates: ReleaseCandidate[] }
+export interface SeaDexEntry { url: string; notes: string; seasons: Record<number, SeaDexSlot> }
+export interface ResolvedPart { label: string | null; source: SeaDexEntry; best: ReleaseCandidate; alts: ReleaseCandidate[] }

@@ -1,7 +1,7 @@
 import type { GroupedCard, ResultItem } from './types.js'
 import { groupResults, STATUS_LABEL, hasCardUpgrade, cardSizeDelta } from './utils.js'
 
-function result(season: number, status: string): ResultItem {
+function result(season: number, status: ResultItem['status']): ResultItem {
   return {
     key: `Sonarr:1:${season}:${status}`,
     group_id: 1,
@@ -23,7 +23,7 @@ function result(season: number, status: string): ResultItem {
   }
 }
 
-function cardStatus(...statuses: string[]): GroupedCard['status'] {
+function cardStatus(...statuses: ResultItem['status'][]): GroupedCard['status'] {
   return groupResults(statuses.map((status, index) => result(index + 1, status)))[0].status
 }
 

@@ -251,37 +251,17 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
     if (bulkInFlight.current || bulkOperationActive) return
     bulkInFlight.current = true
     setBulkBusy(action)
-    let pollId: number | null = null
-    let polling = true
     try {
       if (action === 'start') {
         const allHashes = new Set<string>()
         for (const selection of selections) for (const hash of hashesForSelection(selection)) allHashes.add(hash)
         onBulkOperationChange({ action, phase: 'running', settled: 0, total: allHashes.size, added: 0, failed: 0, message: `Preparing ${allHashes.size} torrent${allHashes.size === 1 ? '' : 's'}…` })
-        // The request settles each torrent one at a time (metadata is fetched
-        // with a 15 second budget per torrent), so poll the live batch status
-        // while it is in flight and color each title as soon as its own
-        // torrent settles instead of only after the whole batch finished.
         setBulkOutcome({ requested: new Set(), failed: new Set(), pending: new Set(allHashes), inflight: true })
-        const request = api.bulkDownloads('start', selections)
-        pollId = window.setInterval(() => {
-          void api.getBulkDownloadStatus().then((status) => {
-            if (!polling) return
-            const settled = status.added.length + status.failures.length
-            onBulkOperationChange({ action, phase: 'running', settled, total: settled + status.pending.length, added: status.added.length, failed: status.failures.length, message: `${status.added.length} added · ${status.pending.length} pending${status.failures.length ? ` · ${status.failures.length} failed` : ''}` })
-            setBulkOutcome((current) => current ? {
-              requested: new Set(status.added.map((hash) => hash.toLowerCase())),
-              failed: new Set(status.failures.map((failure) => failure.hash.toLowerCase())),
-              pending: new Set(status.pending.map((hash) => hash.toLowerCase())),
-              inflight: true,
-            } : current)
-          }).catch(() => { /* transient poll failure — keep polling */ })
-        }, 700)
-        const result = await request
-        polling = false
-        let status: api.BulkDownloadStatus | null = null
-        try { status = await api.getBulkDownloadStatus() } catch { /* fall back to the request result */ }
-        const failures = status && status.failures.length ? status.failures : (result.failures || [])
+        const result = await api.bulkDownloads('start', selections, false, job => {
+          const requested = new Set([...job.added, ...(job.existing || [])])
+          setBulkOutcome({ requested, failed: new Set(job.failures.map(failure => failure.hash)), pending: new Set(job.pending), inflight: !job.finished })
+        })
+        const failures = result.failures || []
         if (result.count > 0) {
           toast.show(`Sent ${result.count} torrent${result.count === 1 ? '' : 's'} to qBittorrent`, 'success')
         } else if (!failures.length) {
@@ -290,12 +270,8 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
         if (failures.length) {
           toast.show(`${failures.length} torrent${failures.length === 1 ? '' : 's'} could not be added: ${describeBulkFailures(failures)}`, 'error')
         }
-        const failed = new Set(failures.map((failure) => failure.hash.toLowerCase()))
-        const pending = status ? new Set(status.pending.map((hash) => hash.toLowerCase())) : new Set<string>()
-        const requested = new Set<string>()
-        if (status) for (const hash of status.added) requested.add(hash.toLowerCase())
-        for (const hash of allHashes) if (!failed.has(hash) && !pending.has(hash) && !requested.has(hash)) requested.add(hash)
-        setBulkOutcome({ requested, failed, pending, inflight: false })
+        const requested = new Set(allHashes)
+        setBulkOutcome({ requested, failed: new Set(failures.map(failure => failure.hash)), pending: new Set(), inflight: false })
         onBulkOperationChange({
           action,
           phase: failures.length ? 'warning' : 'success',
@@ -329,8 +305,6 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
       }
     } finally {
       bulkInFlight.current = false
-      polling = false
-      if (pollId !== null) window.clearInterval(pollId)
       setBulkBusy(null)
     }
   }

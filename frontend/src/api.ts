@@ -1,8 +1,12 @@
+import type { AllDownloadProgress, BulkDownloadTarget, BulkDownloadResult, BulkDownloadStatus, CancelableDownload } from '../../shared/download-contracts.js'
+export type { DownloadProgress, AllDownloadProgress, BulkDownloadTarget, BulkDownloadFailure, BulkDownloadResult, BulkDownloadStatus, CancelableDownload } from '../../shared/download-contracts.js'
+import { waitForDownloadJob } from './bulk-job-store.js'
+export { watchBulkDownloadStatus } from './bulk-job-store.js'
 import type { AuthState, Config, ResultItem, ScanHistoryEntry, ScannedDataInfo, Status } from './types.js'
 
 export const AUTH_REQUIRED_EVENT = 'seadex:authentication-required'
 
-async function api<T = any>(path: string, opts: RequestInit = {}, timeoutMs = 30_000): Promise<T> {
+async function api<T = unknown>(path: string, opts: RequestInit = {}, timeoutMs = 30_000): Promise<T> {
   const timeout = AbortSignal.timeout(timeoutMs)
   const signal = opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout
   const r = await fetch(path, { ...opts, signal })
@@ -53,7 +57,7 @@ export const clearScannedData = () =>
 
 export const getScannedDataInfo = () => api<{ ok: boolean } & ScannedDataInfo>('/api/scanned-data')
 
-export const saveConfig = (cfg: Partial<Config>) =>
+export const saveConfig = (cfg: import('../../shared/contracts.js').ConfigUpdate) =>
   api<Config>('/api/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -61,7 +65,7 @@ export const saveConfig = (cfg: Partial<Config>) =>
   })
 
 
-export const testConnection = (service: 'sonarr' | 'radarr' | 'qbittorrent' | 'discord', config: Record<string, any>) =>
+export const testConnection = (service: 'sonarr' | 'radarr' | 'qbittorrent' | 'discord', config: import('../../shared/contracts.js').ConfigUpdate) =>
   api<{ ok: boolean; message: string }>('/api/config/test', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -125,32 +129,9 @@ export const download = (key: string, release: number, identity?: string) =>
     body: JSON.stringify({ key, release, identity }),
   })
 
-export interface DownloadProgress {
-  identity?: string
-  missing_torrents?: number
-  ok: boolean
-  found: boolean
-  progress: number
-  downloaded: number
-  total_size: number
-  speed: number
-  state: string
-  error?: string
-}
-
-export const getDownloadProgress = (key: string, release: number) =>
-  api<DownloadProgress>(
-    `/api/download_progress?key=${encodeURIComponent(key)}&release=${release}`,
-  )
-
-export interface AllDownloadProgress {
-  ok: boolean
-  downloads: Record<string, DownloadProgress>
-}
-
 let allDownloadProgressRequest: Promise<AllDownloadProgress> | null = null
 
-/** Coalesce the initial probe from every mounted card into one qBittorrent snapshot. */
+/** Coalesce concurrent reads of the authoritative qBittorrent snapshot. */
 export const getAllDownloadProgress = (): Promise<AllDownloadProgress> => {
   if (!allDownloadProgressRequest) {
     const request = api<AllDownloadProgress>('/api/download_progress/all')
@@ -160,55 +141,10 @@ export const getAllDownloadProgress = (): Promise<AllDownloadProgress> => {
   return allDownloadProgressRequest
 }
 
-export const invalidateDownloadProgress = () => { allDownloadProgressRequest = null }
-
-/** A synthetic "not present in qBittorrent" progress entry. */
-const NOT_FOUND_PROGRESS: DownloadProgress = { ok: true, found: false, progress: 0, downloaded: 0, total_size: 0, speed: 0, state: 'unknown' }
-
-type DownloadProgressCallback = (progress: DownloadProgress) => void
-const downloadProgressCallbacks = new Map<string, Set<DownloadProgressCallback>>()
-let sharedDownloadTimer: number | null = null
-
-/**
- * One timer serves every registered release. Each tick fetches a single
- * /api/download_progress/all snapshot and fans the matching entry out to each
- * callback (a release absent from the snapshot is reported as not found). This
- * replaces the old per-release intervals so many simultaneous downloads cost one
- * qBittorrent request per tick instead of one request per release.
- */
-function tickSharedDownloads(): void {
-  const subscribers = [...downloadProgressCallbacks].map(([key, callbacks]) => [key, [...callbacks]] as const)
-  getAllDownloadProgress()
-    .then((res) => {
-      const downloads = res.downloads || {}
-      for (const [idKey, callbacks] of subscribers) for (const callback of callbacks) {
-        if (downloadProgressCallbacks.get(idKey)?.has(callback)) callback(downloads[idKey] ?? NOT_FOUND_PROGRESS)
-      }
-    })
-    .catch(() => {
-      /* transient network/backend error — keep polling */
-    })
-}
-
-/**
- * Registers `callback` to receive live progress for the release identified by
- * `idKey`. Returns an unsubscribe function; the shared timer stops once the last
- * watcher is removed.
- */
-export function watchDownloadProgress(idKey: string, callback: DownloadProgressCallback): () => void {
-  const callbacks = downloadProgressCallbacks.get(idKey) || new Set<DownloadProgressCallback>()
-  callbacks.add(callback)
-  downloadProgressCallbacks.set(idKey, callbacks)
-  if (sharedDownloadTimer === null) sharedDownloadTimer = window.setInterval(tickSharedDownloads, 3000)
-  return () => {
-    const current = downloadProgressCallbacks.get(idKey)
-    current?.delete(callback)
-    if (current?.size === 0) downloadProgressCallbacks.delete(idKey)
-    if (!downloadProgressCallbacks.size && sharedDownloadTimer !== null) {
-      window.clearInterval(sharedDownloadTimer)
-      sharedDownloadTimer = null
-    }
-  }
+export const DOWNLOAD_PROGRESS_INVALIDATED_EVENT = 'seadex:download-progress-invalidated'
+export const invalidateDownloadProgress = () => {
+  allDownloadProgressRequest = null
+  if (typeof window !== 'undefined') window.dispatchEvent?.(new Event(DOWNLOAD_PROGRESS_INVALIDATED_EVENT))
 }
 
 export type DownloadAction = 'pause' | 'resume' | 'remove'
@@ -222,65 +158,30 @@ export const controlDownload = (key: string, release: number, action: DownloadAc
 
 export const DOWNLOADS_CHANGED_EVENT = 'seadex:downloads-changed'
 
-export interface BulkDownloadTarget {
-  key: string
-  release: number
-  identity?: string
-}
-
 export const getBulkDownloadPreflight = (selections: BulkDownloadTarget[], signal?: AbortSignal) =>
   api<import('../../shared/download-estimate.js').DownloadPreflight>('/api/download_bulk/preflight', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections }), signal,
   })
 
-export interface BulkDownloadFailure {
-  hash: string
-  label: string
-  error: string
-}
-
-export interface BulkDownloadResult {
-  ok: boolean
-  count: number
-  targets: BulkDownloadTarget[]
-  failures?: BulkDownloadFailure[]
-  existing?: string[]
-  error?: string
-}
-
-/** Live per-torrent state of the in-flight bulk download batch. */
-export interface BulkDownloadStatus {
-  ok: boolean
-  finished: boolean
-  pending: string[]
-  added: string[]
-  failures: BulkDownloadFailure[]
-}
-
-export const getBulkDownloadStatus = () =>
-  api<BulkDownloadStatus>('/api/download_bulk/status')
-
-export interface CancelableDownload {
-  key: string
-  release: number
-  title: string
-  season: number | null
-  part: string
-  release_group: string
-  tracker: string
-  size: number
-  hashes: string[]
-}
+export const getBulkDownloadStatus = (id?: string) =>
+  api<BulkDownloadStatus>(`/api/download-jobs/${id ? encodeURIComponent(id) : 'latest'}`)
 
 export const getCancelableBulkDownloads = () =>
   api<{ ok: boolean; downloads: CancelableDownload[]; error?: string }>('/api/download_bulk/cancelable')
 
-export async function bulkDownloads(action: 'start' | 'cancel', selections: BulkDownloadTarget[] = [], deleteFiles = false): Promise<BulkDownloadResult> {
-  const result = await api<BulkDownloadResult>('/api/download_bulk', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, selections, delete_files: deleteFiles }),
-  }, action === 'start' ? Math.max(60_000, selections.length * 60_000) : 60_000)
+export async function bulkDownloads(action: 'start' | 'cancel', selections: BulkDownloadTarget[] = [], deleteFiles = false, onProgress?: (job: BulkDownloadStatus) => void): Promise<BulkDownloadResult> {
+  let result: BulkDownloadResult
+  if (action === 'start') {
+    const accepted = await api<BulkDownloadStatus & { id: string }>('/api/download-jobs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections }),
+    })
+    const job = await waitForDownloadJob(accepted, onProgress)
+    result = { ok: job.added.length > 0, count: job.added.length, targets: job.targets, failures: job.failures, existing: job.existing }
+  } else {
+    result = await api<BulkDownloadResult>('/api/download_bulk', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, selections, delete_files: deleteFiles }),
+    })
+  }
   window.dispatchEvent(new CustomEvent(DOWNLOADS_CHANGED_EVENT, { detail: { action, targets: result.targets } }))
   return result
 }
