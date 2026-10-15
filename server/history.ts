@@ -40,13 +40,13 @@ function bestQualitySummary(result: JsonObject): string {
   return qualities.join(' / ')
 }
 
-/** Human-readable specifics of what changed on releases.moe between two scans of the same title. */
+/** Human-readable specifics of what changed on seadex.moe between two scans of the same title. */
 export function describeResultChange(previous: JsonObject | null, current: JsonObject): string[] {
   if (!previous) return ['Newly added to your library']
   const details: string[] = []
   const from = automationStatus(previous)
   const hasReleases = Boolean((current.releases || []).length)
-  if (from === 'missing' && hasReleases) details.push('Now listed on releases.moe')
+  if (from === 'missing' && hasReleases) details.push('Now listed on seadex.moe')
   else if (from === 'uncovered' && hasReleases) details.push('Releases now available on SeaDex')
   const fromBest = String(previous.best_group || '').trim()
   const toBest = String(current.best_group || '').trim()
@@ -69,7 +69,7 @@ export function describeResultChange(previous: JsonObject | null, current: JsonO
   const currentUnavailable = new Set(((current.unavailable_parts || []) as JsonObject[]).map((part) => String(part.label || '').trim()).filter(Boolean))
   for (const label of previousUnavailable) if (!currentUnavailable.has(label)) details.push(`${label} now covered`)
   for (const label of currentUnavailable) if (!previousUnavailable.has(label)) details.push(`${label} no longer available on SeaDex`)
-  if (String(previous.notes || '').trim() !== String(current.notes || '').trim()) details.push('releases.moe notes updated')
+  if (String(previous.notes || '').trim() !== String(current.notes || '').trim()) details.push('seadex.moe notes updated')
   return details.slice(0, 6)
 }
 

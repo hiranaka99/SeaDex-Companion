@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
-import { anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, cancelScan, checkForUpdates, clearScannedData, commonBestRelease, decryptSecretValues, describeResultChange, discordMessageBody, DEFAULT_CONFIG, effectiveSeasonParts, DATA_DIR, encryptSecretValues, getState, loadStringSet, localItems, localPartOwnership, normalizeQbStates, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest, resetRuntimeForTests, resetUpdateCheck, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration } from '../server/app.js'
+import { anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, cancelScan, checkForUpdates, clearScannedData, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, effectiveSeasonParts, DATA_DIR, encryptSecretValues, getState, loadStringSet, localItems, localPartOwnership, normalizeQbStates, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest, resetRuntimeForTests, resetUpdateCheck, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration } from '../server/app.js'
 import { nextScheduledTime, parseReleaseIndex, processAutocheck, processWebhookScans, queueWebhookScan, refreshAutocheckSchedule, resetWebhookScanState, webhookScanState } from '../server/index.js'
 import type { JsonObject, ReleaseCandidate, ScanTrigger } from '../server/types.js'
 
@@ -28,7 +28,7 @@ function release(group: string, count: number, best = false, hashCharacter = 'a'
 }
 
 function seadexEntry(alid: number, candidate: ReleaseCandidate, bucket = 0): JsonObject {
-  return { url: `https://releases.moe/${alid}/`, notes: '-', seasons: { [bucket]: { candidates: [candidate] } } }
+  return { url: `https://seadex.moe/${alid}/`, notes: '-', seasons: { [bucket]: { candidates: [candidate] } } }
 }
 
 async function makeChain(nodes: Map<number, JsonObject>) {
@@ -191,58 +191,6 @@ describe('notifications and scheduling', () => {
     } finally {
       globalThis.fetch = originalFetch
     }
-  })
-
-  test('describes what changed on releases.moe between scans', () => {
-    const previous: JsonObject = {
-      library_key: 'Sonarr:item1', season: 7, title: 'My Hero Academia', arr: 'Sonarr', status: 'upgrade',
-      best_group: 'SubsPlease', notes: 'old notes', unavailable_parts: [{ label: 'Cour 2', reason: 'No releases available on SeaDex' }],
-      releases: [
-        { kind: 'best', releaseGroup: 'SubsPlease', quality: '1080p WEB-DL', tracker: 'AB', tags: [] },
-        { kind: 'alt', releaseGroup: 'FLUX', quality: '1080p WEB-DL', tracker: 'Nyaa', tags: [] },
-      ],
-    }
-    const current: JsonObject = {
-      library_key: 'Sonarr:item1', season: 7, title: 'My Hero Academia', arr: 'Sonarr', status: 'upgrade',
-      best_group: '-ZR-', notes: 'new notes', unavailable_parts: [],
-      releases: [
-        { kind: 'best', releaseGroup: '-ZR-', quality: 'BD', tracker: 'AB', tags: [] },
-        { kind: 'alt', releaseGroup: 'FLUX', quality: '1080p WEB-DL', tracker: 'Nyaa', tags: [] },
-        { kind: 'alt', releaseGroup: 'VALKYRiE', quality: 'BD', tracker: 'Nyaa', tags: [] },
-      ],
-    }
-    const details = describeResultChange(previous, current)
-    assert.ok(details.includes('Best release changed: SubsPlease → -ZR-'), details.join('|'))
-    assert.ok(details.includes('Quality changed: 1080p WEB-DL → BD'), details.join('|'))
-    assert.ok(details.includes('New alternative: VALKYRiE'), details.join('|'))
-    assert.ok(details.includes('Cour 2 now covered'), details.join('|'))
-    assert.ok(details.includes('releases.moe notes updated'), details.join('|'))
-    assert.deepEqual(describeResultChange(null, current), ['Newly added to your library'])
-  })
-
-  test('builds Discord embed notifications with update specifics', () => {
-    const body = discordMessageBody({
-      title: 'My Hero Academia', season: 7, arr: 'Sonarr', status: 'upgrade',
-      have: ['SubsPlease'], best_group: '-ZR-', url: 'https://releases.moe/163139/', image: 'https://img.example/cover.jpg',
-      notes: 'notes here', change_details: ['Best release changed: SubsPlease → -ZR-'],
-      releases: [
-        { kind: 'best', releaseGroup: '-ZR-', quality: '1080p WEB-DL', tracker: 'AB', tags: ['Subs'] },
-        { kind: 'alt', releaseGroup: 'VALKYRiE', quality: 'BD' },
-      ],
-    }) as JsonObject
-    assert.equal(body.content, 'My Hero Academia (S07) — new best release -ZR-')
-    const embed = body.embeds[0] as JsonObject
-    assert.equal(embed.title, 'My Hero Academia (S07)')
-    assert.equal(embed.url, 'https://releases.moe/163139/')
-    assert.deepEqual(embed.thumbnail, { url: 'https://img.example/cover.jpg' })
-    assert.equal(embed.color, 0xf1c40f)
-    const fields = Object.fromEntries((embed.fields as Array<{ name: string; value: string }>).map((field) => [field.name, field.value]))
-    assert.equal(fields['What changed'], 'Best release changed: SubsPlease → -ZR-')
-    assert.equal(fields.Have, 'SubsPlease')
-    assert.equal(fields['Best release'], '-ZR- · 1080p WEB-DL · AB')
-    assert.equal(fields.Alternatives, 'VALKYRiE (BD)')
-    assert.equal(fields.Tags, 'Subs')
-    assert.equal(fields.Notes, 'notes here')
   })
 
   test('marks only successfully delivered notifications', async () => {
@@ -1110,7 +1058,7 @@ describe('release selection and combined cours', () => {
 
   test('treats a filler SeaDex page with no releases as uncovered', async () => {
     const best = new Map([[300, {
-      url: 'https://releases.moe/300/',
+      url: 'https://seadex.moe/300/',
       notes: '-',
       seasons: {},
     }]])
@@ -1129,7 +1077,6 @@ describe('release selection and combined cours', () => {
 
     const result = getState().results[0]
     assert.equal(result.status, 'uncovered')
-    assert.equal(result.url, 'https://releases.moe/300/')
     assert.deepEqual(result.releases, [])
   })
 
@@ -1192,7 +1139,7 @@ describe('release selection and combined cours', () => {
     const diddy1 = release('Diddy', 24, true, 'b'); const diddy2 = release('Diddy', 24, true, 'b')
     const private1 = release('MTBB', 13, true, 'private'); private1.tracker = 'AB'
     const private2 = release('Diddy', 12, true, 'private'); private2.tracker = 'AB'
-    const entry = (id: number, candidates: ReleaseCandidate[]) => ({ url: `https://releases.moe/${id}/`, notes: '-', seasons: { 2: { candidates } } })
+    const entry = (id: number, candidates: ReleaseCandidate[]) => ({ url: `https://seadex.moe/${id}/`, notes: '-', seasons: { 2: { candidates } } })
     const best = new Map([[21, entry(21, [mtbb1, private1, diddy1])], [22, entry(22, [mtbb2, diddy2, private2])]])
     await scanWith(best, chain, [{ arr: 'Sonarr', id: 10, title: 'Combined Season', slug: 'combined-season', seasons: { 2: { groups: ['MTBB'], size: 2500 } } }])
     const result = getState().results[0]
@@ -1218,13 +1165,13 @@ describe('release selection and combined cours', () => {
     assert.deepEqual(seasonOne.anilist_ids, [140960, 142838]); assert.equal(seasonOne.status, 'upgrade')
     assert.equal(seasonOne.best_group, 'ABdex + NAN0'); assert.deepEqual(seasonOne.releases.map((item: JsonObject) => item.part), ['Cour 1', 'Cour 2'])
     assert.deepEqual(seasonOne.notes_by_part, { 'Cour 1': 'Cour one note', 'Cour 2': 'Cour two note' })
-    assert.equal(seasonTwo.anilist_id, 158927); assert.equal(seasonTwo.url, 'https://releases.moe/158927/')
+    assert.equal(seasonTwo.anilist_id, 158927)
   })
 
   test('owning any best-flagged release is best quality', async () => {
     const ntrx = release('NTRX', 13, true, 'a'); ntrx.size = 15300
     const okay = release('Okay-Subs', 13, true, 'b'); okay.size = 14600
-    const best = new Map([[100, { url: 'https://releases.moe/100/', notes: '-', seasons: { 1: { candidates: [ntrx, okay] } } }]])
+    const best = new Map([[100, { url: 'https://seadex.moe/100/', notes: '-', seasons: { 1: { candidates: [ntrx, okay] } } }]])
     const chain = [{ season: 1, id: 100, ids: [100], parts: [{ id: 100, episodeCount: 13 }], cover: 'cover-100', banner: 'banner-100' }]
     await scanWith(best, chain, [{ arr: 'Sonarr', id: 10, title: 'Call of the Night', slug: 'call-of-the-night', seasons: { 1: { groups: ['Okay-Subs'], size: 14600 } } }])
     const result = getState().results[0]

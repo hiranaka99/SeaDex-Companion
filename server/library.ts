@@ -91,14 +91,18 @@ async function radarrItems(config: Config, scope: ScanScope): Promise<LocalItem[
   for (const movie of movies) {
     if (scope.radarrIds?.length && !scope.radarrIds.includes(Number(movie.id))) continue
     const stats = movie.statistics || {}
-    // A movie is shown once it has reached its cinema release date or any
-    // file exists; entries with neither signal are assumed unreleased.
-    const inCinemas = Date.parse(String(movie.inCinemas || ''))
-    if (!(Number.isFinite(inCinemas) && inCinemas <= now) && Number(stats.sizeOnDisk || 0) <= 0) continue
-    const groups = stats.releaseGroups || []
+    // Direct-to-video movies may never have a cinema date. Older Radarr
+    // versions expose ownership on the movie/file instead of statistics.
+    const size = Number(stats.sizeOnDisk || movie.sizeOnDisk || movie.movieFile?.size || 0)
+    const hasFile = size > 0 || movie.hasFile === true || Number(movie.movieFileId || movie.movieFile?.id || 0) > 0
+    const released = [movie.inCinemas, movie.digitalRelease, movie.physicalRelease, movie.releaseDate]
+      .some(value => { const date = Date.parse(String(value || '')); return Number.isFinite(date) && date <= now })
+    if (!released && !hasFile) continue
+    const fileGroup = String(movie.movieFile?.releaseGroup || '').trim()
+    const groups = Array.isArray(stats.releaseGroups) && stats.releaseGroups.length ? stats.releaseGroups : fileGroup ? [fileGroup] : []
     items.push({
       arr: 'Radarr', id: movie.id, title: movie.title, slug: movie.titleSlug,
-      seasons: { 0: { groups, size: stats.sizeOnDisk || 0 } },
+      seasons: { 0: { groups, size } },
     })
   }
   return items

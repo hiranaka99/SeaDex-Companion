@@ -14,7 +14,7 @@ function result(season: number, status: ResultItem['status']): ResultItem {
     best_group: status === 'best' ? 'Example' : null,
     best_size: 0,
     releases: [],
-    url: status === 'best' ? 'https://releases.moe/1/' : null,
+    url: status === 'best' ? 'https://seadex.moe/1/' : null,
     notes: null,
     image: null,
     banner: null,

@@ -6,15 +6,149 @@ import {
   DATA_DIR, ENCRYPTED_SECRETS_FILE, getState, HISTORY_FILE, loadCache, loadConfig, loadLastResults,
   loadScanHistory, loadUserRules, LOG_FILE, normalizeQbStates, qbGetTorrents, readLogTail,
   resetRuntimeForTests, RESULTS_FILE, runScan, cancelScan, setState, USER_RULES_FILE, mergeComplementaryCandidates,
+  loadLocalLibrary, seadexBest, scopeReleaseToPart,
 } from '../server/app.js'
 import { processAutocheck, processWebhookScans, queueWebhookScan, refreshAutocheckSchedule, resetWebhookScanState, startScheduler } from '../server/index.js'
 import { join } from 'node:path'
+import { assessSeason } from '../server/assessment.js'
 
 async function preserveFiles(files: string[], action: () => void | Promise<void>) {
   const saved = files.map(file => existsSync(file) ? readFileSync(file) : null)
   try { await action() }
   finally { files.forEach((file, index) => { const data = saved[index]; if (data) writeFileSync(file, data); else rmSync(file, { force: true }) }) }
 }
+
+test('Radarr includes non-theatrical releases and reads legacy movie-file ownership', async () => {
+  const original = globalThis.fetch
+  const movies = [
+    { id: 1, title: 'Digital movie', digitalRelease: '2000-01-01' },
+    { id: 2, title: 'Physical movie', physicalRelease: '2000-01-01' },
+    { id: 3, title: 'Owned movie', hasFile: true, sizeOnDisk: 123, movieFile: { id: 30, size: 123, releaseGroup: 'Best group' } },
+    { id: 4, title: 'Upcoming movie', inCinemas: '2999-01-01', digitalRelease: '2999-02-01' },
+    { id: 5, title: 'Unknown movie' },
+    { id: 6, title: 'Statistics movie', statistics: { sizeOnDisk: 456, releaseGroups: ['Another group'] } },
+  ]
+  globalThis.fetch = (async () => Response.json(movies)) as typeof fetch
+  try {
+    const { items } = await loadLocalLibrary({ ...DEFAULT_CONFIG, radarr_url: 'http://radarr.test', radarr_key: 'fixture' })
+    assert.deepEqual(items.map(item => item.id), [1, 2, 3, 6])
+    assert.deepEqual(items.find(item => item.id === 3)?.seasons[0], { groups: ['Best group'], size: 123 })
+    assert.deepEqual(items.find(item => item.id === 6)?.seasons[0], { groups: ['Another group'], size: 456 })
+  } finally { globalThis.fetch = original }
+})
+
+test('empty Radarr statistics cannot hide an already-owned best movie file', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = (async () => Response.json([{ id: 1, title: 'Owned movie', hasFile: true,
+    statistics: { sizeOnDisk: 0, releaseGroups: [] },
+    movieFile: { id: 10, size: 123, releaseGroup: 'Best group' },
+  }])) as typeof fetch
+  try {
+    const { items } = await loadLocalLibrary({ ...DEFAULT_CONFIG, radarr_url: 'http://radarr.test', radarr_key: 'fixture' })
+    assert.deepEqual(items[0].seasons[0], { groups: ['Best group'], size: 123 })
+    const result = assessSeason(items[0], 0, items[0].seasons[0],
+      [{ season: 1, id: 42, ids: [42], parts: [{ id: 42, episodeCount: 1 }] }],
+      new Map([[42, { url: 'https://seadex.moe/42/', notes: '', seasons: { 0: { candidates: [{
+        releaseGroup: 'Best group', tracker: 'Nyaa', quality: '1080p', tags: [], size: 123,
+        file_count: 1, info_hashes: ['a'.repeat(40)], is_best: true,
+      }] } } }]]), 'Radarr:item1', undefined, null)
+    assert.equal(result.status, 'best')
+    assert.equal(result.local_size, 123)
+  } finally { globalThis.fetch = original }
+})
+
+test('multi-season catalog torrents select only the requested season files', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = (async () => Response.json({ totalPages: 1, items: [{ alID: 42, expand: { trs: [{
+    releaseGroup: 'Best group', tracker: 'Nyaa', infoHash: 'a'.repeat(40), isBest: true,
+    files: [{ name: 'Show S01E01.mkv', length: 100 }, { name: 'Show S02E01.mkv', length: 200 }],
+  }] } }] })) as typeof fetch
+  try {
+    const catalog = await seadexBest()
+    const candidate = catalog.get(42)!.seasons[1].candidates[0]
+    assert.deepEqual(scopeReleaseToPart(candidate, 1, 0, 1, 0, 1).selected_files, ['Show S01E01.mkv'])
+  } finally { globalThis.fetch = original }
+})
+
+test('an unmapped later season cannot inherit the first season recommendation', () => {
+  const local = { groups: ['Old group'], size: 100, episode_numbers: [1] }
+  const result = assessSeason({ arr: 'Sonarr', id: 1, title: 'Show', seasons: { 2: local } }, 2, local,
+    [{ season: 1, id: 42, ids: [42], parts: [{ id: 42, episodeCount: 1 }], episodeCount: 1 }],
+    new Map([[42, { url: 'https://seadex.moe/42/', notes: '', seasons: { 1: { candidates: [{
+      releaseGroup: 'Best group', tracker: 'Nyaa', quality: '1080p', size: 200, file_count: 1,
+      info_hashes: ['a'.repeat(40)], is_best: true, tags: [],
+    }] } } }]]), 'Sonarr:item1', undefined, null)
+  assert.equal(result.match_status, 'unmatched')
+  assert.equal(result.status, 'missing')
+  assert.deepEqual(result.releases, [])
+  assert.equal(result.group_id, 42)
+  assert.equal(result.local_size, 100)
+})
+
+test('mapped seasons cannot borrow a recommendation from a multi-season catalog', () => {
+  const local = { groups: [], size: 0, episode_numbers: [1] }
+  const candidate = { releaseGroup: 'Best group', tracker: 'Nyaa', quality: '1080p', size: 100, file_count: 1,
+    info_hashes: ['a'.repeat(40)], is_best: true, tags: [] }
+  const chain = [1, 2, 3].map(season => ({ season, id: 40 + season, ids: [40 + season], parts: [{ id: 40 + season, episodeCount: 1 }] }))
+  const source = { url: 'https://seadex.moe/43/', notes: '', seasons: {
+    1: { candidates: [{ ...candidate, source_files: [{ name: 'Show S01E01.mkv', length: 100 }] }] },
+    2: { candidates: [{ ...candidate, source_files: [{ name: 'Show S02E01.mkv', length: 100 }] }] },
+  } }
+  const item = { arr: 'Sonarr' as const, id: 1, title: 'Show', seasons: { 3: local } }
+  const result = assessSeason(item, 3, local, chain, new Map([[43, source]]), 'Sonarr:item1', undefined, null)
+  assert.equal(result.match_status, 'matched')
+  assert.equal(result.status, 'uncovered')
+  assert.deepEqual(result.releases, [])
+  assert.deepEqual(result.unavailable_parts, [{ label: 'S03', reason: 'No releases available on SeaDex' }])
+  assert.equal(result.url, source.url)
+
+  // A lone bucket remains valid: release numbering can restart at S01 for a
+  // sequel whose Sonarr season is S03, or use absolute episode numbering.
+  for (const seasonKey of [0, 1]) {
+    const seasons = { [seasonKey]: seasonKey === 0 ? { candidates: [candidate] } : source.seasons[1] }
+    const single = assessSeason(item, 3, local, chain, new Map([[43, { ...source, seasons }]]), 'Sonarr:item1', undefined, null)
+    assert.equal(single.status, 'upgrade')
+    assert.equal(single.releases.length, 1)
+  }
+  const direct = assessSeason(item, 2, local, chain, new Map([[42, source]]), 'Sonarr:item1', undefined, null)
+  assert.equal(direct.status, 'upgrade')
+  assert.equal(direct.releases.length, 1)
+})
+
+test('part-sized catalog uploads still scope other seasons out of their torrent', () => {
+  const otherSeason = [{ name: 'Show S01E01.mkv', length: 10 }, { name: 'Show S01E02.mkv', length: 10 }]
+  for (const partIndex of [0, 1]) {
+    const sourceFiles = [1, 2].map(episode => ({ name: `Show S02E${partIndex * 2 + episode}.mkv`, length: 100 }))
+    const candidate = { releaseGroup: 'Best group', tracker: 'Nyaa', quality: '1080p', tags: [],
+      size: 200, file_count: 2, is_best: true, info_hashes: ['a'.repeat(40)], source_files: sourceFiles,
+      torrent_files: [{ hash: 'a'.repeat(40), files: [...otherSeason, ...sourceFiles] }] }
+    const scoped = scopeReleaseToPart(candidate, 2, partIndex, 2, partIndex * 2, 2)
+    assert.deepEqual(scoped.selected_files, sourceFiles.map(file => file.name))
+    assert.equal(scoped.size, 200)
+    assert.equal(scoped.file_count, 2)
+    assert.deepEqual(scoped.torrent_files, candidate.torrent_files)
+    const standalone = { ...candidate, torrent_files: [{ hash: 'a'.repeat(40), files: sourceFiles }] }
+    assert.equal(scopeReleaseToPart(standalone, 2, partIndex, 2, partIndex * 2, 2).selected_files, undefined)
+  }
+})
+
+test('incomplete cour coverage does not silently discard unrecognized episodes', () => {
+  const candidate = { releaseGroup: 'Best group', tracker: 'Nyaa', quality: '1080p', tags: [],
+    size: 400, file_count: 4, is_best: true, info_hashes: ['a'.repeat(40)], source_files: [
+      { name: 'Show S01E01.mkv', length: 100 }, { name: 'Show S01E02.mkv', length: 100 },
+      { name: 'Show S01E03.mkv', length: 100 }, { name: 'Unrecognized episode.mkv', length: 100 },
+    ] }
+  const uncertain = scopeReleaseToPart(candidate, 2, 1, 2, 2, 1)
+  assert.equal(uncertain.selected_files, undefined)
+  assert.equal(uncertain.size, 400)
+  assert.equal(uncertain.file_count, 4)
+  const complete = { ...candidate, source_files: candidate.source_files.map((file, index) =>
+    index === 3 ? { ...file, name: 'Show S01E04.mkv' } : file) }
+  const scoped = scopeReleaseToPart(complete, 2, 1, 2, 2, 1)
+  assert.deepEqual(scoped.selected_files, ['Show S01E03.mkv', 'Show S01E04.mkv'])
+  assert.equal(scoped.size, 200)
+  assert.equal(scoped.file_count, 2)
+})
 
 test('log tails retain the first line and complete lines on a byte boundary', async () => {
   mkdirSync(join(DATA_DIR, 'logs'), { recursive: true })

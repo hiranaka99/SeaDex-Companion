@@ -74,9 +74,8 @@ async function authenticateWebhook(request: IncomingMessage): Promise<void> {
   await verifyLoginCredentials(request, decoded.slice(0, separator), decoded.slice(separator + 1))
 }
 
-async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
   const method = request.method || 'GET'
-  const url = new URL(request.url || '/', 'http://localhost')
   const path = url.pathname
 
   if ((method === 'GET' || method === 'HEAD') && path === '/healthz') {
@@ -313,10 +312,13 @@ export function makeServer() {
   migrateConfig()
   downloadJobs.restore()
   return createServer((request, response) => {
-    void handle(request, response).catch((error) => {
+    let url: URL
+    try { url = new URL(request.url || '/', 'http://localhost') }
+    catch { sendJson(response, 400, { error: 'Invalid request URL' }); return }
+    void handle(request, response, url).catch((error) => {
       const message = error instanceof Error ? error.message : String(error)
       const requestMethod = request.method || 'GET'
-      const requestPath = new URL(request.url || '/', 'http://localhost').pathname
+      const requestPath = url.pathname
       if (error instanceof AuthError) {
         log('WARNING', `Request rejected: ${requestMethod} ${requestPath} → HTTP ${error.status} (client: ${clientAddress(request)}; ${message})`)
         if (!response.headersSent) sendJson(response, error.status, { error: message }, { 'Cache-Control': 'no-store' }); else response.end()
