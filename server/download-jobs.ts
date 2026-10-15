@@ -88,7 +88,7 @@ export function submitDownloadJob(config: Config, targets: BulkDownloadTarget[],
   const completion = (async () => {
     try {
       if (!plan.length) return jobResult(downloadJobs.finish(job.id))
-      const existing = new Set((await qbGetTorrents(config)).map(torrent => String(torrent.hash).toLowerCase()))
+      const existing = new Set((await qbGetTorrents(config, undefined, true)).map(torrent => String(torrent.hash).toLowerCase()))
       downloadJobs.existing(job.id, plan.filter(torrent => existing.has(torrent.hash)).map(torrent => torrent.hash))
       await qbBulkAddTorrents(config, plan.filter(torrent => !existing.has(torrent.hash)).map(torrent => ({ ...torrent, label: torrent.labels.join(' / ') || torrent.hash })), {
         onSettle: (hash, error) => downloadJobs.settle(job.id, hash, plan.find(torrent => torrent.hash === hash)!.labels.join(' / '), error),

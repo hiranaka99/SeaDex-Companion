@@ -233,12 +233,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   const scopeControl = <BulkScopeSelector value={bulkScope} onChange={setBulkScope} filteredCount={reviewCounts.filtered} allCount={reviewCounts.all} description={bulkReview?.description || 'Current library results'} showDescription={bulkConfirm === 'cancel'} allLabel={bulkConfirm === 'cancel' ? 'All tracked downloads' : undefined} allDescription={bulkConfirm === 'cancel' ? 'All incomplete downloads tracked by SeaDex Companion, regardless of library filters.' : undefined} disabled={bulkBusy !== null || Boolean(bulkOutcome)}/>
 
   const describeBulkFailures = (failures: api.BulkDownloadFailure[]): string => {
-    const shown = failures.slice(0, 3).map((failure) => {
-      const suffix = /metadata fetching failed/i.test(failure.error)
-        ? ' — metadata fetching failed, torrent removed from qBittorrent'
-        : ` — ${failure.error}`
-      return `${failure.label}${suffix}`
-    })
+    const shown = failures.slice(0, 3).map((failure) => `${failure.label} — ${failure.error}`)
     return shown.join('; ') + (failures.length > 3 ? `; and ${failures.length - 3} more` : '')
   }
 
@@ -275,7 +270,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
         onBulkOperationChange({
           action,
           phase: failures.length ? 'warning' : 'success',
-          settled: requested.size + failures.length,
+          settled: allHashes.size,
           total: allHashes.size,
           added: result.count,
           failed: failures.length,

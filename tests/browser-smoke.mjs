@@ -489,6 +489,7 @@ try {
   await wait(`![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Download 1 torrent')?.disabled`)
   await click('Download 1 torrent')
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('Could not be added')`)
+  assert.ok(await evaluate(`document.querySelector('[aria-label="Application operations"]').textContent.includes('1/1') && !document.querySelector('[aria-label="Application operations"]').textContent.includes('2/1')`), 'A failed torrent is counted once in the completed batch')
   await capture('priorities-failed-batch')
   await click('Close')
   await click('Error details')
@@ -744,6 +745,11 @@ try {
     await key('Escape')
   }
   console.log('PASS responsive configuration clearance, long release identities, noninteractive season pills, and nested mapping at 320/390/900/1440px')
+  bulkState = { ...bulkState, id: 'recovered-existing-job', finished: true, pending: [], added: [], failures: [], existing: ['a'.repeat(40)] }
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('[aria-label="Application operations"]')?.textContent.includes('1 already in qBittorrent')`)
+  assert.ok(await evaluate(`document.querySelector('[aria-label="Application operations"]').textContent.includes('1/1')`), 'Recovered batches count existing torrents as settled')
+  console.log('PASS failed and recovered-existing batch progress counts')
   if (process.env.SCREENSHOT_DIR) writeFileSync(join(process.env.SCREENSHOT_DIR, 'ui-evidence.json'), JSON.stringify(uiEvidence, null, 2))
   for (const mode of ['login', 'setup']) {
     authMode = mode

@@ -113,6 +113,8 @@ Bulk review defaults to the current library results across all matching pages. C
 
 Bulk download review shows the size of new torrents and checks free space on qBittorrent's download paths. Existing torrents are skipped without changing their files or ownership. Low-space warnings require acknowledgement before sending downloads. Older clients may only report space for their default save path; other paths are shown as unavailable. Run a new scan after updating to populate the per-torrent file sizes used by accurate estimates. Estimates do not reserve space or include torrent overhead and library-import copies.
 
+Season/cour file selection requires identifiable coverage for the complete target episode set. If filenames do not identify the full set, the release remains unscoped rather than silently dropping episodes; review the whole-torrent scope before downloading. Bulk cancellation refreshes qBittorrent progress when submitted so an earlier cached incomplete state cannot authorize deleting a completed torrent.
+
 For near-real-time discovery, add these webhook connections in Sonarr and Radarr using HTTP Basic Authentication with your SeaDex Companion username and password:
 
 - Sonarr: `https://your-seadex-host/api/webhooks/sonarr`

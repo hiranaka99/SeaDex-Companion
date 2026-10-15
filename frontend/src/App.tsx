@@ -167,8 +167,9 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   useEffect(() => {
     return api.watchBulkDownloadStatus(batch => {
       if (!batch.id) return
-      const settled = batch.added.length + batch.failures.length
-      setBulkOperation({ action: 'start', phase: batch.finished ? batch.failures.length ? 'warning' : 'success' : 'running', settled, total: settled + batch.pending.length, added: batch.added.length, failed: batch.failures.length, failures: batch.failures, message: `${batch.added.length} added · ${batch.pending.length} pending · ${batch.failures.length} failed` })
+      const existing = batch.existing?.length || 0
+      const settled = batch.added.length + batch.failures.length + existing
+      setBulkOperation({ action: 'start', phase: batch.finished ? batch.failures.length ? 'warning' : 'success' : 'running', settled, total: settled + batch.pending.length, added: batch.added.length, failed: batch.failures.length, failures: batch.failures, message: `${batch.added.length} added${existing ? ` · ${existing} already in qBittorrent` : ''} · ${batch.pending.length} pending · ${batch.failures.length} failed` })
     })
   }, [])
 

@@ -219,7 +219,7 @@ async function qbSelectTorrentFiles(config: Config, hash: string, selectedFiles:
       return [...wanted].some((wantedPath) => path.endsWith(`/${wantedPath}`) || wantedPath.endsWith(`/${path}`))
     })
   }
-  if (!selected.length) throw new Error('The selected cour files could not be matched in qBittorrent; the torrent was left stopped')
+  if (!selected.length) throw new Error('The selected cour files could not be matched in qBittorrent')
 
   const allIds = files.map((file, index) => String(file.index ?? index)).join('|')
   const selectedIds = selected.map(({ file, index }) => String(file.index ?? index)).join('|')
@@ -258,6 +258,8 @@ export async function qbAddTorrent(config: Config, magnet: string, category?: st
             ownership?.forget(hash)
           } catch (cleanupError) {
             throw new Error(`${errorMessage(error)}; cleanup failed and the torrent may remain in qBittorrent: ${errorMessage(cleanupError)}`)
+          } finally {
+            invalidateQbCache(config)
           }
           throw error
         }
@@ -326,7 +328,8 @@ export async function qbBulkAddTorrents(config: Config, entries: QbBulkAddEntry[
   return { added, failures }
 }
 
-export async function qbGetTorrents(config: Config, hashes?: string[]): Promise<JsonObject[]> {
+export async function qbGetTorrents(config: Config, hashes?: string[], fresh = false): Promise<JsonObject[]> {
+  if (fresh) invalidateQbCache(config)
   const connection = connectionFor(config)
   let torrents = connection.cache && Date.now() - connection.cache.timestamp < 2000 ? connection.cache.data : null
   if (!torrents) {

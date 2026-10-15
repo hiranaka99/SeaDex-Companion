@@ -18,6 +18,9 @@ let torrents = hashes.map((hash, index) => ({ hash, name: `Torrent ${index}`, pr
 const actions: { path: string; body: URLSearchParams }[] = []
 const loginPasswords: string[] = []
 let heldAdd: Promise<void> | null = null
+let heldFiles: Promise<void> | null = null
+let torrentFilesRequested: (() => void) | null = null
+let torrentFiles: Record<string, { name: string; index: number }[]> = {}
 const release = { kind: 'best', releaseGroup: 'New group', tracker: 'Nyaa', info_hashes: ['e'.repeat(40)], downloadable: true, size: 500, selected_files: ['01.mkv'], torrent_files: [{ hash: 'e'.repeat(40), files: [{ name: '01.mkv', length: 300 }, { name: 'extra.mkv', length: 200 }] }] }
 const mergedRelease = { kind: 'best', releaseGroup: 'Merged group', tracker: 'Nyaa', info_hashes: [hashes[3], 'f'.repeat(40)], downloadable: true, size: 500, torrent_files: [{ hash: hashes[3], files: [{ name: '02.mkv', length: 100 }] }, { hash: 'f'.repeat(40), files: [{ name: '03.mkv', length: 400 }] }] }
 const legacyRelease = { kind: 'best', releaseGroup: 'Legacy group', tracker: 'Nyaa', info_hashes: ['1'.repeat(40)], downloadable: true, size: 123 }
@@ -42,6 +45,11 @@ before(async () => {
     if (url.pathname === '/api/v2/sync/maindata') { res.end(JSON.stringify({ server_state: { free_space_on_disk: freeSpace } })); return }
     if (url.pathname === '/api/v2/torrents/categories') { res.end(JSON.stringify({ 'sonarr-anime': { savePath: '/category' } })); return }
     if (url.pathname === '/api/v2/app/getFreeSpaceAtPath') { if (pathSpace === null) { res.writeHead(404); res.end() } else res.end(String(pathSpace)); return }
+    if (url.pathname === '/api/v2/torrents/files') {
+      torrentFilesRequested?.()
+      if (heldFiles) await heldFiles
+      res.end(JSON.stringify(torrentFiles[url.searchParams.get('hash') || ''] || [])); return
+    }
     const chunks: Buffer[] = []
     for await (const chunk of req) chunks.push(Buffer.from(chunk))
     const body = new URLSearchParams(Buffer.concat(chunks).toString())
@@ -200,6 +208,76 @@ test('bulk adding a partially existing release only adds the missing torrent wit
   assert.ok(additions[0].body.get('urls')!.includes('f'.repeat(40)))
 })
 
+test('bulk cancellation rejects malformed selections without widening or truncating their scope', async () => {
+  const file = join(dir, 'last_results.json')
+  const original = readFileSync(file)
+  writeFileSync(file, JSON.stringify({ results: [{ key: 'cancel-validation', arr: 'Sonarr', title: 'Cancel validation', releases: [{ ...legacyRelease, info_hashes: [hashes[1]] }] }], last_run: null }))
+  const count = actions.length
+  const originalLedger = readFileSync(join(dir, 'owned_torrents.json'), 'utf8')
+  try {
+    for (const selections of [null, 'invalid', { key: 'cancel-validation', release: 0 }]) {
+      assert.equal((await request('/api/download_bulk', { action: 'cancel', selections, delete_files: true })).status, 400)
+    }
+    for (const key of ['cancel-validation', `torrent:${hashes[1]}`]) {
+      for (const release of ['0garbage', 0.5, -1, null, false]) {
+        const response = await request('/api/download_bulk', { action: 'cancel', selections: [{ key, release }], delete_files: true })
+        assert.equal(response.status, 400)
+        assert.match(String((await response.json()).error), /non-negative integer/)
+      }
+    }
+    assert.equal(actions.length, count, 'Malformed cancellation requests must not mutate qBittorrent')
+    assert.equal(readFileSync(join(dir, 'owned_torrents.json'), 'utf8'), originalLedger)
+    assert.ok(torrents.some(torrent => torrent.hash === hashes[1]))
+  } finally { writeFileSync(file, original) }
+})
+
+test('bulk cancellation refreshes cached progress before deciding which owned torrents to delete', async () => {
+  const originalTorrents = structuredClone(torrents)
+  try {
+    await request('/api/config', { qbittorrent_user: 'test' })
+    const cancelable = await (await request('/api/download_bulk/cancelable')).json()
+    assert.ok(cancelable.downloads.some((download: { key: string }) => download.key === `torrent:${hashes[1]}`))
+    torrents = torrents.map(torrent => torrent.hash === hashes[1] ? { ...torrent, progress: 1, state: 'uploading' } : torrent)
+    const count = actions.length
+    const response = await request('/api/download_bulk', { action: 'cancel', selections: [{ key: `torrent:${hashes[1]}`, release: 0 }], delete_files: true })
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).count, 0)
+    assert.equal(actions.length, count, 'A torrent completed since the dialog opened must not be deleted')
+    assert.ok(torrents.some(torrent => torrent.hash === hashes[1]))
+    const ledger = JSON.parse(readFileSync(join(dir, 'owned_torrents.json'), 'utf8'))
+    assert.ok(hashes[1] in ledger.torrents, 'The completed download remains app-owned')
+  } finally { torrents = originalTorrents; await request('/api/config', { qbittorrent_user: 'test' }) }
+})
+
+test('bulk submission refreshes cached existing torrents after a torrent was removed externally', async () => {
+  const file = join(dir, 'last_results.json')
+  const original = readFileSync(file)
+  const originalTorrents = structuredClone(torrents)
+  const hash = '5'.repeat(40)
+  const selected = { ...legacyRelease, info_hashes: [hash] }
+  writeFileSync(file, JSON.stringify({ results: [{ key: 'removed-existing', arr: 'Sonarr', title: 'Removed torrent', status: 'upgrade', releases: [selected] }], last_run: null }))
+  try {
+    torrents.push({ hash, name: 'Existing torrent', progress: 0.5, size: 100, dlspeed: 0, state: 'downloading' })
+    await request('/api/config', { qbittorrent_user: 'test' })
+    const selections = [{ key: 'removed-existing', release: 0 }]
+    const preflight = await (await request('/api/download_bulk/preflight', { selections })).json()
+    assert.equal(preflight.existing_torrents, 1)
+    torrents = torrents.filter(torrent => torrent.hash !== hash)
+    const count = actions.length
+    const response = await request('/api/download_bulk', { action: 'start', selections })
+    assert.equal(response.status, 200)
+    const result = await response.json()
+    assert.equal(result.count, 1)
+    assert.deepEqual(result.existing, [])
+    assert.deepEqual(result.failures, [])
+    assert.deepEqual(actions.slice(count).filter(action => action.path === '/api/v2/torrents/add').map(action => action.body.get('urls')), [`magnet:?xt=urn:btih:${hash}`])
+  } finally {
+    await request('/api/download_control', { key: 'removed-existing', release: 0, action: 'remove' })
+    torrents = originalTorrents; writeFileSync(file, original)
+    await request('/api/config', { qbittorrent_user: 'test' })
+  }
+})
+
 test('progress deduplicates hashes, waits for missing batch torrents, and preserves errors or incomplete downloads', async () => {
   const file = join(dir, 'last_results.json')
   const original = readFileSync(file)
@@ -285,4 +363,76 @@ test('accepted download jobs survive disconnects, preserve captured associations
     assert.ok(row.result_keys.includes('changed-result'))
     assert.equal(row.title, 'Captured title')
   } finally { releaseAdd(); heldAdd = null; torrents = torrents.filter(torrent => torrent.hash !== hash); writeFileSync(file, original) }
+})
+
+test('individual downloads, progress, and controls honor the selected per-torrent scope', async () => {
+  const file = join(dir, 'last_results.json')
+  const original = readFileSync(file)
+  const originalTorrents = structuredClone(torrents)
+  const wanted = '3'.repeat(40), unrelated = '4'.repeat(40)
+  const scoped = { ...release, info_hashes: [wanted, unrelated], selected_files: ['01.mkv'], torrent_files: [
+    { hash: wanted, files: [{ name: '01.mkv', length: 300 }] },
+    { hash: unrelated, files: [{ name: '02.mkv', length: 200 }] },
+  ] }
+  torrentFiles = { [wanted]: [{ name: '01.mkv', index: 0 }], [unrelated]: [{ name: '02.mkv', index: 0 }] }
+  writeFileSync(file, JSON.stringify({ results: [{ key: 'scoped-result', arr: 'Sonarr', title: 'Scoped anime', status: 'upgrade', releases: [scoped] }], last_run: null }))
+  try {
+    const count = actions.length
+    const latest = await (await request('/api/results')).json()
+    const response = await request('/api/download', { key: 'scoped-result', release: 0, identity: releaseIdentity(latest.results[0].releases[0]) })
+    assert.equal(response.status, 200, JSON.stringify(await response.json()))
+    assert.deepEqual(actions.slice(count).filter(action => action.path === '/api/v2/torrents/add').map(action => action.body.get('urls')), [`magnet:?xt=urn:btih:${wanted}`])
+    torrents = [{ hash: wanted, name: 'Selected cour', progress: 1, size: 300, dlspeed: 0, state: 'uploading' }]
+    await request('/api/config', { qbittorrent_user: 'test' })
+    const progress = await (await request('/api/download_progress?key=scoped-result&release=0')).json()
+    assert.equal(progress.state, 'complete')
+    assert.equal(progress.missing_torrents, 0)
+    const all = await (await request('/api/download_progress/all')).json()
+    assert.equal(all.downloads['scoped-result\0' + 0].state, 'complete')
+    const controlled = await request('/api/download_control', { key: 'scoped-result', release: 0, action: 'remove' })
+    assert.equal(controlled.status, 200)
+    assert.equal(actions.at(-1)!.body.get('hashes'), wanted)
+    assert.equal(actions.at(-1)!.body.get('deleteFiles'), 'false')
+  } finally { torrentFiles = {}; torrents = originalTorrents; writeFileSync(file, original); await request('/api/config', { qbittorrent_user: 'test' }) }
+})
+
+test('failed selected-file setup removes the torrent and invalidates progress cached during metadata loading', async () => {
+  const file = join(dir, 'last_results.json')
+  const original = readFileSync(file)
+  const originalTorrents = structuredClone(torrents)
+  const hash = '6'.repeat(40)
+  const selected = { ...release, info_hashes: [hash], torrent_files: [{ hash, files: [{ name: '01.mkv', length: 300 }] }] }
+  writeFileSync(file, JSON.stringify({ results: [{ key: 'failed-selection', arr: 'Sonarr', title: 'Failed selection', status: 'upgrade', releases: [selected] }], last_run: null }))
+  torrentFiles = { [hash]: [{ name: 'other.mkv', index: 0 }] }
+  const { promise: filesGate, resolve: releaseFiles } = Promise.withResolvers<void>()
+  heldFiles = filesGate
+  const { promise: filesRequested, resolve: onFilesRequested } = Promise.withResolvers<void>()
+  torrentFilesRequested = onFilesRequested
+  const downloading = request('/api/download', { key: 'failed-selection', release: 0 })
+  try {
+    await Promise.race([filesRequested, downloading.then(() => assert.fail('Download settled before requesting metadata'))])
+    torrents.push({ hash, name: 'Pending metadata', progress: 0, size: 300, dlspeed: 0, state: 'downloading' })
+    await request('/api/config', { qbittorrent_user: 'test' })
+    const pending = await (await request('/api/download_progress?key=failed-selection&release=0')).json()
+    assert.equal(pending.found, true)
+    const count = actions.length
+    releaseFiles(); heldFiles = null
+    const response = await downloading
+    assert.equal(response.status, 502)
+    const error = String((await response.json()).error)
+    assert.match(error, /selected cour files could not be matched/)
+    const removals = actions.slice(count).filter(action => action.path === '/api/v2/torrents/delete')
+    assert.equal(removals.length, 1)
+    assert.equal(removals[0].body.get('hashes'), hash)
+    assert.equal(removals[0].body.get('deleteFiles'), 'false')
+    const progress = await (await request('/api/download_progress?key=failed-selection&release=0')).json()
+    assert.equal(progress.found, false, 'The deleted torrent must not remain visible in a cached progress snapshot')
+    const ledger = JSON.parse(readFileSync(join(dir, 'owned_torrents.json'), 'utf8'))
+    assert.ok(!(hash in ledger.torrents))
+  } finally {
+    releaseFiles(); heldFiles = null; torrentFilesRequested = null
+    await downloading
+    torrentFiles = {}; torrents = originalTorrents; writeFileSync(file, original)
+    await request('/api/config', { qbittorrent_user: 'test' })
+  }
 })

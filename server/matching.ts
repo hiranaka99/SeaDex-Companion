@@ -1,4 +1,4 @@
-import { torrentHashes } from '../shared/download-plan.js'
+import { normalizeTorrentPath, torrentHashes } from '../shared/download-plan.js'
 import type { ReleaseCandidate, Release, ChainPart, ChainEntry, LocalSeason, SeaDexEntry, SeaDexSlot, ResolvedPart } from './types.js'
 
 export function isDownloadable(release: Pick<ReleaseCandidate, 'info_hashes'>): boolean {
@@ -81,19 +81,26 @@ export function scopeReleaseToPart(
       .map((item) => item.parsed!.episode),
   )].sort((left, right) => left - right)
   const splitSeason = partCount > 1
-  if (splitSeason ? episodeNumbers.length <= episodeCount : episodeNumbers.length < episodeCount) return release
+  if (episodeNumbers.length < episodeCount) return release
 
-  const start = splitSeason ? (episodeOffset ?? partIndex * episodeCount) : 0
+  // A part-sized upload is already scoped to its cour, even when its episode
+  // numbering starts at one. Only apply the offset to larger season batches.
+  const start = splitSeason && episodeNumbers.length > episodeCount ? (episodeOffset ?? partIndex * episodeCount) : 0
   const selectedNumbers = episodeNumbers.slice(start, start + episodeCount)
-  if (!selectedNumbers.length) return release
+  if (selectedNumbers.length < episodeCount) return release
   const selected = new Set(selectedNumbers)
   const partNumber = partIndex + 1
   const selectedEpisodeFiles = parsed.filter(({ parsed: episode }) =>
     episode && selected.has(episode.episode) && inScope(episode.season),
   )
   const selectedEpisodeFileSet = new Set(selectedEpisodeFiles.map(({ file }) => file))
+  // The catalog may already have narrowed source_files to one season/cour while
+  // the underlying torrent still contains other seasons or extras.
+  const selectedPaths = new Set(selectedEpisodeFiles.map(({ file }) => normalizeTorrentPath(file.name)))
+  const hasOtherTorrentFiles = release.torrent_files?.some(catalog =>
+    catalog.files.some(file => !selectedPaths.has(normalizeTorrentPath(file.name))))
+  if (selectedEpisodeFiles.length === files.length && !hasOtherTorrentFiles) return release
   if (!splitSeason) {
-    if (selectedEpisodeFiles.length === files.length) return release
     return {
       ...release,
       size: selectedEpisodeFiles.reduce((total, { file }) => total + file.length, 0),
@@ -132,9 +139,10 @@ export function seadexSlot(entry: SeaDexEntry, season: number): SeaDexSlot | nul
   const direct = entry.seasons?.[season]
   if (direct?.candidates?.length) return direct
   const buckets = Object.entries(entry.seasons || {}).filter(([, value]) => value.candidates?.length)
-  if (!buckets.length) return null
-  buckets.sort(([left], [right]) => Math.abs(Number(left) - season) - Math.abs(Number(right) - season) || Number(left) - Number(right))
-  return buckets[0][1]
+  // A single bucket may use release numbering rather than Sonarr numbering.
+  // Multiple buckets explicitly distinguish seasons; guessing the nearest one
+  // would offer another season's files for an uncovered mapped season.
+  return buckets.length === 1 ? buckets[0][1] : null
 }
 
 export function entryParts(entry: ChainEntry): ChainPart[] {

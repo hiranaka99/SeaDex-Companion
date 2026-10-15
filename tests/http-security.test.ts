@@ -3,6 +3,7 @@ import { scryptSync } from 'node:crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
+import { request as httpRequest } from 'node:http'
 import { once } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -203,4 +204,20 @@ test('account setup, authenticated access, revocation, and login throttling work
     body: JSON.stringify({ username: 'administrator', password: 'definitely incorrect' }),
   })
   assert.equal(limited.status, 429)
+})
+
+test('malformed request targets return 400 without terminating the server', async () => {
+  for (const path of ['//[invalid', 'http://[invalid']) {
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const request = httpRequest(baseUrl, { path }, response => {
+        response.resume()
+        response.once('end', () => resolve(response.statusCode))
+      })
+      request.once('error', reject)
+      request.end()
+    })
+    assert.equal(status, 400)
+    assert.equal((await fetch(baseUrl + '/healthz')).status, 200)
+    assert.equal(child.exitCode, null)
+  }
 })

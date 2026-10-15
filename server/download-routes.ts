@@ -161,6 +161,10 @@ export async function handleDownloadRequest(request: IncomingMessage, response: 
       return sendJson(response, 400, { ok: false, error: 'Unknown bulk download action' })
     }
     if (bulkOperationActive || downloadJobs.active()) return sendJson(response, 409, { ok: false, error: 'Another bulk operation is already running' })
+    if (action === 'cancel' && data.selections !== undefined) {
+      if (!Array.isArray(data.selections)) return sendJson(response, 400, { ok: false, error: 'Bulk release selections must be an array' })
+      if (data.selections.some(selection => parseReleaseIndex(selection?.release) === null)) return sendJson(response, 400, { ok: false, error: 'Release must be a non-negative integer' })
+    }
     const config = loadConfig()
     bulkOperationActive = true
     try {
@@ -178,7 +182,7 @@ export async function handleDownloadRequest(request: IncomingMessage, response: 
       const ownedSet = new Set(ownedTorrentsSnapshot())
       const requestedSelections = Array.isArray(data.selections) ? data.selections.length : null
       log('INFO', `Bulk cancel requested: ${requestedSelections === null ? 'all incomplete app-added downloads' : `${requestedSelections} selected release${requestedSelections === 1 ? '' : 's'}`} (tracked torrents: ${ownedSet.size}; delete files: ${data.delete_files === true ? 'yes' : 'no'})`)
-      const torrents = ownedSet.size ? await qbGetTorrents(config, [...ownedSet]) : []
+      const torrents = ownedSet.size ? await qbGetTorrents(config, [...ownedSet], true) : []
       const presentHashes = new Set(
         torrents.map((torrent) => String(torrent.hash || '').toLowerCase()).filter((hash) => /^[0-9a-f]{40}$/.test(hash)),
       )
@@ -195,7 +199,7 @@ export async function handleDownloadRequest(request: IncomingMessage, response: 
             (data.selections as Array<{ key?: unknown; release?: unknown }>).flatMap((selection) => {
               const key = String(selection?.key || '')
               if (key.startsWith('torrent:')) return ownedSet.has(key.slice(8)) && parseReleaseIndex(selection.release) === 0 ? [key.slice(8)] : []
-              const targetKey = `${String(selection?.key || '')}\0${Number.parseInt(String(selection?.release ?? -1), 10)}`
+              const targetKey = `${key}\0${parseReleaseIndex(selection?.release)}`
               return [...(index.byTarget.get(targetKey) || [])]
             }),
           )

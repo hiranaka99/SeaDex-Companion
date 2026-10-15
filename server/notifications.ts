@@ -70,7 +70,7 @@ export function discordMessageBody(result: JsonObject): JsonObject {
     color: DISCORD_EMBED_COLORS[String(result.status || '')] ?? 0x5865f2,
     author: { name: `SeaDex · ${String(result.arr || 'Library')}` },
     fields,
-    footer: { text: 'releases.moe' },
+    footer: { text: 'seadex.moe' },
     timestamp: new Date().toISOString(),
   }
   if (result.url) embed.url = String(result.url)

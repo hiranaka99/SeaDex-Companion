@@ -371,7 +371,7 @@ function Season({ sectionId, r, config, dl, busyDownload, onDownload, onPause, o
   const groups = groupByCour(indexedReleases(r.releases || []))
   const split = groups.some(group => group.part)
   const displaySeasonHave = !r.precise_part_ownership || !split
-  const sources = (r.urls?.length ? r.urls : r.url ? [{ label: 'releases.moe', url: r.url }] : []).filter(source => source.label === 'releases.moe')
+  const sources = (r.urls?.length ? r.urls : r.url ? [{ label: 'seadex.moe', url: r.url }] : []).filter(source => source.label === 'seadex.moe')
   const seasonName = detailsSeasonName(r)
   const ignored = Boolean(r.excluded)
   const unavailable = r.status === 'missing' || r.status === 'uncovered'
@@ -390,7 +390,7 @@ function Season({ sectionId, r, config, dl, busyDownload, onDownload, onPause, o
         <button type="button" className={cx(buttonBase, 'min-h-11 min-w-0 max-w-full justify-center px-3 text-xs', ignored ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line-strong bg-panel text-ink hover:bg-panel-raised')} aria-pressed={ignored} aria-label={(ignored ? 'Include ' : 'Ignore ') + seasonName + ' in bulk downloads and notifications'} title={!r.library_key ? 'Run a new scan to enable season rules' : undefined} disabled={!r.library_key || Boolean(ruleBusy)} onClick={() => onToggleExclusion('', !ignored)}><Icon name="ban" size={15}/><span className="min-w-0 wrap-anywhere">{ignored ? 'Ignored for bulk' : 'Ignore for bulk'}</span></button>
       </div>
 
-      {unavailable ? <p className="m-0 rounded-lg border border-dashed border-line-strong bg-panel px-4 py-3 text-sm text-muted">{r.status === 'uncovered' ? 'This season is not covered on releases.moe' : r.match_status === 'unmatched' || !r.anilist_id ? 'AniList match needs review. Use Correct match to choose the right anime.' : 'Not listed on releases.moe'}</p> : <>
+      {unavailable ? <p className="m-0 rounded-lg border border-dashed border-line-strong bg-panel px-4 py-3 text-sm text-muted">{r.status === 'uncovered' ? 'This season is not covered on seadex.moe' : r.match_status === 'unmatched' || !r.anilist_id ? 'AniList match needs review. Use Correct match to choose the right anime.' : 'Not listed on seadex.moe'}</p> : <>
         {!!r.unavailable_parts?.length && <div className="mb-4 flex flex-wrap items-start gap-2 rounded-lg border border-warn/35 bg-warn/8 px-3 py-2 text-xs text-warn" role="status"><Icon name="alert" size={15}/><div className="min-w-0 flex-1"><strong>Unavailable:</strong> {r.unavailable_parts.map(part => <span key={part.label + ':' + part.reason} className="block wrap-anywhere">{part.label} · {part.reason}</span>)}</div></div>}
         {groups.length === 0 && <p className="m-0 text-sm text-muted">No release details are available. Run a new library scan to refresh this title.</p>}
         {!split && <RecommendationNotes notes={r.notes}/>}

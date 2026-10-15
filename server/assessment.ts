@@ -3,7 +3,17 @@ import { effectiveSeasonParts, entryParts, localPartOwnership, seadexSlot, pickB
 
 export function assessSeason(item: LocalItem, season: number, local: LocalSeason, chain: ChainEntry[], best: Map<number, SeaDexEntry>, libraryKey: string, mappingId: number | undefined, arrUrl: string | null): ResultItem {
   const localGroups: string[] = local.groups
-  const entry = season >= 1 && season <= chain.length ? chain[season - 1] : chain[0]
+  const entry = season === 0 ? chain[0] : chain[season - 1]
+  if (!entry) {
+    return {
+      key: `${item.arr}:item${item.id}:${season}:missing`, group_id: chain[0]?.id ?? null,
+      arr: item.arr, title: item.title, season, library_key: libraryKey, mapping_override: Boolean(mappingId),
+      status: 'missing', match_status: 'unmatched', have: [...localGroups].sort(), local_size: local.size || 0,
+      missing_episode_count: local.missing_episode_count, best_group: null, best_size: 0, releases: [],
+      url: null, notes: 'No AniList season match was found. Review the title mapping before downloading.',
+      image: chain[0]?.cover || null, banner: chain[0]?.banner || null, anilist_id: null, arr_url: arrUrl,
+    }
+  }
   const alid = entry.id
   const parts = effectiveSeasonParts(local, entryParts(entry))
   const partOwnership = localPartOwnership(local, parts)
@@ -31,7 +41,7 @@ export function assessSeason(item: LocalItem, season: number, local: LocalSeason
       unavailableParts.push({ label: label || (season ? `S${String(season).padStart(2, '0')}` : 'Movie'), reason: 'Not listed on SeaDex' })
       continue
     }
-    sources.push({ label: label || 'releases.moe', url: source.url })
+    sources.push({ label: label || 'seadex.moe', url: source.url })
     const slot = seadexSlot(source, season)
     if (!slot) {
       outcomes.push('uncovered')
