@@ -15,7 +15,7 @@ const root = resolve('static')
 const appVersion = `v${JSON.parse(readFileSync('frontend/package.json', 'utf8')).version.replace(/\.0$/, '')}`
 const release = (group, hash) => ({ kind: 'best', releaseGroup: group, tracker: 'Nyaa', quality: '1080p', tags: [], size: 200, info_hashes: [hash.repeat(40)], downloadable: true, selected_files: hash === 'a' ? ['01.mkv'] : ['01.mkv', '02.mkv'], torrent_files: [{ hash: hash.repeat(40), files: [{ name: '01.mkv', length: 120 }, { name: '02.mkv', length: 80 }] }] })
 const example = { key: 'Sonarr:1:1:Example', group_id: 1, library_key: 'Sonarr:item1', title: 'Example anime', arr: 'Sonarr', season: 1, status: 'upgrade', match_status: 'matched', have: ['Old group'], local_size: 100, best_size: 200, best_group: 'Example', anilist_id: 1, image: null, banner: null, url: null, notes: null, arr_url: null, releases: [release('Example', 'a'), release('Alternative', 'b')] }
-let config = { sonarr_url: 'http://sonarr.local', sonarr_key: '', sonarr_key_configured: true, radarr_url: '', radarr_key: '', radarr_key_configured: false, sonarr_category: 'sonarr-anime', radarr_category: '', qbittorrent_url: 'http://qbit.local', qbittorrent_user: 'test', qbittorrent_pass: '', qbittorrent_pass_configured: true, webhook: '', webhook_configured: false, notify_enabled: false, hidden: [], scan_schedule: { enabled: false, mode: 'interval', interval_minutes: 60, times: ['03:00'], weekdays: [0], timezone: 'UTC', missed_run: 'skip' } }
+let config = { sonarr_url: 'http://sonarr.local', sonarr_key: '', sonarr_key_configured: true, radarr_url: '', radarr_key: '', radarr_key_configured: false, sonarr_category: 'sonarr-anime', radarr_category: '', qbittorrent_url: 'http://qbit.local', qbittorrent_user: 'test', qbittorrent_pass: '', qbittorrent_pass_configured: true, webhook: '', webhook_configured: false, notify_enabled: false, unhide_on_new_best: false, hidden: [], scan_schedule: { enabled: false, mode: 'interval', interval_minutes: 60, times: ['03:00'], weekdays: [0], timezone: 'UTC', missed_run: 'skip' } }
 let revision = 1
 let resultRequests = 0
 let statusRequests = 0
@@ -70,7 +70,7 @@ const server = createServer(async (req, res) => {
       if (statusFailure) { res.statusCode = 503; response = { error: 'Fixture server unavailable' } }
       else response = { results_revision: String(revision), running: false, progress: 0, total: 0, message: 'Idle', error: null, cancelled: false, trigger: null, source_errors: {}, last_run: '2026-10-02 12:00:00', next_check: null, webhook_scan: { queued: false, due_at: null, sources: [] }, ...statusOverrides }
     }
-    else if (path === '/api/results') { resultRequests++; response = { results: fixtureResults || [example, { ...example, key: 'Sonarr:item2:1:missing', library_key: 'Sonarr:item2', group_id: null, title: 'Unmatched anime', status: 'missing', match_status: 'unmatched', anilist_id: null, best_group: null, releases: [] }], last_run: '2026-10-02 12:00:00' } }
+    else if (path === '/api/results') { resultRequests++; response = { hidden: config.hidden, results: fixtureResults || [example, { ...example, key: 'Sonarr:item2:1:missing', library_key: 'Sonarr:item2', group_id: null, title: 'Unmatched anime', status: 'missing', match_status: 'unmatched', anilist_id: null, best_group: null, releases: [] }], last_run: '2026-10-02 12:00:00' } }
     else if (path === '/api/download_progress/all') response = { ok: true, downloads: progressMode === 'absent' ? {} : { [example.key + '\0' + 0]: progressFor(progressMode === 'downloading' ? originalRelease : example.releases[0]) } }
     else if (path === '/api/logs') { if (logFailure) { res.statusCode = 503; response = { error: 'Fixture log unavailable' } } else response = { lines: fixtureLogs } }
     else if (path === '/api/download_bulk/preflight') {
@@ -347,14 +347,36 @@ try {
 
   await click('Configuration')
   await wait(`document.querySelector('input[name=sonarr_url]')`)
+  await click('Automation & webhooks')
+  const unhideSwitch = '[role=switch][aria-labelledby=unhide-on-new-best-label]'
+  assert.equal(await evaluate(`document.querySelector('${unhideSwitch}').getAttribute('aria-checked')`), 'false')
+  await evaluate(`document.querySelector('${unhideSwitch}').focus()`)
+  await key('Enter')
+  assert.equal(await evaluate(`document.querySelector('${unhideSwitch}').getAttribute('aria-checked')`), 'true')
+  await capture('unhide-setting-desktop')
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+  await evaluate(`document.querySelector('${unhideSwitch}').scrollIntoView({ block: 'center' })`)
+  assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth`), 'Unhide setting fits mobile width')
+  await capture('unhide-setting-mobile')
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
   await fill('input[name=sonarr_url]', 'http://draft.local')
   await wait(`document.body.textContent.includes('Unsaved changes')`)
+  config.hidden = ['1']; revision++
+  await pause(10_500)
+  await wait(`!document.querySelector('.library-grid [aria-label="Details for Example anime"]')`)
+  assert.equal(await evaluate(`document.querySelector('input[name=sonarr_url]').value`), 'http://draft.local', 'Visibility updates preserve unsaved configuration')
+  config.hidden = []; revision++
+  await pause(10_500)
+  await wait(`document.querySelector('.library-grid [aria-label="Details for Example anime"]')`)
+  assert.equal(await evaluate(`document.querySelector('${unhideSwitch}').getAttribute('aria-checked')`), 'true', 'Automatic unhiding preserves the settings draft')
+  console.log('PASS unhide setting keyboard control, mobile layout, live visibility refresh, and draft preservation')
   await click('Scan history')
   await click('Configuration')
   assert.equal(await evaluate(`document.querySelector('input[name=sonarr_url]').value`), 'http://draft.local')
   await click('Save configuration')
   await wait(`document.body.textContent.includes('All configuration changes saved')`)
   assert.equal(saved.at(-1).sonarr_url, 'http://draft.local')
+  assert.equal(saved.at(-1).unhide_on_new_best, true)
   console.log('PASS settings draft survives navigation and saves')
 
   await fill('input[name=sonarr_url]', 'http://next.local')

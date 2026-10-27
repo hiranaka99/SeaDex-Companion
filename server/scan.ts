@@ -11,6 +11,7 @@ import { loadLocalLibrary, arrItemUrl } from './library.js'
 import { anilistChain } from './anilist.js'
 
 import { autoNotifyNew } from './notifications.js'
+import { unhideNewBestReleases } from './hidden.js'
 import type { Config, JsonObject, ScanScope, ScanTrigger, LocalItem, LocalSeason, ResultItem } from './types.js'
 
 export interface ScanDependencies {
@@ -20,6 +21,7 @@ export interface ScanDependencies {
   loadCache?: typeof loadCache
   saveLastResults?: typeof saveLastResults
   autoNotifyNew?: typeof autoNotifyNew
+  unhideNewBestReleases?: typeof unhideNewBestReleases
   loadUserRules?: typeof loadUserRules
   recordScanHistory?: (previous: JsonObject[], current: JsonObject[], runAt: string, file?: string, trigger?: ScanTrigger, metadata?: { durationSeconds?: number; scannedTitles?: number; sourceErrors?: Record<string, string>; outcome?: ScanHistoryEntry['outcome']; error?: string }) => ScanHistoryEntry
 }
@@ -27,7 +29,7 @@ export interface ScanDependencies {
 /** Resolve dependencies once; overrides never disable another subsystem. */
 export function createScanService(overrides: ScanDependencies = {}) {
   const dependencies = {
-    seadexBest, anilistChain, loadCache, saveLastResults, autoNotifyNew, loadUserRules, recordScanHistory,
+    seadexBest, anilistChain, loadCache, saveLastResults, autoNotifyNew, unhideNewBestReleases, loadUserRules, recordScanHistory,
     ...overrides,
     loadLibrary: overrides.localItems ? async (config: Config, scope: ScanScope = {}) => ({ items: await overrides.localItems!(config, scope), sourceErrors: {} }) : loadLocalLibrary,
   }
@@ -113,6 +115,8 @@ async function performScan(config: Config, dependencies: Required<Omit<ScanDepen
     setState({ progress: items.length, message: Object.keys(sourceErrors).length ? 'Done with integration errors' : 'Done', results: finalResults, last_run: lastRun, source_errors: sourceErrors })
     stage = 'saving scan results'
     ;dependencies.saveLastResults(finalResults, lastRun)
+    try { dependencies.unhideNewBestReleases(previousResults, finalResults) }
+    catch (error) { log('WARNING', `Could not restore hidden anime with new best releases: ${errorMessage(error)}`) }
     try {
       const metadata = { durationSeconds: Math.round((Date.now() - started) / 100) / 10, scannedTitles: items.length, sourceErrors }
       dependencies.recordScanHistory(previousResults, finalResults, lastRun, HISTORY_FILE, trigger, metadata)

@@ -100,6 +100,8 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
       if (!mounted.current || request !== resultsRequest.current || (generation !== undefined && generation !== pollGeneration.current)) return
       api.invalidateDownloadProgress()
       setResults(data.results || [])
+      const hidden = data.hidden
+      if (hidden) setConfig(current => current && JSON.stringify(current.hidden) !== JSON.stringify(hidden) ? { ...current, hidden } : current)
       setLastRun(data.last_run || null)
       setResultsError('')
       return true
