@@ -257,7 +257,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
   if (method === 'GET' && path === '/api/results') {
     const state = getState()
     const payload = state.running || state.results.length ? { results: state.results, last_run: state.last_run } : (loadLastResults() || { results: [], last_run: null })
-    return sendJson(response, 200, { ...payload, results: applyUserRulesToResults(payload.results || []) })
+    return sendJson(response, 200, { ...payload, results: applyUserRulesToResults(payload.results || []), hidden: loadConfig().hidden })
   }
 
   if (method === 'GET' && path === '/api/logs') {

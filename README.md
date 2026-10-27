@@ -23,6 +23,7 @@ SeaDex Companion is a self-hosted web UI that compares your **Sonarr** and **Rad
 - Matching-review status and aired-episode missing counts
 - Manual AniList corrections and season/cour exclusions
 - Interval, daily, or weekly scans with timezone and missed-run controls
+- Optional automatic unhiding when a scan finds new best releases for hidden anime (Configuration → Automation & webhooks; off by default)
 - Sonarr and Radarr webhooks for incremental scans when titles are added
 - Scan history, change feed, Discord notifications, and live server logs
 - Password-protected UI, Argon2ID password hashing, session revocation, and AES-256-GCM credential encryption

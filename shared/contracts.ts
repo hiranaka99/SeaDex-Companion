@@ -111,6 +111,7 @@ export interface Config {
   qbittorrent_pass: string
   webhook: string
   notify_enabled: boolean
+  unhide_on_new_best: boolean
   scan_schedule: ScanSchedule
   hidden: string[]
 }

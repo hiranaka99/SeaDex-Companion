@@ -77,7 +77,7 @@ export const getStatus = () => api<Status>('/api/status')
 export const checkForUpdates = () => api<{ current: string; latest: string | null; url: string | null }>('/api/update-check')
 
 export const getResults = () =>
-  api<{ results: ResultItem[]; last_run: string | null }>('/api/results')
+  api<{ results: ResultItem[]; last_run: string | null; hidden?: string[] }>('/api/results')
 
 export const getScanHistory = () => api<{ scans: ScanHistoryEntry[] }>('/api/history')
 

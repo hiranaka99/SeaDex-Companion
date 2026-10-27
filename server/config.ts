@@ -19,6 +19,7 @@ export const DEFAULT_CONFIG: Config = {
   qbittorrent_pass: '',
   webhook: '',
   notify_enabled: true,
+  unhide_on_new_best: false,
   scan_schedule: {
     enabled: true,
     mode: 'interval',
@@ -220,9 +221,11 @@ export function applyConfigUpdate(config: Config, input: unknown): Config {
   for (const key of ['sonarr_url', 'radarr_url', 'sonarr_category', 'radarr_category', 'qbittorrent_url', 'qbittorrent_user'] as const) {
     if (key in data) next[key] = key === 'sonarr_url' || key === 'radarr_url' ? arrBaseUrl(data[key]) : String(data[key] ?? '').trim()
   }
-  if ('notify_enabled' in data) {
-    if (typeof data.notify_enabled !== 'boolean') throw new Error('notify_enabled must be a boolean')
-    next.notify_enabled = data.notify_enabled
+  for (const key of ['notify_enabled', 'unhide_on_new_best'] as const) {
+    if (key in data) {
+      if (typeof data[key] !== 'boolean') throw new Error(`${key} must be a boolean`)
+      next[key] = data[key]
+    }
   }
   if ('hidden' in data) next.hidden = Array.isArray(data.hidden) ? data.hidden.filter((key): key is string => typeof key === 'string' && Boolean(key)) : []
   if ('scan_schedule' in data) next.scan_schedule = normalizeScanSchedule(data.scan_schedule)
