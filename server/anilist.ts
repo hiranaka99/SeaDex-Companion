@@ -28,6 +28,10 @@ async function pacedAniList(payload: JsonObject, search: boolean): Promise<any> 
       await sleep((Number(response.headers.get('Retry-After') || 60) + 1) * 1000)
       continue
     }
+    if (response.status === 404) {
+      log('WARNING', `AniList ${search ? 'search ' : ''}returned HTTP 404 (not found / non-anime ID), skipping`)
+      return search ? [] : {}
+    }
     if (!response.ok) {
       const detail = (await response.text()).slice(0, 160)
       lastError = `HTTP ${response.status}${detail ? `: ${detail}` : ''}`
@@ -43,6 +47,10 @@ async function pacedAniList(payload: JsonObject, search: boolean): Promise<any> 
       continue
     }
     if (Array.isArray(body?.errors) && body.errors.length) {
+      if (body.errors.some((error: JsonObject) => error?.status === 404 || error?.message === 'Not Found.')) {
+        log('WARNING', `AniList ${search ? 'search ' : ''}returned GraphQL 404 Not Found, skipping`)
+        return search ? [] : {}
+      }
       lastError = body.errors.map((error: JsonObject) => error.message || 'GraphQL error').join('; ')
       log('WARNING', `AniList ${search ? 'search ' : ''}GraphQL error, retrying: ${lastError}`)
       await sleep(3000)
@@ -167,7 +175,7 @@ export async function anilistChain(title: string, cache: JsonObject, dependencie
   if (!base) return []
   const chainKey = `chain:v8:${base.id}`
   if (cache[chainKey]) return cache[chainKey].chain || []
-  const query = 'query($id:Int){Media(id:$id,type:ANIME){id format season seasonYear episodes title{romaji english native} coverImage{large extraLarge} bannerImage relations{edges{relationType node{id}}}}}'
+  const query = 'query($id:Int){Media(id:$id,type:ANIME){id format season seasonYear episodes title{romaji english native} coverImage{large extraLarge} bannerImage relations{edges{relationType node{id type}}}}}'
   const nodes = new Map<number, JsonObject>()
   const seen = new Set<number>([base.id])
   const queue = [base.id as number]
@@ -178,12 +186,14 @@ export async function anilistChain(title: string, cache: JsonObject, dependencie
     nodes.set(id, data)
     for (const edge of data.relations?.edges || []) {
       const nextId = edge.node?.id
-      if (edge.relationType === 'SEQUEL' && nextId && !seen.has(nextId)) {
+      const nextType = edge.node?.type
+      if (edge.relationType === 'SEQUEL' && (!nextType || nextType === 'ANIME') && nextId && !seen.has(nextId)) {
         seen.add(nextId)
         queue.push(nextId)
       }
     }
   }
+  if (overrideId && !nodes.has(base.id)) return []
   const discovery = new Map([...nodes.keys()].map((id, index) => [id, index]))
   const seasonIds = [...nodes.keys()].filter((id) => id !== base.id && SEASON_FORMATS.has(nodes.get(id)?.format))
   seasonIds.sort((left, right) => {
