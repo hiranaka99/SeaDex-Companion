@@ -31,7 +31,7 @@ export default function SeasonBadge({ season, fallback, className, animeTitle = 
     ? parts.map((part, index) => `${part}: ${tones[index].label}`).join('; ')
     : tone.label
 
-  const badgeClass = cx(className, 'season-badge inline-flex min-h-8 min-w-11 items-center justify-center text-ink')
+  const badgeClass = cx(className, 'season-badge relative inline-flex min-h-8 min-w-11 items-center justify-center text-ink')
 
   // Hard stops give each cour an equal segment, in cour order from left to right.
   const gradient = (opacity: number) => `linear-gradient(to right, ${tones.map((partTone, index) => {

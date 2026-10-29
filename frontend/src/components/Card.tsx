@@ -59,7 +59,7 @@ function jumpToDetails(id: string) {
 }
 
 const CARD_BASE =
-  'group/card flex flex-col overflow-hidden rounded-card border border-line bg-panel transition-opacity duration-200'
+  'group/card relative flex flex-col overflow-hidden rounded-card border border-line bg-panel transition-opacity duration-200'
 const CARD_STATUS: Record<string, { icon: IconName; color: string }> = {
   upgrade: { icon: 'arrow-up', color: 'text-accent-bright' },
   best: { icon: 'check', color: 'text-good' },
@@ -225,7 +225,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
       </div>
         <div className="library-card-seasons flex flex-wrap gap-1.5 px-3.5 pb-3.5 max-[600px]:px-3 max-[600px]:pb-3" aria-label={`${seasonCount} seasons`}>
           {group.seasons.slice(0, 6).map((season) => <SeasonBadge key={season.key} season={season} fallback={st} animeTitle={group.title} className="rounded-md border px-2 py-1 text-xs font-extrabold"/>)}
-          {seasonCount > 6 && <span className="rounded-md border border-line bg-panel-raised px-2 py-1 text-xs font-bold text-muted" title={`View all ${seasonCount} seasons in Details`}>+{seasonCount - 6}<span className="sr-only"> more seasons; open Details to view all {seasonCount} seasons</span></span>}
+          {seasonCount > 6 && <span className="relative rounded-md border border-line bg-panel-raised px-2 py-1 text-xs font-bold text-muted" title={`View all ${seasonCount} seasons in Details`}>+{seasonCount - 6}<span className="sr-only"> more seasons; open Details to view all {seasonCount} seasons</span></span>}
         </div>
       {activeDownloads.length > 0 && <div className="border-t border-line px-3.5 py-3 max-[600px]:px-3">
             <DownloadsPanel
