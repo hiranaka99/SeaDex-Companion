@@ -1,9 +1,116 @@
 import type { ChainEntry, ResultItem, LocalItem, LocalSeason, SeaDexEntry, ResolvedPart } from './types.js'
 import { effectiveSeasonParts, entryParts, localPartOwnership, seadexSlot, pickBest, scopeReleaseToPart, partBestGroups, commonBestRelease, orderedPartReleases, releaseDict } from './matching.js'
 
+export interface ResolvedSeasonChain {
+  entry: ChainEntry | undefined
+  seasonEpisodeOffset: number
+  multiSeasonSplit: boolean
+}
+
+function localSeasonEpisodeCount(local?: LocalSeason): number {
+  if (!local) return 0
+  return Number(local.episode_count || local.episode_numbers?.length || 0)
+}
+
+export function resolveSeasonChainEntry(item: LocalItem, season: number, chain: ChainEntry[]): ResolvedSeasonChain {
+  if (season === 0) return { entry: chain[0], seasonEpisodeOffset: 0, multiSeasonSplit: false }
+  const seasonNumbers = Object.keys(item.seasons || {}).map(Number).filter((n) => Number.isInteger(n) && n > 0).sort((a, b) => a - b)
+  if (seasonNumbers.length <= 1 || seasonNumbers[0] !== 1 || !seasonNumbers.includes(season)) {
+    return { entry: chain[season - 1], seasonEpisodeOffset: 0, multiSeasonSplit: false }
+  }
+  let chainIndex = 0
+  let seasonIndex = 0
+  while (seasonIndex < seasonNumbers.length && chainIndex < chain.length) {
+    const currentSeason = seasonNumbers[seasonIndex]
+    const localCount = localSeasonEpisodeCount(item.seasons[currentSeason])
+    const currentChain = chain[chainIndex]
+    const chainCount = Number(currentChain?.episodeCount || 0)
+    const nextSeason = seasonNumbers[seasonIndex + 1]
+    const nextLocalCount = nextSeason !== undefined ? localSeasonEpisodeCount(item.seasons[nextSeason]) : 0
+
+    // Case 1: One continuous AniList entry split across multiple TVDB seasons (e.g. Bleach S01-S16 -> 269).
+    if (
+      currentChain.parts.length === 1 &&
+      chainCount > 0 &&
+      localCount > 0 &&
+      nextLocalCount > 0 &&
+      localCount + nextLocalCount <= chainCount
+    ) {
+      let offset = 0
+      while (seasonIndex < seasonNumbers.length) {
+        const splitSeason = seasonNumbers[seasonIndex]
+        const splitCount = localSeasonEpisodeCount(item.seasons[splitSeason])
+        if (splitCount <= 0 || offset + splitCount > chainCount) break
+        if (splitSeason === season) {
+          return {
+            entry: {
+              ...currentChain,
+              season,
+              episodeCount: splitCount,
+              parts: [{ ...currentChain.parts[0], episodeCount: splitCount }],
+            },
+            seasonEpisodeOffset: offset,
+            multiSeasonSplit: true,
+          }
+        }
+        offset += splitCount
+        seasonIndex += 1
+      }
+      chainIndex += 1
+      continue
+    }
+
+    // Case 2: Multiple AniList sequel entries grouped into a single TVDB season (e.g. Bleach S17 -> TYBW Cours 1-4).
+    const nextChainCount = Number(chain[chainIndex + 1]?.episodeCount || 0)
+    if (
+      localCount > 0 &&
+      chainCount > 0 &&
+      nextChainCount > 0 &&
+      chainCount + nextChainCount <= localCount
+    ) {
+      const mergedEntries: ChainEntry[] = []
+      let mergedEpisodes = 0
+      while (chainIndex < chain.length) {
+        const candidate = chain[chainIndex]
+        const candidateCount = Number(candidate?.episodeCount || 0)
+        if (candidateCount <= 0 || mergedEpisodes + candidateCount > localCount) break
+        mergedEntries.push(candidate)
+        mergedEpisodes += candidateCount
+        chainIndex += 1
+      }
+      if (currentSeason === season) {
+        const first = mergedEntries[0]
+        const parts = mergedEntries.flatMap((entry) => entryParts(entry))
+        return {
+          entry: {
+            season,
+            id: first.id,
+            ids: mergedEntries.flatMap((entry) => entry.ids),
+            parts,
+            cover: first.cover,
+            banner: first.banner,
+            episodeCount: mergedEpisodes,
+          },
+          seasonEpisodeOffset: 0,
+          multiSeasonSplit: false,
+        }
+      }
+      seasonIndex += 1
+      continue
+    }
+
+    if (currentSeason === season) {
+      return { entry: currentChain, seasonEpisodeOffset: 0, multiSeasonSplit: false }
+    }
+    seasonIndex += 1
+    chainIndex += 1
+  }
+  return { entry: undefined, seasonEpisodeOffset: 0, multiSeasonSplit: false }
+}
+
 export function assessSeason(item: LocalItem, season: number, local: LocalSeason, chain: ChainEntry[], best: Map<number, SeaDexEntry>, libraryKey: string, mappingId: number | undefined, arrUrl: string | null): ResultItem {
   const localGroups: string[] = local.groups
-  const entry = season === 0 ? chain[0] : chain[season - 1]
+  const { entry, seasonEpisodeOffset, multiSeasonSplit } = resolveSeasonChainEntry(item, season, chain)
   if (!entry) {
     return {
       key: `${item.arr}:item${item.id}:${season}:missing`, group_id: chain[0]?.id ?? null,
@@ -30,7 +137,7 @@ export function assessSeason(item: LocalItem, season: number, local: LocalSeason
   const sources: { label: string; url: string }[] = []
   const unavailableParts: { label: string; reason: string }[] = []
   const outcomes: ('missing' | 'uncovered' | 'resolved')[] = []
-  let episodeOffset = 0
+  let episodeOffset = seasonEpisodeOffset
   for (const [partIndex, part] of parts.entries()) {
     const currentEpisodeOffset = episodeOffset
     episodeOffset += Number(part.episodeCount || 0)
@@ -48,10 +155,13 @@ export function assessSeason(item: LocalItem, season: number, local: LocalSeason
       unavailableParts.push({ label: label || (season ? `S${String(season).padStart(2, '0')}` : 'Movie'), reason: 'No releases available on SeaDex' })
       continue
     }
-    const [selected, alternatives] = pickBest(slot.candidates, part.episodeCount)
+    const eligibleCandidates = multiSeasonSplit
+      ? slot.candidates.filter((candidate) => (candidate.file_count || 0) >= currentEpisodeOffset + Number(part.episodeCount || 0))
+      : slot.candidates
+    const [selected, alternatives] = pickBest(eligibleCandidates, part.episodeCount)
     if (!selected) {
       outcomes.push('uncovered')
-      unavailableParts.push({ label: label || (season ? `S${String(season).padStart(2, '0')}` : 'Movie'), reason: 'No release candidates available' })
+      unavailableParts.push({ label: label || (season ? `S${String(season).padStart(2, '0')}` : 'Movie'), reason: multiSeasonSplit ? 'No releases available on SeaDex' : 'No release candidates available' })
       continue
     }
     outcomes.push('resolved')
