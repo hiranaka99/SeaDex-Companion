@@ -85,7 +85,9 @@ export function scopeReleaseToPart(
 
   // A part-sized upload is already scoped to its cour, even when its episode
   // numbering starts at one. Only apply the offset to larger season batches.
-  const start = splitSeason && episodeNumbers.length > episodeCount ? (episodeOffset ?? partIndex * episodeCount) : 0
+  const start = (splitSeason || (episodeOffset ?? 0) > 0) && episodeNumbers.length > episodeCount
+    ? (episodeOffset ?? partIndex * episodeCount)
+    : 0
   const selectedNumbers = episodeNumbers.slice(start, start + episodeCount)
   if (selectedNumbers.length < episodeCount) return release
   const selected = new Set(selectedNumbers)

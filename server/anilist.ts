@@ -8,7 +8,7 @@ let lastAnilist = 0
 async function pacedAniList(payload: JsonObject, search: boolean): Promise<any> {
   let lastError = 'unknown error'
   for (let attempt = 0; attempt < 6; attempt += 1) {
-    const wait = 2050 - (Date.now() - lastAnilist)
+    const wait = 2100 - (Date.now() - lastAnilist)
     if (wait > 0) await sleep(wait)
     lastAnilist = Date.now()
     let response: Response
@@ -17,15 +17,20 @@ async function pacedAniList(payload: JsonObject, search: boolean): Promise<any> 
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
       }, 30_000)
     } catch (error) {
+      lastAnilist = Date.now()
       scanRequests.getStore()?.throwIfAborted()
       lastError = errorMessage(error)
       log('WARNING', `AniList ${search ? 'search ' : ''}network error, retrying: ${lastError}`)
       await sleep(3000)
       continue
     }
+    lastAnilist = Date.now()
     if (response.status === 429) {
-      log('WARNING', `AniList ${search ? 'search ' : ''}rate limit (HTTP 429), backing off`)
-      await sleep((Number(response.headers.get('Retry-After') || 60) + 1) * 1000)
+      const retryAfter = Number(response.headers.get('Retry-After') || 0)
+      const backoffMs = retryAfter > 0 ? (retryAfter + 1) * 1000 : 3000
+      log('WARNING', `AniList ${search ? 'search ' : ''}rate limit (HTTP 429), backing off ${Math.round(backoffMs / 1000)}s`)
+      await sleep(backoffMs)
+      lastAnilist = Date.now()
       continue
     }
     if (response.status === 404) {
@@ -81,9 +86,20 @@ export async function searchAniListTitles(title: string): Promise<JsonObject[]> 
   })
 }
 
+const TITLE_YEAR_RE = /\s*\((19\d\d|20\d\d)\)\s*$/
+
+export function extractTitleYear(title: string): number | null {
+  const match = String(title || '').match(TITLE_YEAR_RE)
+  return match ? Number(match[1]) : null
+}
+
+export function stripTitleYear(title: string): string {
+  return String(title || '').replace(TITLE_YEAR_RE, '').trim()
+}
+
 export function normalizeTitle(title: string): string {
   if (!title) return ''
-  return title.replace(/×/g, 'x').replace(/[‘’]/g, "'").replace(/[–—]/g, '-').replace(/…/g, '...')
+  return stripTitleYear(title).replace(/×/g, 'x').replace(/[‘’]/g, "'").replace(/[–—]/g, '-').replace(/…/g, '...')
     .replace(/[«»]/g, '').replace(/\s*[:-]\s*(The\s+Movie|Movie|Theatrical)\b.*$/i, '')
     .replace(/\s+/g, ' ').trim()
 }
@@ -91,8 +107,9 @@ export function normalizeTitle(title: string): string {
 export function searchCandidates(title: string): string[] {
   const normalized = normalizeTitle(title)
   const spaced = normalized.replace(/([a-z])\s*([Xx])\s*([A-Z])/g, '$1 $2 $3')
+  const candidates = extractTitleYear(title) ? [normalized, spaced, title] : [title, normalized, spaced]
   const seen = new Set<string>()
-  return [title, normalized, spaced].filter((candidate) => {
+  return candidates.filter((candidate) => {
     const key = candidate?.toLowerCase()
     if (!key || seen.has(key)) return false
     seen.add(key)
@@ -104,13 +121,27 @@ export function titleKey(title?: string | null): string {
   return (title || '').toLowerCase().replace(/’/g, "'").replace(/[^a-z0-9]+/g, '')
 }
 
+function collapseRomanization(key: string): string {
+  return key.replace(/uu/g, 'u').replace(/ou/g, 'o')
+}
+
 export function pickAniListSearchResult(candidates: JsonObject[], title: string): JsonObject | null {
   const wanted = titleKey(title)
+  const wantedStripped = titleKey(stripTitleYear(title))
+  const wantedCollapsed = collapseRomanization(wantedStripped || wanted)
+  const wantedYear = extractTitleYear(title)
   const score = (media: JsonObject): number[] => {
     const titles = media.title || {}
-    const exact = Boolean(wanted && ['english', 'romaji', 'native'].some((key) => titleKey(titles[key]) === wanted))
+    const exact = Boolean((wanted || wantedStripped) && ['english', 'romaji', 'native'].some((key) => {
+      const candidateKey = titleKey(titles[key])
+      if (!candidateKey) return false
+      return candidateKey === wanted ||
+        (Boolean(wantedStripped) && candidateKey === wantedStripped) ||
+        (Boolean(wantedCollapsed) && collapseRomanization(candidateKey) === wantedCollapsed)
+    }))
+    const yearMatch = wantedYear ? (Number(media.seasonYear) === wantedYear ? 1 : 0) : 0
     const seasonFormat = ['TV', 'TV_SHORT', 'ONA'].includes(media.format)
-    return [exact ? 3 : 0, seasonFormat ? 1 : 0, -(media.seasonYear || 9999), -(media.id || 0)]
+    return [exact ? 3 : 0, yearMatch, seasonFormat ? 1 : 0, -(media.seasonYear || 9999), -(media.id || 0)]
   }
   const compare = (left: number[], right: number[]) => {
     for (let i = 0; i < left.length; i += 1) if (left[i] !== right[i]) return left[i] - right[i]
@@ -124,7 +155,7 @@ export async function anilistLookup(title: string, cache: JsonObject, search = a
   if (cache[cacheKey]) return cache[cacheKey]
   const query = 'query($t:String){Page(perPage:10){media(search:$t,type:ANIME,sort:SEARCH_MATCH){id format season seasonYear episodes title{romaji english native} coverImage{large extraLarge} bannerImage}}}'
   for (const candidate of searchCandidates(title)) {
-    const data = pickAniListSearchResult(await search(query, { t: candidate }), candidate)
+    const data = pickAniListSearchResult(await search(query, { t: candidate }), title)
     if (data) {
       const cover = data.coverImage || {}
       const entry = { id: data.id, cover: cover.extraLarge || cover.large, banner: data.bannerImage }
