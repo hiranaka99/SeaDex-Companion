@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { test } from 'node:test'
 import {
-  api, alMedia, autoNotifyNew, autocheckState, CACHE_FILE, CONFIG_FILE, DEFAULT_CONFIG,
+  api, alMedia, anilistChain, anilistLookup, autoNotifyNew, autocheckState, CACHE_FILE, CONFIG_FILE, DEFAULT_CONFIG,
   DATA_DIR, ENCRYPTED_SECRETS_FILE, getState, HISTORY_FILE, loadCache, loadConfig, loadLastResults,
-  loadScanHistory, loadUserRules, LOG_FILE, normalizeQbStates, qbGetTorrents, readLogTail,
+  loadScanHistory, loadUserRules, LOG_FILE, normalizeQbStates, pickAniListSearchResult, qbGetTorrents, readLogTail,
   resetRuntimeForTests, RESULTS_FILE, runScan, cancelScan, setState, USER_RULES_FILE, mergeComplementaryCandidates,
   loadLocalLibrary, seadexBest, scopeReleaseToPart,
 } from '../server/app.js'
@@ -347,4 +347,125 @@ test('release uploads without known episode coverage stay separate from compleme
     assert.equal(merged.find(release => release.info_hashes.includes('a'.repeat(40)))?.info_hashes.length, 1)
     if (uploads.length === 3) assert.equal(merged.find(release => release.info_hashes.includes('b'.repeat(40)))?.info_hashes.length, 2)
   }
+})
+
+test('AniList chain ignores non-anime sequel relations and does not retry HTTP 404 responses', async () => {
+  const queriedIds: number[] = []
+  const chain = await anilistChain('Apocalypse Hotel', {}, {
+    lookup: (async () => ({ id: 180675, cover: 'cover-180675', banner: 'banner-180675' })) as any,
+    media: (async (_query: string, variables: { id?: number }) => {
+      queriedIds.push(Number(variables.id))
+      if (variables.id === 180675) {
+        return {
+          id: 180675, format: 'TV', season: 'SPRING', seasonYear: 2025, episodes: 12,
+          title: { english: 'Apocalypse Hotel', romaji: 'Apocalypse Hotel' },
+          relations: { edges: [
+            { relationType: 'SEQUEL', node: { id: 207065, type: 'MANGA' } },
+            { relationType: 'SEQUEL', node: { id: 999999, type: 'ANIME' } },
+          ] },
+        }
+      }
+      return {}
+    }) as any,
+    persist: (() => undefined) as any,
+  })
+  assert.deepEqual(queriedIds, [180675, 999999])
+  assert.deepEqual(chain.map(entry => entry.ids), [[180675]])
+
+  const originalFetch = globalThis.fetch
+  let attempts = 0
+  globalThis.fetch = (async () => {
+    attempts += 1
+    return new Response(JSON.stringify({ errors: [{ message: 'Not Found.', status: 404 }], data: { Media: null } }), { status: 404 })
+  }) as typeof fetch
+  try {
+    const data = await alMedia('query($id:Int){Media(id:$id,type:ANIME){id}}', { id: 207065 })
+    assert.deepEqual(data, {})
+    assert.equal(attempts, 1)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('AniList title lookup strips trailing TVDB year disambiguation and prefers the matching release year', async () => {
+  const queries: string[] = []
+  const dororoCandidates = [
+    { id: 5760, format: 'TV', seasonYear: 1969, title: { english: 'Dororo', romaji: 'Dororo' }, coverImage: { large: 'cover-1969' } },
+    { id: 101347, format: 'TV', seasonYear: 2019, title: { english: 'Dororo', romaji: 'Dororo' }, coverImage: { large: 'cover-2019' } },
+  ]
+  const entry = await anilistLookup('Dororo (2019)', {}, (async (_query: string, variables: { t?: string }) => {
+    queries.push(String(variables.t))
+    return variables.t === 'Dororo' ? dororoCandidates : []
+  }) as any, () => undefined)
+  assert.equal(entry?.id, 101347)
+  assert.equal(queries[0], 'Dororo')
+
+  const yuukiCandidates = [
+    { id: 97856, format: 'TV_SHORT', seasonYear: 2017, title: { romaji: 'Yuuki Yuuna wa Yuusha-bu Shozoku' } },
+    { id: 20800, format: 'TV', seasonYear: 2014, title: { english: 'Yuki Yuna is a Hero', romaji: 'Yuuki Yuuna wa Yuusha de Aru' } },
+  ]
+  assert.equal(pickAniListSearchResult(yuukiCandidates, 'Yuuki Yuuna Is a Hero')?.id, 20800)
+})
+
+test('assessSeason aligns continuous multi-season TVDB splits and multi-cour sequel seasons by episode count', () => {
+  const item = {
+    arr: 'Sonarr' as const,
+    id: 30,
+    title: 'Bleach',
+    seasons: {
+      1: { groups: ['Draknodd'], size: 100, episode_count: 20, episode_numbers: Array.from({ length: 20 }, (_, i) => i + 1) },
+      2: { groups: ['Draknodd'], size: 100, episode_count: 21, episode_numbers: Array.from({ length: 21 }, (_, i) => i + 1) },
+      3: { groups: ['Draknodd'], size: 100, episode_count: 22, episode_numbers: Array.from({ length: 22 }, (_, i) => i + 1) },
+      4: { groups: [], size: 0, episode_count: 26, episode_numbers: Array.from({ length: 26 }, (_, i) => i + 1) },
+    },
+  }
+  const chain = [
+    { season: 1, id: 269, ids: [269], episodeCount: 63, parts: [{ id: 269, episodeCount: 63 }] },
+    { season: 2, id: 116674, ids: [116674], episodeCount: 13, parts: [{ id: 116674, episodeCount: 13 }] },
+    { season: 3, id: 159322, ids: [159322], episodeCount: 13, parts: [{ id: 159322, episodeCount: 13 }] },
+  ]
+  const ascFiles = Array.from({ length: 41 }, (_, index) => ({
+    name: `[ASC] Bleach - ${String(index + 1).padStart(3, '0')}.mkv`,
+    length: 10,
+  }))
+  const best = new Map<number, any>([
+    [269, { url: 'https://seadex.moe/269/', notes: '-', seasons: { 0: { candidates: [{
+      releaseGroup: 'ASC', tracker: 'Nyaa', quality: '576p', tags: [], size: 410,
+      file_count: 41, info_hashes: ['a'.repeat(40)], is_best: true, source_files: ascFiles,
+    }] } } }],
+    [116674, { url: 'https://seadex.moe/116674/', notes: '-', seasons: { 4: { candidates: [{
+      releaseGroup: 'LGH', tracker: 'Nyaa', quality: '1080p', tags: [], size: 130,
+      file_count: 13, info_hashes: ['b'.repeat(40)], is_best: true,
+    }] } } }],
+    [159322, { url: 'https://seadex.moe/159322/', notes: '-', seasons: { 4: { candidates: [{
+      releaseGroup: 'LGH', tracker: 'Nyaa', quality: '1080p', tags: [], size: 130,
+      file_count: 13, info_hashes: ['c'.repeat(40)], is_best: true,
+    }] } } }],
+  ])
+
+  const s1 = assessSeason(item, 1, item.seasons[1], chain, best, 'Sonarr:item30', undefined, null)
+  const s2 = assessSeason(item, 2, item.seasons[2], chain, best, 'Sonarr:item30', undefined, null)
+  const s3 = assessSeason(item, 3, item.seasons[3], chain, best, 'Sonarr:item30', undefined, null)
+  const s4 = assessSeason(item, 4, item.seasons[4], chain, best, 'Sonarr:item30', undefined, null)
+
+  assert.equal(s1.anilist_id, 269)
+  assert.equal(s1.status, 'upgrade')
+  assert.equal(s1.best_size, 200)
+  assert.equal(s1.releases[0].selected_files?.length, 20)
+
+  assert.equal(s2.anilist_id, 269)
+  assert.equal(s2.status, 'upgrade')
+  assert.equal(s2.best_size, 210)
+  assert.equal(s2.releases[0].selected_files?.[0], '[ASC] Bleach - 021.mkv')
+
+  // Episodes 42-63 are beyond the 41-episode ASC release on SeaDex, so S03 is matched but uncovered.
+  assert.equal(s3.anilist_id, 269)
+  assert.equal(s3.match_status, 'matched')
+  assert.equal(s3.status, 'uncovered')
+
+  // S04 (26 episodes) merges both 13-episode TYBW sequel entries into Cour 1 and Cour 2.
+  assert.deepEqual(s4.anilist_ids, [116674, 159322])
+  assert.equal(s4.match_status, 'matched')
+  assert.equal(s4.status, 'upgrade')
+  assert.deepEqual(s4.releases.map(r => r.part), ['Cour 1', 'Cour 2'])
 })
