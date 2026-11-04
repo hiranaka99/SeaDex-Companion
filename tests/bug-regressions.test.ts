@@ -171,7 +171,7 @@ test('persisted collections tolerate non-object JSON roots and invalid array ent
       assert.deepEqual(loadConfig().hidden, [])
       assert.deepEqual(loadCache(), {})
       assert.equal(loadLastResults(), null)
-      assert.deepEqual(loadUserRules(), { mappings: {}, exclusions: [] })
+      assert.deepEqual(loadUserRules(), { mappings: {}, season_mappings: {}, exclusions: [] })
       assert.deepEqual(loadScanHistory(), [])
     }
     writeFileSync(CONFIG_FILE, JSON.stringify({ hidden: ['valid', null, 5] }))

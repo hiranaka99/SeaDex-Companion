@@ -27,7 +27,7 @@ import { clearScannedData, loadLastResults, scannedDataInfo } from './results.js
 import { runScan } from './scan.js'
 import { autocheckState, cancelScan, getState, resultsRevision, setState } from './scan-state.js'
 import { checkForUpdates } from './updates.js'
-import { applyUserRulesToResults, exclusionRuleKey, loadUserRules, saveUserRules } from './user-rules.js'
+import { applyUserRulesToResults, exclusionRuleKey, loadUserRules, saveUserRules, seasonMappingKey, validSeasonMappingIds } from './user-rules.js'
 import { AuthError, authState, expiredSessionCookie, isAuthenticated, login, logout, sessionCookie, setupAccount, updateAccount, verifyLoginCredentials } from './auth.js'
 import type { Config, JsonObject } from './types.js'
 
@@ -162,6 +162,20 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
     const libraryKey = String(data.library_key || '').trim()
     if (!libraryKey || !resultsForRequest().some((result) => result.library_key === libraryKey)) return sendJson(response, 404, { error: 'Library title not found — run a scan first' })
     const rules = loadUserRules()
+    if (data.season !== undefined) {
+      const season = data.season
+      if (!Number.isSafeInteger(season) || season <= 0) return sendJson(response, 400, { error: 'A positive Sonarr season number is required' })
+      if (!resultsForRequest().some(result => result.library_key === libraryKey && result.arr === 'Sonarr' && result.season === season)) return sendJson(response, 404, { error: 'Season not found — run a scan first' })
+      const ids = data.anilist_ids
+      if (ids !== null && !validSeasonMappingIds(ids)) return sendJson(response, 400, { error: 'Choose 1–20 distinct AniList IDs in episode order, or null to restore automatic matching' })
+      const key = seasonMappingKey(libraryKey, season)
+      rules.season_mappings ||= {}
+      if (ids === null) delete rules.season_mappings[key]
+      else rules.season_mappings[key] = ids
+      saveUserRules(rules)
+      log('INFO', `${ids === null ? 'Removed season AniList match' : `Set season AniList match to ${ids.join(', ')}`} for ${libraryKey} season ${season}`)
+      return sendJson(response, 200, { ok: true, season, anilist_ids: ids })
+    }
     if (data.anilist_id == null) delete rules.mappings[libraryKey]
     else {
       const anilistId = Number(data.anilist_id)

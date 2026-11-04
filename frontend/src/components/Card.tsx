@@ -76,6 +76,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
   const [removeTarget, setRemoveTarget] = useState<DownloadEntry | null>(null)
   const [deleteFiles, setDeleteFiles] = useState(false)
   const [mappingOpen, setMappingOpen] = useState(false)
+  const [mappingSeason, setMappingSeason] = useState<ResultItem | null>(null)
   const [ruleBusy, setRuleBusy] = useState('')
   const hideTimer = useRef<number | null>(null)
   const closing = useRef(false)
@@ -172,12 +173,13 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
     } finally { setRuleBusy('') }
   }
 
-  const applyMapping = async (anilistId: number | null) => {
-    const libraryKey = group.seasons[0]?.library_key
+  const applyMapping = async (anilistIds: number[] | null) => {
+    const libraryKey = mappingSeason?.library_key || group.seasons[0]?.library_key
     if (!libraryKey) throw new Error('Run a new scan before correcting this match')
-    await api.setMappingOverride(libraryKey, anilistId)
+    if (mappingSeason?.season) await api.setSeasonMappingOverride(libraryKey, mappingSeason.season, anilistIds)
+    else await api.setMappingOverride(libraryKey, anilistIds?.[0] ?? null)
     setMappingOpen(false)
-    toast.show(anilistId ? `Manual AniList match saved; rescanning ${group.title}` : 'Automatic AniList matching restored; rescanning library', 'success')
+    toast.show(anilistIds ? `AniList match saved${mappingSeason ? ` for ${detailsSeasonName(mappingSeason)}` : ''}; rescanning library` : 'Automatic AniList matching restored; rescanning library', 'success')
     onRescan()
   }
 
@@ -199,7 +201,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
     return entries
   }) : [], [detailsOpen, group.seasons, titleId])
   const nextUpgrade = detailIndex.find(entry => entry.upgrade)
-  const managementLinks = detailsOpen ? <nav className="flex flex-wrap items-center gap-2 text-xs" aria-label="Anime links">{group.arr_url && <a className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised hover:no-underline')} href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{typeof group.anilist_id === 'number' && <a className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised hover:no-underline')} href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList <Icon name="chevron-right" size={14}/></a>}<button type="button" className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-muted hover:bg-panel-raised hover:text-ink')} onClick={() => setMappingOpen(true)} disabled={!group.seasons[0]?.library_key} title={!group.seasons[0]?.library_key ? 'Run a new scan to enable manual matching' : undefined}><Icon name="refresh" size={14}/>{group.seasons.some((season) => season.mapping_override) ? 'Change manual match' : 'Correct match'}</button>{group.seasons.some((season) => season.mapping_override) && <span className="rounded-full border border-purple/35 bg-purple/10 px-2 py-1 text-xs font-bold text-ink">Manual match</span>}</nav> : null
+  const managementLinks = detailsOpen ? <nav className="flex flex-wrap items-center gap-2 text-xs" aria-label="Anime links">{group.arr_url && <a className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised hover:no-underline')} href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{typeof group.anilist_id === 'number' && <a className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised hover:no-underline')} href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList <Icon name="chevron-right" size={14}/></a>}<button type="button" className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-muted hover:bg-panel-raised hover:text-ink')} onClick={() => { setMappingSeason(null); setMappingOpen(true) }} disabled={!group.seasons[0]?.library_key} title={!group.seasons[0]?.library_key ? 'Run a new scan to enable manual matching' : undefined}><Icon name="refresh" size={14}/>{group.seasons.some((season) => season.mapping_override) ? 'Change manual match' : 'Correct match'}</button>{group.seasons.some((season) => season.mapping_override) && <span className="rounded-full border border-purple/35 bg-purple/10 px-2 py-1 text-xs font-bold text-ink">Manual match</span>}</nav> : null
 
   return <>
     <article
@@ -293,6 +295,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
                   onRemove={(entry) => { setDeleteFiles(false); setRemoveTarget(entry) }}
                   ruleBusy={ruleBusy}
                   onToggleExclusion={(part, excluded) => void toggleExclusion(season, part, excluded)}
+                  onCorrectMatch={() => { setMappingSeason(season); setMappingOpen(true) }}
                 />)}
                 {group.status !== 'review' && <details className="details-management border-t border-line pt-3"><summary className="touch-target cursor-pointer py-2 text-sm font-semibold text-muted">Links & matching</summary><div className="mt-2">{managementLinks}</div></details>}
               </div>
@@ -315,7 +318,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
         <span><span className="block font-bold text-bad">Also delete downloaded files</span><span className="mt-0.5 block text-xs text-muted">This cannot be undone.</span></span>
       </label>
     </ConfirmDialog>
-    <MappingDialog open={mappingOpen} title={group.title} currentAniListId={group.anilist_id} hasOverride={group.seasons.some((season) => season.mapping_override)} onApply={applyMapping} onClose={() => setMappingOpen(false)}/>
+    <MappingDialog open={mappingOpen} title={group.title} season={mappingSeason?.season || undefined} currentAniListId={mappingSeason ? mappingSeason.anilist_id : group.anilist_id} currentAniListIds={mappingSeason?.anilist_ids} hasOverride={mappingSeason ? Boolean(mappingSeason.season_mapping_override) : group.seasons.some((season) => season.mapping_override)} onApply={applyMapping} onClose={() => setMappingOpen(false)}/>
   </>
 }
 
@@ -333,6 +336,7 @@ interface SeasonProps {
   onRemove: (entry: DownloadEntry) => void
   ruleBusy: string
   onToggleExclusion: (part: string, excluded: boolean) => void
+  onCorrectMatch: () => void
 }
 
 interface DisplayRelease {
@@ -367,7 +371,7 @@ function groupByCour(releases: DisplayRelease[]): { part: string; items: Display
   return groups
 }
 
-function Season({ sectionId, r, config, dl, busyDownload, onDownload, onPause, onResume, onRemove, ruleBusy, onToggleExclusion }: SeasonProps) {
+function Season({ sectionId, r, config, dl, busyDownload, onDownload, onPause, onResume, onRemove, ruleBusy, onToggleExclusion, onCorrectMatch }: SeasonProps) {
   const groups = groupByCour(indexedReleases(r.releases || []))
   const split = groups.some(group => group.part)
   const displaySeasonHave = !r.precise_part_ownership || !split
@@ -383,14 +387,17 @@ function Season({ sectionId, r, config, dl, busyDownload, onDownload, onPause, o
           <div className="mb-1 flex flex-wrap items-center gap-2">
             <h3 className="m-0 text-lg font-bold tracking-tight">{seasonName}</h3>
             <span className="rounded-full border border-line-strong bg-panel px-2 py-1 text-xs font-semibold text-ink">{detailsStatus(r)}</span>
+            {r.season_mapping_override && <span className="text-xs font-semibold text-purple">Manual season match</span>}
           </div>
           <p className="m-0 text-xs text-muted wrap-anywhere">{displaySeasonHave ? 'Current release: ' + (r.have.length ? r.have.join(', ') : 'None') : 'Split into ' + groups.length + ' cours'}{(r.missing_episode_count || 0) > 0 && <span className="text-warn"> · {r.missing_episode_count} episode{r.missing_episode_count === 1 ? '' : 's'} missing</span>}</p>
         </div>
         {sources.map(source => <a key={source.url} href={source.url} target="_blank" rel="noopener" className="touch-target inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-accent-bright">SeaDex <Icon name="chevron-right" size={14}/></a>)}
+        {r.arr === 'Sonarr' && !!r.season && <button type="button" className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised')} disabled={!r.library_key || Boolean(ruleBusy)} onClick={onCorrectMatch} aria-label={`${r.season_mapping_override ? 'Change' : 'Correct'} Season ${r.season} match`}><Icon name="refresh" size={15}/>{r.season_mapping_override ? 'Change season match' : 'Correct season match'}</button>}
+        {r.arr === 'Sonarr' && !!r.season && r.anilist_id && <a href={`https://anilist.co/anime/${r.anilist_id}`} target="_blank" rel="noopener" className="touch-target inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-accent-bright" aria-label={`Open Season ${r.season} in AniList`}>AniList <Icon name="chevron-right" size={14}/></a>}
         <button type="button" className={cx(buttonBase, 'min-h-11 min-w-0 max-w-full justify-center px-3 text-xs', ignored ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line-strong bg-panel text-ink hover:bg-panel-raised')} aria-pressed={ignored} aria-label={(ignored ? 'Include ' : 'Ignore ') + seasonName + ' in bulk downloads and notifications'} title={!r.library_key ? 'Run a new scan to enable season rules' : undefined} disabled={!r.library_key || Boolean(ruleBusy)} onClick={() => onToggleExclusion('', !ignored)}><Icon name="ban" size={15}/><span className="min-w-0 wrap-anywhere">{ignored ? 'Ignored for bulk' : 'Ignore for bulk'}</span></button>
       </div>
 
-      {unavailable ? <p className="m-0 rounded-lg border border-dashed border-line-strong bg-panel px-4 py-3 text-sm text-muted">{r.status === 'uncovered' ? 'This season is not covered on seadex.moe' : r.match_status === 'unmatched' || !r.anilist_id ? 'AniList match needs review. Use Correct match to choose the right anime.' : 'Not listed on seadex.moe'}</p> : <>
+      {unavailable ? <p className="m-0 rounded-lg border border-dashed border-line-strong bg-panel px-4 py-3 text-sm text-muted">{r.status === 'uncovered' ? 'This season is not covered on seadex.moe' : r.match_status === 'unmatched' || !r.anilist_id ? r.arr === 'Sonarr' && r.season ? 'AniList match needs review. Use Correct season match to choose the entry for this season.' : 'AniList match needs review. Use Correct match to choose the right anime.' : 'Not listed on seadex.moe'}</p> : <>
         {!!r.unavailable_parts?.length && <div className="mb-4 flex flex-wrap items-start gap-2 rounded-lg border border-warn/35 bg-warn/8 px-3 py-2 text-xs text-warn" role="status"><Icon name="alert" size={15}/><div className="min-w-0 flex-1"><strong>Unavailable:</strong> {r.unavailable_parts.map(part => <span key={part.label + ':' + part.reason} className="block wrap-anywhere">{part.label} · {part.reason}</span>)}</div></div>}
         {groups.length === 0 && <p className="m-0 text-sm text-muted">No release details are available. Run a new library scan to refresh this title.</p>}
         {!split && <RecommendationNotes notes={r.notes}/>}

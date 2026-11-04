@@ -49,6 +49,7 @@ export function normalizeResults(value: unknown): ResultItem[] {
       have_by_part: dictionary(item.have_by_part, strings), owned_by_part: dictionary(item.owned_by_part, strings),
       local_size_by_part: dictionary(item.local_size_by_part, number), notes_by_part: dictionary(item.notes_by_part, value => text(value) || ''),
       excluded: item.excluded === true, excluded_parts: strings(item.excluded_parts), mapping_override: item.mapping_override === true,
+      season_mapping_override: item.season_mapping_override === true,
       ...(Array.isArray(item.anilist_ids) ? { anilist_ids: item.anilist_ids.filter((id): id is number => typeof id === 'number') } : {}),
       urls: (Array.isArray(item.urls) ? item.urls : []).flatMap(raw => { const value = object(raw); return typeof value.url === 'string' ? [{ label: text(value.label) || '', url: value.url }] : [] }),
       unavailable_parts: (Array.isArray(item.unavailable_parts) ? item.unavailable_parts : []).map(raw => { const value = object(raw); return { label: text(value.label) || '', reason: text(value.reason) || '' } }),

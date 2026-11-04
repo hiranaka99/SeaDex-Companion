@@ -4,11 +4,11 @@ import { scanRequests } from './http.js'
 import { log, timestamp, errorMessage } from './logging.js'
 import { HISTORY_FILE } from './paths.js'
 import { loadCache, loadLastResults, saveLastResults } from './results.js'
-import { loadUserRules, libraryItemKey, applyUserRulesToResults } from './user-rules.js'
+import { loadUserRules, libraryItemKey, seasonMappingKey, applyUserRulesToResults } from './user-rules.js'
 import { recordScanHistory, type ScanHistoryEntry } from './history.js'
 import { seadexBest } from './catalog.js'
 import { loadLocalLibrary, arrItemUrl } from './library.js'
-import { anilistChain } from './anilist.js'
+import { anilistChain, anilistSeason } from './anilist.js'
 
 import { autoNotifyNew } from './notifications.js'
 import { unhideNewBestReleases } from './hidden.js'
@@ -18,6 +18,7 @@ export interface ScanDependencies {
   seadexBest?: typeof seadexBest
   localItems?: (config: Config, scope?: ScanScope) => Promise<LocalItem[]>
   anilistChain?: typeof anilistChain
+  anilistSeason?: typeof anilistSeason
   loadCache?: typeof loadCache
   saveLastResults?: typeof saveLastResults
   autoNotifyNew?: typeof autoNotifyNew
@@ -29,7 +30,7 @@ export interface ScanDependencies {
 /** Resolve dependencies once; overrides never disable another subsystem. */
 export function createScanService(overrides: ScanDependencies = {}) {
   const dependencies = {
-    seadexBest, anilistChain, loadCache, saveLastResults, autoNotifyNew, unhideNewBestReleases, loadUserRules, recordScanHistory,
+    seadexBest, anilistChain, anilistSeason, loadCache, saveLastResults, autoNotifyNew, unhideNewBestReleases, loadUserRules, recordScanHistory,
     ...overrides,
     loadLibrary: overrides.localItems ? async (config: Config, scope: ScanScope = {}) => ({ items: await overrides.localItems!(config, scope), sourceErrors: {} }) : loadLocalLibrary,
   }
@@ -88,24 +89,24 @@ async function performScan(config: Config, dependencies: Required<Omit<ScanDepen
       const arrUrl = arrItemUrl(config, item)
       const libraryKey = libraryItemKey(item)
       const mappingId = rules.mappings[libraryKey]
-      const chain = await dependencies.anilistChain(item.title, cache, {}, mappingId)
       const seasonEntries = Object.entries(item.seasons).map(([season, local]) => [Number(season), local as LocalSeason] as const).sort(([a], [b]) => a - b)
+      const requiredSeasons = seasonEntries.filter(([season]) => !rules.season_mappings?.[seasonMappingKey(libraryKey, season)]).map(([season]) => season)
+      const chain = await dependencies.anilistChain(item.title, cache, {}, mappingId, { requiredSeasons })
       if (!chain.length) {
         log('WARNING', `${mappingId ? `Manual AniList override ${mappingId} produced no match for` : 'No AniList match for'}: ${item.title}`)
-        for (const [season, local] of seasonEntries) results.push({
-          key: `${item.arr}:item${item.id}:${season}:missing`, group_id: null, arr: item.arr, title: item.title,
-          library_key: libraryKey, mapping_override: Boolean(mappingId),
-          season, status: 'missing', have: [...local.groups].sort(), local_size: local.size || 0,
-          match_status: 'unmatched', missing_episode_count: local.missing_episode_count,
-          best_group: null, best_size: 0, releases: [], url: null, notes: null, image: null,
-          banner: null, anilist_id: null, arr_url: arrUrl,
-        })
-        setState({ progress: itemIndex + 1, results: [...retainedResults, ...results] })
-        continue
       }
+      const overrides = new Map<number, Awaited<ReturnType<typeof anilistSeason>>>()
+      for (const [season] of seasonEntries) {
+        const ids = rules.season_mappings?.[seasonMappingKey(libraryKey, season)]
+        if (ids) overrides.set(season, await dependencies.anilistSeason(ids, cache))
+      }
+      const groupId = chain[0]?.id ?? [...overrides.values()].find(entry => entry)?.id ?? null
       for (const [season, local] of seasonEntries) {
         setState({ message: `Resolving: ${item.title} (${season ? `S${String(season).padStart(2, '0')}` : 'Movie'})` })
-        results.push(assessSeason(item, season, local, chain, best, libraryKey, mappingId, arrUrl))
+        const override = overrides.has(season) ? { entry: overrides.get(season)!, groupId, ids: rules.season_mappings![seasonMappingKey(libraryKey, season)] } : undefined
+        const result = assessSeason(item, season, local, chain, best, libraryKey, mappingId, arrUrl, override)
+        result.group_id = groupId
+        results.push(result)
       }
       setState({ progress: itemIndex + 1, results: [...retainedResults, ...results] })
     }

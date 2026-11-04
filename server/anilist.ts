@@ -157,23 +157,61 @@ export interface AniListDependencies {
   lookup?: typeof anilistLookup
   media?: typeof alMedia
   persist?: typeof saveCache
+  now?: () => number
 }
 
-export async function anilistChain(title: string, cache: JsonObject, dependencies: AniListDependencies = {}, overrideId?: number): Promise<ChainEntry[]> {
+const ANILIST_CACHE_TTL = 24 * 60 * 60 * 1000
+const MEDIA_QUERY = 'query($id:Int){Media(id:$id,type:ANIME){id format season seasonYear episodes title{romaji english native} coverImage{large extraLarge} bannerImage relations{edges{relationType node{id}}}}}'
+
+function freshCache(entry: JsonObject | undefined, now: number): boolean {
+  return typeof entry?.fetched_at === 'number' && entry.fetched_at <= now && now - entry.fetched_at < ANILIST_CACHE_TTL
+}
+
+function chainEntry(parts: ChainPart[], season = 1): ChainEntry {
+  const first = parts[0]
+  return {
+    season, id: first.id, ids: parts.map(part => part.id), parts, cover: first.cover, banner: first.banner,
+    episodeCount: parts.every(part => part.episodeCount !== null) ? parts.reduce((sum, part) => sum + (part.episodeCount ?? 0), 0) : null,
+  }
+}
+
+/** Resolve only the explicitly selected entries, in episode order, without following sequels. */
+export async function anilistSeason(ids: number[], cache: JsonObject, dependencies: AniListDependencies = {}): Promise<ChainEntry | null> {
+  const now = (dependencies.now || Date.now)()
+  const key = `season:v1:${ids.join(',')}`
+  if (freshCache(cache[key], now)) return cache[key].entry
+  const parts: ChainPart[] = []
+  for (const id of ids) {
+    const data = await (dependencies.media || alMedia)(MEDIA_QUERY, { id })
+    if (data.id !== id) return null
+    parts.push(mediaPart(id, data))
+  }
+  if (!parts.length) return null
+  const entry = chainEntry(parts)
+  cache[key] = { entry, fetched_at: now }
+  ;(dependencies.persist || saveCache)(cache)
+  return entry
+}
+
+export async function anilistChain(title: string, cache: JsonObject, dependencies: AniListDependencies = {}, overrideId?: number, options: { requiredSeasons?: number[] } = {}): Promise<ChainEntry[]> {
   const lookup = dependencies.lookup || anilistLookup
   const media = dependencies.media || alMedia
   const persist = dependencies.persist || saveCache
   const base = overrideId ? { id: overrideId } : await lookup(title, cache)
   if (!base) return []
   const chainKey = `chain:v8:${base.id}`
-  if (cache[chainKey]) return cache[chainKey].chain || []
-  const query = 'query($id:Int){Media(id:$id,type:ANIME){id format season seasonYear episodes title{romaji english native} coverImage{large extraLarge} bannerImage relations{edges{relationType node{id}}}}}'
+  const now = (dependencies.now || Date.now)()
+  const cached = cache[chainKey]
+  const requiredSeason = Math.max(0, ...(options.requiredSeasons || []))
+  // A newly observed Sonarr season triggers one refresh even for a recent chain.
+  // Remember that check so disconnected sequels do not force requests on every scan.
+  if (freshCache(cached, now) && Array.isArray(cached.chain) && requiredSeason <= Math.max(cached.checked_through_season || 0, cached.chain.length)) return cached.chain
   const nodes = new Map<number, JsonObject>()
   const seen = new Set<number>([base.id])
   const queue = [base.id as number]
   while (queue.length && nodes.size < 50) {
     const id = queue.shift()!
-    const data = await media(query, { id })
+    const data = await media(MEDIA_QUERY, { id })
     if (!Object.keys(data).length) continue
     nodes.set(id, data)
     for (const edge of data.relations?.edges || []) {
@@ -184,6 +222,7 @@ export async function anilistChain(title: string, cache: JsonObject, dependencie
       }
     }
   }
+  if (!nodes.has(base.id)) return []
   const discovery = new Map([...nodes.keys()].map((id, index) => [id, index]))
   const seasonIds = [...nodes.keys()].filter((id) => id !== base.id && SEASON_FORMATS.has(nodes.get(id)?.format))
   seasonIds.sort((left, right) => {
@@ -207,15 +246,9 @@ export async function anilistChain(title: string, cache: JsonObject, dependencie
   }
   const chain = groups.map((ids, index) => {
     const parts = ids.map((id) => mediaPart(id, nodes.get(id) || {}, id === base.id ? base : {}))
-    const first = parts[0]
-    const counts = parts.map((part) => part.episodeCount)
-    return {
-      season: index + 1, id: first.id, ids: parts.map((part) => part.id), parts,
-      cover: first.cover, banner: first.banner,
-      episodeCount: counts.every((count) => count !== null) ? counts.reduce<number>((sum, count) => sum + (count ?? 0), 0) : null,
-    } satisfies ChainEntry
+    return chainEntry(parts, index + 1)
   })
-  cache[chainKey] = { chain }
+  cache[chainKey] = { chain, fetched_at: now, checked_through_season: Math.max(requiredSeason, chain.length) }
   persist(cache)
   return chain
 }
