@@ -230,7 +230,7 @@ export default function ConfigTab({ active, scanDisabled, footerTarget, loadErro
 
 
   const saveControls = <div className="configuration-save-controls flex flex-wrap items-center justify-between gap-3 max-[600px]:gap-2">
-    <p className="m-0 text-xs text-muted" role="status"><Icon name="hard-drive" size={15} className="mr-1.5 inline"/>{dirty ? <><span>Unsaved changes</span><span className="max-[600px]:hidden"> · your draft is kept when switching tabs</span></> : <><span className="max-[600px]:sr-only">All configuration changes saved</span><span aria-hidden="true" className="hidden max-[600px]:inline">Saved</span></>}</p>
+    <p className="relative m-0 text-xs text-muted" role="status"><Icon name="hard-drive" size={15} className="mr-1.5 inline"/>{dirty ? <><span>Unsaved changes</span><span className="max-[600px]:hidden"> · your draft is kept when switching tabs</span></> : <><span className="max-[600px]:sr-only">All configuration changes saved</span><span aria-hidden="true" className="hidden max-[600px]:inline">Saved</span></>}</p>
     <button type="submit" form={formId} className={cx(buttonPrimary, 'justify-center')} disabled={saving || !dirty}>{saving ? <span className="size-4 animate-spin rounded-full border-2 border-current/30 border-t-current"/> : <Icon name="check" size={17}/>} {saving ? 'Saving…' : 'Save configuration'}</button>
   </div>
 

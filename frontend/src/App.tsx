@@ -225,7 +225,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
 
   return (
     <div
-      className="app-shell grid h-dvh grid-cols-[var(--sidebar)_minmax(0,1fr)] overflow-hidden max-[900px]:grid-cols-1"
+      className="app-shell relative grid h-dvh grid-cols-[var(--sidebar)_minmax(0,1fr)] overflow-hidden max-[900px]:grid-cols-1"
       style={{ ['--sidebar' as string]: `${sidebarWidth}px` }}
     >
       <TopBar
@@ -237,7 +237,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
         onToggleCollapsed={toggleCollapsed}
       />
       <main className="flex min-h-0 min-w-0 flex-col overflow-hidden">
-        <div className={`app-scroll-pane app-scrollbar min-h-0 flex-1 overflow-y-auto px-8 max-[1200px]:px-6 max-[900px]:px-4 ${tab === 'config' ? 'pb-4' : 'pb-14 mobile-content-clearance'} ${tab === 'log' ? 'log-main-pane' : ''}`}>
+        <div className={`app-scroll-pane app-scrollbar relative min-h-0 flex-1 overflow-y-auto px-8 max-[1200px]:px-6 max-[900px]:px-4 ${tab === 'config' ? 'pb-4' : 'pb-14 mobile-content-clearance'} ${tab === 'log' ? 'log-main-pane' : ''}`}>
         <div className={`app-content pt-7 ${tab === 'log' ? 'flex h-full min-h-0 flex-col' : ''}`}>
         <OperationCenter
           status={status}
