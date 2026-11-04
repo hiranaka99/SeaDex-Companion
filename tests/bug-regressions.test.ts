@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { test } from 'node:test'
 import {
-  api, alMedia, autoNotifyNew, autocheckState, CACHE_FILE, CONFIG_FILE, DEFAULT_CONFIG,
+  api, alMedia, anilistChain, autoNotifyNew, autocheckState, CACHE_FILE, CONFIG_FILE, DEFAULT_CONFIG,
   DATA_DIR, ENCRYPTED_SECRETS_FILE, getState, HISTORY_FILE, loadCache, loadConfig, loadLastResults,
   loadScanHistory, loadUserRules, LOG_FILE, normalizeQbStates, qbGetTorrents, readLogTail,
   resetRuntimeForTests, RESULTS_FILE, runScan, cancelScan, setState, USER_RULES_FILE, mergeComplementaryCandidates,
@@ -346,5 +346,43 @@ test('release uploads without known episode coverage stay separate from compleme
     assert.equal(merged.length, 2)
     assert.equal(merged.find(release => release.info_hashes.includes('a'.repeat(40)))?.info_hashes.length, 1)
     if (uploads.length === 3) assert.equal(merged.find(release => release.info_hashes.includes('b'.repeat(40)))?.info_hashes.length, 2)
+  }
+})
+
+test('AniList chain ignores non-anime sequel relations and does not retry HTTP 404 responses', async () => {
+  const queriedIds: number[] = []
+  const chain = await anilistChain('Apocalypse Hotel', {}, {
+    lookup: (async () => ({ id: 180675, cover: 'cover-180675', banner: 'banner-180675' })) as any,
+    media: (async (_query: string, variables: { id?: number }) => {
+      queriedIds.push(Number(variables.id))
+      if (variables.id === 180675) {
+        return {
+          id: 180675, format: 'TV', season: 'SPRING', seasonYear: 2025, episodes: 12,
+          title: { english: 'Apocalypse Hotel', romaji: 'Apocalypse Hotel' },
+          relations: { edges: [
+            { relationType: 'SEQUEL', node: { id: 207065, type: 'MANGA' } },
+            { relationType: 'SEQUEL', node: { id: 999999, type: 'ANIME' } },
+          ] },
+        }
+      }
+      return {}
+    }) as any,
+    persist: (() => undefined) as any,
+  })
+  assert.deepEqual(queriedIds, [180675, 999999])
+  assert.deepEqual(chain.map(entry => entry.ids), [[180675]])
+
+  const originalFetch = globalThis.fetch
+  let attempts = 0
+  globalThis.fetch = (async () => {
+    attempts += 1
+    return new Response(JSON.stringify({ errors: [{ message: 'Not Found.', status: 404 }], data: { Media: null } }), { status: 404 })
+  }) as typeof fetch
+  try {
+    const data = await alMedia('query($id:Int){Media(id:$id,type:ANIME){id}}', { id: 207065 })
+    assert.deepEqual(data, {})
+    assert.equal(attempts, 1)
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })
