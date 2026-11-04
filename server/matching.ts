@@ -43,6 +43,38 @@ function extraBelongsToPart(name: string, partNumber: number): boolean {
   return new RegExp(`(?:P(?:art)?[ ._-]*0?${partNumber}\\b.*(?:NCOP|NCED)|(?:NCOP|NCED)[ ._-]*${padded}\\b)`, 'i').test(name)
 }
 
+/** Continuous AniList entries need verified Sonarr-season or absolute coverage. */
+export function scopeReleaseToSeasonRange(release: ReleaseCandidate, episodes: number[], offset: number, season: number): ReleaseCandidate | null {
+  const expected = [...new Set(episodes)]
+  if (!expected.length) return null
+  const files = release.source_files?.length ? release.source_files : release.torrent_files?.flatMap(torrent => torrent.files) || []
+  const parsedFiles = files.map(file => ({ file, episode: episodeFromFilename(file.name) }))
+  const hasExplicit = parsedFiles.some(({ episode }) => episode?.explicit)
+  const parsed = parsedFiles.filter(({ episode }) => episode && Number.isInteger(episode.episode) && (!hasExplicit || episode.explicit))
+  const bySeason = parsed.filter(({ episode }) => episode!.season === season)
+  const absolute = parsed.filter(({ episode }) => episode!.season === null)
+  // Whole-series encodes sometimes put absolute numbers under S01E. Other
+  // explicitly numbered seasons must never stand in for the requested season.
+  const seriesSeason = parsed.filter(({ episode }) => episode!.season === 1)
+  const ranges = [
+    { files: bySeason, numbers: expected },
+    { files: absolute, numbers: expected.map(number => number + offset) },
+    { files: seriesSeason, numbers: expected.map(number => number + offset) },
+  ]
+  for (const range of ranges) {
+    const available = new Set(range.files.map(({ episode }) => episode!.episode))
+    if (!range.numbers.every(number => available.has(number))) continue
+    const selected = new Set(range.numbers)
+    const chosen = [...new Map(range.files.filter(({ episode }) => selected.has(episode!.episode))
+      .map(({ file }) => [normalizeTorrentPath(file.name), file])).values()]
+    return {
+      ...release, file_count: expected.length, size: chosen.reduce((sum, file) => sum + file.length, 0),
+      selected_files: chosen.map(file => file.name),
+    }
+  }
+  return null
+}
+
 /**
  * Restrict downloads to regular episodes. For split cours this also scopes a
  * whole-season torrent to the current cour; for normal seasons it removes
@@ -85,7 +117,9 @@ export function scopeReleaseToPart(
 
   // A part-sized upload is already scoped to its cour, even when its episode
   // numbering starts at one. Only apply the offset to larger season batches.
-  const start = splitSeason && episodeNumbers.length > episodeCount ? (episodeOffset ?? partIndex * episodeCount) : 0
+  const start = (splitSeason || (episodeOffset ?? 0) > 0) && episodeNumbers.length > episodeCount
+    ? (episodeOffset ?? partIndex * episodeCount)
+    : 0
   const selectedNumbers = episodeNumbers.slice(start, start + episodeCount)
   if (selectedNumbers.length < episodeCount) return release
   const selected = new Set(selectedNumbers)
