@@ -12,6 +12,7 @@ SeaDex Companion is a self-hosted web UI that compares your **Sonarr** and **Rad
 ## Highlights
 
 - One card per anime, with all seasons grouped together
+- Clear release-quality verdicts and visible owned releases, with independently expandable seasons and cours in Details
 - Upgrade states for **Upgradable**, **Best quality**, **Partially on SeaDex**, and **Not on SeaDex**
 - Episode-aware matching for split seasons, cours, and multi-part releases
 - Current-size versus target-size comparison
