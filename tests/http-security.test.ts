@@ -195,6 +195,22 @@ test('account setup, authenticated access, revocation, and login throttling work
   writeFileSync(join(dataDir, 'last_results.json'), JSON.stringify({ results: [1, 2].map(season => ({
     key: `Sonarr:10:${season}`, library_key: 'Sonarr:item10', arr: 'Sonarr', title: 'Anime', season, releases: [],
   })) }))
+  const changeKey = JSON.stringify(['Sonarr:item10', 1])
+  const change = { id: 'observed-change', kind: 'alternative', description: 'New alternative: Group B', detected_at: '2026-11-04T12:00:00.000Z' }
+  writeFileSync(join(dataDir, 'release_changes.json'), JSON.stringify({ [changeKey]: [change, { ...change, id: 'newer-change' }] }))
+  const readResults = async () => (await (await fetch(`${baseUrl}/api/results`, { headers: { Cookie: updatedCookie } })).json()).results
+  assert.equal((await readResults())[0].unseen_changes.length, 2)
+  const reviewChanges = (ids: unknown, authenticated = true) => fetch(`${baseUrl}/api/release-changes/review`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(authenticated ? { Cookie: updatedCookie } : {}) }, body: JSON.stringify({ ids }),
+  })
+  assert.equal((await reviewChanges([change.id], false)).status, 401)
+  assert.equal((await reviewChanges('all')).status, 400)
+  assert.equal((await reviewChanges([null])).status, 400)
+  const revisionBeforeReview = (await (await fetch(`${baseUrl}/api/status`, { headers: { Cookie: updatedCookie } })).json()).results_revision
+  assert.deepEqual(await (await reviewChanges([change.id])).json(), { ok: true, reviewed: 1 })
+  assert.deepEqual((await readResults())[0].unseen_changes.map((entry: { id: string }) => entry.id), ['newer-change'])
+  const revisionAfterReview = (await (await fetch(`${baseUrl}/api/status`, { headers: { Cookie: updatedCookie } })).json()).results_revision
+  assert.notEqual(revisionBeforeReview, revisionAfterReview, 'Other sessions reload reviewed changes on their next status poll')
   const match = (body: unknown, authenticated = true) => fetch(`${baseUrl}/api/mapping-overrides`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(authenticated ? { Cookie: updatedCookie } : {}) }, body: JSON.stringify(body),
   })

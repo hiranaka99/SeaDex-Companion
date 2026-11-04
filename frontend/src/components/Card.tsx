@@ -15,6 +15,8 @@ import MappingDialog from './MappingDialog'
 import SeasonBadge from './SeasonBadge'
 import LibrarySizeChange from './LibrarySizeChange'
 import ReleaseDetails, { type DetailsDownloadState } from './ReleaseDetails'
+import { groupReleaseChanges } from '../release-changes'
+import { RELEASE_CHANGE_LABELS } from '../../../shared/release-changes'
 
 function HideActionIcon({ hidden }: { hidden: boolean }) {
   return <Icon name={hidden ? 'eye' : 'eye-off'} size={18} />
@@ -31,6 +33,8 @@ interface CardProps {
   onToggle: (group: GroupedCard) => void
   onRulesChanged: () => Promise<void>
   onRescan: () => void
+  reviewingChanges: boolean
+  onReviewChanges: (ids: string[]) => Promise<void>
 }
 
 const HIDE_DURATION_MS = 280
@@ -69,7 +73,7 @@ const CARD_STATUS: Record<string, { icon: IconName; color: string }> = {
 }
 const ICON_BUTTON =
   'grid size-9 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-panel-raised hover:text-ink'
-function Card({ active, openRequested, onOpened, group, index, config, hidden = false, onToggle, onRulesChanged, onRescan }: CardProps) {
+function Card({ active, openRequested, onOpened, group, index, config, hidden = false, onToggle, onRulesChanged, onRescan, reviewingChanges, onReviewChanges }: CardProps) {
   const [hiding, setHiding] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [detailsVisible, setDetailsVisible] = useState(false)
@@ -108,6 +112,8 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
   const { dlBySeason, activeDownloads, busyDownload, handleDownload, handleDownloadAction } = useCardDownloads(group, toast.show)
 
   const seasonCount = group.seasons.length
+  const unseenChanges = useMemo(() => groupReleaseChanges(group), [group.seasons])
+  const changeIds = unseenChanges.map(({ change }) => change.id)
   const upgradableSeasonCount = group.seasons.filter(isSeasonUpgradable).length
   const delta = cardSizeDelta(group)
 
@@ -229,6 +235,10 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
           {group.seasons.slice(0, 6).map((season) => <SeasonBadge key={season.key} season={season} fallback={st} animeTitle={group.title} className="rounded-md border px-2 py-1 text-xs font-extrabold"/>)}
           {seasonCount > 6 && <span className="relative rounded-md border border-line bg-panel-raised px-2 py-1 text-xs font-bold text-muted" title={`View all ${seasonCount} seasons in Details`}>+{seasonCount - 6}<span className="sr-only"> more seasons; open Details to view all {seasonCount} seasons</span></span>}
         </div>
+      {unseenChanges.length > 0 && <div className="library-unseen-summary mx-3.5 mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 max-[600px]:mx-3" aria-label={`Unseen changes for ${group.title}`}>
+        <div className="min-w-0 flex-1 space-y-1">{unseenChanges.slice(0, 2).map(({ season, change }) => <p key={change.id} className="m-0 text-xs font-semibold text-accent-bright wrap-anywhere">{RELEASE_CHANGE_LABELS[change.kind]} · {seasonLabel(season)}{change.part ? ` · ${change.part}` : ''}</p>)}{unseenChanges.length > 2 && <p className="m-0 text-xs text-muted">+{unseenChanges.length - 2} more in Details</p>}</div>
+        <button type="button" className="touch-target cursor-pointer rounded-lg px-2 py-2 text-xs font-semibold text-muted hover:bg-panel-raised hover:text-ink disabled:cursor-wait disabled:opacity-60" aria-label={`Mark changes for ${group.title} reviewed`} disabled={reviewingChanges} onClick={() => void onReviewChanges(changeIds)}>Mark reviewed</button>
+      </div>}
       {activeDownloads.length > 0 && <div className="border-t border-line px-3.5 py-3 max-[600px]:px-3">
             <DownloadsPanel
               downloads={activeDownloads}
@@ -277,6 +287,10 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
             </div>
             <div className="anime-details-body app-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain">
               <div className="anime-details-content space-y-5">
+                {unseenChanges.length > 0 && <section className="border-b border-line pb-4" aria-label="What changed">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="m-0 text-sm font-bold text-ink">What changed <span className="font-normal text-muted">({unseenChanges.length})</span></h3><button type="button" className={cx(buttonBase, 'border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised')} disabled={reviewingChanges} onClick={() => void onReviewChanges(changeIds)}>{reviewingChanges ? 'Marking reviewed…' : 'Mark reviewed'}</button></div>
+                  <ul className="m-0 list-none space-y-3 p-0">{unseenChanges.map(({ season, change }) => <li key={change.id} className="min-w-0 text-sm wrap-anywhere"><div className="flex flex-wrap items-baseline gap-x-2 gap-y-1"><span className="font-semibold text-accent-bright">{RELEASE_CHANGE_LABELS[change.kind]}</span><span className="text-xs text-muted">{seasonLabel(season)}{change.part ? ` · ${change.part}` : ''}</span><time className="text-xs text-muted" dateTime={change.detected_at}>Detected {new Date(change.detected_at).toLocaleString()}</time></div><p className="mt-1 mb-0 max-w-[70ch] text-muted">{change.description}</p></li>)}</ul>
+                </section>}
                 {detailIndex.length > 1 && <nav className="details-index space-y-2" aria-label="Season and cour navigation">
                   {nextUpgrade && <button type="button" className={cx(buttonBase, 'min-h-11 min-w-0 max-w-full border-accent/40 bg-accent/10 px-3 text-xs text-accent-bright')} onClick={() => jumpToDetails(nextUpgrade.id)}><Icon name="arrow-up" size={15}/><span className="min-w-0 wrap-anywhere">Next upgrade: {nextUpgrade.name}</span></button>}
                   <details><summary className="touch-target cursor-pointer py-2 text-sm font-semibold text-ink">Browse {group.arr === 'Radarr' ? 'movies' : 'seasons & cours'}</summary><div className="details-index-links mt-2 grid gap-2">{detailIndex.map(entry => <button key={entry.id} type="button" className="min-w-0 cursor-pointer rounded-lg border border-line bg-panel px-3 py-2 text-left hover:bg-panel-raised" onClick={() => jumpToDetails(entry.id)}><span className="block text-sm font-semibold text-ink wrap-anywhere">{entry.name}</span><span className="block text-xs text-muted wrap-anywhere">{entry.status}</span></button>)}</div></details>

@@ -20,6 +20,7 @@ import { loadConfig, publicConfig, saveConfig, SECRET_CONFIG_KEYS } from './conf
 import { ownedTorrentsSnapshot } from './download-store.js'
 import { resultsForRequest } from './downloads.js'
 import { loadScanHistory } from './history.js'
+import { reviewReleaseChanges, withReleaseChanges } from './release-changes.js'
 import { log, readLogTail } from './logging.js'
 import { DATA_DIR, STATIC_DIR } from './paths.js'
 import { testIntegration } from './qbittorrent.js'
@@ -271,7 +272,15 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
   if (method === 'GET' && path === '/api/results') {
     const state = getState()
     const payload = state.running || state.results.length ? { results: state.results, last_run: state.last_run } : (loadLastResults() || { results: [], last_run: null })
-    return sendJson(response, 200, { ...payload, results: applyUserRulesToResults(payload.results || []), hidden: loadConfig().hidden })
+    return sendJson(response, 200, { ...payload, results: applyUserRulesToResults(withReleaseChanges(payload.results || [])), hidden: loadConfig().hidden })
+  }
+
+  if (method === 'POST' && path === '/api/release-changes/review') {
+    const data = await readJson(request)
+    if (!Array.isArray(data.ids) || !data.ids.every((id: unknown) => typeof id === 'string' && id.length > 0 && id.length <= 100)) {
+      return sendJson(response, 400, { error: 'Provide the change IDs to mark reviewed' })
+    }
+    return sendJson(response, 200, { ok: true, reviewed: reviewReleaseChanges(data.ids) })
   }
 
   if (method === 'GET' && path === '/api/logs') {

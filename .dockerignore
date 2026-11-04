@@ -18,6 +18,7 @@ download_records.json.tmp
 anilist_cache.json
 auth-artwork.json
 last_results.json
+release_changes.json
 *.md
 docker-compose.yml
 Dockerfile

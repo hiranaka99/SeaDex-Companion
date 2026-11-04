@@ -2,6 +2,8 @@ import { HISTORY_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
 import { titleKey } from './anilist.js'
 import type { JsonObject, ScanTrigger } from './types.js'
+import { describeReleaseChanges } from '../shared/release-changes.js'
+import type { ResultItem } from '../shared/contracts.js'
 
 function resultIdentity(result: JsonObject): string {
   const base = String(result.library_key || `${result.arr || 'Unknown'}:${result.group_id ?? result.anilist_id ?? result.title ?? 'unknown'}`)
@@ -70,6 +72,7 @@ export function describeResultChange(previous: JsonObject | null, current: JsonO
   for (const label of previousUnavailable) if (!currentUnavailable.has(label)) details.push(`${label} now covered`)
   for (const label of currentUnavailable) if (!previousUnavailable.has(label)) details.push(`${label} no longer available on SeaDex`)
   if (String(previous.notes || '').trim() !== String(current.notes || '').trim()) details.push('seadex.moe notes updated')
+  if (!details.length) details.push(...describeReleaseChanges(previous as ResultItem, current as ResultItem).map(change => change.description))
   return details.slice(0, 6)
 }
 
@@ -114,7 +117,7 @@ export function buildScanHistoryEntry(previous: JsonObject[], current: JsonObjec
       const from = automationStatus(old)
       if (from !== 'upgrade' && to === 'upgrade') changes.push({ type: 'upgrade', ...describe(result), details: describeResultChange(old, result), from, to })
       else if (from === 'upgrade' && to !== 'upgrade') changes.push({ type: 'resolved', ...describe(result), details: [], from, to })
-      else if (from !== to || String(old.best_group || '') !== String(result.best_group || '')) changes.push({ type: 'changed', ...describe(result), details: describeResultChange(old, result), from, to })
+      else if (from !== to || String(old.best_group || '') !== String(result.best_group || '') || describeReleaseChanges(old as ResultItem, result as ResultItem).length) changes.push({ type: 'changed', ...describe(result), details: describeResultChange(old, result), from, to })
     }
   }
   for (const [key, result] of before) if (!after.has(key) && !matchedBefore.has(key)) changes.push({ type: 'removed', ...describe(result), details: [], from: automationStatus(result), to: null })
