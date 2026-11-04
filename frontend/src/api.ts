@@ -81,6 +81,11 @@ export const getResults = () =>
 
 export const getScanHistory = () => api<{ scans: ScanHistoryEntry[] }>('/api/history')
 
+export const reviewReleaseChanges = (ids: string[]) =>
+  api<{ ok: boolean; reviewed: number }>('/api/release-changes/review', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }),
+  })
+
 export interface AniListSearchResult {
   id: number
   title: string

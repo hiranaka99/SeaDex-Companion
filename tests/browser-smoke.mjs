@@ -29,6 +29,8 @@ let saveDelay = 0
 let progressMode = 'downloading'
 let authMode = 'authenticated'
 let fixtureResults = null
+let failChangeReview = false
+const changeReviewRequests = []
 let fixtureHistory = null
 let fixtureLogs = ['2026-10-02 12:00:00 [INFO] First log entry']
 let statusOverrides = {}
@@ -74,6 +76,16 @@ const server = createServer(async (req, res) => {
       else response = { results_revision: String(revision), running: false, progress: 0, total: 0, message: 'Idle', error: null, cancelled: false, trigger: null, source_errors: {}, last_run: '2026-10-02 12:00:00', next_check: null, webhook_scan: { queued: false, due_at: null, sources: [] }, ...statusOverrides }
     }
     else if (path === '/api/results') { resultRequests++; response = { hidden: config.hidden, results: fixtureResults || [example, { ...example, key: 'Sonarr:item2:1:missing', library_key: 'Sonarr:item2', group_id: null, title: 'Unmatched anime', status: 'missing', match_status: 'unmatched', anilist_id: null, best_group: null, releases: [] }], last_run: '2026-10-02 12:00:00' } }
+    else if (path === '/api/release-changes/review') {
+      changeReviewRequests.push(body.ids)
+      if (failChangeReview) { res.statusCode = 503; response = { error: 'Fixture review unavailable' } }
+      else {
+        const reviewed = new Set(body.ids)
+        fixtureResults = fixtureResults.map(result => ({ ...result, unseen_changes: (result.unseen_changes || []).filter(change => !reviewed.has(change.id)) }))
+        revision++
+        response = { ok: true, reviewed: reviewed.size }
+      }
+    }
     else if (path === '/api/download_progress/all') response = { ok: true, downloads: progressMode === 'absent' ? {} : { [example.key + '\0' + 0]: progressFor(progressMode === 'downloading' ? originalRelease : example.releases[0]) } }
     else if (path === '/api/logs') { if (logFailure) { res.statusCode = 503; response = { error: 'Fixture log unavailable' } } else response = { lines: fixtureLogs } }
     else if (path === '/api/download_bulk/preflight') {
@@ -147,7 +159,7 @@ const fill = (selector, value) => evaluate(`(() => { const input = document.quer
 const select = (selector, value) => evaluate(`(() => { const input = document.querySelector(${JSON.stringify(selector)}); input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('change', { bubbles: true })); })()`)
 const key = async key => { const keyCode = key === 'Tab' ? 9 : key === 'Enter' ? 13 : 27; await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: keyCode, text: key === 'Enter' ? '\r' : undefined }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: keyCode }); await pause(60) }
 const capture = async name => {
-  if (!process.env.SCREENSHOT_DIR) return
+  if (!process.env.SCREENSHOT_DIR || (process.env.SCREENSHOT_FILTER && !name.startsWith(process.env.SCREENSHOT_FILTER))) return
   await pause(250)
   mkdirSync(process.env.SCREENSHOT_DIR, { recursive: true })
   const screenshot = await send('Page.captureScreenshot', { format: 'png' })
@@ -182,6 +194,11 @@ try {
   console.log('PASS card library and distinct match status')
 
   // Observe real browser animation calls while exercising title continuity.
+  // Leave enough vertical room that a late download row cannot change the
+  // scrollbar width during this test of card reordering.
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1100, deviceScaleFactor: 1, mobile: false })
+  await wait(`document.querySelector('[aria-label="Active downloads"]')`)
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
   await evaluate(`(() => { window.libraryMotionCalls = []; const original = Element.prototype.animate; Element.prototype.animate = function(frames, options) { if (this.matches('article[data-library-key]')) window.libraryMotionCalls.push({ key: this.dataset.libraryKey, frames, options }); return original.call(this, frames, options) }; window.restoreLibraryMotion = () => { Element.prototype.animate = original } })()`)
   await select('[aria-label="Sort library"]', 'title')
   await wait(`document.querySelector('.library-grid article h2')?.textContent === 'Example anime'`)
@@ -222,6 +239,64 @@ try {
   await capture('library-motion-desktop')
   await evaluate(`window.restoreLibraryMotion()`)
   console.log('PASS library reorder continuity, rapid interruption, mobile motion, and live reduced-motion preference')
+
+  const changeFixture = (id, kind, detected_at) => ({ id, kind, detected_at, description: kind === 'best' ? 'Best release changed: Old group → Example' : kind === 'alternative' ? 'New alternative: Alternative · 1080p' : 'Example · Quality: 1080p → 2160p' })
+  fixtureResults = [
+    { ...example, unseen_changes: [changeFixture('best-change', 'best', '2026-11-04T11:00:00.000Z')] },
+    { ...example, key: 'Sonarr:1:2:Example', season: 2, unseen_changes: [changeFixture('alt-change', 'alternative', '2026-11-04T12:00:00.000Z')] },
+    { ...example, key: 'recent', library_key: 'Sonarr:item2', anilist_id: 2, group_id: 2, title: 'Recent anime', status: 'best', unseen_changes: [changeFixture('quality-change', 'updated', '2026-11-04T13:00:00.000Z')] },
+    { ...example, key: 'quiet', library_key: 'Sonarr:item3', anilist_id: 3, group_id: 3, title: 'Quiet anime' },
+  ]
+  progressMode = 'absent'; revision++
+  await evaluate('location.reload()')
+  await wait(`document.querySelector('[aria-label="Unseen changes (2 titles)"]') && document.querySelectorAll('.library-grid article').length === 3`)
+  await evaluate(`document.querySelector('[aria-label="Unseen changes (2 titles)"]').click()`)
+  await wait(`document.querySelectorAll('.library-grid article').length === 2`)
+  assert.equal(await evaluate(`document.querySelector('.library-grid article h2').textContent`), 'Recent anime', 'Unseen titles show their latest change first')
+  await capture('unseen-desktop')
+  await click('Details')
+  await wait(`document.querySelector('dialog [aria-label="What changed"]')`)
+  assert.ok(await evaluate(`document.querySelector('dialog [aria-label="What changed"]').textContent.includes('1080p → 2160p')`))
+  await capture('unseen-details-desktop')
+  await evaluate(`document.querySelector('[aria-label="Close details"]').click()`)
+  await wait(`!document.querySelector('dialog[open]')`)
+  failChangeReview = true
+  await evaluate(`document.querySelector('[aria-label="Mark changes for Recent anime reviewed"]').click()`)
+  await wait(`document.body.textContent.includes('Could not mark changes reviewed') && !document.querySelector('[aria-label="Mark changes for Recent anime reviewed"]').disabled`)
+  assert.equal(await evaluate(`document.querySelectorAll('.library-grid article').length`), 2, 'Failed review leaves unseen changes in place')
+  failChangeReview = false
+  await evaluate(`document.querySelector('[aria-label="Mark changes for Recent anime reviewed"]').click()`)
+  await wait(`document.querySelectorAll('.library-grid article').length === 1`)
+  assert.deepEqual(changeReviewRequests.at(-1), ['quality-change'])
+  await evaluate(`document.querySelectorAll('[aria-label="Dismiss notification"]').forEach(button => button.click())`)
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+  await capture('unseen-mobile')
+  assert.ok(await evaluate(`document.querySelector('[aria-label="Unseen changes (1 title)"]').getBoundingClientRect().height >= 44`))
+  await click('Details')
+  await wait(`document.querySelector('dialog [aria-label="What changed"]')`)
+  assert.ok(await evaluate(`document.querySelector('dialog [aria-label="What changed"]').textContent.includes('S02')`))
+  assert.ok(await evaluate(`document.querySelector('dialog [aria-label="What changed"]').textContent.includes('New alternative')`))
+  assert.ok(await evaluate(`document.documentElement.scrollWidth <= 390`))
+  await capture('unseen-details-mobile')
+  await evaluate(`document.querySelector('[aria-label="Close details"]').click()`)
+  await wait(`!document.querySelector('dialog[open]')`)
+  await evaluate('location.reload()')
+  await wait(`document.querySelector('[aria-label="Unseen changes (1 title)"]')`)
+  assert.equal(await evaluate(`document.querySelector('[aria-label="Unseen changes for Recent anime"]')`), null, 'Reviewed state survives a page reload')
+  fixtureResults = Array.from({ length: 65 }, (_, index) => ({ ...example, key: `unseen-${index}`, library_key: `Sonarr:item${100 + index}`, anilist_id: 100 + index, group_id: 100 + index, title: `Changed anime ${index}`, unseen_changes: [changeFixture(`event-${index}`, 'alternative', '2026-11-04T12:00:00.000Z')] }))
+  revision++
+  await evaluate('location.reload()')
+  await wait(`document.querySelector('[aria-label="Unseen changes (65 titles)"]') && document.querySelectorAll('.library-grid article').length === 60`)
+  await evaluate(`document.querySelector('[aria-label="Unseen changes (65 titles)"]').click()`)
+  await click('Mark all reviewed')
+  await wait(`document.body.textContent.includes('No unseen changes')`)
+  assert.equal(new Set(changeReviewRequests.at(-1)).size, 65, 'Mark all reviewed includes matching titles on every page')
+  fixtureResults = null; progressMode = 'downloading'; revision++
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  await evaluate('location.reload()')
+  await wait(`document.body.textContent.includes('Unmatched anime') && document.querySelectorAll('.library-grid article').length === 2`)
+  await pause(320)
+  console.log('PASS unseen title counts, latest-change sorting, season details, failed-review recovery, persistent review, mobile controls, and cross-page review')
 
   statusOverrides = { cancelled: true }
   await evaluate(`location.reload()`)

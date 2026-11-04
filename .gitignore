@@ -55,6 +55,7 @@ last_results.json
 notified.json
 owned_torrents.json
 scan_history.json
+release_changes.json
 scan_schedule_state.json
 user_rules.json
 logs/

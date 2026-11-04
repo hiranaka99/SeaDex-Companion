@@ -1,6 +1,6 @@
 import { normalizeResults } from './result-model.js'
 import { statSync } from 'node:fs'
-import { RESULTS_FILE, USER_RULES_FILE } from './paths.js'
+import { RESULTS_FILE, USER_RULES_FILE, RELEASE_CHANGES_FILE } from './paths.js'
 import type { ScanState } from './types.js'
 
 export const scanState: ScanState = {
@@ -25,7 +25,7 @@ export const autocheckState: { next: number | null; signature: string; pending: 
 let resultRevision = 0
 export function resultsRevision(): string {
   const stamp = (file: string) => { try { const stat = statSync(file); return `${stat.mtimeMs}:${stat.size}` } catch { return '' } }
-  return `${resultRevision}:${stamp(RESULTS_FILE)}:${stamp(USER_RULES_FILE)}`
+  return `${resultRevision}:${stamp(RESULTS_FILE)}:${stamp(USER_RULES_FILE)}:${stamp(RELEASE_CHANGES_FILE)}`
 }
 
 export function setState(values: Omit<Partial<ScanState>, 'results'> & { results?: readonly unknown[] }): void {

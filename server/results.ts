@@ -1,4 +1,5 @@
 import { normalizeResults } from './result-model.js'
+import { recordReleaseChanges } from './release-changes.js'
 import type { ResultItem } from './types.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { CACHE_FILE, RESULTS_FILE } from './paths.js'
@@ -12,6 +13,8 @@ export function loadCache(): JsonObject {
 }
 export function saveCache(cache: JsonObject): void { writeJsonAtomic(CACHE_FILE, cache, true) }
 export function saveLastResults(results: JsonObject[], lastRun: string): void {
+  const previous = loadLastResults()?.results || []
+  recordReleaseChanges(previous, normalizeResults(results))
   writeJsonAtomic(RESULTS_FILE, { results, last_run: lastRun })
 }
 export function loadLastResults(): { results: ResultItem[]; last_run: string | null } | null {

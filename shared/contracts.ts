@@ -21,6 +21,7 @@ export interface Release {
 }
 
 export interface ResultItem {
+  unseen_changes?: ReleaseChange[]
   key: string
   group_id: number | null
   arr: string
@@ -54,6 +55,14 @@ export interface ResultItem {
   season_mapping_override?: boolean
   excluded?: boolean
   excluded_parts?: string[]
+}
+
+export interface ReleaseChange {
+  id: string
+  kind: 'best' | 'alternative' | 'updated' | 'removed'
+  description: string
+  part?: string
+  detected_at: string
 }
 
 export interface ScanHistoryChange {

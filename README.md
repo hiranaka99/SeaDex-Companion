@@ -131,6 +131,12 @@ For near-real-time discovery, add these webhook connections in Sonarr and Radarr
 
 SeaDex Companion accepts Sonarr `SeriesAdd` and Radarr `MovieAdded` events. Keep a scheduled scan enabled as well; scheduled scans reconcile existing titles when SeaDex changes older entries.
 
+## Reviewing release changes
+
+The library's **Unseen changes** filter shows anime with release changes you have not reviewed, including new best releases, alternatives, updated torrents or metadata, and removals. Its count covers matching titles across all pages, with the latest changes first. Cards label the affected seasons; open **Details → What changed** for the before/after summary and detection time. Use **Mark reviewed** for one anime, or **Mark all reviewed** for all titles matching the current library filters. Opening the app or completing another unchanged scan does not clear these changes.
+
+Review state is saved in `DATA_DIR/release_changes.json` and shared across devices. Existing scan results establish the comparison baseline; a first scan or newly discovered title starts without unseen alerts. Changes are detected on completed scans, rather than at the upstream release's publication time.
+
 ## Run from source
 
 Requires **Node.js 24+**.
