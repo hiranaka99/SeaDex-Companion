@@ -4,6 +4,7 @@ import type { JsonObject } from './types.js'
 
 export interface UserRules {
   mappings: Record<string, number>
+  season_mappings?: Record<string, number[]>
   exclusions: string[]
 }
 
@@ -18,11 +19,23 @@ export function loadUserRules(file = USER_RULES_FILE): UserRules {
   const exclusions = Array.isArray(stored.exclusions)
     ? [...new Set(stored.exclusions.filter((value): value is string => typeof value === 'string' && Boolean(value)))].sort()
     : []
-  return { mappings, exclusions }
+  const seasonMappings = stored.season_mappings && typeof stored.season_mappings === 'object' && !Array.isArray(stored.season_mappings)
+    ? Object.fromEntries(Object.entries(stored.season_mappings).filter(([key, ids]) => key && validSeasonMappingIds(ids)))
+    : {}
+  return { mappings, season_mappings: seasonMappings, exclusions }
 }
 
 export function saveUserRules(rules: UserRules, file = USER_RULES_FILE): void {
-  writeJsonAtomic(file, { mappings: rules.mappings, exclusions: [...new Set(rules.exclusions)].sort() }, true, 0o600)
+  writeJsonAtomic(file, { mappings: rules.mappings, season_mappings: rules.season_mappings || {}, exclusions: [...new Set(rules.exclusions)].sort() }, true, 0o600)
+}
+
+export function validSeasonMappingIds(ids: unknown): ids is number[] {
+  return Array.isArray(ids) && ids.length > 0 && ids.length <= 20 &&
+    ids.every(id => Number.isSafeInteger(id) && id > 0) && new Set(ids).size === ids.length
+}
+
+export function seasonMappingKey(libraryKey: string, season: number): string {
+  return `${libraryKey}:${season}`
 }
 
 export function libraryItemKey(item: JsonObject): string {

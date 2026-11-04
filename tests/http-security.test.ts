@@ -192,6 +192,31 @@ test('account setup, authenticated access, revocation, and login throttling work
   assert.match(String((await invalidSchedule.json()).error), /at least one day/)
   assert.equal((await fetch(`${baseUrl}/api/scan/cancel`, { method: 'POST', headers: { Cookie: updatedCookie } })).status, 409)
 
+  writeFileSync(join(dataDir, 'last_results.json'), JSON.stringify({ results: [1, 2].map(season => ({
+    key: `Sonarr:10:${season}`, library_key: 'Sonarr:item10', arr: 'Sonarr', title: 'Anime', season, releases: [],
+  })) }))
+  const match = (body: unknown, authenticated = true) => fetch(`${baseUrl}/api/mapping-overrides`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(authenticated ? { Cookie: updatedCookie } : {}) }, body: JSON.stringify(body),
+  })
+  assert.equal((await match({ library_key: 'Sonarr:item10', season: 2, anilist_ids: [200] }, false)).status, 401)
+  assert.equal((await match({ library_key: 'Sonarr:item10', anilist_id: 100 })).status, 200)
+  assert.equal((await match({ library_key: 'Sonarr:item10', season: 2, anilist_ids: [201, 200] })).status, 200)
+  let rules = JSON.parse(readFileSync(join(dataDir, 'user_rules.json'), 'utf8'))
+  assert.deepEqual(rules.mappings, { 'Sonarr:item10': 100 }, 'Season corrections preserve show-level matches')
+  assert.deepEqual(rules.season_mappings, { 'Sonarr:item10:2': [201, 200] })
+  for (const ids of [[], [0], [-1], [1.5], ['200'], [200, 200], Array.from({ length: 21 }, (_, index) => index + 1)]) {
+    assert.equal((await match({ library_key: 'Sonarr:item10', season: 2, anilist_ids: ids })).status, 400)
+  }
+  for (const season of [0, -1, 1.5, '2', null]) {
+    assert.equal((await match({ library_key: 'Sonarr:item10', season, anilist_ids: [200] })).status, 400)
+  }
+  assert.equal((await match({ library_key: 'Sonarr:item10', season: 3, anilist_ids: [200] })).status, 404)
+  assert.equal((await match({ library_key: 'Sonarr:item99', season: 2, anilist_ids: [200] })).status, 404)
+  assert.equal((await match({ library_key: 'Sonarr:item10', season: 2, anilist_ids: null })).status, 200)
+  rules = JSON.parse(readFileSync(join(dataDir, 'user_rules.json'), 'utf8'))
+  assert.deepEqual(rules.season_mappings, {})
+  assert.deepEqual(rules.mappings, { 'Sonarr:item10': 100 }, 'Restoring automatic matching only removes the selected season rule')
+
   const failures = await Promise.all(Array.from({ length: 8 }, () => fetch(`${baseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

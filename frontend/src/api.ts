@@ -100,6 +100,12 @@ export const setMappingOverride = (libraryKey: string, anilistId: number | null)
     body: JSON.stringify({ library_key: libraryKey, anilist_id: anilistId }),
   })
 
+export const setSeasonMappingOverride = (libraryKey: string, season: number, anilistIds: number[] | null) =>
+  api<{ ok: boolean; season: number; anilist_ids: number[] | null }>('/api/mapping-overrides', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ library_key: libraryKey, season, anilist_ids: anilistIds }),
+  })
+
 export const setExclusion = (libraryKey: string, season: number | null, part: string, excluded: boolean) =>
   api<{ ok: boolean; excluded: boolean }>('/api/exclusions', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

@@ -1,13 +1,15 @@
 import type { ChainEntry, ResultItem, LocalItem, LocalSeason, SeaDexEntry, ResolvedPart } from './types.js'
 import { effectiveSeasonParts, entryParts, localPartOwnership, seadexSlot, pickBest, scopeReleaseToPart, partBestGroups, commonBestRelease, orderedPartReleases, releaseDict } from './matching.js'
 
-export function assessSeason(item: LocalItem, season: number, local: LocalSeason, chain: ChainEntry[], best: Map<number, SeaDexEntry>, libraryKey: string, mappingId: number | undefined, arrUrl: string | null): ResultItem {
+export function assessSeason(item: LocalItem, season: number, local: LocalSeason, chain: ChainEntry[], best: Map<number, SeaDexEntry>, libraryKey: string, mappingId: number | undefined, arrUrl: string | null, override?: { entry: ChainEntry | null; groupId: number | null; ids: number[] }): ResultItem {
   const localGroups: string[] = local.groups
-  const entry = season === 0 ? chain[0] : chain[season - 1]
+  const entry = override ? override.entry : season === 0 ? chain[0] : chain.find(entry => entry.season === season)
+  const groupId = override ? override.groupId : chain[0]?.id ?? null
   if (!entry) {
     return {
-      key: `${item.arr}:item${item.id}:${season}:missing`, group_id: chain[0]?.id ?? null,
+      key: `${item.arr}:item${item.id}:${season}:missing`, group_id: groupId,
       arr: item.arr, title: item.title, season, library_key: libraryKey, mapping_override: Boolean(mappingId),
+      season_mapping_override: Boolean(override), ...(override ? { anilist_ids: override.ids } : {}),
       status: 'missing', match_status: 'unmatched', have: [...localGroups].sort(), local_size: local.size || 0,
       missing_episode_count: local.missing_episode_count, best_group: null, best_size: 0, releases: [],
       url: null, notes: 'No AniList season match was found. Review the title mapping before downloading.',
@@ -18,9 +20,10 @@ export function assessSeason(item: LocalItem, season: number, local: LocalSeason
   const parts = effectiveSeasonParts(local, entryParts(entry))
   const partOwnership = localPartOwnership(local, parts)
   const common: Omit<ResultItem, 'key' | 'status' | 'best_group' | 'best_size' | 'releases'> = {
-    group_id: chain[0].id, arr: item.arr, title: item.title, season, have: [...localGroups].sort(),
+    group_id: groupId, arr: item.arr, title: item.title, season, have: [...localGroups].sort(),
     match_status: 'matched', missing_episode_count: local.missing_episode_count,
     library_key: libraryKey, mapping_override: Boolean(mappingId),
+    season_mapping_override: Boolean(override),
     have_by_part: partOwnership.have, owned_by_part: partOwnership.owned, precise_part_ownership: partOwnership.precise,
     local_size_by_part: partOwnership.sizes,
     local_size: local.size || 0, url: null, notes: null, image: entry.cover || null,

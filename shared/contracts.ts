@@ -51,6 +51,7 @@ export interface ResultItem {
   arr_url: string | null
   library_key?: string
   mapping_override?: boolean
+  season_mapping_override?: boolean
   excluded?: boolean
   excluded_parts?: string[]
 }

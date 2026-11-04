@@ -15,6 +15,9 @@ const root = resolve('static')
 const appVersion = `v${JSON.parse(readFileSync('frontend/package.json', 'utf8')).version.replace(/\.0$/, '')}`
 const release = (group, hash) => ({ kind: 'best', releaseGroup: group, tracker: 'Nyaa', quality: '1080p', tags: [], size: 200, info_hashes: [hash.repeat(40)], downloadable: true, selected_files: hash === 'a' ? ['01.mkv'] : ['01.mkv', '02.mkv'], torrent_files: [{ hash: hash.repeat(40), files: [{ name: '01.mkv', length: 120 }, { name: '02.mkv', length: 80 }] }] })
 const example = { key: 'Sonarr:1:1:Example', group_id: 1, library_key: 'Sonarr:item1', title: 'Example anime', arr: 'Sonarr', season: 1, status: 'upgrade', match_status: 'matched', have: ['Old group'], local_size: 100, best_size: 200, best_group: 'Example', anilist_id: 1, image: null, banner: null, url: null, notes: null, arr_url: null, releases: [release('Example', 'a'), release('Alternative', 'b')] }
+let anilistSearchResults = [{ id: 1, title: 'Example anime', year: 2026, format: 'TV', episodes: 12, cover: null }]
+const mappingRequests = []
+let mappingFailure = false
 let config = { sonarr_url: 'http://sonarr.local', sonarr_key: '', sonarr_key_configured: true, radarr_url: '', radarr_key: '', radarr_key_configured: false, sonarr_category: 'sonarr-anime', radarr_category: '', qbittorrent_url: 'http://qbit.local', qbittorrent_user: 'test', qbittorrent_pass: '', qbittorrent_pass_configured: true, webhook: '', webhook_configured: false, notify_enabled: false, unhide_on_new_best: false, hidden: [], scan_schedule: { enabled: false, mode: 'interval', interval_minutes: 60, times: ['03:00'], weekdays: [0], timezone: 'UTC', missed_run: 'skip' } }
 let revision = 1
 let resultRequests = 0
@@ -101,7 +104,8 @@ const server = createServer(async (req, res) => {
     else if (path === '/api/scanned-data') response = { results: 2, cache_entries: 1, last_run: null, cache_valid: true, results_valid: true }
     else if (path === '/api/history') response = { scans: fixtureHistory || [{ id: 'scan-1', run_at: '2026-10-02 12:00:00', trigger: 'manual', counts: { upgrade: 1 }, changes: [{ key: example.key, title: example.title, arr: 'Sonarr', season: 1, type: 'upgrade', from: 'best', to: 'upgrade', best_group: 'Example' }] }] }
     else if (path === '/api/download_bulk/cancelable') response = { ok: true, downloads: cancelableDownloads }
-    else if (path === '/api/anilist/search') response = { results: [{ id: 1, title: 'Example anime', year: 2026, format: 'TV', episodes: 12, cover: null }] }
+    else if (path === '/api/anilist/search') response = { results: anilistSearchResults }
+    else if (path === '/api/mapping-overrides') { mappingRequests.push(body); if (mappingFailure) { res.statusCode = 500; response = { error: 'Fixture match save failed. Try again.' } } else response = { ok: true, ...body } }
     else { res.statusCode = 404; response = { error: 'Unknown fixture route: ' + path } }
     res.end(JSON.stringify(response))
     return
@@ -767,6 +771,58 @@ try {
     await key('Escape')
   }
   console.log('PASS responsive configuration clearance, long release identities, noninteractive season pills, and nested mapping at 320/390/900/1440px')
+  anilistSearchResults = [200, 201].map(id => ({ id, title: `Example anime Season 2${id === 201 ? ' Part 2' : ''}`, year: 2026, format: 'ONA', episodes: 6, cover: null }))
+  config.hidden = []
+  progressMode = 'absent'
+  for (const width of [320, 1440]) {
+    fixtureResults = [{ ...example, status: 'best' }, { ...example, key: 'Sonarr:1:2:missing', season: 2, anilist_id: null, status: 'missing', match_status: 'unmatched', best_group: null, releases: [] }]
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 900 })
+    await evaluate(`location.hash = 'anime'; location.reload()`)
+    await wait(`document.querySelector('article')?.textContent.includes('Example anime')`)
+    await click('Details')
+    await wait(`document.querySelector('button[aria-label="Correct Season 2 match"]')`)
+    await evaluate(`document.querySelector('button[aria-label="Correct Season 2 match"]').click()`)
+    await wait(`document.querySelector('#mapping-title')?.textContent === 'Correct Season 2 match' && document.querySelector('button[aria-pressed="false"]')`)
+    assert.ok(await evaluate(`document.querySelector('input[placeholder="Anime title"]').value.endsWith(' Season 2')`), 'Search starts with the affected season')
+    assert.ok(await evaluate(`document.querySelectorAll('dialog[open]').length === 2`))
+    assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open]')].at(-1).textContent.includes('Season 2 of Example anime')`))
+    for (const id of [200, 201]) await evaluate(`(() => { const dialog = [...document.querySelectorAll('dialog[open]')].at(-1); [...dialog.querySelectorAll('button[aria-pressed]')].find(button => button.textContent.includes('AniList #${id}')).click() })()`)
+    await evaluate(`document.querySelector('button[aria-label="Move AniList 201 earlier"]').click()`)
+    assert.ok(await evaluate(`[...document.querySelectorAll('[aria-label="Selected AniList entries"] li')][0].textContent.includes('Part 2')`))
+    await evaluate(`document.querySelector('button[aria-label="Move AniList 200 earlier"]').click()`)
+    assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth`), 'Season mapping fits the viewport')
+    assert.ok(await evaluate(`(() => { const dialog = [...document.querySelectorAll('dialog[open]')].at(-1); return dialog.scrollWidth <= dialog.clientWidth + 1 })()`), 'Season mapping dialog has no horizontal overflow')
+    await capture(`season-mapping-${width}`)
+    const beforeSave = scanRequests.length
+    if (width === 320) {
+      mappingFailure = true
+      await click('Save and rescan')
+      await wait(`document.querySelector('[role="alert"]')?.textContent.includes('Fixture match save failed')`)
+      assert.equal(scanRequests.length, beforeSave, 'A failed save cannot start a scan')
+      assert.equal(await evaluate(`document.querySelectorAll('[aria-label="Selected AniList entries"] li').length`), 2, 'A failed save preserves selections')
+      mappingFailure = false
+    }
+    await click('Save and rescan')
+    await wait(`document.querySelectorAll('dialog[open]').length === 1`)
+    assert.deepEqual(mappingRequests.at(-1), { library_key: 'Sonarr:item1', season: 2, anilist_ids: [200, 201] })
+    assert.ok(scanRequests.length > beforeSave, 'Saving a season mapping starts a scan')
+    await key('Escape')
+
+    fixtureResults[1] = { ...fixtureResults[1], anilist_id: 200, anilist_ids: [200, 201], match_status: 'matched', season_mapping_override: true }
+    await evaluate(`location.reload()`)
+    await wait(`document.querySelector('article')?.textContent.includes('Example anime')`)
+    await click('Details')
+    await wait(`document.querySelector('button[aria-label="Change Season 2 match"]')`)
+    assert.ok(await evaluate(`document.querySelector('a[aria-label="Open Season 2 in AniList"]').href.endsWith('/200')`))
+    await evaluate(`document.querySelector('button[aria-label="Change Season 2 match"]').click()`)
+    await wait(`document.querySelector('[aria-label="Selected AniList entries"] li')`)
+    assert.equal(await evaluate(`document.querySelectorAll('[aria-label="Selected AniList entries"] li').length`), 2)
+    await click('Use automatic match')
+    await wait(`document.querySelectorAll('dialog[open]').length === 1`)
+    assert.deepEqual(mappingRequests.at(-1), { library_key: 'Sonarr:item1', season: 2, anilist_ids: null })
+    await key('Escape')
+  }
+  console.log('PASS season-specific selection, cour ordering, save/rescan, reset, and responsive dialogs at 320/1440px')
   bulkState = { ...bulkState, id: 'recovered-existing-job', finished: true, pending: [], added: [], failures: [], existing: ['a'.repeat(40)] }
   await evaluate(`location.reload()`)
   await wait(`document.querySelector('[aria-label="Application operations"]')?.textContent.includes('1 already in qBittorrent')`)
