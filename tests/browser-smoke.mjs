@@ -363,7 +363,7 @@ try {
   await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
   await evaluate(`document.querySelector('button[aria-label="Details for Example anime"]').click()`)
   await wait(`document.querySelector('.details-index')`)
-  assert.ok(await evaluate(`document.querySelector('.owned-release-summary') && !document.querySelector('.owned-release-summary').open`), 'Owned releases start summarized')
+  assert.ok(await evaluate(`document.querySelector('.details-season-disclosure') && !document.querySelector('.details-season-disclosure').open && document.querySelector('.details-season-disclosure > summary').textContent.includes('Your release: Example')`), 'Owned releases remain visible while season details start collapsed')
   await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 900, deviceScaleFactor: 1, mobile: true })
   await evaluate(`document.documentElement.style.fontSize='32px'`)
   await pause(150)
@@ -384,6 +384,57 @@ try {
   await evaluate(`location.reload()`)
   await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
   console.log('PASS enlarged-text details, owned summaries, upgrade navigation, recommendation order, bulk scope, and movie terminology')
+
+  const beforeOverviewProgress = progressMode
+  progressMode = 'absent'
+  const overviewSeason = (number, cours = 0) => ({ ...example, key: `Sonarr:overview:${number}`, group_id: 1, season: number, status: 'best', have: [number === 1 ? 'FLE' : 'sam'], precise_part_ownership: true,
+    have_by_part: Object.fromEntries((cours ? Array.from({length: cours}, (_, i) => `Cour ${i + 1}`) : ['']).map(part => [part, [number === 1 ? 'FLE' : 'sam']])),
+    owned_by_part: Object.fromEntries((cours ? Array.from({length: cours}, (_, i) => `Cour ${i + 1}`) : ['']).map(part => [part, [number === 1 ? 'FLE' : 'sam']])),
+    releases: (cours ? Array.from({length: cours}, (_, i) => ({...release('sam', 'a'), part: `Cour ${i + 1}`})) : [release(number === 1 ? 'FLE' : 'sam', 'a')]),
+  })
+  fixtureResults = [overviewSeason(1), overviewSeason(2), overviewSeason(3, 2), overviewSeason(4, 3)]
+  revision++
+  for (const width of [1440, 390, 320]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: width < 900 })
+    await evaluate(`location.reload()`)
+    await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
+    await click('Details')
+    await wait(`document.querySelector('.details-verdict[data-quality="best"]')`)
+    assert.equal(await evaluate(`document.querySelector('.details-verdict h3').textContent`), 'You have the best releases')
+    assert.ok(await evaluate(`[...document.querySelectorAll('.details-season-disclosure')].every(details => !details.open)`), 'Seasons start compact')
+    assert.ok(await evaluate(`[...document.querySelectorAll('.details-season-disclosure > summary')].every(summary => summary.getClientRects().length && summary.textContent.includes('Your release') && summary.querySelector('strong')?.textContent)`), 'Every owned group stays visible in the collapsed overview')
+    assert.ok(await evaluate(`(() => { const summary = document.querySelectorAll('.details-season-disclosure > summary')[3]; return summary.textContent.includes('Cour 1: sam') && summary.textContent.includes('Cour 2: sam') && summary.textContent.includes('Cour 3: sam') })()`), 'Split summaries retain each cour release')
+    assert.ok(await evaluate(`document.querySelector('.anime-details-body').scrollWidth <= document.querySelector('.anime-details-body').clientWidth + 1`), 'Release overview fits the viewport')
+    await capture(`details-overview-${width}`)
+    await evaluate(`document.querySelectorAll('.details-season-disclosure > summary')[2].focus()`)
+    await key('Enter')
+    await wait(`document.querySelectorAll('.details-season-disclosure')[2].open`)
+    await evaluate(`document.querySelector('.details-cour > summary').focus()`)
+    await key('Enter')
+    await wait(`document.querySelector('.details-cour').open`)
+    assert.ok(await evaluate(`document.querySelectorAll('.details-season-disclosure')[2].open && !document.querySelectorAll('.details-cour')[1].open`), 'Cours expand independently without closing their season')
+    assert.ok(await evaluate(`document.querySelector('.details-cour .release-row').getClientRects().length > 0`), 'Cour expansion exposes the real release and download controls')
+    await capture(`details-cour-${width}`)
+    await key('Escape')
+    await wait(`!document.querySelector('dialog[open]')`)
+  }
+  fixtureResults[2] = { ...fixtureResults[2], status: 'partial', upgrade_available: true, have_by_part: {'Cour 1':['sam'], 'Cour 2':['sam']}, owned_by_part: {'Cour 1':['sam'], 'Cour 2':[]}, unavailable_parts: [{label:'Cour 3',reason:'Not listed on SeaDex'}] }
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
+  await click('Details')
+  await wait(`document.querySelector('.details-verdict[data-quality="upgrade"]')`)
+  assert.ok(await evaluate(`document.querySelectorAll('.details-season-disclosure > summary')[2].textContent.includes('Partially on SeaDex')`), 'Partial coverage stays explicit')
+  await evaluate(`document.querySelectorAll('.details-season-disclosure > summary')[2].click()`)
+  assert.equal(await evaluate(`document.querySelectorAll('.details-cour > summary .details-quality')[1].getAttribute('data-quality')`), 'upgrade', 'A group found in incomplete cour files is not presented as fully owned')
+  assert.equal(await evaluate(`document.querySelectorAll('.details-cour > summary .details-quality')[2].textContent`), 'Not on SeaDex', 'Unavailable cours remain in the overview')
+  await key('Escape')
+  fixtureResults = null
+  progressMode = beforeOverviewProgress
+  revision++
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
+  console.log('PASS release overview, per-cour ownership, independent keyboard disclosures, partial coverage, and responsive details at 320/390/1440px')
 
   await click('Bulk download')
   await evaluate(`document.querySelector('dialog[open] button[aria-expanded]').click()`)
@@ -817,6 +868,7 @@ try {
     await capture(`review-${width}-season-pills`)
     await evaluate(`(() => { const card = [...document.querySelectorAll('article')].find(card => card.textContent.includes(${JSON.stringify(example.title)})); [...card.querySelectorAll('button')].find(button => button.textContent.trim() === 'Details').click() })()`)
     await wait(`document.querySelector('.release-identity')`)
+    await evaluate(`document.querySelectorAll('.details-season-disclosure, .details-cour').forEach(details => { details.open = true })`)
     const releaseGeometry = await evaluate(`(() => { const identities = [...document.querySelectorAll('.release-identity')]; return identities.map(identity => ({ width: identity.clientWidth, scrollWidth: identity.scrollWidth, groupWidth: identity.querySelector('span').clientWidth, groupScrollWidth: identity.querySelector('span').scrollWidth, tagWidths: [...identity.querySelectorAll('div > span')].map(tag => tag.getBoundingClientRect().width) })) })()`)
     for (const row of releaseGeometry) {
       assert.ok(row.width > 0 && row.scrollWidth <= row.width + 1, 'Release identity is not clipped')

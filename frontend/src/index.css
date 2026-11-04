@@ -194,13 +194,39 @@
 .anime-details-frame { padding: 12px; }
 .anime-details-panel { max-height: calc(100dvh - 24px); }
 .anime-details-header { gap: 12px; padding: 16px; max-height: 35dvh; overflow-y: auto; }
+.anime-details-cover { width: 96px; height: 144px; flex-shrink: 0; border-radius: var(--radius-lg); object-fit: cover; }
 .anime-details-close { width: 44px; height: 44px; min-width: 44px; min-height: 44px; position: sticky; top: 0; }
 .anime-details-banner::after { content: ''; position: absolute; inset: 0; background: linear-gradient(to bottom, rgb(9 13 19 / .86) 0%, rgb(9 13 19 / .86) calc(100% - 64px), rgb(9 13 19 / .2) 100%); }
-.anime-details-art-reveal { height: 64px; }
-.anime-details-content { padding: 16px; }
-.details-index-links { grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr)); }
-.details-index-links button { min-height: 44px; }
+.anime-details-content { padding: 24px; }
+.details-verdict { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; margin-bottom: 24px; padding: 20px; border-radius: 12px; color: var(--color-warn); background: color-mix(in srgb, var(--color-warn) 8%, var(--color-canvas)); }
+.details-verdict[data-quality="best"] { color: var(--color-good); background: color-mix(in srgb, var(--color-good) 9%, var(--color-canvas)); }
+.details-verdict[data-quality="missing"] { color: var(--color-muted); background: var(--color-panel); }
+.details-verdict > svg { margin-top: 2px; }
+.details-verdict > div:first-of-type { flex-basis: 15rem; }
+.details-index { margin-left: 38px; }
+.details-list-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
 .details-season, .details-cour { scroll-margin-block: 12px; }
+.details-season { border-top: 1px solid var(--color-line); }
+.details-summary { display: grid; grid-template-columns: minmax(0, 1fr) fit-content(40%) 16px; align-items: center; gap: 16px; min-height: 80px; padding-block: 16px; list-style: none; border-radius: 6px; }
+.details-summary::-webkit-details-marker, .details-season-actions > summary::-webkit-details-marker, .release-notes > summary::-webkit-details-marker { display: none; }
+.details-summary:hover { background: var(--color-panel); }
+.details-season-name { display: block; font-size: .875rem; font-weight: 700; }
+.details-current-release { display: block; margin-top: 4px; color: var(--color-muted); font-size: .75rem; overflow-wrap: anywhere; }
+.details-current-release strong { color: var(--color-ink); font-size: .875rem; font-weight: 700; }
+.details-owned-cours { display: flex; flex-wrap: wrap; gap: 3px 14px; margin-top: 3px; }
+.details-owned-cours > span { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.details-quality { display: inline-flex; align-items: center; gap: 6px; max-width: 13em; min-width: 0; font-size: .75rem; font-weight: 700; overflow-wrap: anywhere; }
+.details-quality > svg { flex-shrink: 0; }
+.details-disclosure-chevron { flex-shrink: 0; transition: transform 150ms ease-out; }
+.details-season-disclosure[open] > .details-summary > .details-disclosure-chevron, .details-cour[open] > .details-summary > .details-disclosure-chevron { transform: rotate(90deg); }
+.details-summary-note { display: block; margin-top: 5px; font-size: .75rem; overflow-wrap: anywhere; }
+.details-season-content { padding-bottom: 18px; }
+.details-cour { margin-left: 14px; border-top: 1px solid var(--color-line); }
+.details-cour-content { padding-bottom: 16px; }
+.details-secondary-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; }
+.details-season-actions { margin-top: 10px; }
+.details-season-actions > summary { width: fit-content; }
+.details-management { margin-top: 16px; }
 .anime-details-body .release-row { padding: 16px; container-type: inline-size; container-name: release-details; }
 .anime-details-body button, .anime-details-body a, .anime-details-body summary { max-width: 100%; overflow-wrap: anywhere; }
 .anime-details-body .release-sizes > div { min-width: 0; max-width: 100%; }
@@ -212,10 +238,19 @@
 }
 @media (width < 601px) {
   .anime-details-header, .anime-details-content, .anime-details-body .release-row { padding: 12px; }
-  .anime-details-art-reveal { display: none; }
+  .anime-details-cover { width: 64px; height: 96px; }
   .anime-details-banner::after { background: rgb(9 13 19 / .86); }
   .anime-details-body button, .anime-details-body a { min-width: 0; }
   .anime-details-body .release-download-button { width: 100%; }
+  .details-verdict { padding: 16px; margin-bottom: 20px; gap: 10px; }
+  .details-verdict > div:first-of-type { flex-basis: 8rem; }
+  .details-index { margin-left: 0; }
+  .details-summary { gap: 8px; grid-template-columns: minmax(0, 1fr) fit-content(40%) 14px; }
+  .details-quality { justify-self: end; gap: 4px; }
+  .details-cour { margin-left: 10px; }
+}
+@media (max-height: 500px) {
+  .anime-details-cover { width: 48px; height: 72px; }
 }
 .library-card-readable {
   transition: opacity 180ms ease-out, clip-path 220ms cubic-bezier(0.16, 1, 0.3, 1), border-color 140ms ease-out;
