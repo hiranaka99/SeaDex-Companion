@@ -1,6 +1,6 @@
 # SeaDex Companion
 
-SeaDex Companion is a self-hosted web UI that compares your **Sonarr** and **Radarr** anime libraries with the best releases indexed by [SeaDex](https://seadex.moe/). It highlights missing upgrades, explains the match season by season, and can send selected public releases directly to qBittorrent.
+SeaDex Companion compares your **Sonarr** and **Radarr** anime libraries with the best releases indexed by [SeaDex](https://seadex.moe/). See which titles need an upgrade, review your current releases season by season, and send selected public releases directly to qBittorrent.
 
 <p align="center">
   <img width="100%" alt="SeaDex Companion library showing anime upgrade status" src="docs/screenshots/library.png" />
@@ -11,37 +11,21 @@ SeaDex Companion is a self-hosted web UI that compares your **Sonarr** and **Rad
 
 ## Highlights
 
-- One card per anime, with all seasons grouped together
-- Clear release-quality verdicts and visible owned releases, with independently expandable seasons and cours in Details
-- Upgrade states for **Upgradable**, **Best quality**, **Partially on SeaDex**, and **Not on SeaDex**
-- Episode-aware matching for split seasons, cours, and multi-part releases
-- Current-size versus target-size comparison
-- One-click or bulk downloads through qBittorrent, limited to missing episodes when possible
-- Bulk download estimates deduplicate shared torrents and selected files, skip existing hashes, and check qBittorrent download-disk space where supported
-- Bulk review follows your library filters, with an explicit entire-library scope and background batch progress
-- Download monitoring, pause, resume, cancellation, and removal
-- Search and filtering by title, release group, source, and status
-- Matching-review status and aired-episode missing counts
-- Manual AniList corrections and season/cour exclusions
-- Interval, daily, or weekly scans with timezone and missed-run controls
-- Optional automatic unhiding when a scan finds new best releases for hidden anime (Configuration → Automation & webhooks; off by default)
-- Sonarr and Radarr webhooks for incremental scans when titles are added
-- Scan history, change feed, Discord notifications, and live server logs
-- Password-protected UI, Argon2ID password hashing, session revocation, and AES-256-GCM credential encryption
-- Guided connection setup and mobile layouts with larger touch controls
+- See all seasons of an anime together, with clear upgrade and ownership summaries.
+- Compare your current release groups, episode coverage, and file sizes with SeaDex recommendations.
+- Find titles by name, release group, source, or upgrade status.
+- Correct AniList matches and exclude individual seasons or cours from upgrades.
+- Download individual releases or review a batch, with size estimates and available-disk-space checks.
+- Monitor downloads, pause or resume torrents, and cancel downloads while preserving files by default.
+- Track unseen release changes and receive optional Discord notifications.
+- Schedule scans or connect Sonarr and Radarr webhooks to scan newly added titles.
+- Use a password-protected interface on desktop or mobile, with encrypted storage for integration credentials.
 
 ## Quick start
 
 ### Docker
 
-The published image is available from [Docker Hub](https://hub.docker.com/r/hiranaka/seadex-companion).
-
-The **Publish Docker image** GitHub Actions workflow builds and pushes `linux/amd64` and `linux/arm64` images whenever a GitHub release is published. Add these repository secrets under **Settings → Secrets and variables → Actions**:
-
-- `DOCKERHUB_USERNAME`: the Docker Hub account with push access to `hiranaka/seadex-companion`.
-- `DOCKERHUB_TOKEN`: a Docker Hub access token with write permission for that repository.
-
-Release tags must match both package versions, for example `v1.10.0`. A stable release publishes `:1.10.0`, `:1.10`, and `:latest`; prereleases publish only their full version tag. The workflow runs the server tests and builds the existing Dockerfile before publishing. It can also be run manually from **Actions → Publish Docker image → Run workflow**, with an existing release tag and the prerelease option when appropriate. Publishing an image does not automatically update running containers.
+The published image is available from [Docker Hub](https://hub.docker.com/r/hiranaka/seadex-companion) for Linux amd64 and arm64. You need a Sonarr or Radarr library that SeaDex Companion can reach; qBittorrent is optional unless you want to download releases.
 
 ```bash
 docker run -d \
@@ -54,21 +38,11 @@ docker run -d \
 
 Open [http://localhost:8080](http://localhost:8080), create the administrator account, then configure your services under **Configuration**.
 
-The named volume stores configuration, account data, the encryption key, caches, scan results, and logs. The container runs as an unprivileged user and exposes a health check at `/healthz`.
-
-Configuration upgrades read existing `config.json`, `secrets.enc.json`, and torrent ownership files. On startup, configuration and encrypted credentials are migrated into one atomic `config.json` snapshot; the existing encryption key is retained. Download ownership and its title associations are committed together in `owned_torrents.json`. Back up the data directory before upgrading; restore that backup when downgrading to a version using the older storage format.
-
-Bulk downloads run as server-owned jobs with stable IDs. Closing the page does not cancel them. Job status survives reloads; after a server restart, unfinished torrents are reported as interrupted so you can check qBittorrent before retrying. Existing torrents remain untouched.
+Keep the `seadex-data` volume: it stores your settings, account, integration credentials, matching corrections, and scan history. Both installation examples limit access to the host computer. See [Security](#security) before setting up access from other devices.
 
 ### Docker Compose
 
-The included `docker-compose.yml` builds the current source:
-
-```bash
-docker compose up -d --build
-```
-
-For the published image instead, use:
+To use Compose, create a `compose.yaml` file with the following settings:
 
 ```yaml
 services:
@@ -89,13 +63,15 @@ volumes:
   seadex-data:
 ```
 
-Replace `TZ` with your [IANA timezone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones). Update a published-image deployment with:
+Replace `TZ` with your timezone, such as `Europe/Berlin` or `America/New_York`. Start SeaDex Companion from the folder containing your `compose.yaml`:
 
 ```bash
-docker compose pull && docker compose up -d
+docker compose up -d
 ```
 
-## Configuration
+Open [http://localhost:8080](http://localhost:8080) and create your administrator account. The `latest` image follows stable releases; use a specific version tag if you prefer to choose when to upgrade.
+
+## Connect your library
 
 All integrations are configured in the WebUI; no integration credentials need to be passed through Docker.
 
@@ -105,60 +81,73 @@ All integrations are configured in the WebUI; no integration credentials need to
 4. Test each configured integration, save, and select **Scan library**.
 5. Configure automatic scans under **Configuration → Automation & webhooks**.
 
-The desktop sign-in screen displays trending anime covers from AniList, shuffled on each visit. The server caches the cover URLs in `DATA_DIR/auth-artwork.json` for 24 hours and refreshes them when the screen next requests artwork. Refreshes time out after six seconds; failed requests have a 30-minute retry cooldown. Bundled covers appear immediately and remain the fallback when AniList, the instance's internet connection, or individual cover images are unavailable. Artwork never blocks signing in. The animation can be paused and respects reduced-motion preferences.
+Use addresses reachable from the SeaDex Companion container. Inside a container, `localhost` refers to that container, so it usually cannot reach Sonarr or qBittorrent running elsewhere through `localhost`.
 
-Sonarr v3/v4 (API v3) and the [Sonarr v5 beta](https://forums.sonarr.tv/t/sonarr-v5-beta/41099) (API v5) are supported. Connection tests and scans discover Sonarr's advertised API version automatically; Radarr continues to use API v3. Enter the service's base URL, including any reverse-proxy path such as `http://sonarr:8989/sonarr`. Existing URLs ending in `/api/v3` or `/api/v5` are also accepted.
+Sonarr v3, v4, and v5 are supported. Enter each service's base URL, including any reverse-proxy path, such as `http://sonarr:8989/sonarr`. If your proxy redirects to a different address or from HTTP to HTTPS, enter the final URL directly.
 
-Sonarr API requests follow redirects only within the same origin (scheme, host, and port), with a five-redirect limit. Redirects to another origin remain blocked to protect API keys. If a proxy redirects HTTP to HTTPS or changes the host or port, configure the final URL directly.
+## Review your library
 
-If Sonarr combines seasons that AniList lists separately, open the anime's details and choose **Correct season match** beside the affected season. Select its AniList entry, then **Save and rescan**. For split cours, select each entry in episode order; **Move up** changes their order. Season-specific matches take priority over automatic and show-level matches, without changing the other seasons. **Use automatic match** removes just that season's override. These choices are stored in `DATA_DIR/user_rules.json` and survive clearing scanned data.
+Open **Details** on an anime to see its quality verdict, the release groups in your files, and the recommended upgrades. Expand a season or cour to compare releases and download options. A cour is one part of a split season.
 
-AniList season chains and manually selected entry metadata refresh after 24 hours, on the next scan. A newly observed Sonarr season missing from a recent chain triggers one earlier refresh before requesting match review. If AniList still has no sequel connection, use a season-specific match. A confirmed AniList match with no SeaDex listing appears as **Not on SeaDex**, rather than **Match needs review**.
+**Not on SeaDex** means there is no matching SeaDex listing. **Match needs review** means SeaDex Companion needs help identifying the correct anime or season. A matching release group alone does not mean a season is complete; review any missing-episode or uncertain-coverage messages as well.
 
-Continuous anime can map several consecutive Sonarr seasons to one AniList entry, while a Sonarr season can combine multiple AniList sequel entries when their episode totals match. Continuous-season recommendations require filenames identifying the requested season or absolute episode range; incomplete or unverifiable releases are shown as uncovered. Missing season metadata and incomplete boundaries require review rather than guessing a sequel. Manual season matches take priority, and confirming the same continuous entry retains its episode offset.
+### Correct a season match
 
-Automatic title matching handles trailing TVDB years such as `Dororo (2019)` and common long-vowel spelling variants, while preferring literal title matches. Older title-search cache entries are refreshed once after this matching update. AniList manga sequel relations are skipped, missing IDs do not abort scans, and searches share request pacing with scans.
+If Sonarr groups seasons differently from AniList, open the anime's details and use the match control beside the affected season. Select its AniList entry, then **Save and rescan**. For split cours, select each entry in episode order; use **Move up** to change their order.
 
-Bulk review defaults to the current library results across all matching pages. Choose **Entire library** to review titles outside your search, source, and status filters; hidden titles start unchecked. Release rows show the group, tracker, quality, audio, and tags before submission. After submitting, selections are fixed and **Continue in background** lets you use other tabs while the batch runs. **Review batch** reopens the most recent submitted review in the same session; operation progress and failure details can also be recovered after a reload.
+Season corrections affect only that season. Choose **Use automatic match** to remove a correction. Your matching corrections and exclusions survive clearing scanned data.
 
-Bulk download review shows the size of new torrents and checks free space on qBittorrent's download paths. Existing torrents are skipped without changing their files or ownership. Low-space warnings require acknowledgement before sending downloads. Older clients may only report space for their default save path; other paths are shown as unavailable. Run a new scan after updating to populate the per-torrent file sizes used by accurate estimates. Estimates do not reserve space or include torrent overhead and library-import copies.
+### Download and monitor upgrades
 
-Season/cour file selection requires identifiable coverage for the complete target episode set. If filenames do not identify the full set, the release remains unscoped rather than silently dropping episodes; review the whole-torrent scope before downloading. Bulk cancellation refreshes qBittorrent progress when submitted so an earlier cached incomplete state cannot authorize deleting a completed torrent.
+Download an individual release from **Details**, or open bulk review to select several upgrades. Bulk review includes titles matching your current filters across all pages. Choose **Entire library** to include titles outside those filters; hidden titles start unchecked.
 
-For near-real-time discovery, add these webhook connections in Sonarr and Radarr using HTTP Basic Authentication with your SeaDex Companion username and password:
+Review the release groups, selected episodes, download sizes, and available disk space before submitting. Torrents already present in qBittorrent are skipped. When filenames identify the required episodes, SeaDex Companion can download only the selected files; otherwise, review the whole-torrent scope before proceeding.
+
+Disk-space checks may be unavailable for some download paths or older qBittorrent versions. Size estimates do not reserve space or include torrent overhead and library-import copies. Run a new scan if older results are missing file-size information.
+
+Choose **Continue in background** to keep using the app while a batch runs. Closing the page does not cancel downloads. **Review batch** reopens your latest submitted review in the same session, and download progress is recovered after a reload. After a SeaDex Companion restart, check qBittorrent before retrying downloads reported as interrupted.
+
+Use the download controls to pause, resume, cancel, or remove torrents. File deletion is optional; downloaded files are preserved by default.
+
+## Automatic scans and notifications
+
+Set an interval, daily times, or weekdays under **Configuration → Automation & webhooks**. Choose the timezone and what should happen if a scan was missed while SeaDex Companion was offline.
+
+**Unhide anime with new best releases** is off by default. Enable it to bring hidden titles back when a scan finds a new best release. Alternative releases do not trigger this setting. Add a Discord webhook under **Configuration** if you want upgrade notifications.
+
+To scan newly added titles sooner, add these webhook connections in Sonarr and Radarr using HTTP Basic Authentication with your SeaDex Companion username and password:
 
 - Sonarr: `https://your-seadex-host/api/webhooks/sonarr`
 - Radarr: `https://your-seadex-host/api/webhooks/radarr`
 
-SeaDex Companion accepts Sonarr `SeriesAdd` and Radarr `MovieAdded` events. Keep a scheduled scan enabled as well; scheduled scans reconcile existing titles when SeaDex changes older entries.
+Enable Sonarr `SeriesAdd` or Radarr `MovieAdded` events for the corresponding connection. Keep a scheduled scan enabled as well to check existing titles for changed SeaDex recommendations.
 
 ## Reviewing release changes
 
 The library's **Unseen changes** filter shows anime with release changes you have not reviewed, including new best releases, alternatives, updated torrents or metadata, and removals. Its count covers matching titles across all pages, with the latest changes first. Cards label the affected seasons; open **Details → What changed** for the before/after summary and detection time. Use **Mark reviewed** for one anime, or **Mark all reviewed** for all titles matching the current library filters. Opening the app or completing another unchanged scan does not clear these changes.
 
-Review state is saved in `DATA_DIR/release_changes.json` and shared across devices. Existing scan results establish the comparison baseline; a first scan or newly discovered title starts without unseen alerts. Changes are detected on completed scans, rather than at the upstream release's publication time.
+Reviewed changes stay reviewed across reloads and devices. A first scan or newly discovered title starts without unseen alerts. New changes appear after a completed scan; they are not live notifications of upstream publication.
 
-## Run from source
+## Updating and backups
 
-Requires **Node.js 24+**.
+Back up the complete `seadex-data` volume before upgrading or moving to another host. Keep the encryption key and the rest of the data together so your saved integration credentials remain usable. Keep a pre-upgrade backup if you may need to return to an older version.
 
-```bash
-npm install
-npm --prefix frontend install
-npm start
-```
-
-For live updates, start the backend and frontend together:
+For the Compose setup above, update with:
 
 ```bash
-npm run dev
+docker compose pull
+docker compose up -d
 ```
 
-Open the Vite URL printed in the terminal (normally [http://localhost:5173](http://localhost:5173)). Frontend edits update automatically, and backend edits restart the API server. Vite proxies `/api` requests to the backend on port `8080`; opening port `8080` directly serves the last compiled frontend without live updates. Press Ctrl+C to stop both servers.
+For `docker run`, pull the new image, stop and remove the old container, then run the installation command again with the same `seadex-data` volume:
 
-To run either server separately, use `npm run dev:server` or `npm run dev:frontend`.
+```bash
+docker pull hiranaka/seadex-companion:latest
+docker stop seadex-companion
+docker rm seadex-companion
+```
 
-Run `npm test` for backend, HTTP, scheduling, and frontend utility regressions. For browser workflow checks, run `npm run test:browser`. The browser checks use isolated local fixtures and default to Microsoft Edge on Windows; set `BROWSER_PATH` to a Chromium executable on other systems.
+New images take effect after the container is recreated. See the [release notes](https://github.com/hiranaka99/SeaDex-Companion/releases) for changes and any additional upgrade steps.
 
 ## Security
 
@@ -179,7 +168,6 @@ For remote access, prefer a private VPN. If you use a reverse proxy, require HTT
 
 ## Screenshots
 
-
 ### Release details
 
 <img width="100%" alt="Anime details showing current files and recommended SeaDex releases" src="docs/screenshots/release-details.png" />
@@ -191,7 +179,6 @@ For remote access, prefer a private VPN. If you use a reverse proxy, require HTT
 ### Bulk cancellation
 
 <img width="100%" alt="Bulk cancellation review showing selected app-managed torrents and the optional file-deletion warning" src="docs/screenshots/bulk-cancellation.png" />
-
 
 ### Scan history
 
