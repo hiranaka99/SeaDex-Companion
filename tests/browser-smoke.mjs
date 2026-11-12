@@ -147,7 +147,8 @@ const evaluate = async expression => {
   return response.result.value
 }
 const wait = async expression => {
-  for (let attempt = 0; attempt < 100; attempt++) { if (await evaluate(`Boolean(${expression})`)) return; await pause(50) }
+  // Reloads can briefly expose a document without a body before parsing finishes.
+  for (let attempt = 0; attempt < 100; attempt++) { if (await evaluate(`document.readyState !== 'loading' && Boolean(${expression})`)) return; await pause(50) }
   throw new Error('UI did not reach expected state: ' + expression)
 }
 const click = async text => {
