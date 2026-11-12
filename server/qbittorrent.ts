@@ -48,6 +48,17 @@ async function withTorrentLocks<T>(config: Config, hashes: string[], operation: 
   } finally { for (const release of unlock.reverse()) release() }
 }
 
+function qbCookies(headers: Headers, previous = ''): string {
+  const cookies = new Map<string, string>()
+  // Read Set-Cookie individually; Expires attributes can contain commas.
+  for (const value of [...previous.split(';'), ...headers.getSetCookie()]) {
+    const pair = value.split(';', 1)[0].trim()
+    const separator = pair.indexOf('=')
+    if (separator > 0) cookies.set(pair.slice(0, separator), pair.slice(separator + 1))
+  }
+  return [...cookies].map(([name, value]) => `${name}=${value}`).join('; ')
+}
+
 async function qbLogin(base: string, user: string, password: string): Promise<QbSession> {
   const response = await fetchWithTimeout(`${base}/api/v2/auth/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -55,7 +66,7 @@ async function qbLogin(base: string, user: string, password: string): Promise<Qb
   }, 30_000)
   const text = await response.text()
   if (response.status === 204 || (response.status === 200 && text.trim() === 'Ok.')) {
-    return { cookie: (response.headers.get('set-cookie') || '').split(';', 1)[0] }
+    return { cookie: qbCookies(response.headers) }
   }
   throw new Error(`qBittorrent login failed (HTTP ${response.status})`)
 }
@@ -119,11 +130,17 @@ async function qbRequest(config: Config, path: string, init: RequestInit = {}, r
   connection.session ||= login()
   const sessionPromise = connection.session
   const session = await sessionPromise
-  const headers = new Headers(init.headers); if (session.cookie) headers.set('Cookie', session.cookie)
+  let cookie = session.cookie
+  const headers = new Headers(init.headers); if (cookie) headers.set('Cookie', cookie)
   const response = await fetchWithTimeout(`${base}${path}`, { ...init, headers }, timeout)
+  // Authentication bypass can replace an expired session on a successful response.
+  // A delayed response must not overwrite cookies adopted by a newer request.
+  if (connection.session === sessionPromise && session.cookie === cookie) {
+    cookie = session.cookie = qbCookies(response.headers, cookie)
+  }
   if (response.status === 403 && retry) {
     await response.body?.cancel()
-    if (connection.session === sessionPromise) connection.session = login()
+    if (connection.session === sessionPromise && session.cookie === cookie) connection.session = login()
     return qbRequest(config, path, init, false, timeout)
   }
   return response
