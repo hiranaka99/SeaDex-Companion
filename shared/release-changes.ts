@@ -1,6 +1,5 @@
-import type { Release, ReleaseChange, ResultItem } from './contracts.js'
+import type { Release, ReleaseChange, ReleaseChangeDetail, ResultItem } from './contracts.js'
 
-export type ReleaseChangeDescription = Omit<ReleaseChange, 'id' | 'detected_at'>
 export const RELEASE_CHANGE_LABELS: Record<ReleaseChange['kind'], string> = {
   best: 'New best release', alternative: 'New alternative', updated: 'Release updated', removed: 'Release removed',
 }
@@ -15,19 +14,48 @@ const values = (items: string[] = []) => [...new Set(items.map(normalized).filte
 const slot = (release: Release) => JSON.stringify([normalized(release.part), normalized(release.releaseGroup), normalized(release.tracker)])
 const name = (release: Release) => `${clean(release.releaseGroup) || 'Unknown group'}${release.tracker ? ` (${clean(release.tracker)})` : ''}`
 
+function bestReleases(result: ResultItem, part: string): Release[] {
+  return (result.releases || []).filter(release => release.kind === 'best' && clean(release.part) === part)
+}
+
+function releaseReplacement(previous: Release[], next: Release[]): ReleaseChangeDetail['release_replacement'] {
+  const wasBest = new Set(previous.map(release => normalized(release.releaseGroup)))
+  const isBest = new Set(next.map(release => normalized(release.releaseGroup)))
+  const removed = previous.filter(release => !isBest.has(normalized(release.releaseGroup)))
+  const added = next.filter(release => !wasBest.has(normalized(release.releaseGroup)))
+  if (removed.length !== 1 || added.length !== 1) return undefined
+  const [old] = removed, [current] = added
+  const hashes = (release: Release) => values(release.info_hashes?.filter(hash => /^[a-f\d]{40}$/i.test(hash)))
+  const oldHashes = hashes(old), newHashes = hashes(current)
+  return {
+    previous: name(old), next: name(current),
+    torrent_changed: Boolean(oldHashes && newHashes && oldHashes !== newHashes),
+  }
+}
+
+function notesByPart(result: ResultItem): Map<string, string | null> {
+  const noteText = (note: string | null | undefined) => note?.trim() && note.trim() !== '-' ? note : null
+  const notes = new Map(Object.entries(result.notes_by_part || {}).map(([part, note]) => [clean(part), noteText(note)] as const))
+  if (!notes.size) notes.set('', noteText(result.notes))
+  return notes
+}
+
 /** Compare catalog facts only: ownership, selected files, and download state are local. */
-export function describeReleaseChanges(previous: ResultItem, current: ResultItem): ReleaseChangeDescription[] {
-  const changes: ReleaseChangeDescription[] = []
+export function describeReleaseChanges(previous: ResultItem, current: ResultItem): ReleaseChangeDetail[] {
+  const changes: ReleaseChangeDetail[] = []
   const before = new Map((previous.releases || []).map(release => [slot(release), release]))
   const after = new Map((current.releases || []).map(release => [slot(release), release]))
   const changedBestParts = new Set<string>()
   const parts = new Set([...(previous.releases || []), ...(current.releases || [])].map(release => clean(release.part)))
   for (const part of parts) {
-    const best = (result: ResultItem) => [...new Set((result.releases || []).filter(release => release.kind === 'best' && clean(release.part) === part).map(release => clean(release.releaseGroup)))].sort()
-    const oldBest = best(previous), newBest = best(current)
+    const oldReleases = bestReleases(previous, part), newReleases = bestReleases(current, part)
+    const groups = (releases: Release[]) => [...new Set(releases.map(release => clean(release.releaseGroup)))].sort()
+    const oldBest = groups(oldReleases), newBest = groups(newReleases)
     if (values(oldBest) === values(newBest)) continue
     changedBestParts.add(part)
+    const replacement = releaseReplacement(oldReleases, newReleases)
     changes.push({ kind: newBest.length ? 'best' : 'removed', part,
+      ...(replacement ? { release_replacement: replacement } : {}),
       description: !newBest.length ? `Best release removed: ${oldBest.join(', ')}` : oldBest.length
         ? `Best release changed: ${oldBest.join(', ')} → ${newBest.join(', ')}` : `New best release: ${newBest.join(', ')}` })
   }
@@ -50,8 +78,15 @@ export function describeReleaseChanges(previous: ResultItem, current: ResultItem
   for (const [key, release] of before) if (!after.has(key) && !(release.kind === 'best' && changedBestParts.has(clean(release.part)))) {
     changes.push({ kind: 'removed', part: clean(release.part), description: `${release.kind === 'best' ? 'Best release' : 'Alternative'} removed: ${name(release)}` })
   }
-  const notes = (result: ResultItem) => JSON.stringify([clean(result.notes), Object.entries(result.notes_by_part || {}).map(([part, note]) => [clean(part), clean(note)]).sort()])
-  if (notes(previous) !== notes(current)) changes.push({ kind: 'updated', description: 'SeaDex recommendation notes updated' })
+  const oldNotes = notesByPart(previous), newNotes = notesByPart(current)
+  for (const part of new Set([...oldNotes.keys(), ...newNotes.keys()])) {
+    const oldNote = oldNotes.get(part) ?? null, newNote = newNotes.get(part) ?? null
+    if (oldNote?.trim().replace(/\r\n/g, '\n') === newNote?.trim().replace(/\r\n/g, '\n')) continue
+    changes.push({
+      kind: 'updated', description: 'SeaDex recommendation notes updated', ...(part ? { part } : {}),
+      note_change: { previous: oldNote, next: newNote },
+    })
+  }
   const unavailable = (result: ResultItem) => new Set((result.unavailable_parts || []).map(part => part.label))
   const oldUnavailable = unavailable(previous), newUnavailable = unavailable(current)
   for (const part of oldUnavailable) if (!newUnavailable.has(part)) changes.push({ kind: 'updated', part, description: `${part} now covered` })

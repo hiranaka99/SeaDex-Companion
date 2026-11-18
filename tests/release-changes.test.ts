@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import { describeReleaseChanges } from '../shared/release-changes.js'
 import { loadReleaseChanges, recordReleaseChanges, reviewReleaseChanges, withReleaseChanges } from '../server/release-changes.js'
 import { normalizeResults } from '../server/result-model.js'
-import { buildScanHistoryEntry } from '../server/history.js'
+import { buildScanHistoryEntry, loadScanHistory, recordScanHistory } from '../server/history.js'
 import { groupResults } from '../frontend/src/utils.js'
 import { groupReleaseChanges, latestReleaseChange } from '../frontend/src/release-changes.js'
 import type { Release, ResultItem } from '../shared/contracts.js'
@@ -38,7 +38,8 @@ test('alternative-only additions, updates, and removals are detected with unchan
 test('best replacement shows before and after, while a same-group replacement still records its new torrent', () => {
   const old = result()
   const next = result({ key: 'new-key', best_group: 'Group B', releases: [release({ releaseGroup: 'Group B' })] })
-  assert.deepEqual(describeReleaseChanges(old, next), [{ kind: 'best', part: '', description: 'Best release changed: Group A → Group B' }])
+  assert.deepEqual(describeReleaseChanges(old, next), [{ kind: 'best', part: '', description: 'Best release changed: Group A → Group B',
+    release_replacement: { previous: 'Group A (Nyaa)', next: 'Group B (Nyaa)', torrent_changed: false } }])
   assert.match(describeReleaseChanges(old, result({ releases: [release({ info_hashes: ['d'.repeat(40)] })] }))[0].description, /Torrent changed/)
 })
 
@@ -58,6 +59,33 @@ test('cour changes retain their affected part and notes/coverage edits remain vi
   assert(changes.some(change => change.description.includes('notes updated')))
   assert(changes.some(change => change.part === 'Cour 3' && change.description.includes('now covered')))
 })
+
+test('history and unseen changes keep the same before/after data after a later scan', () => fixture(file => {
+  const historyFile = file + '.history'
+  const previousNote = 'Use the weekly releases.\nThe specials are separate.'
+  const currentNote = 'Use the season batch.\nThe specials are separate.'
+  const otherBest = release({ part: 'Cour 1', releaseGroup: 'Unchanged recommendation', info_hashes: ['c'.repeat(40)] })
+  const previous = result({ releases: [release({ part: 'Cour 1' }), otherBest], notes_by_part: { 'Cour 1': previousNote, 'Cour 2': '-' } })
+  const current = result({ status: 'best', best_group: 'Group B', notes_by_part: { 'Cour 1': currentNote, 'Cour 2': 'Special edition' },
+    releases: [release({ part: 'Cour 1', releaseGroup: 'Group B', tracker: 'AB', info_hashes: ['b'.repeat(40)] }), otherBest] })
+  const later = result({ ...current, notes_by_part: { 'Cour 1': 'Final guidance', 'Cour 2': '-' } })
+  recordReleaseChanges([previous], [current], file, '2026-11-18T10:00:00Z')
+  recordScanHistory([previous], [current], '2026-11-18T10:00:00Z', historyFile)
+  recordReleaseChanges([current], [later], file, '2026-11-18T11:00:00Z')
+  recordScanHistory([current], [later], '2026-11-18T11:00:00Z', historyFile)
+  const oldHistory = loadScanHistory(historyFile)[1].changes[0]
+  assert.equal(oldHistory.type, 'resolved')
+  const [replacement, editedNote, addedNote] = oldHistory.release_changes!
+  assert.deepEqual(replacement.release_replacement, { previous: 'Group A (Nyaa)', next: 'Group B (AB)', torrent_changed: true })
+  assert.equal(editedNote.part, 'Cour 1')
+  assert.deepEqual(editedNote.note_change, { previous: previousNote, next: currentNote })
+  assert.deepEqual(addedNote.note_change, { previous: null, next: 'Special edition' })
+  const unseen = withReleaseChanges([later], file)[0].unseen_changes!
+  assert.deepEqual(unseen[0].release_replacement, replacement.release_replacement)
+  assert.deepEqual(unseen[1].note_change, editedNote.note_change)
+  assert.deepEqual(unseen.at(-1)?.note_change, { previous: 'Special edition', next: null })
+  assert.equal(buildScanHistoryEntry([later], [later], 'unchanged').changes.length, 0)
+}))
 
 test('first scan establishes a baseline and unseen events survive unchanged scans and reloads', () => fixture(file => {
   const old = result(), next = result({ releases: [release(), alternative] })

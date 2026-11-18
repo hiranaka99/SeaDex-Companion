@@ -32,10 +32,14 @@ let fixtureResults = null
 let failChangeReview = false
 const changeReviewRequests = []
 let fixtureHistory = null
+const replacementChange = { kind: 'best', description: 'Best release changed: Old group → New group',
+  release_replacement: { previous: 'Old group (AB)', next: 'New group (Nyaa)', torrent_changed: true } }
+const noteChange = { kind: 'updated', description: 'SeaDex recommendation notes updated', part: 'Cour 2',
+  note_change: { previous: 'Use the weekly releases.\nThe specials are separate.', next: 'Use the season batch.\nThe specials are separate.' } }
 const readableHistory = () => [{ id: 'scan-readable', run_at: '2026-11-18 10:35:34', trigger: 'manual', duration_seconds: 12,
   counts: { best: 158, upgrade: 28, missing: 34, partial: 1 }, changes: [
     { key: example.key, title: example.title, arr: 'Sonarr', season: 1, type: 'resolved', from: 'upgrade', to: 'best', details: [] },
-    { key: 'love-ru', title: 'To LOVE-Ru', arr: 'Sonarr', season: 2, type: 'changed', from: 'upgrade', to: 'upgrade', details: ['-ZR- (AB) · Torrent changed'] },
+    { key: 'love-ru', title: 'To LOVE-Ru', arr: 'Sonarr', season: 2, type: 'changed', from: 'upgrade', to: 'upgrade', release_changes: [replacementChange, noteChange] },
     { key: 'banished', title: "Banished From the Hero's Party, I Decided To Live a Quiet Life in the Countryside", arr: 'Sonarr', season: 2, type: 'changed', from: 'upgrade', to: 'upgrade', details: ['NAN0 (AB) · Torrent changed', '-ZR- (AB) · Torrent changed'] },
     { key: 'quality', title: 'The Dangers in My Heart', arr: 'Sonarr', season: 2, type: 'changed', from: 'best', to: 'best', details: ['MTBB (Nyaa) · Quality: 1080p → 2160p; Torrent changed'] },
     { key: 'added', title: 'A newly added anime', arr: 'Radarr', season: 0, type: 'new', from: null, to: 'missing', details: [] },
@@ -252,9 +256,12 @@ try {
 
   const changeFixture = (id, kind, detected_at) => ({ id, kind, detected_at, description: kind === 'best' ? 'Best release changed: Old group → Example' : kind === 'alternative' ? 'New alternative: Alternative · 1080p' : 'A release group with a long name (AB) · Quality: 1080p → 2160p; Torrent changed' })
   fixtureResults = [
-    { ...example, unseen_changes: [changeFixture('best-change', 'best', '2026-11-04T11:00:00.000Z')] },
+    { ...example, unseen_changes: [{ ...replacementChange, id: 'best-change', detected_at: '2026-11-04T11:00:00.000Z' }] },
     { ...example, key: 'Sonarr:1:2:Example', season: 2, unseen_changes: [changeFixture('alt-change', 'alternative', '2026-11-04T12:00:00.000Z')] },
-    { ...example, key: 'recent', library_key: 'Sonarr:item2', anilist_id: 2, group_id: 2, title: 'Recent anime', status: 'best', unseen_changes: [changeFixture('quality-change', 'updated', '2026-11-04T13:00:00.000Z')] },
+    { ...example, key: 'recent', library_key: 'Sonarr:item2', anilist_id: 2, group_id: 2, title: 'Recent anime', status: 'best', unseen_changes: [
+      changeFixture('quality-change', 'updated', '2026-11-04T13:00:00.000Z'),
+      { ...noteChange, id: 'note-change', detected_at: '2026-11-04T12:30:00.000Z' },
+    ] },
     { ...example, key: 'quiet', library_key: 'Sonarr:item3', anilist_id: 3, group_id: 3, title: 'Quiet anime' },
   ]
   progressMode = 'absent'; revision++
@@ -264,6 +271,8 @@ try {
   await wait(`document.querySelectorAll('.library-grid article').length === 2`)
   assert.equal(await evaluate(`document.querySelector('.library-grid article h2').textContent`), 'Recent anime', 'Unseen titles show their latest change first')
   assert.ok(await evaluate(`(() => { const summary = document.querySelector('[aria-label="Unseen changes for Recent anime"]'); return summary.textContent.includes('Quality: 1080p → 2160p') && summary.textContent.includes('Torrent updated') && !summary.textContent.includes('Release updated') })()`), 'Library cards show the actual changes instead of a generic category')
+  assert.ok(await evaluate(`document.querySelector('[aria-label="Unseen changes for Example anime"]').textContent.includes('Old group (AB) → New group (Nyaa)')`), 'Library card shows both release groups')
+  assert.ok(await evaluate(`(() => { const comparison = document.querySelector('[aria-label="Unseen changes for Recent anime"] details'); if (!comparison || comparison.open) return false; comparison.querySelector('summary').click(); return comparison.open && comparison.innerText.includes('Use the weekly releases') && comparison.innerText.includes('Use the season batch') })()`), 'Library card expands both note versions')
   await capture('unseen-desktop')
   for (const width of [320, 390, 1440]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 901 })
@@ -276,6 +285,7 @@ try {
   await wait(`document.querySelector('dialog [aria-label="What changed"]')`)
   assert.ok(await evaluate(`document.querySelector('dialog [aria-label="What changed"]').textContent.includes('1080p → 2160p')`))
   await evaluate(`document.querySelector('dialog [aria-label="What changed"]').open = true`)
+  assert.ok(await evaluate(`(() => { const notes = document.querySelector('dialog .details-changes details'); notes.querySelector('summary').click(); return notes.open && notes.innerText.includes('Previous note') && notes.innerText.includes('New note') })()`), 'Library details also compare both notes')
   assert.ok(await evaluate(`(() => { const changes = document.querySelector('dialog [aria-label="What changed"]'); return changes.textContent.indexOf('Torrent updated') < changes.textContent.indexOf('A release group with a long name (AB)') })()`), 'Library details put the actual edit before the release identity')
   for (const width of [320, 390, 1440]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 901 })
@@ -294,7 +304,7 @@ try {
   failChangeReview = false
   await evaluate(`document.querySelector('[aria-label="Mark changes for Recent anime reviewed"]').click()`)
   await wait(`document.querySelectorAll('.library-grid article').length === 1`)
-  assert.deepEqual(changeReviewRequests.at(-1), ['quality-change'])
+  assert.deepEqual(changeReviewRequests.at(-1), ['quality-change', 'note-change'])
   await evaluate(`document.querySelectorAll('[aria-label="Dismiss notification"]').forEach(button => button.click())`)
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
   await capture('unseen-mobile')
@@ -549,7 +559,10 @@ try {
   await click('Scan history')
   await wait(`document.body.textContent.includes('Still upgradable')`)
   assert.ok(await evaluate(`!document.body.textContent.includes('Upgradable → Upgradable')`), 'History omits unchanged status transitions')
-  assert.ok(await evaluate(`(() => { const row = [...document.querySelectorAll('article > div > ul > li')].find(row => row.textContent.includes('To LOVE-Ru')); return row && row.textContent.indexOf('Torrent updated') < row.textContent.indexOf('-ZR- (AB)') && row.textContent.includes('Season 2') })()`), 'The actual edit precedes the release identity and spells out the season')
+  assert.ok(await evaluate(`(() => { const row = [...document.querySelectorAll('article > div > ul > li')].find(row => row.textContent.includes('To LOVE-Ru')); return row && row.textContent.includes('Torrent replaced') && row.textContent.includes('Old group (AB) → New group (Nyaa)') && row.textContent.includes('Season 2') })()`), 'Compact history shows the action, season and both release groups')
+  await evaluate(`[...document.querySelectorAll('article details summary')].find(summary => summary.textContent.includes('SeaDex note updated')).focus()`)
+  await key('Enter')
+  assert.ok(await evaluate(`(() => { const notes = document.activeElement.closest('details'); return notes.open && notes.innerText.includes('Use the weekly releases') && notes.innerText.includes('Use the season batch') })()`), 'History reveals both note versions with the keyboard')
   await evaluate(`document.querySelectorAll('[aria-label="Dismiss notification"]').forEach(button => button.click())`)
   await capture('history-clear-desktop')
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })

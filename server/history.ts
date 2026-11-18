@@ -3,7 +3,7 @@ import { readJson, writeJsonAtomic } from './persistence.js'
 import { titleKey } from './anilist.js'
 import type { JsonObject, ScanTrigger } from './types.js'
 import { describeReleaseChanges } from '../shared/release-changes.js'
-import type { ResultItem } from '../shared/contracts.js'
+import type { ReleaseChangeDetail, ResultItem } from '../shared/contracts.js'
 
 function resultIdentity(result: JsonObject): string {
   const base = String(result.library_key || `${result.arr || 'Unknown'}:${result.group_id ?? result.anilist_id ?? result.title ?? 'unknown'}`)
@@ -79,6 +79,7 @@ export function describeResultChange(previous: JsonObject | null, current: JsonO
 export interface ScanHistoryChange extends JsonObject {
   type: 'new' | 'upgrade' | 'resolved' | 'changed' | 'removed'
   details: string[]
+  release_changes?: ReleaseChangeDetail[]
 }
 
 export interface ScanHistoryEntry extends JsonObject {
@@ -115,9 +116,16 @@ export function buildScanHistoryEntry(previous: JsonObject[], current: JsonObjec
     else {
       matchedBefore.add(resultIdentity(old))
       const from = automationStatus(old)
-      if (from !== 'upgrade' && to === 'upgrade') changes.push({ type: 'upgrade', ...describe(result), details: describeResultChange(old, result), from, to })
-      else if (from === 'upgrade' && to !== 'upgrade') changes.push({ type: 'resolved', ...describe(result), details: [], from, to })
-      else if (from !== to || String(old.best_group || '') !== String(result.best_group || '') || describeReleaseChanges(old as ResultItem, result as ResultItem).length) changes.push({ type: 'changed', ...describe(result), details: describeResultChange(old, result), from, to })
+      const releaseChanges = describeReleaseChanges(old as ResultItem, result as ResultItem)
+      if (from === to && String(old.best_group || '') === String(result.best_group || '') && !releaseChanges.length) continue
+      const type = from !== 'upgrade' && to === 'upgrade' ? 'upgrade'
+        : from === 'upgrade' && to !== 'upgrade' ? 'resolved' : 'changed'
+      const details = releaseChanges.length ? releaseChanges.map(change => change.description)
+        : type === 'resolved' ? [] : describeResultChange(old, result)
+      changes.push({
+        type, ...describe(result), from, to, details,
+        ...(releaseChanges.length ? { release_changes: releaseChanges } : {}),
+      })
     }
   }
   for (const [key, result] of before) if (!after.has(key) && !matchedBefore.has(key)) changes.push({ type: 'removed', ...describe(result), details: [], from: automationStatus(result), to: null })
