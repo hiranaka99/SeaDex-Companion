@@ -1,4 +1,4 @@
-import { SEADEX, api } from './http.js'
+import { loadCatalogPage } from './catalog-client.js'
 import { episodeFromFilename, type ParsedEpisode } from './matching.js'
 import type { JsonObject, ReleaseCandidate, SeaDexEntry } from './types.js'
 
@@ -63,11 +63,12 @@ export function mergeComplementaryCandidates(candidates: ReleaseCandidate[]): Re
   return merged
 }
 
-export async function seadexBest(): Promise<Map<number, SeaDexEntry>> {
+export async function seadexBest(dependencies: { loadPage?: typeof loadCatalogPage } = {}): Promise<Map<number, SeaDexEntry>> {
+  const loadPage = dependencies.loadPage ?? loadCatalogPage
   const best = new Map<number, SeaDexEntry>()
   let page = 1
   while (true) {
-    const data = await api(`${SEADEX}/collections/entries/records?page=${page}&perPage=500&expand=trs`)
+    const data = await loadPage(page)
     for (const item of data.items as JsonObject[]) {
       const alid = Number(item.alID)
       const torrents = item.expand?.trs || []

@@ -122,6 +122,10 @@ To scan newly added titles sooner, add these webhook connections in Sonarr and R
 
 Enable Sonarr `SeriesAdd` or Radarr `MovieAdded` events for the corresponding connection. Keep a scheduled scan enabled as well to check existing titles for changed SeaDex recommendations.
 
+Scans reuse recent AniList information and refresh known titles together to reduce waiting while respecting API limits. Titles with manual matches skip unnecessary automatic searches. Your first scan, scans with many new titles, and scans that refresh older information can take longer. Season information refreshes after 24 hours, on the next scan; newly added seasons are checked sooner. You can cancel a scan at any time.
+
+Temporary SeaDex connection problems are retried automatically. If a scan still fails, your previous results remain available. Check **Scan history** or **Server log** for details before trying again later.
+
 ## Reviewing release changes
 
 The library's **Unseen changes** filter shows anime with release changes you have not reviewed, including new best releases, alternatives, updated torrents or metadata, and removals. Its count covers matching titles across all pages, with the latest changes first. Cards label the affected seasons; open **Details → What changed** for the before/after summary and detection time. Use **Mark reviewed** for one anime, or **Mark all reviewed** for all titles matching the current library filters. Opening the app or completing another unchanged scan does not clear these changes.

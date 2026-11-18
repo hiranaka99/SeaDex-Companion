@@ -1,4 +1,4 @@
-import { assessSeason } from './assessment.js'
+import { assessSeason, resolveSeasonChainEntry } from './assessment.js'
 import { beginScan, endScan, getState, setState } from './scan-state.js'
 import { scanRequests } from './http.js'
 import { log, timestamp, errorMessage } from './logging.js'
@@ -74,6 +74,24 @@ async function performScan(config: Config, dependencies: Required<Omit<ScanDepen
     const cache = dependencies.loadCache()
     const previousResults = (previousState.results.length ? previousState.results : loadLastResults()?.results || [])
     const rules = dependencies.loadUserRules()
+    // Reuse saved title matches and sequel IDs to refresh the library in batches.
+    // Unknown titles still go through the normal title matching rules.
+    const prefetchIds: number[] = []
+    for (const item of items) {
+      const libraryKey = libraryItemKey(item)
+      let needsAutomatic = false
+      for (const season of Object.keys(item.seasons).map(Number)) {
+        const ids = rules.season_mappings?.[seasonMappingKey(libraryKey, season)]
+        if (ids) prefetchIds.push(...ids)
+        else needsAutomatic = true
+      }
+      if (!needsAutomatic) continue
+      const id = rules.mappings[libraryKey] || cache[`lookup:v3:${item.title}`]?.id
+      if (!id) continue
+      prefetchIds.push(id)
+      const chain = cache[`chain:v8:${id}`]?.chain
+      if (Array.isArray(chain)) for (const entry of chain) prefetchIds.push(...(entry.ids || [entry.id]))
+    }
     const scopedKeys = new Set([...(scope.sonarrIds || []).map((id) => `Sonarr:item${id}`), ...(scope.radarrIds || []).map((id) => `Radarr:item${id}`)])
     const retainedResults = previousResults.filter((result) => {
       const source = String(result.arr || '')
@@ -91,16 +109,30 @@ async function performScan(config: Config, dependencies: Required<Omit<ScanDepen
       const mappingId = rules.mappings[libraryKey]
       const seasonEntries = Object.entries(item.seasons).map(([season, local]) => [Number(season), local as LocalSeason] as const).sort(([a], [b]) => a - b)
       const requiredSeasons = seasonEntries.filter(([season]) => !rules.season_mappings?.[seasonMappingKey(libraryKey, season)]).map(([season]) => season)
-      const chain = await dependencies.anilistChain(item.title, cache, {}, mappingId, { requiredSeasons })
-      if (!chain.length) {
+      const chain = requiredSeasons.length
+        ? await dependencies.anilistChain(item.title, cache, { prefetchIds }, mappingId, { requiredSeasons })
+        : []
+      const automaticGroupId = chain[0]?.id
+      if (requiredSeasons.length && !chain.length) {
         log('WARNING', `${mappingId ? `Manual AniList override ${mappingId} produced no match for` : 'No AniList match for'}: ${item.title}`)
       }
       const overrides = new Map<number, Awaited<ReturnType<typeof anilistSeason>>>()
       for (const [season] of seasonEntries) {
         const ids = rules.season_mappings?.[seasonMappingKey(libraryKey, season)]
-        if (ids) overrides.set(season, await dependencies.anilistSeason(ids, cache))
+        if (ids) overrides.set(season, await dependencies.anilistSeason(ids, cache, { prefetchIds }))
       }
-      const groupId = chain[0]?.id ?? [...overrides.values()].find(entry => entry)?.id ?? null
+      // Full manual coverage needs no title search or sequel traversal. Preserve
+      // continuous-entry episode offsets using the selected entries themselves.
+      if (!requiredSeasons.length && [...overrides.values()].every(entry => entry)) {
+        const selected: typeof chain = []
+        for (const entry of overrides.values()) {
+          if (entry && entry.ids.join(',') !== selected.at(-1)?.ids.join(',')) selected.push({ ...entry, season: selected.length + 1 })
+        }
+        // Apply inferred offsets only when every inferred match agrees with the
+        // explicit choices. Unrelated manual entries must never form a split.
+        if (seasonEntries.every(([season]) => resolveSeasonChainEntry(item, season, selected).entry?.ids.join(',') === overrides.get(season)?.ids.join(','))) chain.push(...selected)
+      }
+      const groupId = automaticGroupId ?? mappingId ?? cache[`lookup:v3:${item.title}`]?.id ?? [...overrides.values()].find(entry => entry)?.id ?? null
       for (const [season, local] of seasonEntries) {
         setState({ message: `Resolving: ${item.title} (${season ? `S${String(season).padStart(2, '0')}` : 'Movie'})` })
         const override = overrides.has(season) ? { entry: overrides.get(season)!, groupId, ids: rules.season_mappings![seasonMappingKey(libraryKey, season)] } : undefined

@@ -1,5 +1,6 @@
 import { saveCache } from './results.js'
-import { alMedia, alSearch } from './anilist-client.js'
+import { alSearch } from './anilist-client.js'
+import { freshCache, loadAniListMedia, metadataFetchedAt, type MetadataDependencies } from './anilist-metadata.js'
 export { alMedia, alSearch } from './anilist-client.js'
 import type { JsonObject, ChainPart, ChainEntry } from './types.js'
 
@@ -121,18 +122,8 @@ function mediaPart(id: number, data: JsonObject, fallback: JsonObject = {}): Cha
   }
 }
 
-export interface AniListDependencies {
+export interface AniListDependencies extends MetadataDependencies {
   lookup?: typeof anilistLookup
-  media?: typeof alMedia
-  persist?: typeof saveCache
-  now?: () => number
-}
-
-const ANILIST_CACHE_TTL = 24 * 60 * 60 * 1000
-const MEDIA_QUERY = 'query($id:Int){Media(id:$id,type:ANIME){id format season seasonYear episodes title{romaji english native} coverImage{large extraLarge} bannerImage relations{edges{relationType node{id type}}}}}'
-
-function freshCache(entry: JsonObject | undefined, now: number): boolean {
-  return typeof entry?.fetched_at === 'number' && entry.fetched_at <= now && now - entry.fetched_at < ANILIST_CACHE_TTL
 }
 
 function chainEntry(parts: ChainPart[], season = 1): ChainEntry {
@@ -148,22 +139,22 @@ export async function anilistSeason(ids: number[], cache: JsonObject, dependenci
   const now = (dependencies.now || Date.now)()
   const key = `season:v1:${ids.join(',')}`
   if (freshCache(cache[key], now)) return cache[key].entry
+  const records = await loadAniListMedia([...ids, ...(dependencies.prefetchIds || [])], cache, dependencies)
   const parts: ChainPart[] = []
   for (const id of ids) {
-    const data = await (dependencies.media || alMedia)(MEDIA_QUERY, { id })
-    if (data.id !== id) return null
+    const data = records.get(id)
+    if (!data) return null
     parts.push(mediaPart(id, data))
   }
   if (!parts.length) return null
   const entry = chainEntry(parts)
-  cache[key] = { entry, fetched_at: now }
+  cache[key] = { entry, fetched_at: metadataFetchedAt(ids, cache, now) }
   ;(dependencies.persist || saveCache)(cache)
   return entry
 }
 
 export async function anilistChain(title: string, cache: JsonObject, dependencies: AniListDependencies = {}, overrideId?: number, options: { requiredSeasons?: number[] } = {}): Promise<ChainEntry[]> {
   const lookup = dependencies.lookup || anilistLookup
-  const media = dependencies.media || alMedia
   const persist = dependencies.persist || saveCache
   const base = overrideId ? { id: overrideId } : await lookup(title, cache)
   if (!base) return []
@@ -174,20 +165,27 @@ export async function anilistChain(title: string, cache: JsonObject, dependencie
   // A newly observed Sonarr season triggers one refresh even for a recent chain.
   // Remember that check so disconnected sequels do not force requests on every scan.
   if (freshCache(cached, now) && Array.isArray(cached.chain) && requiredSeason <= Math.max(cached.checked_through_season || 0, cached.chain.length)) return cached.chain
+  const knownIds: number[] = (Array.isArray(cached?.chain) ? cached.chain : []).flatMap((entry: ChainEntry) => entry.ids || [entry.id])
+  // Newly observed seasons must recheck relations even if raw metadata is fresh.
+  const refreshIds = freshCache(cached, now) ? [base.id, ...knownIds] : []
+  await loadAniListMedia([base.id, ...knownIds, ...(dependencies.prefetchIds || [])], cache, dependencies, refreshIds)
   const nodes = new Map<number, JsonObject>()
   const seen = new Set<number>([base.id])
   const queue = [base.id as number]
   while (queue.length && nodes.size < 50) {
-    const id = queue.shift()!
-    const data = await media(MEDIA_QUERY, { id })
-    if (!Object.keys(data).length) continue
-    nodes.set(id, data)
-    for (const edge of data.relations?.edges || []) {
-      const nextId = edge.node?.id
-      const nextType = edge.node?.type
-      if (edge.relationType === 'SEQUEL' && (!nextType || nextType === 'ANIME') && nextId && !seen.has(nextId)) {
-        seen.add(nextId)
-        queue.push(nextId)
+    const ids = queue.splice(0, Math.min(25, 50 - nodes.size))
+    const records = await loadAniListMedia(ids, cache, dependencies)
+    for (const id of ids) {
+      const data = records.get(id)
+      if (!data) continue
+      nodes.set(id, data)
+      for (const edge of data.relations?.edges || []) {
+        const nextId = edge.node?.id
+        const nextType = edge.node?.type
+        if (edge.relationType === 'SEQUEL' && (!nextType || nextType === 'ANIME') && nextId && !seen.has(nextId)) {
+          seen.add(nextId)
+          queue.push(nextId)
+        }
       }
     }
   }
@@ -217,7 +215,7 @@ export async function anilistChain(title: string, cache: JsonObject, dependencie
     const parts = ids.map((id) => mediaPart(id, nodes.get(id) || {}, id === base.id ? base : {}))
     return chainEntry(parts, index + 1)
   })
-  cache[chainKey] = { chain, fetched_at: now, checked_through_season: Math.max(requiredSeason, chain.length) }
+  cache[chainKey] = { chain, fetched_at: metadataFetchedAt([...seen], cache, now), checked_through_season: Math.max(requiredSeason, chain.length) }
   persist(cache)
   return chain
 }
