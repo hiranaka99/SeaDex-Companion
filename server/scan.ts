@@ -4,6 +4,7 @@ import { scanRequests } from './http.js'
 import { log, timestamp, errorMessage } from './logging.js'
 import { HISTORY_FILE } from './paths.js'
 import { loadCache, loadLastResults, saveLastResults } from './results.js'
+import { normalizeResults } from './result-model.js'
 import { loadUserRules, libraryItemKey, seasonMappingKey, applyUserRulesToResults } from './user-rules.js'
 import { recordScanHistory, type ScanHistoryEntry } from './history.js'
 import { seadexBest } from './catalog.js'
@@ -144,7 +145,9 @@ async function performScan(config: Config, dependencies: Required<Omit<ScanDepen
     }
     if (controller.signal.aborted) throw new DOMException('Scan cancelled', 'AbortError')
     const lastRun = timestamp()
-    const finalResults = applyUserRulesToResults([...retainedResults, ...results], rules)
+    // Compare and persist the same normalized snapshot used by scan state.
+    // Raw catalog hashes can include private-tracker placeholders or unselected torrents.
+    const finalResults = normalizeResults(applyUserRulesToResults([...retainedResults, ...results], rules))
     setState({ progress: items.length, message: Object.keys(sourceErrors).length ? 'Done with integration errors' : 'Done', results: finalResults, last_run: lastRun, source_errors: sourceErrors })
     stage = 'saving scan results'
     ;dependencies.saveLastResults(finalResults, lastRun)

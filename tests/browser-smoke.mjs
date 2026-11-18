@@ -32,6 +32,15 @@ let fixtureResults = null
 let failChangeReview = false
 const changeReviewRequests = []
 let fixtureHistory = null
+const readableHistory = () => [{ id: 'scan-readable', run_at: '2026-11-18 10:35:34', trigger: 'manual', duration_seconds: 12,
+  counts: { best: 158, upgrade: 28, missing: 34, partial: 1 }, changes: [
+    { key: example.key, title: example.title, arr: 'Sonarr', season: 1, type: 'resolved', from: 'upgrade', to: 'best', details: [] },
+    { key: 'love-ru', title: 'To LOVE-Ru', arr: 'Sonarr', season: 2, type: 'changed', from: 'upgrade', to: 'upgrade', details: ['-ZR- (AB) · Torrent changed'] },
+    { key: 'banished', title: "Banished From the Hero's Party, I Decided To Live a Quiet Life in the Countryside", arr: 'Sonarr', season: 2, type: 'changed', from: 'upgrade', to: 'upgrade', details: ['NAN0 (AB) · Torrent changed', '-ZR- (AB) · Torrent changed'] },
+    { key: 'quality', title: 'The Dangers in My Heart', arr: 'Sonarr', season: 2, type: 'changed', from: 'best', to: 'best', details: ['MTBB (Nyaa) · Quality: 1080p → 2160p; Torrent changed'] },
+    { key: 'added', title: 'A newly added anime', arr: 'Radarr', season: 0, type: 'new', from: null, to: 'missing', details: [] },
+    { key: 'removed', title: 'An anime removed from the library', arr: 'Sonarr', season: 1, type: 'removed', from: 'upgrade', to: null, details: [] },
+  ] }]
 let fixtureLogs = ['2026-10-02 12:00:00 [INFO] First log entry']
 let statusOverrides = {}
 let cancelableDownloads = []
@@ -241,7 +250,7 @@ try {
   await evaluate(`window.restoreLibraryMotion()`)
   console.log('PASS library reorder continuity, rapid interruption, mobile motion, and live reduced-motion preference')
 
-  const changeFixture = (id, kind, detected_at) => ({ id, kind, detected_at, description: kind === 'best' ? 'Best release changed: Old group → Example' : kind === 'alternative' ? 'New alternative: Alternative · 1080p' : 'Example · Quality: 1080p → 2160p' })
+  const changeFixture = (id, kind, detected_at) => ({ id, kind, detected_at, description: kind === 'best' ? 'Best release changed: Old group → Example' : kind === 'alternative' ? 'New alternative: Alternative · 1080p' : 'A release group with a long name (AB) · Quality: 1080p → 2160p; Torrent changed' })
   fixtureResults = [
     { ...example, unseen_changes: [changeFixture('best-change', 'best', '2026-11-04T11:00:00.000Z')] },
     { ...example, key: 'Sonarr:1:2:Example', season: 2, unseen_changes: [changeFixture('alt-change', 'alternative', '2026-11-04T12:00:00.000Z')] },
@@ -254,10 +263,27 @@ try {
   await evaluate(`document.querySelector('[aria-label="Unseen changes (2 titles)"]').click()`)
   await wait(`document.querySelectorAll('.library-grid article').length === 2`)
   assert.equal(await evaluate(`document.querySelector('.library-grid article h2').textContent`), 'Recent anime', 'Unseen titles show their latest change first')
+  assert.ok(await evaluate(`(() => { const summary = document.querySelector('[aria-label="Unseen changes for Recent anime"]'); return summary.textContent.includes('Quality: 1080p → 2160p') && summary.textContent.includes('Torrent updated') && !summary.textContent.includes('Release updated') })()`), 'Library cards show the actual changes instead of a generic category')
   await capture('unseen-desktop')
+  for (const width of [320, 390, 1440]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 901 })
+    await evaluate(`document.querySelector('[aria-label="Unseen changes for Recent anime"]').scrollIntoView({ block: 'center' })`)
+    assert.ok(await evaluate(`(() => { const summary = document.querySelector('[aria-label="Unseen changes for Recent anime"]'); return summary.scrollWidth <= summary.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth })()`), 'Library change summaries fit narrow cards')
+    await capture(`library-changes-${width}`)
+  }
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
   await click('Details')
   await wait(`document.querySelector('dialog [aria-label="What changed"]')`)
   assert.ok(await evaluate(`document.querySelector('dialog [aria-label="What changed"]').textContent.includes('1080p → 2160p')`))
+  await evaluate(`document.querySelector('dialog [aria-label="What changed"]').open = true`)
+  assert.ok(await evaluate(`(() => { const changes = document.querySelector('dialog [aria-label="What changed"]'); return changes.textContent.indexOf('Torrent updated') < changes.textContent.indexOf('A release group with a long name (AB)') })()`), 'Library details put the actual edit before the release identity')
+  for (const width of [320, 390, 1440]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 901 })
+    await evaluate(`document.querySelector('dialog [aria-label="What changed"]').scrollIntoView({ block: 'start' })`)
+    assert.ok(await evaluate(`(() => { const changes = document.querySelector('dialog [aria-label="What changed"]'); return changes.scrollWidth <= changes.clientWidth + 1 })()`), 'Library change details fit narrow screens')
+    await capture(`library-details-changes-${width}`)
+  }
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
   await capture('unseen-details-desktop')
   await evaluate(`document.querySelector('[aria-label="Close details"]').click()`)
   await wait(`!document.querySelector('dialog[open]')`)
@@ -275,6 +301,7 @@ try {
   assert.ok(await evaluate(`document.querySelector('[aria-label="Unseen changes (1 title)"]').getBoundingClientRect().height >= 44`))
   await click('Details')
   await wait(`document.querySelector('dialog [aria-label="What changed"]')`)
+  await evaluate(`document.querySelector('dialog [aria-label="What changed"]').open = true`)
   assert.ok(await evaluate(`document.querySelector('dialog [aria-label="What changed"]').textContent.includes('S02')`))
   assert.ok(await evaluate(`document.querySelector('dialog [aria-label="What changed"]').textContent.includes('New alternative')`))
   assert.ok(await evaluate(`document.documentElement.scrollWidth <= 390`))
@@ -518,7 +545,20 @@ try {
   saveDelay = 0
   console.log('PASS pending settings save protects newer edits')
 
+  fixtureHistory = readableHistory()
   await click('Scan history')
+  await wait(`document.body.textContent.includes('Still upgradable')`)
+  assert.ok(await evaluate(`!document.body.textContent.includes('Upgradable → Upgradable')`), 'History omits unchanged status transitions')
+  assert.ok(await evaluate(`(() => { const row = [...document.querySelectorAll('article > div > ul > li')].find(row => row.textContent.includes('To LOVE-Ru')); return row && row.textContent.indexOf('Torrent updated') < row.textContent.indexOf('-ZR- (AB)') && row.textContent.includes('Season 2') })()`), 'The actual edit precedes the release identity and spells out the season')
+  await evaluate(`document.querySelectorAll('[aria-label="Dismiss notification"]').forEach(button => button.click())`)
+  await capture('history-clear-desktop')
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+  assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth`), 'Readable history fits mobile')
+  await evaluate(`[...document.querySelectorAll('article > div > ul > li')].find(row => row.textContent.includes('To LOVE-Ru')).scrollIntoView({ block: 'start' })`)
+  await capture('history-clear-mobile')
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  console.log('PASS action-first history details and unchanged-status context on desktop and mobile')
+  fixtureHistory = null
   await click('Example anime')
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('Correct match')`)
   assert.ok(await evaluate(`!document.querySelector('dialog[open] button[aria-label^="Pause torrent"]')`), 'A changed release must not inherit the previous torrent state')
@@ -842,6 +882,7 @@ try {
   await evaluate(`location.hash = 'anime'; location.reload()`)
   await wait(`document.body.textContent.includes(${JSON.stringify(example.title)})`)
   const uiEvidence = [{ width: 390, route: 'paginated-library', firstCardTop: mobileFirstCard }]
+  fixtureHistory = readableHistory()
   for (const [width, height] of [[1440, 1000], [900, 900], [390, 844], [320, 700]]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 901 })
     for (const route of ['anime', 'history', 'config', 'log']) {
@@ -850,6 +891,12 @@ try {
       assert.ok(await evaluate(`document.documentElement.scrollWidth <= ${width}`), `${route} fits ${width}px viewport`)
       await evaluate(`document.querySelector('main > .app-scrollbar').scrollTop = 0`)
       await capture(`review-${width}-${route}`)
+      if (route === 'history') {
+        await wait(`document.body.textContent.includes('Torrent updated')`)
+        await evaluate(`[...document.querySelectorAll('article > div > ul > li')].find(row => row.textContent.includes('To LOVE-Ru')).scrollIntoView({ block: 'start' })`)
+        assert.ok(await evaluate(`(() => { const rows = [...document.querySelectorAll('article > div > ul > li')]; return rows.length === 6 && rows.every(row => row.scrollWidth <= row.clientWidth + 1) && !rows.some(row => row.textContent.includes('Upgradable → Upgradable')) })()`), 'History details and long names remain readable without clipping')
+        await capture(`review-${width}-history-changes`)
+      }
       if (route === 'config') {
         const geometry = await evaluate(`(() => { const pane = document.querySelector('main > .app-scrollbar').getBoundingClientRect(); const save = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Save configuration').getBoundingClientRect(); const nav = document.querySelector('nav[aria-label="Mobile navigation"]'); return { paneBottom: pane.bottom, saveTop: save.top, saveBottom: save.bottom, navTop: nav.getClientRects().length ? nav.getBoundingClientRect().top : null } })()`)
         assert.ok(geometry.saveTop >= geometry.paneBottom, 'Save controls never overlay the scrolling configuration')
