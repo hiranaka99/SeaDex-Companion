@@ -17,8 +17,7 @@ import LibrarySizeChange from './LibrarySizeChange'
 import DetailsSeason, { detailsSeasonName } from './DetailsSeason'
 import { QUALITY_ICONS } from './DetailsQuality'
 import { releaseOverview, releaseQuality } from '../release-status'
-import { groupReleaseChanges } from '../release-changes'
-import { RELEASE_CHANGE_LABELS } from '../../../shared/release-changes'
+import { groupReleaseChanges, releaseChangeDetail } from '../release-changes'
 
 function HideActionIcon({ hidden }: { hidden: boolean }) {
   return <Icon name={hidden ? 'eye' : 'eye-off'} size={18} />
@@ -223,7 +222,10 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
           {seasonCount > 6 && <span className="relative rounded-md border border-line bg-panel-raised px-2 py-1 text-xs font-bold text-muted" title={`View all ${seasonCount} seasons in Details`}>+{seasonCount - 6}<span className="sr-only"> more seasons; open Details to view all {seasonCount} seasons</span></span>}
         </div>
       {unseenChanges.length > 0 && <div className="library-unseen-summary mx-3.5 mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 max-[600px]:mx-3" aria-label={`Unseen changes for ${group.title}`}>
-        <div className="min-w-0 flex-1 space-y-1">{unseenChanges.slice(0, 2).map(({ season, change }) => <p key={change.id} className="m-0 text-xs font-semibold text-accent-bright wrap-anywhere">{RELEASE_CHANGE_LABELS[change.kind]} · {seasonLabel(season)}{change.part ? ` · ${change.part}` : ''}</p>)}{unseenChanges.length > 2 && <p className="m-0 text-xs text-muted">+{unseenChanges.length - 2} more in Details</p>}</div>
+        <div className="min-w-0 flex-1 space-y-2">{unseenChanges.slice(0, 2).map(({ season, change }) => {
+          const detail = releaseChangeDetail(change.description)
+          return <div key={change.id} className="min-w-0 wrap-anywhere"><p className="m-0 text-xs font-semibold text-ink">{detail.summary}</p><p className="mt-0.5 mb-0 text-xs text-muted">{seasonLabel(season)}{change.part ? ` · ${change.part}` : ''}{detail.release ? ` · ${detail.release}` : ''}</p></div>
+        })}{unseenChanges.length > 2 && <p className="m-0 text-xs text-muted">+{unseenChanges.length - 2} more in Details</p>}</div>
         <button type="button" className="touch-target cursor-pointer rounded-lg px-2 py-2 text-xs font-semibold text-muted hover:bg-panel-raised hover:text-ink disabled:cursor-wait disabled:opacity-60" aria-label={`Mark changes for ${group.title} reviewed`} disabled={reviewingChanges} onClick={() => void onReviewChanges(changeIds)}>Mark reviewed</button>
       </div>}
       {activeDownloads.length > 0 && <div className="border-t border-line px-3.5 py-3 max-[600px]:px-3">
@@ -280,7 +282,10 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
                 </section>
                 {unseenChanges.length > 0 && <details className="details-changes mb-5 border-b border-line pb-3" aria-label="What changed"><summary className="touch-target cursor-pointer py-2 text-sm font-semibold text-accent-bright">What changed ({unseenChanges.length})</summary><section className="pt-3">
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="m-0 text-sm font-bold text-ink">What changed <span className="font-normal text-muted">({unseenChanges.length})</span></h3><button type="button" className={cx(buttonBase, 'border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised')} disabled={reviewingChanges} onClick={() => void onReviewChanges(changeIds)}>{reviewingChanges ? 'Marking reviewed…' : 'Mark reviewed'}</button></div>
-                  <ul className="m-0 list-none space-y-3 p-0">{unseenChanges.map(({ season, change }) => <li key={change.id} className="min-w-0 text-sm wrap-anywhere"><div className="flex flex-wrap items-baseline gap-x-2 gap-y-1"><span className="font-semibold text-accent-bright">{RELEASE_CHANGE_LABELS[change.kind]}</span><span className="text-xs text-muted">{seasonLabel(season)}{change.part ? ` · ${change.part}` : ''}</span><time className="text-xs text-muted" dateTime={change.detected_at}>Detected {new Date(change.detected_at).toLocaleString()}</time></div><p className="mt-1 mb-0 max-w-[70ch] text-muted">{change.description}</p></li>)}</ul>
+                  <ul className="m-0 list-none divide-y divide-line p-0">{unseenChanges.map(({ season, change }) => {
+                    const detail = releaseChangeDetail(change.description)
+                    return <li key={change.id} className="min-w-0 py-3 first:pt-0 last:pb-0 wrap-anywhere"><p className="m-0 text-sm font-semibold text-ink">{detail.summary}</p>{detail.release && <p className="mt-1 mb-0 text-sm text-muted">{detail.release}</p>}<div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-muted"><span>{seasonLabel(season)}{change.part ? ` · ${change.part}` : ''}</span><time dateTime={change.detected_at}>Detected {new Date(change.detected_at).toLocaleString()}</time></div></li>
+                  })}</ul>
                 </section></details>}
                 <div className="details-list-heading"><h3 className="m-0 text-sm font-bold">Your {group.arr === 'Radarr' ? 'movies' : 'seasons'}</h3><span className="text-xs text-muted max-[600px]:hidden">Expand for release details</span></div>
                 {group.status === 'review' && managementLinks}

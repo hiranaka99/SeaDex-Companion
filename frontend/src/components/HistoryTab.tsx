@@ -3,13 +3,13 @@ import * as api from '../api'
 import { ResultItem, ScanHistoryChange, ScanHistoryEntry } from '../types'
 import Icon from './Icons'
 import { buttonBase, control, cx } from '../styles'
+import { historyDetails, historyStatus, historyStatusLabel as statusLabel } from '../history'
 
 const changeTone: Record<string, string> = {
   upgrade: 'border-accent/35 bg-accent/8 text-ink', resolved: 'border-good/35 bg-good/8 text-ink',
   new: 'border-purple/35 bg-purple/8 text-ink', removed: 'border-line bg-canvas-soft text-muted', changed: 'border-warn/35 bg-warn/8 text-ink',
 }
-const changeLabel: Record<string, string> = { upgrade: 'Now upgradable', resolved: 'Resolved', new: 'New title', removed: 'Removed', changed: 'Changed' }
-const statusLabel: Record<string, string> = { upgrade: 'Upgradable', best: 'Best quality', missing: 'Not on SeaDex', uncovered: 'No releases', partial: 'Partially on SeaDex' }
+const changeLabel: Record<string, string> = { upgrade: 'Now upgradable', resolved: 'Resolved', new: 'New title', removed: 'Removed', changed: 'Updated' }
 interface Props { active: boolean; results: ResultItem[]; onOpenResult: (key: string) => void }
 
 export default function HistoryTab({ active, results, onOpenResult }: Props) {
@@ -58,11 +58,20 @@ export default function HistoryTab({ active, results, onOpenResult }: Props) {
         <div className="min-w-0 flex-1"><h2 className="m-0 text-sm font-extrabold">{scan.run_at}</h2><p className="mt-1 mb-0 text-xs text-muted">{scan.id === scans[0]?.id ? 'Latest scan · ' : ''}{scan.changes.length} recorded changes · {scan.trigger === 'scheduled' ? 'Scheduled' : scan.trigger && scan.trigger !== 'manual' ? scan.trigger + ' webhook' : 'Manual'}{scan.duration_seconds !== undefined ? ' · ' + scan.duration_seconds.toFixed(1) + 's' : ''}{scan.outcome && scan.outcome !== 'success' ? ' · ' + scan.outcome : ''}</p>{scan.error && <p className="mt-1 text-xs text-bad">{scan.error}</p>}{Object.entries(scan.source_errors || {}).map(([source, message]) => <p key={source} className="mt-1 text-xs text-warn">{source}: {message}</p>)}</div>
         <div className="flex flex-wrap gap-1.5">{Object.entries(scan.counts || {}).filter(([, count]) => count > 0).map(([status, count]) => <span key={status} className="rounded-full border border-line px-2.5 py-1 text-xs text-muted">{count} {statusLabel[status] || status}</span>)}</div>
       </header>
-      {scan.outcome === 'failed' || scan.outcome === 'cancelled' ? null : <div className="p-5">{!scan.changes.length ? <p className="m-0 text-sm text-muted">No changes from the previous scan.</p> : <ul className="m-0 grid list-none gap-2 p-0 sm:grid-cols-2">{scan.changes.map((change, index) => {
+      {scan.outcome === 'failed' || scan.outcome === 'cancelled' ? null : <div className="px-5 py-2">{!scan.changes.length ? <p className="my-3 text-sm text-muted">No changes from the previous scan.</p> : <ul className="m-0 grid list-none gap-x-6 p-0 lg:grid-cols-2">{scan.changes.map((change, index) => {
         const result = currentResult(change)
-        return <li key={change.key + ':' + index} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-line bg-canvas-soft px-3 py-2.5">
-          <span className={cx('shrink-0 rounded-full border px-2 py-1 text-xs font-extrabold uppercase', changeTone[change.type])}>{changeLabel[change.type]}</span>
-          <span className="min-w-0 flex-1 max-[600px]:basis-full"><button type="button" className="block w-full cursor-pointer text-left wrap-anywhere text-xs font-bold text-accent-bright hover:underline disabled:cursor-default disabled:text-muted disabled:no-underline" disabled={!result} title={result ? 'Open ' + change.title + ' in the library' : change.title + ' is no longer in the current library'} onClick={() => result && onOpenResult(result.key)}>{change.title}</button><span className="mt-0.5 block text-xs text-muted">{change.season ? 'S' + String(change.season).padStart(2, '0') : 'Movie'}{change.from || change.to ? ' · ' + (statusLabel[change.from || ''] || change.from || '—') + ' → ' + (statusLabel[change.to || ''] || change.to || '—') : ''}{change.details?.length ? ' — ' + change.details.join(' · ') : ''}</span></span>
+        const status = historyStatus(change)
+        return <li key={change.key + ':' + index} className="min-w-0 border-t border-line py-4 first:border-t-0 lg:[&:nth-child(2)]:border-t-0">
+          <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+            <button type="button" className="touch-target min-w-0 flex-1 cursor-pointer text-left wrap-anywhere text-sm font-bold text-accent-bright hover:underline disabled:cursor-default disabled:text-muted disabled:no-underline" disabled={!result} title={result ? 'Open ' + change.title + ' in the library' : change.title + ' is no longer in the current library'} onClick={() => result && onOpenResult(result.key)}>{change.title}</button>
+            <span className={cx('shrink-0 rounded-full border px-2 py-0.5 text-xs font-semibold', changeTone[change.type])}>{changeLabel[change.type]}</span>
+          </div>
+          <p className="mt-1 mb-0 text-xs text-muted">{change.season ? 'Season ' + change.season : 'Movie'}{change.arr ? ' · ' + change.arr : ''}</p>
+          <ul className="mt-3 mb-0 list-none space-y-2 p-0">{historyDetails(change).map((detail, detailIndex) => <li key={detailIndex} className="wrap-anywhere">
+            <p className="m-0 text-sm font-semibold text-ink">{detail.summary}</p>
+            {detail.release && <p className="mt-0.5 mb-0 text-xs text-muted">{detail.release}</p>}
+          </li>)}</ul>
+          {status && <p className="mt-2 mb-0 text-xs text-muted">{status}</p>}
         </li>
       })}</ul>}</div>}
     </article>)}</div>

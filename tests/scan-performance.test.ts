@@ -278,3 +278,45 @@ test('a failed metadata batch preserves the previous scan results and failure ou
     assert.deepEqual(getState().results, previous.results)
   } finally { setState(before) }
 })
+
+test('scan history records torrent replacements once and ignores private-tracker hash placeholders', async () => {
+  const before = getState()
+  const history: ReturnType<typeof buildScanHistoryEntry>[] = []
+  let hash = 'restricted', saved: JsonObject[] = []
+  const service = scanFixture({
+    localItems: async () => [{ arr: 'Sonarr', id: 1, title: 'Anime', seasons: { 1: { groups: [], size: 0 } } }],
+    anilistChain: async () => [{ id: 1, ids: [1], season: 1, episodeCount: 2, parts: [{ id: 1, episodeCount: 2 }] }],
+    seadexBest: async () => new Map([[1, { url: 'https://seadex.moe/1', notes: '-', seasons: { 0: { candidates: [{
+      releaseGroup: 'Best', tracker: 'AB', quality: '1080p', tags: [], size: 400,
+      file_count: 2, info_hashes: [hash], is_best: true,
+    }] } } }]]),
+    saveLastResults: results => { saved = JSON.parse(JSON.stringify(results)) },
+    recordScanHistory: (previous, current, at, _file, trigger, metadata) => {
+      const entry = buildScanHistoryEntry(previous, current, at, trigger, metadata)
+      history.push(entry)
+      return entry
+    },
+  })
+  try {
+    setState({ results: [], error: null })
+    await service.run(DEFAULT_CONFIG)
+    assert.equal(getState().error, null)
+    assert.equal(history[0].changes[0].type, 'new')
+    await service.run(DEFAULT_CONFIG)
+    assert.deepEqual(history[1].changes, [], 'An unchanged private-tracker release must not report a new torrent')
+    assert.deepEqual(saved, getState().results, 'Persistence and history must use the same results as scan state')
+
+    hash = 'a'.repeat(40)
+    await service.run(DEFAULT_CONFIG)
+    assert.match(history[2].changes[0].details.join('; '), /Torrent changed/)
+    hash = 'b'.repeat(40)
+    await service.run(DEFAULT_CONFIG)
+    assert.match(history[3].changes[0].details.join('; '), /Torrent changed/)
+    await service.run(DEFAULT_CONFIG)
+    assert.deepEqual(history[4].changes, [])
+
+    setState({ results: JSON.parse(JSON.stringify(saved)) })
+    await service.run(DEFAULT_CONFIG)
+    assert.deepEqual(history[5].changes, [], 'Reloading the saved baseline must not repeat the replacement')
+  } finally { setState(before) }
+})
