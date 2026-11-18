@@ -14,6 +14,10 @@ qBittorrent sessions and caches belong to each connection. Mutation locks belong
 
 # Persistence and compatibility
 
+AniList metadata is persisted under `media:v1:<id>` and shared by automatic chains and explicit season matches. Known IDs from the active scan's saved title matches, chains, and manual selections are loaded through `Page.media(id_in: ...)` in batches of up to 25. All batches use the same serialized transport and 2.1-second pacing as interactive searches. Batch errors must propagate rather than being cached as missing titles; successfully omitted IDs are cached as missing for 24 hours.
+
+Raw metadata and derived season/chain caches expire after 24 hours. Derived caches inherit the oldest raw metadata timestamp used, preventing reuse from extending stale metadata indefinitely. A newly required Sonarr season forces one relation refresh even for fresh raw data. Fully manual items skip automatic title matching and traversal, and use manual metadata for continuous episode offsets only when inferred matches agree with every explicit selection.
+
 Configuration settings and their AES-GCM encrypted credentials share one atomic `config.json` commit. Ordinary reads do not write. Startup migration reads the former separate secrets file without replacing the existing key. Back up the complete data directory before upgrading; restore that backup for older versions that expect separate credential storage.
 
 `owned_torrents.json` now contains `{ version: 1, torrents: { [hash]: metadataOrNull } }`. Legacy ownership arrays and separate `download_records.json` details are read together and migrated on the next ownership commit. Unattributed legacy hashes remain cancellable in the all-downloads scope. Ownership and associated metadata are committed before in-memory state changes.

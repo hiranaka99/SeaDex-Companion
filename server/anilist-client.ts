@@ -2,6 +2,8 @@ import { ANILIST, sleep, fetchWithTimeout, scanRequests } from './http.js'
 import { log, errorMessage } from './logging.js'
 import type { JsonObject } from './types.js'
 
+type RequestKind = 'media' | 'search' | 'batch'
+
 function waitForTurn(previous: Promise<void>, signal?: AbortSignal): Promise<void> {
   if (!signal) return previous
   return new Promise((resolve, reject) => {
@@ -23,7 +25,9 @@ export function createAniListClient(dependencies: {
   let lastCompleted: number | null = null
   let tail = Promise.resolve()
 
-  async function perform(payload: JsonObject, search: boolean): Promise<any> {
+  async function perform(payload: JsonObject, kind: RequestKind): Promise<any> {
+    const search = kind !== 'media'
+    const label = search ? `${kind} ` : ''
     let lastError = 'unknown error'
     for (let attempt = 0; attempt < 6; attempt++) {
       scanRequests.getStore()?.throwIfAborted()
@@ -38,7 +42,7 @@ export function createAniListClient(dependencies: {
         lastCompleted = now()
         scanRequests.getStore()?.throwIfAborted()
         lastError = errorMessage(error)
-        log('WARNING', `AniList ${search ? 'search ' : ''}network error, retrying: ${lastError}`)
+        log('WARNING', `AniList ${label}network error, retrying: ${lastError}`)
         await pause(3000)
         continue
       }
@@ -47,45 +51,48 @@ export function createAniListClient(dependencies: {
         lastError = 'HTTP 429 (rate limited)'
         const retryAfter = Number(response.headers.get('Retry-After') || 0)
         const backoff = retryAfter > 0 ? (retryAfter + 1) * 1000 : Math.min(3000 * 2 ** attempt, 60_000)
-        log('WARNING', `AniList ${search ? 'search ' : ''}rate limit (HTTP 429), backing off ${Math.round(backoff / 1000)}s`)
+        log('WARNING', `AniList ${label}rate limit (HTTP 429), backing off ${Math.round(backoff / 1000)}s`)
         await pause(backoff)
         continue
       }
-      if (response.status === 404) {
-        log('WARNING', `AniList ${search ? 'search ' : ''}returned HTTP 404 (not found / non-anime ID), skipping`)
+      if (response.status === 404 && kind !== 'batch') {
+        log('WARNING', `AniList ${label}returned HTTP 404 (not found / non-anime ID), skipping`)
         return search ? [] : {}
       }
       if (!response.ok) {
         const detail = (await response.text()).slice(0, 160)
         lastError = `HTTP ${response.status}${detail ? `: ${detail}` : ''}`
-        log('WARNING', `AniList ${search ? 'search ' : ''}request failed (${lastError}), retrying`)
+        log('WARNING', `AniList ${label}request failed (${lastError}), retrying`)
         await pause(3000)
         continue
       }
       let body: JsonObject
-      try { body = await response.json() }
+      try {
+        body = await response.json()
+        if (kind === 'batch' && !body?.errors?.length && !Array.isArray(body?.data?.Page?.media)) throw new Error('missing Page.media array')
+      }
       catch (error) {
         lastError = `invalid JSON: ${errorMessage(error)}`
-        log('WARNING', `AniList ${search ? 'search ' : ''}response was invalid, retrying: ${lastError}`)
+        log('WARNING', `AniList ${label}response was invalid, retrying: ${lastError}`)
         await pause(3000)
         continue
       }
       if (Array.isArray(body?.errors) && body.errors.length) {
-        if (body.errors.every((error: JsonObject) => error?.status === 404 || error?.message === 'Not Found.')) {
-          log('WARNING', `AniList ${search ? 'search ' : ''}returned GraphQL 404 Not Found, skipping`)
+        if (kind !== 'batch' && body.errors.every((error: JsonObject) => error?.status === 404 || error?.message === 'Not Found.')) {
+          log('WARNING', `AniList ${label}returned GraphQL 404 Not Found, skipping`)
           return search ? [] : {}
         }
         lastError = body.errors.map((error: JsonObject) => error?.message || 'GraphQL error').join('; ')
-        log('WARNING', `AniList ${search ? 'search ' : ''}GraphQL error, retrying: ${lastError}`)
+        log('WARNING', `AniList ${label}GraphQL error, retrying: ${lastError}`)
         await pause(3000)
         continue
       }
       return search ? (body?.data?.Page?.media || []) : (body?.data?.Media || {})
     }
-    throw new Error(`AniList ${search ? 'search ' : ''}request failed after 6 attempts: ${lastError}`)
+    throw new Error(`AniList ${label}request failed after 6 attempts: ${lastError}`)
   }
 
-  async function request(payload: JsonObject, search: boolean): Promise<any> {
+  async function request(payload: JsonObject, kind: RequestKind): Promise<any> {
     const previous = tail
     let unlock!: () => void
     const current = new Promise<void>(resolve => { unlock = resolve })
@@ -94,16 +101,18 @@ export function createAniListClient(dependencies: {
       // Searches and scans share one rate limit. Cancelled queued scans may
       // leave promptly without allowing later requests to overtake the queue.
       await waitForTurn(previous, scanRequests.getStore())
-      return await perform(payload, search)
+      return await perform(payload, kind)
     } finally { unlock() }
   }
 
   return {
-    media: (query: string, variables: JsonObject): Promise<JsonObject> => request({ query, variables }, false),
-    search: (query: string, variables: JsonObject): Promise<JsonObject[]> => request({ query, variables }, true),
+    media: (query: string, variables: JsonObject): Promise<JsonObject> => request({ query, variables }, 'media'),
+    search: (query: string, variables: JsonObject): Promise<JsonObject[]> => request({ query, variables }, 'search'),
+    batch: (query: string, variables: JsonObject): Promise<JsonObject[]> => request({ query, variables }, 'batch'),
   }
 }
 
 const client = createAniListClient()
 export const alMedia = client.media
 export const alSearch = client.search
+export const alBatch = client.batch

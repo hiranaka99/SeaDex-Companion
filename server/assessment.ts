@@ -126,7 +126,7 @@ export function assessSeason(item: LocalItem, season: number, local: LocalSeason
   const automatic = resolveSeasonChainEntry(item, season, chain)
   const sameContinuousEntry = override?.entry && automatic.multiSeasonSplit && override.entry.ids.length === 1 && override.entry.id === automatic.entry?.id
   const { entry, seasonEpisodeOffset, multiSeasonSplit } = override
-    ? { entry: override.entry, seasonEpisodeOffset: sameContinuousEntry ? automatic.seasonEpisodeOffset : 0, multiSeasonSplit: Boolean(sameContinuousEntry) }
+    ? { entry: sameContinuousEntry ? automatic.entry : override.entry, seasonEpisodeOffset: sameContinuousEntry ? automatic.seasonEpisodeOffset : 0, multiSeasonSplit: Boolean(sameContinuousEntry) }
     : automatic
   const groupId = override ? override.groupId : chain[0]?.id ?? null
   if (!entry) {
