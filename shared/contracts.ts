@@ -57,11 +57,16 @@ export interface ResultItem {
   excluded_parts?: string[]
 }
 
-export interface ReleaseChange {
-  id: string
+export interface ReleaseChangeDetail {
   kind: 'best' | 'alternative' | 'updated' | 'removed'
   description: string
   part?: string
+  release_replacement?: { previous: string; next: string; torrent_changed: boolean }
+  note_change?: { previous: string | null; next: string | null }
+}
+
+export interface ReleaseChange extends ReleaseChangeDetail {
+  id: string
   detected_at: string
 }
 
@@ -76,6 +81,7 @@ export interface ScanHistoryChange {
   from: string | null
   to: string | null
   details?: string[]
+  release_changes?: ReleaseChangeDetail[]
 }
 
 export interface ScanHistoryEntry {

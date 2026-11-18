@@ -1,5 +1,5 @@
 import type { ScanHistoryChange } from '../../shared/contracts.js'
-import { releaseChangeDetail } from './release-changes.js'
+import { presentReleaseChange, releaseChangeDetail, type ChangePresentation } from './release-changes.js'
 
 export const historyStatusLabel: Record<string, string> = {
   upgrade: 'Upgradable', best: 'Best quality', missing: 'Not on SeaDex', uncovered: 'No releases', partial: 'Partially on SeaDex',
@@ -14,7 +14,8 @@ export function historyStatus(change: ScanHistoryChange): string | null {
     uncovered: 'Still no releases', partial: 'Still partially on SeaDex' } as Record<string, string>)[to] || (historyStatusLabel[to] || to)
 }
 
-export function historyDetails(change: ScanHistoryChange): ReturnType<typeof releaseChangeDetail>[] {
+export function historyDetails(change: ScanHistoryChange): ChangePresentation[] {
+  if (change.release_changes?.length) return change.release_changes.map(presentReleaseChange)
   const details = change.details?.filter(detail => detail.trim()) || []
   if (details.length) return details.map(releaseChangeDetail)
   if (change.type === 'new') return [{ summary: 'Added to your library' }]
