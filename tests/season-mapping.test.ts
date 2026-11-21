@@ -4,8 +4,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
-import { anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, bulkDownloadTargets, cancelScan, checkForUpdates, clearScannedData, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, effectiveSeasonParts, DATA_DIR, encryptSecretValues, getState, loadStringSet, localItems, localPartOwnership, normalizeQbStates, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest, resetRuntimeForTests, resetUpdateCheck, runScan, scannedDataInfo, sendToDiscord, setState, testIntegration } from '../server/app.js'
-import { nextScheduledTime, parseReleaseIndex, processAutocheck, processWebhookScans, queueWebhookScan, refreshAutocheckSchedule, resetWebhookScanState, webhookScanState } from '../server/index.js'
+import { anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, cancelScan, checkForUpdates, clearScannedData, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, effectiveSeasonParts, DATA_DIR, encryptSecretValues, getState, loadStringSet, localItems, localPartOwnership, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest, resetRuntimeForTests, resetUpdateCheck, runScan, scannedDataInfo, sendToDiscord, setState } from '../server/app.js'
+import { nextScheduledTime, processAutocheck, processWebhookScans, queueWebhookScan, refreshAutocheckSchedule, resetWebhookScanState, webhookScanState } from '../server/index.js'
+import { qbPhase } from '../server/download-progress.js'
+import { testIntegration } from '../server/integration-tests.js'
+import { upgradeParts, type RecommendationSeason } from '../shared/download-plan.js'
 import type { JsonObject, ReleaseCandidate, ScanTrigger } from '../server/types.js'
 
 function node(id: number, title: string, year: number | null, season: string | null, episodes: number | null, options: JsonObject = {}): JsonObject {
@@ -122,21 +125,21 @@ describe('scanned data maintenance', () => {
 })
 
 describe('manual rules and scan history', () => {
-  test('applies season and cour exclusions to bulk download targets', () => {
+  test('applies season and cour exclusions to upgrade parts', () => {
     const results = [{
       key: 'series:1', library_key: 'Sonarr:item10', season: 1, status: 'upgrade', arr: 'Sonarr',
       releases: [
-        { kind: 'best', part: 'Cour 1', downloadable: true, info_hashes: ['a'.repeat(40)] },
-        { kind: 'best', part: 'Cour 2', downloadable: true, info_hashes: ['b'.repeat(40)] },
+        { kind: 'best', part: 'Cour 1', torrent_available: true, releaseGroup: 'Best', info_hashes: ['a'.repeat(40)] },
+        { kind: 'best', part: 'Cour 2', torrent_available: true, releaseGroup: 'Best', info_hashes: ['b'.repeat(40)] },
       ],
     }]
     const courRules = { mappings: {}, exclusions: ['Sonarr:item10:1:Cour 1'] }
     const decorated = applyUserRulesToResults(results, courRules)
     assert.deepEqual(decorated[0].excluded_parts, ['Cour 1'])
-    assert.deepEqual(bulkDownloadTargets(decorated).map((target) => target.part), ['Cour 2'])
+    assert.deepEqual(upgradeParts(decorated[0] as unknown as RecommendationSeason).map(part => part.part), ['Cour 2'])
 
     const seasonRules = { mappings: {}, exclusions: ['Sonarr:item10:1:*'] }
-    assert.equal(bulkDownloadTargets(applyUserRulesToResults(results, seasonRules)).length, 0)
+    assert.deepEqual(upgradeParts(applyUserRulesToResults(results, seasonRules)[0] as unknown as RecommendationSeason), [])
   })
 
   test('summarizes new upgrades and resolved upgrades between scans', () => {
@@ -294,11 +297,6 @@ describe('notifications and scheduling', () => {
     assert.equal(deliveries, 2)
   })
 
-  test('rejects malformed release indexes', () => {
-    assert.equal(parseReleaseIndex('0'), 0)
-    assert.equal(parseReleaseIndex(2), 2)
-    for (const value of ['abc', '1junk', '1.9', '-1', 1.5, -1]) assert.equal(parseReleaseIndex(value), null)
-  })
 })
 
 describe('Sonarr and Radarr URL normalization', () => {
@@ -500,26 +498,26 @@ describe('SeaDex catalog aggregation', () => {
 
 describe('qBittorrent torrent controls', () => {
   test('selects only downloadable best releases from upgradable seasons', () => {
-    const targets = bulkDownloadTargets([
-      {
-        key: 'upgrade-season', status: 'upgrade', arr: 'Sonarr', releases: [
-          { kind: 'best', downloadable: true, info_hashes: ['a'.repeat(40)], selected_files: ['Cour 1/episode.mkv'] },
-          { kind: 'alt', downloadable: true, info_hashes: ['b'.repeat(40)] },
-          { kind: 'best', downloadable: false, info_hashes: ['c'.repeat(40)] },
-        ],
-      },
-      { key: 'owned-season', status: 'best', arr: 'Sonarr', releases: [{ kind: 'best', downloadable: true, info_hashes: ['d'.repeat(40)] }] },
-      { key: 'missing-season', status: 'missing', arr: 'Sonarr', releases: [] },
-    ])
-    assert.deepEqual(targets, [{
-      key: 'upgrade-season', release: 0, arr: 'Sonarr', part: '', hashes: ['a'.repeat(40)],
-      selectedFiles: ['Cour 1/episode.mkv'],
-    }])
+    const upgradeSeason: RecommendationSeason = {
+      key: 'upgrade-season', status: 'upgrade', releases: [
+        { kind: 'best', torrent_available: true, releaseGroup: 'Group', info_hashes: ['a'.repeat(40)], selected_files: ['Cour 1/episode.mkv'] },
+        { kind: 'alt', torrent_available: true, releaseGroup: 'Group', info_hashes: ['b'.repeat(40)] },
+        { kind: 'best', torrent_available: false, releaseGroup: 'Group', info_hashes: ['c'.repeat(40)] },
+      ],
+    }
+    const parts = upgradeParts(upgradeSeason)
+    assert.deepEqual(parts.map(part => [part.part, part.torrent_available]), [['', true]])
+    assert.deepEqual(parts[0].options.map(option => option.index), [0], 'Only the downloadable best release is offered for submission')
+    assert.deepEqual(upgradeParts({ key: 'owned-season', status: 'best', releases: [{ kind: 'best', torrent_available: true, releaseGroup: 'Group', info_hashes: ['d'.repeat(40)] }] }), [])
+    assert.deepEqual(upgradeParts({ key: 'missing-season', status: 'missing', releases: [] }), [])
   })
 
-  test('recognizes paused states from qBittorrent 4 and 5', () => {
-    assert.equal(normalizeQbStates(['pausedDL']), 'paused')
-    assert.equal(normalizeQbStates(['stoppedDL', 'stoppedUP']), 'paused')
+  test('normalizes qBittorrent states into download phases', () => {
+    assert.equal(qbPhase('pausedDL', 0.5), 'paused')
+    assert.equal(qbPhase('stoppedDL', 0.5), 'paused')
+    assert.equal(qbPhase('uploading', 1), 'seeding')
+    assert.equal(qbPhase('checkingDL', 0.5), 'verifying')
+    assert.equal(qbPhase('missingFiles', 0.5), 'error')
   })
 
   test('pauses torrents and removes them with the selected file behavior', async () => {
@@ -1095,9 +1093,9 @@ describe('release selection and combined cours', () => {
     assert.equal(result.status, 'partial')
     assert.equal(result.releases.length, 1)
     assert.equal(result.releases[0].part, 'Cour 1')
-    assert.equal(result.releases[0].downloadable, true)
+    assert.equal(result.releases[0].torrent_available, true)
     assert.deepEqual(result.unavailable_parts, [{ label: 'Cour 2', reason: 'Not listed on SeaDex' }])
-    assert.equal(bulkDownloadTargets([result]).length, 1)
+    assert.deepEqual(upgradeParts(result).map(part => part.part), ['Cour 1'])
   })
 
   test('gives the best flag priority over episode count', () => {

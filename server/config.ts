@@ -17,6 +17,16 @@ export const DEFAULT_CONFIG: Config = {
   qbittorrent_url: '',
   qbittorrent_user: '',
   qbittorrent_pass: '',
+  download_mode: 'torrent_only',
+  sabnzbd_url: '',
+  sabnzbd_key: '',
+  sabnzbd_sonarr_category: 'sonarr-anime',
+  sabnzbd_radarr_category: 'radarr-anime',
+  animetosho_enabled: true,
+  animetosho_url: 'https://feed.animetosho.net',
+  amenzb_enabled: false,
+  amenzb_url: 'https://amenzb.moe',
+  amenzb_key: '',
   webhook: '',
   notify_enabled: true,
   unhide_on_new_best: false,
@@ -32,8 +42,26 @@ export const DEFAULT_CONFIG: Config = {
   hidden: [],
 }
 
-export const SECRET_CONFIG_KEYS = ['sonarr_key', 'radarr_key', 'qbittorrent_pass', 'webhook'] as const
+export const SECRET_CONFIG_KEYS = ['sonarr_key', 'radarr_key', 'qbittorrent_pass', 'sabnzbd_key', 'amenzb_key', 'webhook'] as const
 export type SecretConfigKey = typeof SECRET_CONFIG_KEYS[number]
+
+export const DOWNLOAD_MODES = ['torrent_only', 'usenet_only', 'choose'] as const
+
+/** Validate a user-configured client/provider base URL. Preserves reverse-proxy path prefixes, never double-appends. */
+export function serviceBaseUrl(value: unknown, label: string): string {
+  const raw = String(value ?? '').trim()
+  if (!raw) return ''
+  let parsed: URL
+  try { parsed = new URL(raw) } catch { throw new Error(`${label} must be a valid URL`) }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error(`${label} must use HTTP or HTTPS`)
+  return raw.replace(/\/+$/, '')
+}
+
+/** SABnzbd control base: configured URL plus a single /api segment, reverse-proxy safe. */
+export function sabnzbdApiUrl(config: Config): string {
+  const base = serviceBaseUrl(config.sabnzbd_url, 'sabnzbd_url')
+  return base ? `${base.replace(/\/api$/i, '')}/api` : ''
+}
 
 export function arrBaseUrl(value: unknown): string {
   return String(value || '').trim().replace(/\/+$/, '').replace(/\/api\/v\d+$/i, '').replace(/\/+$/, '')
@@ -170,9 +198,10 @@ export function loadConfig(): Config {
 }
 
 export function publicConfig(config: Config): PublicConfig {
-  return { ...config, sonarr_key: '', radarr_key: '', qbittorrent_pass: '', webhook: '',
+  return { ...config, sonarr_key: '', radarr_key: '', qbittorrent_pass: '', sabnzbd_key: '', amenzb_key: '', webhook: '',
     sonarr_key_configured: Boolean(config.sonarr_key), radarr_key_configured: Boolean(config.radarr_key),
-    qbittorrent_pass_configured: Boolean(config.qbittorrent_pass), webhook_configured: Boolean(config.webhook),
+    qbittorrent_pass_configured: Boolean(config.qbittorrent_pass), sabnzbd_key_configured: Boolean(config.sabnzbd_key),
+    amenzb_key_configured: Boolean(config.amenzb_key), webhook_configured: Boolean(config.webhook),
   }
 }
 
@@ -218,10 +247,17 @@ export function applyConfigUpdate(config: Config, input: unknown): Config {
       if (value) next[key] = value
     }
   }
-  for (const key of ['sonarr_url', 'radarr_url', 'sonarr_category', 'radarr_category', 'qbittorrent_url', 'qbittorrent_user'] as const) {
+  for (const key of ['sonarr_url', 'radarr_url', 'sonarr_category', 'radarr_category', 'qbittorrent_url', 'qbittorrent_user', 'sabnzbd_sonarr_category', 'sabnzbd_radarr_category'] as const) {
     if (key in data) next[key] = key === 'sonarr_url' || key === 'radarr_url' ? arrBaseUrl(data[key]) : String(data[key] ?? '').trim()
   }
-  for (const key of ['notify_enabled', 'unhide_on_new_best'] as const) {
+  if ('download_mode' in data) {
+    if (typeof data.download_mode !== 'string' || !DOWNLOAD_MODES.includes(data.download_mode as typeof DOWNLOAD_MODES[number])) throw new Error('download_mode must be torrent_only, usenet_only, or choose')
+    next.download_mode = data.download_mode as Config['download_mode']
+  }
+  if ('sabnzbd_url' in data) next.sabnzbd_url = serviceBaseUrl(data.sabnzbd_url, 'sabnzbd_url')
+  if ('animetosho_url' in data) next.animetosho_url = serviceBaseUrl(data.animetosho_url, 'animetosho_url')
+  if ('amenzb_url' in data) next.amenzb_url = serviceBaseUrl(data.amenzb_url, 'amenzb_url')
+  for (const key of ['notify_enabled', 'unhide_on_new_best', 'animetosho_enabled', 'amenzb_enabled'] as const) {
     if (key in data) {
       if (typeof data[key] !== 'boolean') throw new Error(`${key} must be a boolean`)
       next[key] = data[key]
@@ -236,6 +272,9 @@ export function integrationConfig(config: Config, service: string, input: unknow
   const fields: Record<string, readonly string[]> = {
     sonarr: ['sonarr_url', 'sonarr_key'], radarr: ['radarr_url', 'radarr_key'],
     qbittorrent: ['qbittorrent_url', 'qbittorrent_user', 'qbittorrent_pass'], discord: ['webhook'],
+    sabnzbd: ['sabnzbd_url', 'sabnzbd_key', 'sabnzbd_sonarr_category', 'sabnzbd_radarr_category'],
+    animetosho: ['animetosho_enabled', 'animetosho_url'],
+    amenzb: ['amenzb_enabled', 'amenzb_url', 'amenzb_key'],
   }
   const allowed = fields[service]
   if (!allowed) throw new Error('Unknown integration')

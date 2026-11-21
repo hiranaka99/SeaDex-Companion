@@ -1,7 +1,7 @@
 {
   "name": "seadex-companion",
   "private": true,
-  "version": "2.6.4",
+  "version": "2.7.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -27,6 +27,7 @@
     "typescript": "7.0.2"
   },
   "dependencies": {
-    "@node-rs/argon2": "^2.2.1"
+    "@node-rs/argon2": "^2.2.1",
+    "fast-xml-parser": "^5.12.1"
   }
 }

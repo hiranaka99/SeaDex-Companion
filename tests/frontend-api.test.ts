@@ -1,7 +1,7 @@
 import { refreshDownloads, subscribeDownloads } from '../frontend/src/download-store.js'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { getAllDownloadProgress, getBulkDownloadPreflight, invalidateDownloadProgress } from '../frontend/src/api.js'
+import { getAllDownloadProgress, invalidateDownloadProgress, preflightDownload } from '../frontend/src/api.js'
 
 test('progress probes share a request but cannot reuse a stale request after results change', async () => {
   const original = globalThis.fetch
@@ -53,6 +53,6 @@ test('preflight requests retain their timeout when supplied with a cancellation 
     const guard = setTimeout(() => reject(new Error('Request did not time out')), 250)
     signal.addEventListener('abort', () => { clearTimeout(guard); reject(signal.reason) }, { once: true })
   })) as typeof fetch
-  try { await assert.rejects(getBulkDownloadPreflight([], new AbortController().signal), error => error instanceof DOMException && error.name === 'TimeoutError') }
+  try { await assert.rejects(preflightDownload([], false, new AbortController().signal), error => error instanceof DOMException && error.name === 'TimeoutError') }
   finally { globalThis.fetch = originalFetch; AbortSignal.timeout = originalTimeout }
 })

@@ -4,7 +4,6 @@ import { invalidateQbSnapshots } from './qbittorrent.js'
 import { migrateConfig } from './config.js'
 import { SECURITY_HEADERS, sendJson, readJson } from './http-response.js'
 import { handleDownloadRequest } from './download-routes.js'
-export { parseReleaseIndex } from './download-routes.js'
 import { resetWebhookScanState, queueWebhookScan, webhookScanState, startScheduler, refreshAutocheckSchedule } from './scheduler.js'
 export * from './scheduler.js'
 import { createReadStream, existsSync, statSync } from 'node:fs'
@@ -17,13 +16,17 @@ import { fileURLToPath } from 'node:url'
 import { createAuthArtworkCache } from './auth-artwork.js'
 import { searchAniListTitles } from './anilist.js'
 import { loadConfig, publicConfig, saveConfig, SECRET_CONFIG_KEYS } from './config.js'
-import { ownedTorrentsSnapshot } from './download-store.js'
+import { downloadRecords, migrateOwnedDownloads } from './download-store.js'
 import { resultsForRequest } from './downloads.js'
 import { loadScanHistory } from './history.js'
 import { reviewReleaseChanges, withReleaseChanges } from './release-changes.js'
 import { log, readLogTail } from './logging.js'
 import { DATA_DIR, STATIC_DIR } from './paths.js'
-import { testIntegration } from './qbittorrent.js'
+import { testIntegration } from './integration-tests.js'
+import { qbEndpointId } from './client-identity.js'
+import { bumpGeneration } from './config-generation.js'
+import { invalidateUsenetLookups } from './usenet.js'
+import { invalidatePlans } from './download-plans.js'
 import { clearScannedData, loadLastResults, scannedDataInfo } from './results.js'
 import { runScan } from './scan.js'
 import { autocheckState, cancelScan, getState, resultsRevision, setState } from './scan-state.js'
@@ -221,6 +224,9 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
     const clearedSecrets = new Set<string>(Array.isArray(data.clear_secrets) ? data.clear_secrets.filter((key: unknown): key is string => typeof key === 'string' && SECRET_CONFIG_KEYS.some(secret => secret === key)) : [])
     saveConfig(config)
     invalidateQbSnapshots()
+    bumpGeneration()
+    invalidateUsenetLookups()
+    invalidatePlans()
     refreshAutocheckSchedule(config)
     const updatedSecrets = SECRET_CONFIG_KEYS.filter((key) => key in data && Boolean(String(data[key] || '').trim()))
     const integrationState = [
@@ -325,7 +331,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
     return sendJson(response, 200, { ok: true, hidden: config.hidden })
   }
 
-  if (path.startsWith('/api/download')) return handleDownloadRequest(request, response, url)
+  if (path.startsWith('/api/download') || path === '/api/usenet/availability') return handleDownloadRequest(request, response, url)
 
   if ((method === 'GET' || method === 'HEAD') && !path.startsWith('/api/') && serveStatic(path, response, method === 'HEAD')) return
   sendJson(response, 404, { error: 'Not found' })
@@ -333,6 +339,8 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
 
 export function makeServer() {
   migrateConfig()
+  try { migrateOwnedDownloads(qbEndpointId(loadConfig())) }
+  catch (error) { log('ERROR', `Acquisition ledger migration deferred: ${error instanceof Error ? error.message : String(error)}`) }
   downloadJobs.restore()
   return createServer((request, response) => {
     let url: URL
@@ -384,7 +392,7 @@ if (isMain) {
       const config = loadConfig()
       const savedResults = loadLastResults()?.results?.length || 0
       const hiddenCount = Array.isArray(config.hidden) ? config.hidden.length : 0
-      log('INFO', `Runtime state restored (saved results: ${savedResults}; tracked torrents: ${ownedTorrentsSnapshot().length}; hidden titles: ${hiddenCount}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'})`)
+      log('INFO', `Runtime state restored (saved results: ${savedResults}; owned acquisitions: ${downloadRecords().length}; hidden titles: ${hiddenCount}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'})`)
     } catch (error) {
       log('ERROR', `Runtime configuration could not be restored: ${error instanceof Error ? error.message : String(error)}`)
     }

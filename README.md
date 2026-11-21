@@ -16,7 +16,8 @@ SeaDex Companion compares your **Sonarr** and **Radarr** anime libraries with th
 - Find titles by name, release group, source, or upgrade status.
 - Correct AniList matches and exclude individual seasons or cours from upgrades.
 - Download individual releases or review a batch, with size estimates and available-disk-space checks.
-- Monitor downloads, pause or resume torrents, and cancel downloads while preserving files by default.
+- Download over qBittorrent, over Usenet through SABnzbd, or choose per release.
+- Monitor downloads, pause or resume, and cancel downloads while preserving files by default.
 - Track unseen release changes and receive optional Discord notifications.
 - Schedule scans or connect Sonarr and Radarr webhooks to scan newly added titles.
 - Use a password-protected interface on desktop or mobile, with encrypted storage for integration credentials.
@@ -101,13 +102,25 @@ Season corrections affect only that season. Choose **Use automatic match** to re
 
 Download an individual release from **Details**, or open bulk review to select several upgrades. Bulk review includes titles matching your current filters across all pages. Choose **Entire library** to include titles outside those filters; hidden titles start unchecked.
 
-Review the release groups, selected episodes, download sizes, and available disk space before submitting. Torrents already present in qBittorrent are skipped. When filenames identify the required episodes, SeaDex Companion can download only the selected files; otherwise, review the whole-torrent scope before proceeding.
+Review the release groups, selected episodes, download sizes, and available disk space before submitting. Downloads already present in qBittorrent or SABnzbd are skipped. When filenames identify the required episodes, SeaDex Companion can download only the selected files; otherwise, review the whole-torrent scope before proceeding.
 
-Disk-space checks may be unavailable for some download paths or older qBittorrent versions. Size estimates do not reserve space or include torrent overhead and library-import copies. Run a new scan if older results are missing file-size information.
+Disk-space checks may be unavailable for some download paths or older client versions. Size estimates do not reserve space or include torrent overhead and library-import copies. Run a new scan if older results are missing file-size information.
 
-Choose **Continue in background** to keep using the app while a batch runs. Closing the page does not cancel downloads. **Review batch** reopens your latest submitted review in the same session, and download progress is recovered after a reload. After a SeaDex Companion restart, check qBittorrent before retrying downloads reported as interrupted.
+Choose **Continue in background** to keep using the app while a batch runs. Closing the page does not cancel downloads. **Review batch** reopens your latest submitted review in the same session, and download progress is recovered after a reload. After a SeaDex Companion restart, check the download client before retrying downloads reported as interrupted.
 
-Use the download controls to pause, resume, cancel, or remove torrents. File deletion is optional; downloaded files are preserved by default.
+Use the download controls to pause, resume, cancel, or remove downloads. Controls are labeled per client. File deletion is optional; downloaded files are preserved by default.
+
+### Usenet downloads
+
+Set the download method under **Configuration → Downloads**: **Torrents only**, **Usenet only**, or **Let me choose per release**. Existing installations stay on **Torrents only** until you change it.
+
+To download over Usenet:
+
+- Connect SABnzbd with its server URL and API key, set the Sonarr and Radarr categories, and confirm **Test connection**.
+- AnimeTosho is enabled by default and needs no account. Optionally enable AmeNZB and add the API key from your amenzb.moe profile.
+- Release details report whether an enabled Usenet source carries the release, with its size, and offer a re-check. In **Let me choose per release** mode, pick **Torrent** or **Usenet** per release; releases without a public magnet can become Usenet-only, and releases no source carries stay torrent-only.
+
+Usenet sources cannot be split per episode: the whole upload is downloaded, including files beyond the selected episodes. The review lists the known extra files and requires your acknowledgement before sending. If the connection to SABnzbd drops before it confirms a download, SeaDex Companion never re-submits it automatically; the entry remains listed with **Awaiting confirmation**, so check SABnzbd before retrying.
 
 ## Automatic scans and notifications
 

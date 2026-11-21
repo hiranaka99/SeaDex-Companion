@@ -1,92 +1,353 @@
-import { OWNED_TORRENTS_FILE, DOWNLOAD_RECORDS_FILE } from './paths.js'
+import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
+import { DATA_DIR, DOWNLOAD_RECORDS_FILE, OWNED_TORRENTS_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
-import type { BulkCancelInfo, ResultReleaseIndex } from './downloads.js'
-import type { JsonObject } from './types.js'
+import { log } from './logging.js'
+import type { DownloadClient, DownloadPhase, DownloadProtocol } from '../shared/download-contracts.js'
+import type { UsenetProvider } from '../shared/usenet-contracts.js'
+
+const OWNED_DOWNLOADS_FILE = join(DATA_DIR, 'owned_downloads.json')
 
 const normalizeInfoHash = (value: unknown): string | null => typeof value === 'string' && /^[0-9a-f]{40}$/i.test(value) ? value.toLowerCase() : null
+const safeText = (value: unknown, max = 300): string => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max)
+const nullableInteger = (value: unknown): number | null => Number.isInteger(value) && (value as number) >= 0 ? value as number : null
+const nonNegativeNumber = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
 
-type Ledger = Record<string, BulkCancelInfo | null>
-let ledger: Ledger | null = null
+/**
+ * The authoritative app-owned acquisition ledger. One protocol-neutral record per
+ * accepted client job; `t:<hash>` records double as legacy torrent ledger entries.
+ * Records are only ever added or annotated here — deleting one loses ownership.
+ */
+export interface OwnedDownloadRecord {
+  id: string
+  protocol: DownloadProtocol
+  client: DownloadClient
+  /** Normalized client endpoint identity used at submission, without credentials. Empty means unbound. */
+  endpoint: string
+  /** qBittorrent info hash or SABnzbd nzo_id. Empty only while acceptance is unknown. */
+  native_id: string
+  state: 'accepted' | 'acceptance_unknown'
+  source_hash: string
+  category: string
+  /** Effective torrent file scope. Undefined means the whole torrent. */
+  scope?: string[]
+  provider?: UsenetProvider
+  entry_id?: string
+  nzb_name?: string
+  added_at: string
+  updated_at: string
+  /** Successful explicit removal audit; the record leaves active views but is retained. */
+  removed_at?: string
+  last_phase?: DownloadPhase
+  card?: { title: string; season: number | null; part: string; release_group: string; tracker: string; size: number }
+  labels: string[]
+}
 
-function decodeInfo(info: unknown): BulkCancelInfo | null {
-  if (!info || typeof info !== 'object' || !('title' in info) || typeof info.title !== 'string') return null
-  const value = info as Partial<BulkCancelInfo>
+interface CardSnapshot { title: string; season: number | null; part: string; release_group: string; tracker: string; size: number }
+interface AssociationRow { key: string; release: number }
+interface LegacyTorrentAssociation extends AssociationRow { library_key?: string; season: number | null }
+interface LegacyTorrentCard extends CardSnapshot { key: string; release: number; associations?: LegacyTorrentAssociation[] }
+
+interface RecordFile { version: 2; records: OwnedDownloadRecord[]; rows: Record<string, AssociationRow[]> }
+
+let ledger: RecordFile | null = null
+
+const now = () => new Date().toISOString()
+
+function decodeCard(value: unknown): CardSnapshot | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const card = value as Record<string, unknown>
+  if (typeof card.title !== 'string' || !card.title) return undefined
   return {
-    key: typeof value.key === 'string' ? value.key : '', release: Number.isInteger(value.release) && value.release! >= 0 ? value.release! : 0,
-    title: info.title, season: Number.isInteger(value.season) && value.season! >= 0 ? value.season! : null,
-    part: typeof value.part === 'string' ? value.part : '', releaseGroup: typeof value.releaseGroup === 'string' ? value.releaseGroup : '',
-    tracker: typeof value.tracker === 'string' ? value.tracker : '', size: Number(value.size) || 0,
-    ...(typeof value.library_key === 'string' ? { library_key: value.library_key } : {}),
-    ...(Array.isArray(value.associations) ? { associations: value.associations.filter(item => item && typeof item.key === 'string' && (item.season === null || Number.isInteger(item.season))) } : {}),
+    title: card.title, season: nullableInteger(card.season), part: safeText(card.part, 80),
+    release_group: safeText(card.release_group, 120), tracker: safeText(card.tracker, 120), size: nonNegativeNumber(card.size),
   }
 }
 
-function decodeRecords(value: unknown): Record<string, BulkCancelInfo> {
+function decodeRecord(value: unknown): OwnedDownloadRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Record<string, unknown>
+  if (typeof raw.id !== 'string' || !raw.id) return null
+  if (raw.protocol !== 'torrent' && raw.protocol !== 'usenet') return null
+  if (raw.client !== 'qbittorrent' && raw.client !== 'sabnzbd') return null
+  if (raw.state !== 'accepted' && raw.state !== 'acceptance_unknown') return null
+  const sourceHash = normalizeInfoHash(raw.source_hash)
+  if (!sourceHash) return null
+  const nativeId = typeof raw.native_id === 'string' ? raw.native_id.trim() : ''
+  if (raw.state === 'accepted' && !nativeId) return null
+  const addedAt = typeof raw.added_at === 'string' ? raw.added_at : now()
+  return {
+    id: raw.id, protocol: raw.protocol, client: raw.client,
+    endpoint: typeof raw.endpoint === 'string' ? raw.endpoint : '',
+    native_id: raw.protocol === 'torrent' ? (normalizeInfoHash(nativeId) || sourceHash) : nativeId,
+    state: raw.state, source_hash: sourceHash, category: safeText(raw.category, 80),
+    ...(Array.isArray(raw.scope) ? { scope: raw.scope.filter((path): path is string => typeof path === 'string' && Boolean(path)) } : {}),
+    ...(raw.provider === 'animetosho' || raw.provider === 'amenzb' ? { provider: raw.provider } : {}),
+    ...(typeof raw.entry_id === 'string' && raw.entry_id ? { entry_id: raw.entry_id.slice(0, 80) } : {}),
+    ...(typeof raw.nzb_name === 'string' && raw.nzb_name ? { nzb_name: safeText(raw.nzb_name, 200) } : {}),
+    added_at: addedAt, updated_at: typeof raw.updated_at === 'string' ? raw.updated_at : addedAt,
+    ...(typeof raw.removed_at === 'string' ? { removed_at: raw.removed_at } : {}),
+    ...(decodePhase(raw.last_phase) ? { last_phase: raw.last_phase as DownloadPhase } : {}),
+    ...(decodeCard(raw.card) ? { card: decodeCard(raw.card) } : {}),
+    labels: Array.isArray(raw.labels) ? raw.labels.filter((label): label is string => typeof label === 'string' && Boolean(label)).slice(0, 16).map(label => safeText(label, 200)) : [],
+  }
+}
+
+const PHASES: Record<string, true> = {
+  acceptance_unknown: true, queued: true, downloading: true, paused: true, verifying: true, repairing: true,
+  unpacking: true, post_processing: true, seeding: true, complete: true, error: true, missing: true, unavailable: true,
+}
+function decodePhase(value: unknown): value is DownloadPhase { return typeof value === 'string' && Boolean(PHASES[value]) }
+
+function decodeRows(value: unknown): Record<string, AssociationRow[]> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
-  return Object.fromEntries(Object.entries(value).flatMap(([hash, raw]) => {
-    const normalized = normalizeInfoHash(hash), info = decodeInfo(raw)
-    return normalized && info ? [[normalized, { ...info, key: info.key || `torrent:${normalized}` }]] : []
-  }))
+  const rows: Record<string, AssociationRow[]> = {}
+  for (const [recordId, raw] of Object.entries(value)) {
+    if (!Array.isArray(raw)) continue
+    const list = raw.flatMap(row => {
+      if (!row || typeof row !== 'object') return []
+      const candidate = row as Record<string, unknown>
+      return typeof candidate.key === 'string' && candidate.key && Number.isInteger(candidate.release) && (candidate.release as number) >= 0 ? [{ key: candidate.key, release: candidate.release as number }] : []
+    }).slice(0, 64)
+    if (list.length) rows[recordId] = list
+  }
+  return rows
 }
 
-function currentLedger(): Ledger {
-  if (ledger) return ledger
-  const stored = readJson<unknown>(OWNED_TORRENTS_FILE, {}, 'Could not read torrent ownership ledger')
-  if (Array.isArray(stored)) {
-    // Legacy arrays and separate details are read together, then migrated on the next commit.
-    const details = decodeRecords(readJson<unknown>(DOWNLOAD_RECORDS_FILE, {}))
-    ledger = Object.fromEntries(stored.flatMap(value => { const hash = normalizeInfoHash(value); return hash ? [[hash, details[hash] || null]] : [] }))
-  } else {
-    const data = stored && typeof stored === 'object' && 'version' in stored && stored.version === 1 && 'torrents' in stored ? stored.torrents : {}
-    ledger = data && typeof data === 'object' && !Array.isArray(data) ? Object.fromEntries(Object.entries(data).flatMap(([hash, info]) => {
-      const normalized = normalizeInfoHash(hash)
-      return normalized ? [[normalized, decodeInfo(info)]] : []
-    })) : {}
+function decodeFile(value: unknown): RecordFile | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const file = value as Record<string, unknown>
+  if (file.version !== 2 || !Array.isArray(file.records)) return null
+  const records = file.records.map(decodeRecord).filter((record): record is OwnedDownloadRecord => Boolean(record))
+  return { version: 2, records, rows: decodeRows(file.rows) }
+}
+
+function legacyCardFrom(raw: unknown, hash: string): LegacyTorrentCard {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { title: '', season: null, part: '', release_group: '', tracker: '', size: 0, key: `torrent:${hash}`, release: 0 }
+  const info = raw as Record<string, unknown>
+  const title = typeof info.title === 'string' ? info.title : ''
+  return {
+    title, season: nullableInteger(info.season), part: safeText(info.part, 80),
+    release_group: safeText(info.releaseGroup, 120), tracker: safeText(info.tracker, 120), size: nonNegativeNumber(info.size),
+    key: typeof info.key === 'string' && info.key ? info.key : `torrent:${hash}`,
+    release: Number.isInteger(info.release) && (info.release as number) >= 0 ? info.release as number : 0,
+    ...(Array.isArray(info.associations) ? {
+      associations: (info.associations as unknown[]).flatMap(association => {
+        if (!association || typeof association !== 'object') return []
+        const row = association as Record<string, unknown>
+        return typeof row.key === 'string' && row.key ? [{
+          key: row.key, release: 0, season: row.season === null ? null : nullableInteger(row.season),
+          ...(typeof row.library_key === 'string' && row.library_key ? { library_key: row.library_key } : {}),
+        }] : []
+      }),
+    } : {}),
   }
+}
+
+function legacyFile(): { cards: Map<string, LegacyTorrentCard>; hashes: string[] } | null {
+  const owned = readJson<unknown>(OWNED_TORRENTS_FILE, undefined)
+  if (owned === undefined) return null
+  const details = readJson<unknown>(DOWNLOAD_RECORDS_FILE, {}, 'Could not read legacy download details')
+  const cards = new Map<string, LegacyTorrentCard>()
+  const hashes: string[] = []
+  if (Array.isArray(owned)) {
+    const detailMap = details && typeof details === 'object' && !Array.isArray(details) ? details as Record<string, unknown> : {}
+    for (const value of owned) {
+      const hash = normalizeInfoHash(value)
+      if (!hash) continue
+      hashes.push(hash)
+      cards.set(hash, legacyCardFrom(detailMap[hash], hash))
+    }
+  } else if (owned && typeof owned === 'object' && 'version' in owned && (owned as Record<string, unknown>).version === 1 && 'torrents' in owned) {
+    const torrents = (owned as Record<string, unknown>).torrents
+    if (torrents && typeof torrents === 'object' && !Array.isArray(torrents)) for (const [value, raw] of Object.entries(torrents as Record<string, unknown>)) {
+      const hash = normalizeInfoHash(value)
+      if (!hash) continue
+      hashes.push(hash)
+      cards.set(hash, legacyCardFrom(raw, hash))
+    }
+  } else {
+    return null
+  }
+  return { cards, hashes: [...new Set(hashes)] }
+}
+
+/**
+ * One-time migration from the legacy torrent ledger and detail records into the
+ * versioned protocol-neutral file. Idempotent; the durable new record is written
+ * before anything is considered migrated, and the legacy files are left in place
+ * so a failed cutover can be re-derived.
+ */
+export function migrateOwnedDownloads(qbEndpoint: string): void {
+  if (ledger) return
+  const existing = decodeFile(readJson<unknown>(OWNED_DOWNLOADS_FILE, null))
+  if (existing) { ledger = existing; return }
+  const legacy = legacyFile()
+  if (!legacy) { ledger = { version: 2, records: [], rows: {} }; return }
+  const records: OwnedDownloadRecord[] = []
+  const rows: Record<string, AssociationRow[]> = {}
+  for (const hash of legacy.hashes) {
+    const card = legacy.cards.get(hash)!
+    const id = `t:${hash}`
+    const createdAt = now()
+    records.push({
+      id, protocol: 'torrent', client: 'qbittorrent', endpoint: qbEndpoint, native_id: hash,
+      state: 'accepted', source_hash: hash, category: '', added_at: createdAt, updated_at: createdAt,
+      ...(card.title ? { card: { title: card.title, season: card.season, part: card.part, release_group: card.release_group, tracker: card.tracker, size: card.size } } : {}),
+      labels: [],
+    })
+    const associated: AssociationRow[] = [{ key: card.key, release: card.release }, ...(card.associations || []).map(({ key, release }) => ({ key, release }))]
+    const unique = [...new Map(associated.map(row => [`${row.key}\u0000${row.release}`, row])).values()]
+    if (unique.length) rows[id] = unique
+  }
+  ledger = { version: 2, records, rows }
+  writeJsonAtomic(OWNED_DOWNLOADS_FILE, ledger, true, 0o600)
+  log('INFO', `Migrated ${records.length} owned torrent record(s) to the versioned acquisition ledger`)
+}
+
+function current(): RecordFile {
+  if (ledger) return ledger
+  const stored = decodeFile(readJson<unknown>(OWNED_DOWNLOADS_FILE, null, 'Could not read the acquisition ledger'))
+  if (stored) { ledger = stored; return ledger }
+  ledger = { version: 2, records: [], rows: {} }
   return ledger
 }
 
-function commit(next: Ledger): void {
-  writeJsonAtomic(OWNED_TORRENTS_FILE, { version: 1, torrents: next })
-  ledger = next
+function commit(): void { writeJsonAtomic(OWNED_DOWNLOADS_FILE, current(), true, 0o600) }
+
+function mutate(id: string, change: (record: OwnedDownloadRecord) => void): OwnedDownloadRecord | null {
+  const record = current().records.find(record => record.id === id)
+  if (!record) return null
+  change(record)
+  record.updated_at = now()
+  commit()
+  return structuredClone(record)
 }
 
-export function loadDownloadRecords(file = DOWNLOAD_RECORDS_FILE): Record<string, BulkCancelInfo> {
-  return file === DOWNLOAD_RECORDS_FILE ? decodeRecords(currentLedger()) : decodeRecords(readJson<unknown>(file, {}))
+export interface NewDownloadRecord {
+  protocol: DownloadProtocol
+  client: DownloadClient
+  endpoint: string
+  native_id?: string
+  state: OwnedDownloadRecord['state']
+  source_hash: string
+  category: string
+  scope?: string[]
+  provider?: UsenetProvider
+  entry_id?: string
+  nzb_name?: string
+  card?: CardSnapshot
+  labels?: string[]
+  rows?: AssociationRow[]
 }
 
-/** Ownership and its library association become visible in the same atomic rename. */
-export function recordOwnedDownload(hash: string, info: BulkCancelInfo): void {
-  const normalized = normalizeInfoHash(hash)
-  if (!normalized) throw new Error('Invalid download hash')
-  commit({ ...currentLedger(), [normalized]: info })
-}
-
-export function recordDownloadDetails(hash: string, info: BulkCancelInfo, file = DOWNLOAD_RECORDS_FILE): void {
-  const normalized = normalizeInfoHash(hash)
-  if (!normalized) throw new Error('Invalid download hash')
-  if (file === DOWNLOAD_RECORDS_FILE) recordOwnedDownload(normalized, info)
-  else writeJsonAtomic(file, { ...loadDownloadRecords(file), [normalized]: info })
-}
-
-export function trackedDownloadInfo(torrent: JsonObject, records: Record<string, BulkCancelInfo>, index: ResultReleaseIndex): BulkCancelInfo {
-  const hash = String(torrent.hash || '').toLowerCase()
-  return records[hash] || index.byHash.get(hash) || {
-    key: `torrent:${hash}`, release: 0, title: String(torrent.name || hash), season: null,
-    part: '', releaseGroup: '', tracker: '', size: Number(torrent.size || torrent.total_size || 0),
+/** Creates the durable record. Torrent records reuse `t:<hash>`; Usenet gets `u:<hash>:<uuid>`. */
+export function addDownloadRecord(input: NewDownloadRecord): OwnedDownloadRecord {
+  const sourceHash = normalizeInfoHash(input.source_hash)
+  if (!sourceHash) throw new Error('Invalid source hash')
+  const file = current()
+  const id = input.protocol === 'torrent' ? `t:${sourceHash}` : `u:${sourceHash.slice(0, 12)}:${randomUUID()}`
+  const timestamp = now()
+  const record: OwnedDownloadRecord = {
+    id, protocol: input.protocol, client: input.client, endpoint: input.endpoint || '',
+    native_id: input.protocol === 'torrent' ? sourceHash : (input.native_id || ''),
+    state: input.state, source_hash: sourceHash, category: input.category || '',
+    ...(input.scope?.length ? { scope: [...new Set(input.scope)] } : {}),
+    ...(input.provider ? { provider: input.provider } : {}),
+    ...(input.entry_id ? { entry_id: input.entry_id.slice(0, 80) } : {}),
+    ...(input.nzb_name ? { nzb_name: input.nzb_name } : {}),
+    added_at: timestamp, updated_at: timestamp,
+    ...(input.card ? { card: input.card } : {}),
+    labels: [...new Set(input.labels || [])].slice(0, 16),
   }
+  const existing = file.records.find(candidate => candidate.id === id)
+  if (existing) Object.assign(existing, record, { added_at: existing.added_at, removed_at: undefined })
+  else file.records.push(record)
+  if (input.rows?.length) {
+    const unique = [...new Map(input.rows.map(row => [`${row.key}\u0000${row.release}`, row])).values()]
+    if (unique.length) file.rows[id] = unique
+  }
+  commit()
+  return structuredClone(record)
 }
 
-export function saveOwnedTorrents(): void { commit(currentLedger()) }
-export function recordOwnedTorrents(hashes: string[]): void {
-  const next = { ...currentLedger() }
-  for (const value of hashes) { const hash = normalizeInfoHash(value); if (hash && !(hash in next)) next[hash] = null }
-  commit(next)
+export function findDownloadRecord(id: string): OwnedDownloadRecord | null {
+  const record = current().records.find(record => record.id === id)
+  return record ? structuredClone(record) : null
 }
-export function forgetOwnedTorrents(hashes: string[]): void {
-  const next = { ...currentLedger() }
-  for (const value of hashes) { const hash = normalizeInfoHash(value); if (hash) delete next[hash] }
-  commit(next)
+
+export function findTorrentRecord(sourceHash: string): OwnedDownloadRecord | null {
+  const hash = normalizeInfoHash(sourceHash)
+  if (!hash) return null
+  const record = current().records.find(record => record.protocol === 'torrent' && record.source_hash === hash && !record.removed_at)
+  return record ? structuredClone(record) : null
 }
-export function ownedTorrentsSnapshot(): string[] { return Object.keys(currentLedger()).sort() }
-export function resetOwnedRuntime(): void { ledger = {} }
+
+/** App-owned non-removed acquisition for a source hash, any protocol (duplicate guard). */
+export function findAcquisitionRecord(sourceHash: string, protocol?: DownloadProtocol): OwnedDownloadRecord | null {
+  const hash = normalizeInfoHash(sourceHash)
+  if (!hash) return null
+  const record = current().records.find(record => record.source_hash === hash && !record.removed_at && (!protocol || record.protocol === protocol))
+  return record ? structuredClone(record) : null
+}
+
+export function findSabnzbdRecord(nzoId: string): OwnedDownloadRecord | null {
+  const record = current().records.find(record => record.client === 'sabnzbd' && record.native_id === nzoId && !record.removed_at)
+  return record ? structuredClone(record) : null
+}
+
+export function downloadRecords(): OwnedDownloadRecord[] {
+  return structuredClone(current().records.filter(record => !record.removed_at))
+}
+
+export function allDownloadRecords(): OwnedDownloadRecord[] {
+  return structuredClone(current().records)
+}
+
+export function setDownloadNative(id: string, nativeIds: string[]): OwnedDownloadRecord | null {
+  const accepted = nativeIds.map(value => value.trim()).filter(Boolean)
+  const first = accepted[0]
+  if (!first) return null
+  const updated = mutate(id, record => {
+    record.native_id = record.protocol === 'torrent' ? record.source_hash : first
+    record.state = 'accepted'
+  })
+  // A single accepted NZB submission can produce several native jobs; record each extra ID.
+  const file = current()
+  const parent = file.records.find(record => record.id === id)
+  if (parent) for (const nativeId of accepted.slice(1)) {
+    if (file.records.some(record => record.client === parent.client && record.native_id === nativeId && !record.removed_at)) continue
+    file.records.push(structuredClone({ ...parent, id: `u:${parent.source_hash.slice(0, 12)}:${randomUUID()}`, native_id: nativeId, state: 'accepted', removed_at: undefined, added_at: now(), updated_at: now() }))
+  }
+  commit()
+  return updated
+}
+
+export function markDownloadRemoved(id: string): OwnedDownloadRecord | null {
+  return mutate(id, record => { record.removed_at = now() })
+}
+
+export function setDownloadPhase(id: string, phase: DownloadPhase): void {
+  const file = current()
+  const record = file.records.find(record => record.id === id)
+  if (!record || record.last_phase === phase) return
+  record.last_phase = phase
+  commit()
+}
+
+/** Review-row associations retained for card projection after rescans replace rows. */
+export function setDownloadRows(id: string, rows: AssociationRow[]): void {
+  const file = current()
+  if (!file.rows[id]) return
+  file.rows[id] = [...new Map(rows.map(row => [`${row.key}\u0000${row.release}`, row])).values()].slice(0, 64)
+  commit()
+}
+
+export function downloadRows(id: string): AssociationRow[] {
+  return [...(current().rows[id] || [])]
+}
+
+export function resetOwnedRuntime(): void { ledger = null }
+
+/** Test/reinitialization seam used by the suite that isolates DATA_DIR per process. */
+export function reloadOwnedRuntime(): void { ledger = null; current() }

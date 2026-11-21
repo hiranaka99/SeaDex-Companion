@@ -8,7 +8,6 @@ import { join } from 'node:path'
 import { planTorrents, upgradeParts } from '../shared/download-plan.js'
 import { estimateDownloads } from '../shared/download-estimate.js'
 import { normalizeResults } from '../server/result-model.js'
-import { bulkDownloadTargets } from '../server/downloads.js'
 import { createDownloadJobStore } from '../server/download-jobs.js'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { qbAddTorrent, qbControlTorrents, qbGetTorrents, resetQbRuntime } from '../server/qbittorrent.js'
@@ -16,18 +15,20 @@ import { cancelScan, getState } from '../server/scan-state.js'
 import { createScanService } from '../server/scan.js'
 
 const a = 'a'.repeat(40), b = 'b'.repeat(40)
-const release = { kind: 'best' as const, releaseGroup: 'Best', tracker: 'Nyaa', downloadable: true, info_hashes: [a], size: 100 }
+const release = { kind: 'best' as const, releaseGroup: 'Best', tracker: 'Nyaa', torrent_available: true, info_hashes: [a], size: 100 }
 
 test('review and server eligibility agree for owned, excluded, and unavailable cours', () => {
-  const season = { key: 'series', arr: 'Sonarr', status: 'partial', upgrade_available: true, precise_part_ownership: true, owned_by_part: { 'Cour 1': ['BEST'] }, releases: [
+  const season = { key: 'series', status: 'partial', upgrade_available: true, precise_part_ownership: true, owned_by_part: { 'Cour 1': ['BEST'] }, releases: [
     { ...release, part: 'Cour 1' }, { ...release, part: 'Cour 2', info_hashes: [b] },
   ] }
   assert.deepEqual(upgradeParts(season).map(part => part.part), ['Cour 2'])
-  assert.deepEqual(bulkDownloadTargets([season]).map(target => target.part), ['Cour 2'])
   assert.deepEqual(upgradeParts({ ...season, excluded_parts: ['Cour 2'] }), [])
-  assert.deepEqual(bulkDownloadTargets([{ ...season, excluded: true }]), [])
-  const unavailable = upgradeParts({ ...season, releases: [{ ...release, info_hashes: [], downloadable: false, part: 'Cour 2' }] })
-  assert.equal(unavailable[0].downloadable, false)
+  assert.deepEqual(upgradeParts({ ...season, excluded: true }), [])
+  const unavailable = upgradeParts({ ...season, releases: [{ ...release, info_hashes: [], torrent_available: false, part: 'Cour 2' }] })
+  assert.equal(unavailable.length, 1, 'A part without a downloadable release stays visible for review')
+  assert.equal(unavailable[0].part, 'Cour 2')
+  assert.equal(unavailable[0].torrent_available, false)
+  assert.deepEqual(unavailable[0].options.map(option => option.index), [0], 'Unavailable options are kept for the review surface')
 })
 
 test('planning and estimation use the same per-hash union and whole-torrent override', () => {
@@ -57,28 +58,43 @@ test('job identity, restart recovery, and failed persistence preserve authoritat
   let saved: unknown = [], failWrite = false
   const storage = { read: () => saved, write: (jobs: unknown) => { if (failWrite) throw new Error('disk full'); saved = structuredClone(jobs) } }
   const store = createDownloadJobStore(storage)
+  const unitA = { unit_id: `torrent:${a}`, protocol: 'torrent' as const, source_hash: a, label: 'First' }
+  const unitB = { unit_id: `torrent:${b}`, protocol: 'torrent' as const, source_hash: b, label: 'Second' }
+  const targets = [{ key: 'old-result', release: 0 }]
   failWrite = true
-  assert.throws(() => store.begin([], [a]), /disk full/)
+  assert.throws(() => store.begin(targets, [unitA]), /disk full/)
   assert.equal(store.active(), false)
   failWrite = false
-  const first = store.begin([{ key: 'old-result', release: 0 }], [a, b])
-  assert.throws(() => store.begin([], []), /already running/)
-  store.settle(first.id, a, 'First', null)
+  const first = store.begin(targets, [unitA, unitB])
+  assert.throws(() => store.begin(targets, []), /already running/)
+  store.added(first.id, unitA.unit_id, { native_id: a })
   failWrite = true
-  assert.throws(() => store.settle(first.id, b, 'Second', null), /disk full/)
-  assert.deepEqual(store.get(first.id)?.pending, [b])
+  assert.throws(() => store.failure(first.id, { unit_id: unitB.unit_id, protocol: 'torrent', source_hash: b, label: 'Second', code: 'client', error: 'boom', selections: targets }), /disk full/)
+  assert.deepEqual(store.get(first.id)?.pending.map(unit => unit.unit_id), [unitB.unit_id], 'A failed write must not mutate durable state')
   failWrite = false
   const restarted = createDownloadJobStore(storage)
   restarted.restore()
-  assert.equal(restarted.get(first.id)?.finished, true)
-  assert.deepEqual(restarted.get(first.id)?.added, [a])
-  assert.match(restarted.get(first.id)!.failures[0].error, /restarted/)
-  const second = restarted.begin([], [])
+  const recovered = restarted.get(first.id)!
+  assert.equal(recovered.finished, true)
+  assert.deepEqual(recovered.added.map(unit => unit.unit_id), [unitA.unit_id])
+  assert.deepEqual(recovered.pending, [])
+  assert.equal(recovered.failures[0].code, 'interrupted')
+  assert.match(recovered.failures[0].error, /restarted/)
+  const second = restarted.begin(targets, [unitA, unitB])
   assert.notEqual(second.id, first.id)
+  restarted.failure(second.id, { unit_id: unitB.unit_id, protocol: 'torrent', source_hash: b, label: 'Second', code: 'client', error: 'boom', selections: targets })
+  const secondState = restarted.get(second.id)!
+  assert.deepEqual(secondState.pending.map(unit => unit.unit_id), [unitA.unit_id])
+  assert.deepEqual(secondState.existing, [])
+  assert.equal(secondState.failures[0].code, 'client')
+  assert.match(secondState.failures[0].error, /boom/)
+  restarted.finish(second.id)
+  assert.equal(restarted.get(second.id)?.finished, true)
+  assert.equal(restarted.active(), false)
   assert.deepEqual(restarted.get(first.id)?.targets, [{ key: 'old-result', release: 0 }])
   const snapshot = restarted.get(first.id)!
   snapshot.added.length = 0
-  assert.deepEqual(restarted.get(first.id)?.added, [a])
+  assert.deepEqual(restarted.get(first.id)?.added.map(unit => unit.unit_id), [unitA.unit_id])
 })
 
 test('metadata loading does not block status reads or controls for another torrent', async () => {

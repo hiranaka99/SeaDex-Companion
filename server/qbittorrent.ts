@@ -1,6 +1,5 @@
 import { normalizeTorrentPath } from '../shared/download-plan.js'
-import { api, fetchWithTimeout, sleep } from './http.js'
-import { arrApiUrl, sonarrApiUrl } from './config.js'
+import { fetchWithTimeout, sleep } from './http.js'
 import { log, errorMessage } from './logging.js'
 import type { Config, JsonObject } from './types.js'
 
@@ -71,42 +70,10 @@ async function qbLogin(base: string, user: string, password: string): Promise<Qb
   throw new Error(`qBittorrent login failed (HTTP ${response.status})`)
 }
 
-export async function testIntegration(config: Config, service: string): Promise<string> {
-  if (service === 'sonarr' || service === 'radarr') {
-    const url = config[`${service}_url`]
-    let base = arrApiUrl(url)
-    const key = String(config[`${service}_key`] || '')
-    if (!base || !key) throw new Error(`${service === 'sonarr' ? 'Sonarr' : 'Radarr'} URL and API key are required`)
-    if (service === 'sonarr') base = await sonarrApiUrl(url, key)
-    const status = await api(`${base}/system/status`, key, {}, service === 'sonarr')
-    const name = String(status.appName || status.instanceName || (service === 'sonarr' ? 'Sonarr' : 'Radarr'))
-    const version = status.version ? ` ${status.version}` : ''
-    return `Connected to ${name}${version}`
-  }
-  if (service === 'qbittorrent') {
-    const base = String(config.qbittorrent_url || '').replace(/\/+$/, '')
-    if (!base || !config.qbittorrent_user || !config.qbittorrent_pass) throw new Error('qBittorrent URL, username and password are required')
-    await qbLogin(base, config.qbittorrent_user, config.qbittorrent_pass)
-    return 'Connected to qBittorrent'
-  }
-  if (service === 'discord') {
-    if (!config.webhook) throw new Error('Discord webhook URL is required')
-    const response = await fetchWithTimeout(config.webhook, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        embeds: [{
-          title: 'Connection test successful',
-          description: 'Your SeaDex Companion Discord webhook is configured correctly.',
-          color: 0x57f287,
-          footer: { text: 'SeaDex Companion' },
-          timestamp: new Date().toISOString(),
-        }],
-      }),
-    }, 30_000)
-    if (!response.ok) throw new Error(`Discord rejected the test message (HTTP ${response.status})`)
-    return 'Test message sent to Discord'
-  }
-  throw new Error('Unknown integration')
+export async function qbTestConnection(config: Config): Promise<void> {
+  const base = String(config.qbittorrent_url || '').replace(/\/+$/, '')
+  if (!base || !config.qbittorrent_user || !config.qbittorrent_pass) throw new Error('qBittorrent URL, username and password are required')
+  await qbLogin(base, config.qbittorrent_user, config.qbittorrent_pass)
 }
 
 function isTimeoutLikeError(error: unknown): boolean {

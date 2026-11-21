@@ -19,7 +19,7 @@ export function normalizeResults(value: unknown): ResultItem[] {
       const release: Release = {
         kind: source.kind === 'alt' ? 'alt' : 'best', releaseGroup: text(source.releaseGroup) || '', tracker: text(source.tracker) || '',
         quality: text(source.quality) || '', tags: strings(source.tags), dual_audio: source.dual_audio === true,
-        size: number(source.size), info_hashes: hashes, downloadable: torrentHashes({ info_hashes: hashes }).length > 0,
+        size: number(source.size), info_hashes: hashes, torrent_available: torrentHashes({ info_hashes: hashes }).length > 0,
         ...(text(source.part) ? { part: String(source.part) } : {}), ...(text(source.url) ? { url: String(source.url) } : {}),
         ...(strings(source.selected_files).length ? { selected_files: strings(source.selected_files) } : {}),
         ...(Array.isArray(source.torrent_files) ? { torrent_files: source.torrent_files.map(raw => {
@@ -30,10 +30,10 @@ export function normalizeResults(value: unknown): ResultItem[] {
         }) } : {}),
       }
       release.info_hashes = planTorrents([{ release, category: '' }]).map(torrent => torrent.hash)
-      release.downloadable = release.info_hashes.length > 0
+      release.torrent_available = release.info_hashes.length > 0
       const id = `${release.part || ''}\0${release.releaseGroup.trim().toLowerCase()}`
       const previous = releases.get(id)
-      if (!previous || (!previous.downloadable && release.downloadable)) releases.set(id, release)
+      if (!previous || (!previous.torrent_available && release.torrent_available)) releases.set(id, release)
     }
     const status = item.status === 'best' || item.status === 'partial' || item.status === 'upgrade' || item.status === 'uncovered' ? item.status : 'missing'
     return {

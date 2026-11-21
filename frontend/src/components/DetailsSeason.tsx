@@ -3,11 +3,13 @@ import { releaseOwned } from '../../../shared/download-plan'
 import type { Config, ResultItem } from '../types'
 import { currentReleases, releaseCours, releaseQuality } from '../release-status'
 import { buttonBase, cx } from '../styles'
-import { IDLE_DOWNLOAD } from '../useCardDownloads'
+import { IDLE_DOWNLOAD, type SeasonAvailability } from '../useCardDownloads'
 import Icon from './Icons'
 import type { DownloadEntry } from './DownloadsPanel'
-import ReleaseDetails, { type DetailsDownloadState } from './ReleaseDetails'
+import ReleaseDetails from './ReleaseDetails'
+import type { DetailsDownloadState } from '../useCardDownloads'
 import DetailsQuality from './DetailsQuality'
+import type { DownloadProtocol } from '../api'
 
 export function detailsSeasonName(season: ResultItem): string {
   return season.arr === 'Radarr' || season.season === 0 ? 'Movie' : typeof season.season === 'number' ? `Season ${season.season}` : 'Release'
@@ -28,6 +30,12 @@ interface Props {
   config: Config | null
   dl: Record<number, DetailsDownloadState>
   busyDownload: string | null
+  usenetEnabled: boolean
+  availability: SeasonAvailability | undefined
+  protocolFor: (index: number) => DownloadProtocol
+  onProtocol: (index: number, protocol: DownloadProtocol) => void
+  onRefreshAvailability: () => void
+  onOpened: () => void
   onDownload: (release: number) => void
   onPause: (entry: DownloadEntry) => void
   onResume: (entry: DownloadEntry) => void
@@ -37,7 +45,7 @@ interface Props {
   onCorrectMatch: () => void
 }
 
-export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, onDownload, onPause, onResume, onRemove, ruleBusy, onToggleExclusion, onCorrectMatch }: Props) {
+export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, usenetEnabled, availability, protocolFor, onProtocol, onRefreshAvailability, onOpened, onDownload, onPause, onResume, onRemove, ruleBusy, onToggleExclusion, onCorrectMatch }: Props) {
   const root = useRef<HTMLElement>(null)
   const groups = releaseCours(r)
   const split = groups.some(group => group.part)
@@ -45,7 +53,7 @@ export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, 
   const quality = releaseQuality(r)
   const ignored = Boolean(r.excluded)
   const sources = (r.urls?.length ? r.urls : r.url ? [{ label: 'seadex.moe', url: r.url }] : []).filter(source => source.label === 'seadex.moe')
-  const activeReleases = Object.entries(dl).filter(([, state]) => state.phase !== 'idle' && state.phase !== 'complete').map(([index]) => index).join(',')
+  const activeReleases = Object.entries(dl).filter(([, state]) => state.transfers.some(transfer => transfer.phase !== 'complete')).map(([index]) => index).join(',')
 
   useEffect(() => {
     if (!activeReleases || !root.current) return
@@ -66,11 +74,14 @@ export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, 
   }
 
   const renderReleases = (items: typeof groups[number]['items']) => <div className="flex min-w-0 flex-col gap-3">{items.map(({ rel, index }) => <div key={index} data-release-index={index}>
-    <ReleaseDetails result={r} release={rel} index={index} config={config} state={dl[index] || IDLE_DOWNLOAD} busy={busyDownload !== null} onDownload={() => onDownload(index)} onPause={onPause} onResume={onResume} onRemove={onRemove}/>
+    <ReleaseDetails result={r} release={rel} config={config} state={dl[index] || IDLE_DOWNLOAD} busy={busyDownload !== null}
+      protocol={protocolFor(index)} availability={availability?.byRelease[index]} availabilityLoading={Boolean(availability?.loading)} sabnzbdConfigured={Boolean(availability?.sabnzbdConfigured)}
+      onProtocol={protocol => onProtocol(index, protocol)} onRefreshAvailability={onRefreshAvailability}
+      onDownload={() => onDownload(index)} onPause={onPause} onResume={onResume} onRemove={onRemove}/>
   </div>)}</div>
 
   return <section ref={root} id={sectionId} tabIndex={-1} className="details-season min-w-0" aria-label={seasonName} data-needs-review={quality.kind === 'review' || undefined}>
-    <details className="details-season-disclosure">
+    <details className="details-season-disclosure" onToggle={event => { if (usenetEnabled && (event.target as HTMLDetailsElement).open) onOpened() }}>
       <summary className="details-summary cursor-pointer">
         <span className="min-w-0">
           <span className="details-season-name">{seasonName}</span>

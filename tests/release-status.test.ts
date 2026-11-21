@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import type { ResultItem } from '../shared/contracts.js'
 import { currentReleases, releaseCours, releaseOverview, releaseQuality } from '../frontend/src/release-status.js'
 
-const best = { kind: 'best' as const, releaseGroup: 'sam', tracker: 'Nyaa', quality: '1080p', tags: [], size: 200, info_hashes: ['a'.repeat(40)], downloadable: true }
+const best = { kind: 'best' as const, releaseGroup: 'sam', tracker: 'Nyaa', quality: '1080p', tags: [], size: 200, info_hashes: ['a'.repeat(40)], torrent_available: true }
 const season: ResultItem = { key: 'Sonarr:1:1', group_id: 1, arr: 'Sonarr', title: 'Example', season: 1, status: 'best', match_status: 'matched', have: ['sam'], local_size: 200, best_group: 'sam', best_size: 200, releases: [best], url: null, notes: null, image: null, banner: null, anilist_id: 1, arr_url: null }
 const split: ResultItem = { ...season, precise_part_ownership: true, have_by_part: { 'Cour 1': ['sam'], 'Cour 2': ['Other'] }, owned_by_part: { 'Cour 1': ['sam'], 'Cour 2': ['Other'] }, status: 'upgrade', releases: [{ ...best, part: 'Cour 1' }, { ...best, part: 'Cour 2' }] }
 
