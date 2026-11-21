@@ -118,7 +118,7 @@ To download over Usenet:
 
 - Connect SABnzbd with its server URL and API key, set the Sonarr and Radarr categories, and confirm **Test connection**.
 - AnimeTosho is enabled by default and needs no account. Optionally enable AmeNZB and add the API key from your amenzb.moe profile.
-- Release details report whether an enabled Usenet source carries the release, with its size, and offer a re-check. In **Let me choose per release** mode, pick **Torrent** or **Usenet** per release; releases without a public magnet can become Usenet-only, and releases no source carries stay torrent-only.
+- Release details report whether an enabled Usenet source carries the release, with its size, and offer a re-check. Availability is refreshed in the background after each scan, at a request rate the indexers tolerate; opening a card or reviewing a plan uses the latest result immediately. In **Let me choose per release** mode, pick **Torrent** or **Usenet** per release; releases without a public magnet can become Usenet-only, and releases no source carries stay torrent-only.
 
 Usenet sources cannot be split per episode: the whole upload is downloaded, including files beyond the selected episodes. The review lists the known extra files and requires your acknowledgement before sending. If the connection to SABnzbd drops before it confirms a download, SeaDex Companion never re-submits it automatically; the entry remains listed with **Awaiting confirmation**, so check SABnzbd before retrying.
 
@@ -127,6 +127,8 @@ Usenet sources cannot be split per episode: the whole upload is downloaded, incl
 Set an interval, daily times, or weekdays under **Configuration → Automation & webhooks**. Choose the timezone and what should happen if a scan was missed while SeaDex Companion was offline.
 
 **Unhide anime with new best releases** is off by default. Enable it to bring hidden titles back when a scan finds a new best release. Alternative releases do not trigger this setting. Add a Discord webhook under **Configuration** if you want upgrade notifications.
+
+Under **Configuration → Automation & webhooks** you can also set the **Date & time format** used for scan times, history, and detected changes. Build a pattern from the tokens `YYYY YY MM M DD D HH H mm m ss s` — for example `DD.MM.YYYY HH:mm:ss` shows `21.11.2026 18:40:29`. A live preview updates as you type, and the default is `YYYY-MM-DD HH:mm:ss`.
 
 To scan newly added titles sooner, add these webhook connections in Sonarr and Radarr using HTTP Basic Authentication with your SeaDex Companion username and password:
 

@@ -5,6 +5,7 @@ import { CONFIG_FILE, ENCRYPTED_SECRETS_FILE, SECRETS_KEY_FILE } from './paths.j
 import { readJson, writeJsonAtomic } from './persistence.js'
 import { log } from './logging.js'
 import { api } from './http.js'
+import { DEFAULT_DATETIME_FORMAT, isValidDateTimeFormat } from '../shared/datetime-format.js'
 import type { Config, JsonObject, PublicConfig } from './types.js'
 
 export const DEFAULT_CONFIG: Config = {
@@ -30,6 +31,7 @@ export const DEFAULT_CONFIG: Config = {
   webhook: '',
   notify_enabled: true,
   unhide_on_new_best: false,
+  datetime_format: DEFAULT_DATETIME_FORMAT,
   scan_schedule: {
     enabled: true,
     mode: 'interval',
@@ -262,6 +264,12 @@ export function applyConfigUpdate(config: Config, input: unknown): Config {
       if (typeof data[key] !== 'boolean') throw new Error(`${key} must be a boolean`)
       next[key] = data[key]
     }
+  }
+  if ('datetime_format' in data) {
+    const raw = String(data.datetime_format ?? '').trim()
+    if (!raw) next.datetime_format = DEFAULT_DATETIME_FORMAT
+    else if (isValidDateTimeFormat(raw)) next.datetime_format = raw
+    else throw new Error('datetime_format must contain date/time tokens (YYYY MM DD HH mm ss) with only punctuation around them')
   }
   if ('hidden' in data) next.hidden = Array.isArray(data.hidden) ? data.hidden.filter((key): key is string => typeof key === 'string' && Boolean(key)) : []
   if ('scan_schedule' in data) next.scan_schedule = normalizeScanSchedule(data.scan_schedule)

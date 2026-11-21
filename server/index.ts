@@ -26,6 +26,7 @@ import { testIntegration } from './integration-tests.js'
 import { qbEndpointId } from './client-identity.js'
 import { bumpGeneration } from './config-generation.js'
 import { invalidateUsenetLookups } from './usenet.js'
+import { enableUsenetPrefetch, prefetchSavedResults, prefetchUsenetAvailability, stopUsenetPrefetch, usenetPrefetchProgress } from './usenet-prefetch.js'
 import { invalidatePlans } from './download-plans.js'
 import { clearScannedData, loadLastResults, scannedDataInfo } from './results.js'
 import { runScan } from './scan.js'
@@ -212,6 +213,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
   if (method === 'DELETE' && path === '/api/scanned-data') {
     if (getState().running) return sendJson(response, 409, { ok: false, error: 'Wait for the current scan to finish before clearing scanned data' })
     const cleared = clearScannedData()
+    stopUsenetPrefetch()
     log('INFO', `Scanned data cleared (saved results: ${cleared.results}; AniList cache entries: ${cleared.cacheEntries})`)
     return sendJson(response, 200, { ok: true, cleared })
   }
@@ -227,6 +229,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
     bumpGeneration()
     invalidateUsenetLookups()
     invalidatePlans()
+    prefetchSavedResults(config)
     refreshAutocheckSchedule(config)
     const updatedSecrets = SECRET_CONFIG_KEYS.filter((key) => key in data && Boolean(String(data[key] || '').trim()))
     const integrationState = [
@@ -266,6 +269,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
       running: state.running, progress: state.progress, total: state.total, message: state.message,
       error: state.error, cancelled: state.cancelled, trigger: state.trigger, source_errors: state.source_errors,
       last_run: state.last_run || (!state.running ? loadLastResults()?.last_run ?? null : null), next_check: autocheckState.next,
+      usenet_prefetch: usenetPrefetchProgress(),
       results_revision: resultsRevision(),
       webhook_scan: { queued: webhookScanState.dueAt !== null, due_at: webhookScanState.dueAt, sources: [...webhookScanState.sources] },
     })
@@ -393,6 +397,10 @@ if (isMain) {
       const savedResults = loadLastResults()?.results?.length || 0
       const hiddenCount = Array.isArray(config.hidden) ? config.hidden.length : 0
       log('INFO', `Runtime state restored (saved results: ${savedResults}; owned acquisitions: ${downloadRecords().length}; hidden titles: ${hiddenCount}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'})`)
+      enableUsenetPrefetch()
+      const saved = loadLastResults()?.results
+      // Delay the startup sweep so the first interactive lookups after boot own the providers.
+      if (saved) setTimeout(() => prefetchUsenetAvailability(config, saved, 'startup'), 30_000).unref?.()
     } catch (error) {
       log('ERROR', `Runtime configuration could not be restored: ${error instanceof Error ? error.message : String(error)}`)
     }

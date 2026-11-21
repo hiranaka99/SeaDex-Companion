@@ -13,6 +13,7 @@ import { anilistChain, anilistSeason } from './anilist.js'
 
 import { autoNotifyNew } from './notifications.js'
 import { unhideNewBestReleases } from './hidden.js'
+import { prefetchAfterScan } from './usenet-prefetch.js'
 import type { Config, JsonObject, ScanScope, ScanTrigger, LocalItem, LocalSeason, ResultItem } from './types.js'
 
 export interface ScanDependencies {
@@ -25,13 +26,14 @@ export interface ScanDependencies {
   autoNotifyNew?: typeof autoNotifyNew
   unhideNewBestReleases?: typeof unhideNewBestReleases
   loadUserRules?: typeof loadUserRules
+  onScanFinished?: (config: Config, results: ResultItem[]) => void
   recordScanHistory?: (previous: JsonObject[], current: JsonObject[], runAt: string, file?: string, trigger?: ScanTrigger, metadata?: { durationSeconds?: number; scannedTitles?: number; sourceErrors?: Record<string, string>; outcome?: ScanHistoryEntry['outcome']; error?: string }) => ScanHistoryEntry
 }
 
 /** Resolve dependencies once; overrides never disable another subsystem. */
 export function createScanService(overrides: ScanDependencies = {}) {
   const dependencies = {
-    seadexBest, anilistChain, anilistSeason, loadCache, saveLastResults, autoNotifyNew, unhideNewBestReleases, loadUserRules, recordScanHistory,
+    seadexBest, anilistChain, anilistSeason, loadCache, saveLastResults, autoNotifyNew, unhideNewBestReleases, loadUserRules, recordScanHistory, onScanFinished: prefetchAfterScan,
     ...overrides,
     loadLibrary: overrides.localItems ? async (config: Config, scope: ScanScope = {}) => ({ items: await overrides.localItems!(config, scope), sourceErrors: {} }) : loadLocalLibrary,
   }
@@ -150,7 +152,9 @@ async function performScan(config: Config, dependencies: Required<Omit<ScanDepen
     const finalResults = normalizeResults(applyUserRulesToResults([...retainedResults, ...results], rules))
     setState({ progress: items.length, message: Object.keys(sourceErrors).length ? 'Done with integration errors' : 'Done', results: finalResults, last_run: lastRun, source_errors: sourceErrors })
     stage = 'saving scan results'
-    ;dependencies.saveLastResults(finalResults, lastRun)
+    dependencies.saveLastResults(finalResults, lastRun)
+    try { dependencies.onScanFinished(config, finalResults) }
+    catch (error) { log('WARNING', `Usenet prefetch after scan could not start: ${errorMessage(error)}`) }
     try { dependencies.unhideNewBestReleases(previousResults, finalResults) }
     catch (error) { log('WARNING', `Could not restore hidden anime with new best releases: ${errorMessage(error)}`) }
     try {

@@ -120,8 +120,25 @@
 }
 .sidebar-nav { clip-path: inset(-4px); }
 
+/* Drag handle: a quiet hit strip on the sidebar seam, lit only while aimed at. */
+.sidebar-resize { cursor: col-resize; }
+.sidebar-resize::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin-inline: auto;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background-color 120ms ease-out;
+}
+.sidebar-resize:hover::after,
+.sidebar-resize:focus-visible::after { background: color-mix(in srgb, var(--color-accent) 55%, transparent); }
+html.sidebar-resizing { cursor: col-resize; user-select: none; }
+html.sidebar-resizing .app-shell { transition: none; }
+
 @media (prefers-reduced-motion: reduce) {
-  .app-shell, .sidebar-selection, .sidebar-nav-label { transition: none; }
+  .app-shell, .sidebar-selection, .sidebar-nav-label, .sidebar-resize::after { transition: none; }
   .sidebar[data-collapsed="true"] .sidebar-nav-label { transform: none; }
 }
 

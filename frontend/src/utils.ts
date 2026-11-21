@@ -12,6 +12,14 @@ export const STATUS_LABEL: Record<CardStatus, string> = {
 
 export { isSeasonUpgradable } from '../../shared/download-plan.js'
 
+/** Display names for Usenet indexers, in lookup order. */
+export const PROVIDER_LABEL: Record<string, string> = { animetosho: 'AnimeTosho', amenzb: 'AmeNZB' }
+
+/** Deduplicated display names for a list of provider ids; empty when unknown. */
+export function providerNames(providers: (string | undefined)[]): string[] {
+  return [...new Set(providers)].filter((provider): provider is string => Boolean(provider)).map(provider => PROVIDER_LABEL[provider] || provider)
+}
+
 export function hasCardUpgrade(group: GroupedCard): boolean {
   return group.seasons.some(isSeasonUpgradable)
 }

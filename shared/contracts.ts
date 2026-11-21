@@ -141,6 +141,7 @@ export interface Config {
   webhook: string
   notify_enabled: boolean
   unhide_on_new_best: boolean
+  datetime_format: string
   scan_schedule: ScanSchedule
   hidden: string[]
 }
@@ -170,4 +171,6 @@ export interface Status {
   last_run: string | null
   next_check: number | null
   webhook_scan: { queued: boolean; due_at: number | null; sources: Array<'sonarr' | 'radarr'> }
+  /** Background Usenet availability sweep; absent or not running when idle. */
+  usenet_prefetch?: { running: boolean; checked: number; total: number }
 }

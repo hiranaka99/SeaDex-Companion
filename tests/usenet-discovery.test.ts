@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { bumpGeneration } from '../server/config-generation.js'
-import { aggregateHashStates, invalidateUsenetLookups, resolveUsenetHash, resolveUsenetRelease, usenetAvailability } from '../server/usenet.js'
+import { aggregateHashStates, invalidateUsenetLookups, raceWithWallClockGuard, resolveUsenetHash, resolveUsenetRelease, setUsenetProviderMinIntervalMs, usenetAvailability } from '../server/usenet.js'
 import type { Release, ResultItem } from '../server/types.js'
 
 const HASH = 'a'.repeat(40)
@@ -25,7 +25,7 @@ function release(overrides: Partial<Release> = {}): Release {
   return { kind: 'best', releaseGroup: 'Group', tracker: 'Nyaa', torrent_available: true, info_hashes: [HASH], size: 100, ...overrides } as Release
 }
 
-interface Fixture { animetosho?: () => Response; amenzb?: () => Response }
+interface Fixture { animetosho?: () => Response | Promise<Response>; amenzb?: () => Response | Promise<Response> }
 
 function router(fixture: Fixture): { calls: string[]; fetchImpl: typeof fetch } {
   const calls: string[] = []
@@ -53,6 +53,8 @@ const animetoshoMatch = () => Response.json({
 function isolation() {
   const original = globalThis.fetch
   invalidateUsenetLookups()
+  setUsenetProviderMinIntervalMs('animetosho', 0)
+  setUsenetProviderMinIntervalMs('amenzb', 0)
   const generation = bumpGeneration()
   return { original, generation }
 }
@@ -180,4 +182,24 @@ test('unsupported releases report unsupported_hash without provider traffic', as
     assert.equal(state.state, 'unsupported_hash')
     assert.equal(routed.calls.length, 0)
   } finally { restore(original) }
+})
+
+test('a refresh bypasses a wedged in-flight lookup instead of inheriting its hang', async () => {
+  const { original } = isolation()
+  let hang = true
+  router({ animetosho: () => hang ? new Promise<Response>(() => {}) : animetoshoMatch() })
+  try {
+    const wedged = resolveUsenetHash(config(), HASH)
+    hang = false
+    const state = await resolveUsenetHash(config(), HASH, true)
+    assert.equal(state.state, 'available')
+    assert.equal(state.provider, 'animetosho')
+    void wedged
+  } finally { restore(original) }
+})
+
+test('the wall-clock guard rejects a provider call that never settles', async () => {
+  const started = Date.now()
+  await assert.rejects(raceWithWallClockGuard(new Promise<never>(() => {}), 20), /wall-clock guard/)
+  assert.ok(Date.now() - started < 5_000, 'the guard must not keep the process waiting')
 })

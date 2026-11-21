@@ -1,8 +1,9 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import * as api from '../api'
-import { TabId } from '../types'
+import { Status, TabId } from '../types'
 import { cx } from '../styles'
 import Icon, { IconName } from './Icons'
+import SidebarStatus from './SidebarStatus'
 import pkg from '../../package.json'
 
 const APP_VERSION = `v${pkg.version.replace(/\.0$/, '')}`
@@ -21,6 +22,13 @@ interface Props {
   onLogout: () => void
   collapsed: boolean
   onToggleCollapsed: () => void
+  status: Status
+  scanCompleted: string | null
+  scanCancelledDismissed: boolean
+  onCancelScan: () => void
+  onRetryScan: () => void
+  onOpenConfig: () => void
+  onDismissScan: () => void
 }
 
 function Brand({ compact = false }: { compact?: boolean }) {
@@ -43,7 +51,7 @@ function positionSelection(nav: HTMLElement | null, marker: HTMLElement | null) 
   if (marker.style.transform !== transform) marker.style.transform = transform
 }
 
-function TopBar({ tab, onTabChange, username, onLogout, collapsed, onToggleCollapsed }: Props) {
+function TopBar({ tab, onTabChange, username, onLogout, collapsed, onToggleCollapsed, status, scanCompleted, scanCancelledDismissed, onCancelScan, onRetryScan, onOpenConfig, onDismissScan }: Props) {
   const [update, setUpdate] = useState<{ latest: string; url: string } | null>(null)
   const mobileHeaderRef = useRef<HTMLElement>(null)
   const mobileNavRef = useRef<HTMLElement>(null)
@@ -133,6 +141,17 @@ function TopBar({ tab, onTabChange, username, onLogout, collapsed, onToggleColla
         </nav>
 
         <div className={cx('mt-auto', collapsed && 'flex w-full flex-col items-center')}>
+          <SidebarStatus
+            status={status}
+            scanCompleted={scanCompleted}
+            scanCancelledDismissed={scanCancelledDismissed}
+            collapsed={collapsed}
+            onCancelScan={onCancelScan}
+            onRetryScan={onRetryScan}
+            onOpenConfig={onOpenConfig}
+            onDismissScan={onDismissScan}
+            onExpand={onToggleCollapsed}
+          />
           {collapsed ? (
             <div className="flex w-full flex-col items-center gap-3 animate-fade">
               <div className={cx('flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.14em]', update ? 'text-accent-bright' : 'text-muted-dim')} title={update ? `SeaDex Companion ${APP_VERSION} installed — v${update.latest} available` : `SeaDex Companion ${APP_VERSION}`}>{APP_VERSION}{update && <span className="size-1.5 rounded-full bg-accent-bright" aria-label="Update available"/>}</div>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ResultItem, Config, Status, GroupedCard } from '../types'
 import { groupResults, seasonLabel, cardSizeDelta, hasCardUpgrade } from '../utils'
+import { displayDateTime } from '../datetime'
 import Card from './Card'
 import BulkDownloadDialog from './BulkDownloadDialog'
 import BulkCancelDialog from './BulkCancelDialog'
@@ -276,6 +277,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
           total: settled + current.pending.length,
           added: current.added.length,
           failed: current.failures.length,
+          jobId: job_id,
           message: `${current.added.length} sent · ${current.existing.length} already queued · ${current.pending.length} pending`,
         })
       })
@@ -294,6 +296,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
         added: job.added.length,
         failed: failures.length,
         failures,
+        jobId: job.id || job_id,
         message: `${job.added.length} sent · ${job.existing.length} already queued${failures.length ? ` · ${failures.length} failed` : ''}`,
       })
       api.invalidateDownloadProgress()
@@ -332,7 +335,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   return (
     <section>
       <header className="app-page-header mb-5 flex flex-wrap items-start justify-between gap-4 max-[600px]:mb-4 max-[600px]:gap-3">
-        <div><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted max-[600px]:hidden"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}</span>{autoCheckLabel !== null && <span title={scheduleDescription || undefined}>{scheduleDescription} · next in ~{autoCheckLabel}</span>}{status.webhook_scan.queued && <span className="text-accent-bright">Webhook scan queued</span>}</div></div>
+        <div><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted max-[600px]:hidden"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${displayDateTime(lastRun)}` : 'No completed scan'}</span>{autoCheckLabel !== null && <span title={scheduleDescription || undefined}>{scheduleDescription} · next in ~{autoCheckLabel}</span>}{status.webhook_scan.queued && <span className="text-accent-bright">Webhook scan queued</span>}</div></div>
         <div className="library-actions flex flex-wrap items-center gap-2 max-[600px]:w-full">
           <button type="button" className={cx(buttonBase, 'library-scan-button justify-center wrap-anywhere max-[600px]:text-xs')} onClick={onScan} disabled={!libraryConfigured || status.running || bulkBusy !== null || bulkOperationActive}>{status.running ? <span className="size-4 animate-spin rounded-full border-2 border-current/30 border-t-current"/> : <Icon name="play" size={17}/>}<span>{status.running ? 'Scanning…' : 'Scan library'}</span></button>
           <button type="button" className={cx(buttonBase, 'library-bulk-button justify-center wrap-anywhere border-line bg-panel text-ink hover:bg-panel-raised max-[600px]:text-xs')} onClick={() => openBulkReview('start')} disabled={status.running || bulkBusy !== null || bulkOperationActive || upgradeSeasonCount === 0}><Icon name="download" size={17}/><span>Bulk download</span></button>
@@ -366,7 +369,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
           {unseenGroups.length > 0 && <button type="button" className="touch-target ml-auto cursor-pointer rounded-lg px-3 py-2 text-xs font-semibold text-accent-bright hover:bg-accent/10 disabled:cursor-wait disabled:opacity-60" title="Mark all changes matching the current library filters reviewed, across all pages" disabled={reviewingChanges || loading} onClick={() => void handleReviewChanges(unseenGroups.flatMap(group => groupReleaseChanges(group).map(({ change }) => change.id)))}>{reviewingChanges ? 'Marking reviewed…' : 'Mark all reviewed'}</button>}
         </div>
         {statusFilter === 'upgrade' && <p className="mt-2 mb-0 text-xs text-muted">Includes partially covered titles with available upgrades.</p>}
-        <div className="mt-2 hidden flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted max-[600px]:flex"><span>{groups.length} shown</span><span className="library-scan-freshness">{lastRun ? `Last scan ${lastRun}` : 'No completed scan'}</span>{totalDelta !== 0 && <LibrarySizeChange delta={totalDelta}/>}</div>
+        <div className="mt-2 hidden flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted max-[600px]:flex"><span>{groups.length} shown</span><span className="library-scan-freshness">{lastRun ? `Last scan ${displayDateTime(lastRun)}` : 'No completed scan'}</span>{totalDelta !== 0 && <LibrarySizeChange delta={totalDelta}/>}</div>
         <p className="sr-only" role="status" aria-atomic="true">{groups.length} matching titles{activeFilters.length ? ` · ${activeFilters.join(' · ')}` : ''}</p>
         {activeFilters.length > 0 && <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line pt-2 text-xs text-muted" aria-label="Active library filters"><span className="min-w-0 flex-1 wrap-anywhere">{activeFilters.join(' · ')}</span><button type="button" className="touch-target cursor-pointer rounded-md px-2 py-1 font-semibold text-accent-bright hover:underline" onClick={clearFilters}>Clear filters</button></div>}
       </div>
