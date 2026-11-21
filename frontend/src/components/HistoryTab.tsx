@@ -3,6 +3,7 @@ import * as api from '../api'
 import { ResultItem, ScanHistoryChange, ScanHistoryEntry } from '../types'
 import Icon from './Icons'
 import { buttonBase, control, cx } from '../styles'
+import { displayDateTime } from '../datetime'
 import { historyDetails, historyStatus, historyStatusLabel as statusLabel } from '../history'
 import ReleaseChangeLine from './ReleaseChangeLine'
 
@@ -52,7 +53,7 @@ export default function HistoryTab({ active, results, onOpenResult }: Props) {
     <div className="space-y-4">{filtered.map(scan => <article key={scan.id} className="overflow-hidden rounded-2xl border border-line bg-panel">
       <header className="flex flex-wrap items-center gap-3 border-b border-line px-5 py-4">
         <Icon name={scan.outcome && scan.outcome !== 'success' ? 'alert' : 'clock'} className="text-accent-bright"/>
-        <div className="min-w-0 flex-1"><h2 className="m-0 text-sm font-extrabold">{scan.run_at}</h2><p className="mt-1 mb-0 text-xs text-muted">{scan.id === scans[0]?.id ? 'Latest scan · ' : ''}{scan.changes.length} recorded changes · {scan.trigger === 'scheduled' ? 'Scheduled' : scan.trigger && scan.trigger !== 'manual' ? scan.trigger + ' webhook' : 'Manual'}{scan.duration_seconds !== undefined ? ' · ' + scan.duration_seconds.toFixed(1) + 's' : ''}{scan.outcome && scan.outcome !== 'success' ? ' · ' + scan.outcome : ''}</p>{scan.error && <p className="mt-1 text-xs text-bad">{scan.error}</p>}{Object.entries(scan.source_errors || {}).map(([source, message]) => <p key={source} className="mt-1 text-xs text-warn">{source}: {message}</p>)}</div>
+        <div className="min-w-0 flex-1"><h2 className="m-0 text-sm font-extrabold">{displayDateTime(scan.run_at)}</h2><p className="mt-1 mb-0 text-xs text-muted">{scan.id === scans[0]?.id ? 'Latest scan · ' : ''}{scan.changes.length} recorded changes · {scan.trigger === 'scheduled' ? 'Scheduled' : scan.trigger && scan.trigger !== 'manual' ? scan.trigger + ' webhook' : 'Manual'}{scan.duration_seconds !== undefined ? ' · ' + scan.duration_seconds.toFixed(1) + 's' : ''}{scan.outcome && scan.outcome !== 'success' ? ' · ' + scan.outcome : ''}</p>{scan.error && <p className="mt-1 text-xs text-bad">{scan.error}</p>}{Object.entries(scan.source_errors || {}).map(([source, message]) => <p key={source} className="mt-1 text-xs text-warn">{source}: {message}</p>)}</div>
         <div className="flex flex-wrap gap-1.5">{Object.entries(scan.counts || {}).filter(([, count]) => count > 0).map(([status, count]) => <span key={status} className="rounded-full border border-line px-2.5 py-1 text-xs text-muted">{count} {statusLabel[status] || status}</span>)}</div>
       </header>
       {scan.outcome === 'failed' || scan.outcome === 'cancelled' ? null : <div>{!scan.changes.length ? <p className="m-0 px-5 py-3 text-sm text-muted">No changes from the previous scan.</p> : <ul className="m-0 grid list-none p-0 lg:grid-cols-2">{scan.changes.map((change, index) => {

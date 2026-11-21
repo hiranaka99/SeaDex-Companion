@@ -1,4 +1,4 @@
-import { formatBytes } from '../utils'
+import { formatBytes, providerNames } from '../utils'
 import { cx } from '../styles'
 import Icon from './Icons'
 import type { DiskSpaceCheck, DownloadPreflight, PlannedUnit } from '../api'
@@ -19,7 +19,7 @@ export function UnitLine({ unit }: { unit: PlannedUnit }) {
       <span className={cx('shrink-0 rounded-md border px-1.5 py-0.5 text-[0.6875rem] font-bold', unit.protocol === 'usenet' ? 'border-sky/40 bg-sky/10 text-sky' : 'border-accent/40 bg-accent/10 text-accent-bright')}>{unit.protocol === 'usenet' ? 'Usenet' : 'Torrent'}</span>
       <span className="min-w-0 basis-40 flex-1 truncate text-xs font-semibold text-ink" title={name}>{name}</span>
       <span className="shrink-0 text-xs tabular-nums text-muted">{unitSize(unit)}</span>
-      <span className="shrink-0 text-xs text-muted-dim">{clientName(unit.client)} · {unit.category}</span>
+      <span className="shrink-0 text-xs text-muted-dim">{clientName(unit.client)} · {unit.category}{unit.protocol === 'usenet' && providerNames([unit.provider]).length ? ` · via ${providerNames([unit.provider])[0]}` : ''}</span>
       {unit.status === 'existing' && <span className="shrink-0 rounded-md border border-good/35 bg-good/10 px-1.5 py-0.5 text-[0.6875rem] font-bold text-good">already queued</span>}
       {(unit.whole_source || extras) && <span className="basis-full text-xs text-warn">{unit.whole_source ? 'Whole Usenet source — files beyond the requested episodes will be downloaded' : ''}{extras}</span>}
     </li>

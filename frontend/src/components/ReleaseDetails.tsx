@@ -1,7 +1,7 @@
 import { normalizeTorrentPath as normalizeFile } from '../../../shared/download-plan'
 import { useMemo } from 'react'
 import type { Config, Release, ResultItem } from '../types'
-import { formatBytes, formatEta, seasonLabel, sizeDelta } from '../utils'
+import { formatBytes, formatEta, providerNames, seasonLabel, sizeDelta } from '../utils'
 import { buttonBase, cx, downloadTextTone } from '../styles'
 import Icon from './Icons'
 import { DownloadActions, clientName, phaseLabel, type DownloadEntry } from './DownloadsPanel'
@@ -30,8 +30,6 @@ interface Props {
 
 const bytesOrUnknown = (bytes: number) => bytes > 0 ? formatBytes(bytes) : 'Size unavailable'
 
-const PROVIDER_LABEL: Record<string, string> = { animetosho: 'AnimeTosho', amenzb: 'AmeNZB' }
-
 interface UsenetInfo {
   usable: boolean
   label: string
@@ -44,15 +42,16 @@ function describeUsenet(row: UsenetAvailabilityResult | undefined, sabnzbdConfig
   const hash = row.hashes[0]
   if (!sabnzbdConfigured) return { usable: false, label: 'Usenet needs SABnzbd', detail: 'Set up SABnzbd in Settings to download over Usenet.' }
   if (row.aggregate === 'available') {
-    const size = hash?.total_bytes ? ` · ~${formatBytes(hash.total_bytes)}` : ''
+    const foundOn = providerNames(row.hashes.map(item => item.provider))
+    const size = hash?.total_bytes ? ` · ~${formatBytes(hash.total_bytes).replace(' ', '\u00a0')}` : ''
     const extras = hash?.files_known && hash.file_count ? ` · ${hash.file_count} file source` : ''
-    return { usable: true, label: `Usenet source found${size}${extras}`, detail: 'The Usenet source is the whole upload; files beyond the selected episodes will also download.' }
+    return { usable: true, label: `Usenet source found${foundOn.length ? ` on ${foundOn.join(' and ')}` : ''}${size}${extras}`, detail: 'The Usenet source is the whole upload; files beyond the selected episodes will also download.' }
   }
-  if (row.aggregate === 'processing') return { usable: false, label: 'Usenet source still processing', detail: 'An Usenet source is still indexing this release. Try again later.' }
+  if (row.aggregate === 'processing') return { usable: false, label: 'Not found on Usenet indexers yet', detail: 'The indexer is still converting this release on their side; it can take hours after release. Re-check refreshes the status.' }
   if (row.aggregate === 'incomplete') return { usable: false, label: 'Usenet source uncertain', detail: 'Providers returned partial results for this release.' }
-  if (row.aggregate === 'no_match') return { usable: false, label: 'Not on Usenet', detail: 'No enabled Usenet source has this release.' }
+  if (row.aggregate === 'no_match') return { usable: false, label: 'Not found on Usenet indexers', detail: 'None of the enabled Usenet indexers has this release.' }
   if (row.aggregate === 'lookup_failed') {
-    const providers = (hash?.providers_failed || []).map(provider => PROVIDER_LABEL[provider] || provider)
+    const providers = providerNames(hash?.providers_failed || [])
     return { usable: false, label: 'Usenet lookup failed', detail: `${providers.length ? `${providers.join(' and ')} ` : 'The Usenet source '}could not be reached. Retry in a moment.` }
   }
   if (row.aggregate === 'unsupported_hash') return { usable: false, label: 'Usenet unavailable', detail: 'This release has no hash the enabled Usenet sources can search.' }

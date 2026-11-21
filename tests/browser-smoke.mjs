@@ -471,9 +471,9 @@ try {
   assert.equal(await evaluate(`getComputedStyle(document.querySelector('.library-toolbar')).position`), 'relative', 'Cancellation notice shares the operations sticky layer')
   await capture('scan-cancelled-desktop')
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
-  assert.ok(await evaluate(`document.querySelector('[aria-label="Dismiss scan cancellation"]').getBoundingClientRect().height >= 44`), 'Cancellation dismiss button has a mobile touch target')
+  assert.ok(await evaluate(`document.querySelector('.operation-center [aria-label="Dismiss scan cancellation"]').getBoundingClientRect().height >= 44`), 'Cancellation dismiss button has a mobile touch target')
   await capture('scan-cancelled-mobile')
-  await evaluate(`document.querySelector('[aria-label="Dismiss scan cancellation"]').focus()`)
+  await evaluate(`document.querySelector('.operation-center [aria-label="Dismiss scan cancellation"]').focus()`)
   await key('Enter')
   await wait(`!document.querySelector('[aria-label="Application operations"]')`)
   const pollsAtDismissal = statusRequests
@@ -1132,10 +1132,9 @@ try {
   assert.ok(await evaluate(`!document.querySelector('[aria-label="Application operations"] details').open`), 'Full diagnostics start collapsed')
   await evaluate(`document.querySelector('[aria-label="Application operations"] summary').click()`)
   await pause(100)
-  assert.ok(await evaluate(`(() => { const panel=document.querySelector('.operation-center'); const details=panel.querySelector('.operation-diagnostics'); return getComputedStyle(panel).position === 'relative' && details.clientHeight <= innerHeight*.3+1 && details.textContent.includes('Sonarr request failed') })()`), 'Expanded diagnostics are bounded and leave the sticky layer')
+  assert.ok(await evaluate(`(() => { const details=document.querySelector('.sidebar-status .operation-diagnostics'); return details.clientHeight <= innerHeight*.3+1 && details.textContent.includes('Sonarr request failed') })()`), 'Expanded diagnostics are bounded inside the sidebar')
   await capture('follow-up-expanded-diagnostics')
-  await evaluate(`document.querySelector('main > .app-scrollbar').scrollTop=10000`)
-  assert.ok(await evaluate(`document.querySelector('.operation-center').getBoundingClientRect().bottom < 100`), 'Users can scroll past errors to integration settings')
+  assert.ok(await evaluate(`(() => { const box=document.querySelector('.sidebar-status').getBoundingClientRect(); return box.top >= 0 && box.bottom <= innerHeight })()`), 'The sidebar keeps scan status visible without scrolling')
   statusOverrides = {}
   fixtureLogs = ['2026-10-02 12:00:00 [INFO] First log entry']
   await evaluate(`location.hash='anime'; location.reload()`)
@@ -1284,6 +1283,16 @@ try {
   await wait(`document.querySelector('[aria-label="Application operations"]')?.textContent.includes('1 already queued')`)
   assert.ok(await evaluate(`document.querySelector('[aria-label="Application operations"]').textContent.includes('1/1')`), 'Recovered batches count existing units as settled')
   console.log('PASS failed and recovered-existing batch progress counts')
+  assert.ok(await evaluate(`(() => { const button = document.querySelector('[aria-label="Dismiss bulk operation"]'); if (!button) return false; button.click(); return true })()`), 'Finished bulk banner offers dismissal')
+  await wait(`!document.querySelector('[aria-label="Dismiss bulk operation"]')`)
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('h1')`)
+  await pause(1200)
+  assert.ok(!(await evaluate(`Boolean(document.querySelector('[aria-label="Dismiss bulk operation"]'))`)), 'Dismissed bulk banners must not return after reload')
+  bulkState = { ...bulkState, id: 'newer-bulk-job' }
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('[aria-label="Application operations"]')?.textContent.includes('1 already queued')`)
+  console.log('PASS dismissed bulk download banners stay dismissed across reloads while newer jobs still restore')
   if (process.env.SCREENSHOT_DIR) writeFileSync(join(process.env.SCREENSHOT_DIR, 'ui-evidence.json'), JSON.stringify(uiEvidence, null, 2))
   for (const mode of ['login', 'setup']) {
     authMode = mode

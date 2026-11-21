@@ -1,5 +1,6 @@
 import { Status } from '../types'
 import { buttonBase, cx } from '../styles'
+import { displayDateTime } from '../datetime'
 import Icon from './Icons'
 
 export interface BulkOperationState {
@@ -11,6 +12,7 @@ export interface BulkOperationState {
   failed: number
   message: string
   failures?: { label: string; error: string }[]
+  jobId?: string
 }
 
 interface Props {
@@ -29,12 +31,13 @@ interface Props {
 
 export default function OperationCenter({ status, scanCompleted, scanCancelledDismissed = false, bulk, onRetryScan, onCancelScan, onOpenLibrary, onOpenConfig, onDismissBulk, onDismissScan, onReviewBulk }: Props) {
   const scanVisible = status.running || Boolean(status.error) || (status.cancelled && !scanCancelledDismissed) || Boolean(scanCompleted) || status.webhook_scan.queued
-  if (!scanVisible && !bulk) return null
+  const usenet = status.usenet_prefetch
+  if (!scanVisible && !bulk && !usenet?.running) return null
   const progress = status.total ? Math.min(100, Math.round(status.progress / status.total * 100)) : 0
   const bulkProgress = bulk?.total ? Math.min(100, Math.round(bulk.settled / bulk.total * 100)) : 0
 
   return (
-    <section className="operation-center sticky top-0 z-40 mb-5 divide-y divide-line rounded-card border border-line bg-canvas-soft px-4" aria-label="Application operations">
+    <section className={cx('operation-center sticky top-0 z-40 mb-5 divide-y divide-line rounded-card border border-line bg-canvas-soft px-4', !bulk && 'hidden max-[900px]:block')} aria-label="Application operations">
       {scanVisible && (
         <div className="py-3">
           <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2.5">
@@ -43,7 +46,7 @@ export default function OperationCenter({ status, scanCompleted, scanCancelledDi
             </span>
             <div className="min-w-0" role={(status.error || status.cancelled) && !status.running ? 'alert' : 'status'}>
               <div className="text-sm font-extrabold text-ink wrap-anywhere">{status.running ? status.message || 'Scanning library…' : status.webhook_scan.queued ? 'Scan queued' : status.cancelled ? 'Scan cancelled' : status.error ? 'Scan failed' : 'Scan complete'}</div>
-              <div className="mt-1 whitespace-pre-wrap text-xs text-muted wrap-anywhere">{status.running ? (status.total ? `${status.progress}/${status.total} titles · ${progress}%` : 'Preparing scan…') : status.webhook_scan.queued ? `Starts after new ${status.webhook_scan.sources.join(' + ')} entries settle` : status.cancelled ? 'Previous complete results were preserved' : status.error ? 'Review the error details or check your integrations.' : `Completed ${scanCompleted}`}</div>
+              <div className="mt-1 whitespace-pre-wrap text-xs text-muted wrap-anywhere">{status.running ? (status.total ? `${status.progress}/${status.total} titles · ${progress}%` : 'Preparing scan…') : status.webhook_scan.queued ? `Starts after new ${status.webhook_scan.sources.join(' + ')} entries settle` : status.cancelled ? 'Previous complete results were preserved' : status.error ? 'Review the error details or check your integrations.' : `Completed ${displayDateTime(scanCompleted)}`}</div>
             </div>
             {!status.running && !status.webhook_scan.queued && (status.cancelled || scanCompleted) && <button type="button" className="touch-target grid size-8 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink" onClick={onDismissScan} aria-label={status.cancelled ? 'Dismiss scan cancellation' : 'Dismiss scan completion'}><Icon name="close" size={16}/></button>}
           </div>
@@ -56,6 +59,17 @@ export default function OperationCenter({ status, scanCompleted, scanCancelledDi
           </div>
           {!status.running && status.error && <details className="mt-3 border-t border-bad/25 pt-2 text-xs"><summary className="touch-target w-fit cursor-pointer rounded-md py-1 font-semibold text-ink">Error details</summary><div className="operation-diagnostics app-scrollbar mt-2 overflow-y-auto whitespace-pre-wrap text-muted wrap-anywhere" tabIndex={0} role="region" aria-label="Scan error details">{status.error}</div></details>}
           {status.running && <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-panel-raised"><div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${Math.max(progress, status.total ? 2 : 0)}%` }}/></div>}
+        </div>
+      )}
+
+      {usenet?.running && (
+        <div className="hidden py-3 max-[900px]:block" role="status">
+          <div className="flex items-center gap-2">
+            <span className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-sky/30 border-t-sky" aria-hidden="true"/>
+            <span className="min-w-0 flex-1 text-xs font-semibold text-muted">Matching Usenet sources</span>
+            <span className="shrink-0 text-xs font-bold tabular-nums text-muted-dim">{usenet.checked}/{usenet.total}</span>
+          </div>
+          <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-panel-raised"><div className="h-full rounded-full bg-sky transition-[width] duration-500" style={{ width: `${Math.max(usenet.total ? Math.round(usenet.checked / usenet.total * 100) : 0, 2)}%` }}/></div>
         </div>
       )}
 

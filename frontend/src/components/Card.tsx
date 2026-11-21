@@ -2,6 +2,7 @@ import { useCardDownloads, useSeasonAvailability } from '../useCardDownloads'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { GroupedCard, ResultItem, Config } from '../types'
 import { seasonLabel, STATUS_LABEL, cardSizeDelta, isSeasonUpgradable } from '../utils'
+import { displayDateTime } from '../datetime'
 import * as api from '../api'
 import { buttonBase, cx } from '../styles'
 import Icon, { IconName } from './Icons'
@@ -302,7 +303,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
                   <ul className="m-0 list-none divide-y divide-line p-0">
                     {unseenChanges.map(({ season, change }) => <li key={change.id} className="min-w-0 py-2 first:pt-0 last:pb-0">
                       <ReleaseChangeLine detail={presentReleaseChange(change)} context={seasonLabel(season)} />
-                      <time className="block text-xs text-muted" dateTime={change.detected_at}>Detected {new Date(change.detected_at).toLocaleString()}</time>
+                      <time className="block text-xs text-muted" dateTime={change.detected_at}>Detected {displayDateTime(change.detected_at)}</time>
                     </li>)}
                   </ul>
                 </section></details>}

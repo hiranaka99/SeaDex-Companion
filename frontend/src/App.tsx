@@ -10,6 +10,7 @@ import HistoryTab from './components/HistoryTab'
 import { useToast } from './components/Toast'
 import { TabId, Status, ResultItem, Config, AuthState } from './types'
 import * as api from './api'
+import { setDateTimeFormat } from './datetime'
 
 const INITIAL_STATUS: Status = {
   running: false,
@@ -32,6 +33,20 @@ interface AuthenticatedAppProps {
 }
 
 const SIDEBAR_KEY = 'seadex-sidebar-collapsed'
+const SIDEBAR_WIDTH_KEY = 'seadex-sidebar-width'
+const DISMISSED_BULK_JOB_KEY = 'seadex-dismissed-download-job'
+
+function readDismissedBulkJob(): string | null {
+  try {
+    return localStorage.getItem(DISMISSED_BULK_JOB_KEY)
+  } catch {
+    return null
+  }
+}
+
+const SIDEBAR_MIN = 232
+const SIDEBAR_MAX = 480
+const SIDEBAR_DEFAULT = 248
 
 function readCollapsed(): boolean {
   try {
@@ -39,6 +54,16 @@ function readCollapsed(): boolean {
   } catch {
     return false
   }
+}
+
+function readSidebarWidth(): number {
+  try {
+    const value = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
+    if (Number.isFinite(value) && value >= SIDEBAR_MIN && value <= SIDEBAR_MAX) return value
+  } catch {
+    // ignore storage errors
+  }
+  return SIDEBAR_DEFAULT
 }
 
 function readTab(): TabId {
@@ -64,13 +89,31 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   const [statusError, setStatusError] = useState('')
   const [lastStatusUpdate, setLastStatusUpdate] = useState<Date | null>(null)
   const [bulkOperation, setBulkOperation] = useState<BulkOperationState | null>(null)
+  const dismissedBulkJob = useRef<string | null>(readDismissedBulkJob())
   const [bulkReviewAvailable, setBulkReviewAvailable] = useState(false)
   const [bulkReviewRequest, setBulkReviewRequest] = useState(0)
   const [scanCompleted, setScanCompleted] = useState<string | null>(null)
   const [scanCancelledDismissed, setScanCancelledDismissed] = useState(false)
   const [collapsed, setCollapsed] = useState<boolean>(readCollapsed)
+  const [sidebarPx, setSidebarPx] = useState<number>(readSidebarWidth)
+  const sidebarDrag = useRef<{ startX: number; startWidth: number } | null>(null)
   const [configFooterTarget, setConfigFooterTarget] = useState<HTMLDivElement | null>(null)
   const toast = useToast()
+
+  const persistSidebarWidth = useCallback((width: number) => {
+    try {
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width))
+    } catch {
+      // ignore storage errors
+    }
+  }, [])
+  const nudgeSidebar = useCallback((delta: number) => {
+    setSidebarPx((current) => {
+      const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, current + delta))
+      persistSidebarWidth(next)
+      return next
+    })
+  }, [persistSidebarWidth])
 
   const toggleCollapsed = useCallback(() => {
     setCollapsed((prev) => {
@@ -136,7 +179,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
         if (await loadResults(generation)) lastLoadedRevision.current = st.results_revision
       }
       if (!mounted.current || generation !== pollGeneration.current) return
-      pollTimer.current = window.setTimeout(() => { void pollStatus(generation) }, st.running ? 1500 : 10_000)
+      pollTimer.current = window.setTimeout(() => { void pollStatus(generation) }, st.running ? 1500 : st.usenet_prefetch?.running ? 4000 : 10_000)
     } catch (e) {
       console.error('Status poll failed:', e)
       if (!mounted.current || generation !== pollGeneration.current) return
@@ -150,6 +193,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
     try {
       const cfg = await api.getConfig()
       api.invalidateDownloadProgress()
+      setDateTimeFormat(cfg.datetime_format)
       setConfig(cfg)
       setConfigError('')
     } catch (e) {
@@ -168,9 +212,9 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
 
   useEffect(() => {
     return api.watchDownloadJob(job => {
-      if (!job.id) return
+      if (!job.id || job.id === dismissedBulkJob.current) return
       const settled = job.added.length + job.existing.length + job.failures.length
-      setBulkOperation({ action: 'start', phase: job.finished ? job.failures.length ? 'warning' : 'success' : 'running', settled, total: settled + job.pending.length, added: job.added.length, failed: job.failures.length, failures: job.failures, message: `${job.added.length} sent${job.existing.length ? ` · ${job.existing.length} already queued` : ''} · ${job.pending.length} pending · ${job.failures.length} failed` })
+      setBulkOperation({ action: 'start', phase: job.finished ? job.failures.length ? 'warning' : 'success' : 'running', settled, total: settled + job.pending.length, added: job.added.length, failed: job.failures.length, failures: job.failures, jobId: job.id, message: `${job.added.length} sent${job.existing.length ? ` · ${job.existing.length} already queued` : ''} · ${job.pending.length} pending · ${job.failures.length} failed` })
     })
   }, [])
 
@@ -220,7 +264,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
     setScanCompleted(null)
   }
 
-  const sidebarWidth = collapsed ? 76 : 248
+  const sidebarWidth = collapsed ? 76 : sidebarPx
 
   return (
     <div
@@ -234,7 +278,47 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
         onLogout={onLogout}
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
+        status={status}
+        scanCompleted={scanCompleted}
+        scanCancelledDismissed={scanCancelledDismissed}
+        onCancelScan={() => void handleCancelScan()}
+        onRetryScan={() => void handleScan()}
+        onOpenConfig={() => changeTab('config')}
+        onDismissScan={() => { setScanCompleted(null); setScanCancelledDismissed(status.cancelled) }}
       />
+      {!collapsed && <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        aria-valuemin={SIDEBAR_MIN}
+        aria-valuemax={SIDEBAR_MAX}
+        aria-valuenow={sidebarPx}
+        tabIndex={0}
+        className="sidebar-resize absolute bottom-0 top-0 z-30 hidden w-1.5 cursor-col-resize touch-none min-[901px]:block"
+        style={{ left: sidebarWidth - 3 }}
+        onPointerDown={(event) => {
+          sidebarDrag.current = { startX: event.clientX, startWidth: sidebarPx }
+          try { event.currentTarget.setPointerCapture(event.pointerId) } catch { /* synthetic or already-released pointers */ }
+          document.documentElement.classList.add('sidebar-resizing')
+        }}
+        onPointerMove={(event) => {
+          if (!sidebarDrag.current) return
+          setSidebarPx(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, sidebarDrag.current.startWidth + event.clientX - sidebarDrag.current.startX)))
+        }}
+        onPointerUp={(event) => {
+          if (!sidebarDrag.current) return
+          sidebarDrag.current = null
+          try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* capture may already be gone */ }
+          document.documentElement.classList.remove('sidebar-resizing')
+          setSidebarPx((current) => { persistSidebarWidth(current); return current })
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowLeft') { event.preventDefault(); nudgeSidebar(-16) }
+          else if (event.key === 'ArrowRight') { event.preventDefault(); nudgeSidebar(16) }
+          else if (event.key === 'Home') { event.preventDefault(); nudgeSidebar(SIDEBAR_MIN - sidebarPx) }
+          else if (event.key === 'End') { event.preventDefault(); nudgeSidebar(SIDEBAR_MAX - sidebarPx) }
+        }}
+      />}
       <main className="flex min-h-0 min-w-0 flex-col overflow-hidden">
         <div className={`app-scroll-pane app-scrollbar relative min-h-0 flex-1 overflow-y-auto px-8 max-[1200px]:px-6 max-[900px]:px-4 ${tab === 'config' ? 'pb-4' : 'pb-14 mobile-content-clearance'} ${tab === 'log' ? 'log-main-pane' : ''}`}>
         <div className={`app-content pt-7 ${tab === 'log' ? 'flex h-full min-h-0 flex-col' : ''}`}>
@@ -247,11 +331,17 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
           onRetryScan={() => void handleScan()}
           onOpenLibrary={() => changeTab('anime')}
           onOpenConfig={() => changeTab('config')}
-          onDismissBulk={() => setBulkOperation(null)}
+          onDismissBulk={() => {
+            if (bulkOperation?.jobId) {
+              dismissedBulkJob.current = bulkOperation.jobId
+              try { localStorage.setItem(DISMISSED_BULK_JOB_KEY, bulkOperation.jobId) } catch { /* storage unavailable; dismissal still holds for this session */ }
+            }
+            setBulkOperation(null)
+          }}
           onReviewBulk={bulkReviewAvailable ? () => { changeTab('anime'); setBulkReviewRequest(value => value + 1) } : undefined}
           onDismissScan={() => { setScanCompleted(null); setScanCancelledDismissed(status.cancelled) }}
         />
-        <div className="connection-status mb-4 flex shrink-0 flex-wrap items-center gap-3 text-xs text-muted" role={statusError ? 'alert' : undefined}>
+        <div className="connection-status mb-4 hidden shrink-0 flex-wrap items-center gap-3 text-xs text-muted max-[900px]:flex" role={statusError ? 'alert' : undefined}>
           {statusError ? <><span className="text-bad">Connection lost: {statusError}. Displayed data may be outdated.</span><button className="cursor-pointer font-bold text-accent-bright" onClick={() => { if (pollTimer.current) window.clearTimeout(pollTimer.current); void pollStatus(++pollGeneration.current) }}>Retry connection</button></> : lastStatusUpdate && <span>Updated {lastStatusUpdate.toLocaleTimeString()}</span>}
         </div>
         <div hidden={tab !== 'anime'}>
@@ -277,7 +367,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
           />
         </div>
         {historyVisited.current && <div hidden={tab !== 'history'}><HistoryTab active={tab === 'history'} results={results} onOpenResult={openHistoryResult} /></div>}
-        {configVisited.current && <div hidden={tab !== 'config'}><ConfigTab active={tab === 'config'} scanDisabled={status.running || bulkOperation?.phase === 'running'} footerTarget={configFooterTarget} loadError={configError} onRetry={() => void loadConfig()} config={config} status={status} username={username} onRunScan={handleScan} onAccountUpdated={onAccountUpdated} onSaved={saved => { api.invalidateDownloadProgress(); setConfig(saved) }} onScannedDataCleared={handleScannedDataCleared} /></div>}
+        {configVisited.current && <div hidden={tab !== 'config'}><ConfigTab active={tab === 'config'} scanDisabled={status.running || bulkOperation?.phase === 'running'} footerTarget={configFooterTarget} loadError={configError} onRetry={() => void loadConfig()} config={config} status={status} username={username} onRunScan={handleScan} onAccountUpdated={onAccountUpdated} onSaved={saved => { api.invalidateDownloadProgress(); setDateTimeFormat(saved.datetime_format); setConfig(saved) }} onScannedDataCleared={handleScannedDataCleared} /></div>}
         {tab === 'log' && <LogTab active={tab === 'log'} />}
         </div>
         </div>
