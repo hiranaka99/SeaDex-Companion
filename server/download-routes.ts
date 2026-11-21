@@ -1,387 +1,169 @@
-import type { DownloadProgress, CancelableDownload } from '../shared/download-contracts.js'
-import { applyUserRulesToResults } from './user-rules.js'
-import { downloadJobs, submitDownloadJob, DownloadJobConflict } from './download-jobs.js'
-
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { releaseIdentity } from '../shared/releases.js'
-import { downloadPreflight } from './download-preflight.js'
 import { readJson, sendJson } from './http-response.js'
+import { loadConfig } from './config.js'
+import { resultsForRequest } from './downloads.js'
+import { buildDownloadPlan, parseSelections } from './download-preflight.js'
+import { consumePlan, type StoredPlan } from './download-plans.js'
+import { acceptDownloadPlan, PlanRejected, receiptFromJob } from './download-submit.js'
+import { downloadJobs, DownloadJobConflict } from './download-jobs.js'
+import { cancelRecords, collectDownloadProgress, controlRecord, listCancelable, OwnershipError } from './download-progress.js'
+import { usenetAvailability, sabnzbdConfigured } from './usenet.js'
+import { applyUserRulesToResults } from './user-rules.js'
+import { currentGeneration } from './config-generation.js'
 import { log } from './logging.js'
-import { loadConfig, downloadCategory } from './config.js'
-import { resultsForRequest, bulkDownloadTargets, indexResultReleases, normalizeQbStates } from './downloads.js'
-import { qbAddTorrent, qbControlTorrents, qbGetTorrents } from './qbittorrent.js'
-import { forgetOwnedTorrents, ownedTorrentsSnapshot, loadDownloadRecords, recordOwnedDownload, trackedDownloadInfo } from './download-store.js'
-import type { JsonObject } from './types.js'
+import type { ResultItem } from './types.js'
+import type { BulkSubmissionResult } from '../shared/download-contracts.js'
 
-export function parseReleaseIndex(value: unknown): number | null {
-  if (typeof value === 'number') return Number.isInteger(value) && value >= 0 ? value : null
-  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null
-  const parsed = Number(value)
-  return Number.isSafeInteger(parsed) ? parsed : null
-}
-
-function selectedBulkTargets(selections: unknown, results = applyUserRulesToResults(resultsForRequest())): { targets: ReturnType<typeof bulkDownloadTargets>; results: JsonObject[]; error?: [number, string] } {
-  const targets: ReturnType<typeof bulkDownloadTargets> = []
-  if (!Array.isArray(selections)) return { targets, results, error: [400, 'No bulk release selections provided'] }
-  const available = new Map(bulkDownloadTargets(results).map(target => [`${target.key}\0${target.release}`, target]))
-  const parts = new Set<string>()
-  for (const selection of selections) {
-    const key = String(selection?.key || '')
-    const release = parseReleaseIndex(selection?.release)
-    if (release === null) return { targets, results, error: [400, 'Release must be a non-negative integer'] }
-    const target = available.get(`${key}\0${release}`)
-    if (!target) return { targets, results, error: [400, 'A selected bulk release is unavailable'] }
-    const selectedRelease = results.find(item => item.key === key)?.releases?.[release]
-    if (selection.identity && selection.identity !== releaseIdentity(selectedRelease || {})) return { targets, results, error: [409, 'A selected release changed. Reopen the review to see the latest recommendations.'] }
-    const part = `${key}\0${target.part}`
-    if (parts.has(part)) return { targets, results, error: [400, 'Choose only one best release per season or cour'] }
-    parts.add(part)
-    targets.push(target)
-  }
-  return { targets, results }
-}
-
-function findResult(key: string, releaseIndex: number): { result?: JsonObject; release?: JsonObject; error?: [number, string] } {
-  const result = resultsForRequest().find((item) => item.key === key)
-  if (!result) return { error: [404, 'Result not found — run a scan first'] }
-  const releases = result.releases || []
-  if (releaseIndex < 0 || releaseIndex >= releases.length) return { error: [404, 'Release not found'] }
-  return { result, release: releases[releaseIndex] }
-}
-
-function resultLabel(result: JsonObject): string {
-  const season = result.season ? ` S${String(result.season).padStart(2, '0')}` : ' (Movie)'
-  return `${String(result.title || result.key || 'Unknown title')}${season}`
-}
-
-function releaseDetails(result: JsonObject, release: JsonObject, releaseIndex: number): string {
-  return `${resultLabel(result)} [key: ${result.key}; release: ${releaseIndex}; group: ${release.releaseGroup || '-'}; tracker: ${release.tracker || '-'}]`
-}
-
-function formatBytes(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return '0 B'
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-  const unit = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
-  const amount = value / (1024 ** unit)
-  return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`
-}
-
-const downloadProgressStates = new Map<string, string>()
-const downloadProgressFailures = new Map<string, { message: string; lastLogged: number; suppressed: number }>()
+const JOB_STATUS_PATH = /^\/api\/download-jobs\/[^/]+$/
 let bulkOperationActive = false
 
-function summarizeTorrentProgress(torrents: JsonObject[], expectedCount = torrents.length): DownloadProgress {
-  let totalSize = 0; let downloaded = 0; let speed = 0
-  const states: string[] = []
-  for (const torrent of torrents) {
-    const size = Number(torrent.size || torrent.total_size || 0); const progress = Number(torrent.progress || 0)
-    totalSize += size; downloaded += Math.trunc(size * progress); speed += Number(torrent.dlspeed || 0); states.push(String(torrent.state || 'unknown'))
-  }
-  const found = torrents.length > 0
-  const progress = totalSize > 0 ? downloaded / totalSize : 0
-  let state = normalizeQbStates(states)
-  const missing = Math.max(0, expectedCount - torrents.length)
-  if (missing && state === 'complete') state = 'waiting'
-  if (!missing && state !== 'error' && found && totalSize > 0 && progress >= 1) state = 'complete'
-  return { ok: true, found, progress: Math.floor(progress * 10_000) / 10_000, downloaded, total_size: totalSize, speed, state, missing_torrents: missing }
+/** The same rule-applied view the UI received, so validation and identities agree. */
+function currentResults(): ResultItem[] {
+  return applyUserRulesToResults(resultsForRequest()) as unknown as ResultItem[]
 }
 
+function readPlan(body: Record<string, unknown>): { plan: StoredPlan } | { error: [number, string] } {
+  const planId = typeof body.plan_id === 'string' ? body.plan_id.trim() : ''
+  if (!planId) return { error: [400, 'A review plan_id is required'] }
+  const plan = consumePlan(planId)
+  if (!plan) return { error: [410, 'This review has expired or was already used. Re-run the review before submitting.'] }
+  return { plan }
+}
+
+function acknowledgeFlags(body: Record<string, unknown>) {
+  const acknowledge = body.acknowledge && typeof body.acknowledge === 'object' ? body.acknowledge as Record<string, unknown> : {}
+  return { whole_source: acknowledge.whole_source === true, disk_space: acknowledge.disk_space === true }
+}
 
 export async function handleDownloadRequest(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
   const method = request.method || 'GET'
   const path = url.pathname
-  if (method === 'POST' && path === '/api/download') {
-    const data = await readJson(request)
-    const key = String(data.key || '').trim()
-    const releaseIndex = parseReleaseIndex(data.release ?? 0)
-    if (!key) return sendJson(response, 400, { ok: false, error: 'No key provided' })
-    if (releaseIndex === null) return sendJson(response, 400, { ok: false, error: 'Release must be a non-negative integer' })
-    const found = findResult(key, releaseIndex)
-    if (found.error) return sendJson(response, found.error[0], { ok: false, error: found.error[1] })
-    if (data.identity && data.identity !== releaseIdentity(found.release!)) return sendJson(response, 409, { error: 'This release changed. Review the updated recommendation before downloading.' })
-    const hashes = [...new Set<string>((found.release!.info_hashes || []).map((hash: string) => hash.toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash)))]
-    if (!hashes.length) return sendJson(response, 400, { ok: false, error: 'No magnet available for this release (private tracker)' })
-    const config = loadConfig()
-    const category = downloadCategory(config, String(found.result!.arr))
-    const selectedFiles = Array.isArray(found.release!.selected_files) ? found.release!.selected_files.map(String) : []
-    const started = Date.now()
-    const details = releaseDetails(found.result!, found.release!, releaseIndex)
-    const downloadInfo = indexResultReleases([found.result!], [{ key, release: releaseIndex }]).byHash.get(hashes[0])!
-    log('INFO', `Download requested: ${details} (torrents: ${hashes.length}; category: ${category || '-'}; files: ${selectedFiles.length ? `${selectedFiles.length} selected` : 'all'})`)
-    try {
-      for (const hash of hashes) await qbAddTorrent(config, `magnet:?xt=urn:btih:${hash}`, category, selectedFiles, undefined, {
-        record: (ownedHash) => { recordOwnedDownload(ownedHash, downloadInfo) },
-        forget: (ownedHash) => forgetOwnedTorrents([ownedHash]),
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      log('ERROR', `Download failed after ${((Date.now() - started) / 1000).toFixed(1)}s: ${details} (${message})`)
-      return sendJson(response, 502, { ok: false, error: message })
-    }
-    log('INFO', `Download added in ${((Date.now() - started) / 1000).toFixed(1)}s: ${details} (torrents: ${hashes.length}; tracked torrents: ${ownedTorrentsSnapshot().length})`)
-    return sendJson(response, 200, { ok: true })
-  }
 
   if (method === 'POST' && path === '/api/download_bulk/preflight') {
-    const selection = selectedBulkTargets((await readJson(request)).selections)
-    if (selection.error) return sendJson(response, selection.error[0], { error: selection.error[1] })
+    const body = await readJson(request)
+    const parsed = parseSelections(body.selections)
+    if (parsed.error) return sendJson(response, parsed.error[0], { error: parsed.error[1] })
+    const built = await buildDownloadPlan(loadConfig(), parsed.selections, { results: currentResults(), refresh: body.refresh === true })
+    if ('error' in built) return sendJson(response, built.error[0], { error: built.error[1] })
+    return sendJson(response, 200, built.review, { 'Cache-Control': 'no-store' })
+  }
+
+  if (method === 'POST' && path === '/api/usenet/availability') {
+    const body = await readJson(request)
+    const parsed = parseSelections(body.selections)
+    if (parsed.error) return sendJson(response, parsed.error[0], { error: parsed.error[1] })
     const config = loadConfig()
-    const results = selection.results
-    const estimate = await downloadPreflight(config, selection.targets.map(target => ({
-      release: results.find(result => result.key === target.key)!.releases[target.release],
-      category: downloadCategory(config, target.arr),
-    })))
-    return sendJson(response, 200, estimate, { 'Cache-Control': 'no-store' })
+    const results = currentResults()
+    const availability = await usenetAvailability(config, parsed.selections, body.refresh === true, results)
+    return sendJson(response, 200, {
+      ok: true,
+      config_generation: currentGeneration(),
+      providers_enabled: { animetosho: config.animetosho_enabled, amenzb: config.amenzb_enabled },
+      sabnzbd_configured: sabnzbdConfigured(config),
+      results: availability,
+    }, { 'Cache-Control': 'no-store' })
   }
 
-  if (method === 'GET' && (path === '/api/download_bulk/status' || path === '/api/download-jobs/latest' || /^\/api\/download-jobs\/[^/]+$/.test(path))) {
-    const id = path.startsWith('/api/download-jobs/') && !path.endsWith('/latest') ? path.slice('/api/download-jobs/'.length) : undefined
-    const job = downloadJobs.get(id)
-    if (id && !job) return sendJson(response, 404, { error: 'Download job not found' })
-    return sendJson(response, 200, { ok: true, ...(job || { id: null, finished: true, pending: [], added: [], failures: [], existing: [], targets: [] }) })
-  }
-
-  if (method === 'POST' && path === '/api/download-jobs') {
-    if (bulkOperationActive || downloadJobs.active()) return sendJson(response, 409, { error: 'Another bulk operation is already running' })
-    const selection = selectedBulkTargets((await readJson(request)).selections)
-    if (selection.error) return sendJson(response, selection.error[0], { error: selection.error[1] })
-    try {
-      const { job } = submitDownloadJob(loadConfig(), selection.targets, selection.results)
-      return sendJson(response, 202, { ok: true, ...job })
-    } catch (error) {
-      if (error instanceof DownloadJobConflict) return sendJson(response, 409, { error: error.message })
-      throw error
-    }
-  }
-
-  if (method === 'POST' && path === '/api/download_bulk') {
-    const data = await readJson(request)
-    const action = String(data.action || '')
-    if (action !== 'start' && action !== 'cancel') {
-      return sendJson(response, 400, { ok: false, error: 'Unknown bulk download action' })
-    }
-    if (bulkOperationActive || downloadJobs.active()) return sendJson(response, 409, { ok: false, error: 'Another bulk operation is already running' })
-    if (action === 'cancel' && data.selections !== undefined) {
-      if (!Array.isArray(data.selections)) return sendJson(response, 400, { ok: false, error: 'Bulk release selections must be an array' })
-      if (data.selections.some(selection => parseReleaseIndex(selection?.release) === null)) return sendJson(response, 400, { ok: false, error: 'Release must be a non-negative integer' })
-    }
-    const config = loadConfig()
+  if (method === 'POST' && path === '/api/download') {
+    if (bulkOperationActive || downloadJobs.active()) return sendJson(response, 409, { ok: false, error: 'Another download operation is already running' })
+    const body = await readJson(request)
+    const planRead = readPlan(body)
+    if ('error' in planRead) return sendJson(response, planRead.error[0], { ok: false, error: planRead.error[1] })
+    const plan = planRead.plan
+    if (plan.selections.length !== 1) return sendJson(response, 400, { ok: false, error: 'Use the download job endpoint for multi-release reviews' })
     bulkOperationActive = true
     try {
-      if (action === 'start') {
-        const selection = selectedBulkTargets(data.selections)
-        if (selection.error) return sendJson(response, selection.error[0], { error: selection.error[1] })
-        const { completion } = submitDownloadJob(config, selection.targets, selection.results)
-        return sendJson(response, 200, await completion)
-      }
-
-      // Only ever cancel/remove torrents this app added itself (tracked in the
-      // ownership ledger), never torrents the user added manually.
-      const cancelStarted = Date.now()
-      const index = indexResultReleases()
-      const ownedSet = new Set(ownedTorrentsSnapshot())
-      const requestedSelections = Array.isArray(data.selections) ? data.selections.length : null
-      log('INFO', `Bulk cancel requested: ${requestedSelections === null ? 'all incomplete app-added downloads' : `${requestedSelections} selected release${requestedSelections === 1 ? '' : 's'}`} (tracked torrents: ${ownedSet.size}; delete files: ${data.delete_files === true ? 'yes' : 'no'})`)
-      const torrents = ownedSet.size ? await qbGetTorrents(config, [...ownedSet], true) : []
-      const presentHashes = new Set(
-        torrents.map((torrent) => String(torrent.hash || '').toLowerCase()).filter((hash) => /^[0-9a-f]{40}$/.test(hash)),
-      )
-      const incompleteOwned = torrents
-        .filter((torrent) => {
-          const hash = String(torrent.hash || '').toLowerCase()
-          return /^[0-9a-f]{40}$/.test(hash) && ownedSet.has(hash) && Number(torrent.progress || 0) < 1
-        })
-        .map((torrent) => String(torrent.hash || '').toLowerCase())
-      // With explicit selections only the checked releases are cancelled;
-      // without selections the legacy "cancel everything" behavior is kept.
-      const wanted = Array.isArray(data.selections)
-        ? new Set<string>(
-            (data.selections as Array<{ key?: unknown; release?: unknown }>).flatMap((selection) => {
-              const key = String(selection?.key || '')
-              if (key.startsWith('torrent:')) return ownedSet.has(key.slice(8)) && parseReleaseIndex(selection.release) === 0 ? [key.slice(8)] : []
-              const targetKey = `${key}\0${parseReleaseIndex(selection?.release)}`
-              return [...(index.byTarget.get(targetKey) || [])]
-            }),
-          )
-        : null
-      const incompleteHashes = incompleteOwned.filter((hash) => !wanted || wanted.has(hash))
-      const deleteFiles = data.delete_files === true
-      if (incompleteHashes.length) await qbControlTorrents(config, incompleteHashes, 'remove', deleteFiles)
-      const cancelled = new Set(incompleteHashes)
-      const affectedTargetKeys = new Set<string>()
-      for (const hash of cancelled) {
-        const info = index.byHash.get(hash)
-        if (info) affectedTargetKeys.add(`${info.key}\0${info.release}`)
-      }
-      const affectedTargets = [...affectedTargetKeys].map((targetKey) => {
-        const [key, release] = targetKey.split('\0')
-        return { key, release: Number(release) }
-      })
-      // Keep the ledger in sync: forget the removed torrents, plus any app-added
-      // torrent the user deleted manually from qBittorrent in the meantime.
-      const staleHashes = [...ownedSet].filter((hash) => !presentHashes.has(hash) && !cancelled.has(hash))
-      forgetOwnedTorrents([...incompleteHashes, ...staleHashes])
-      log('INFO', `Bulk cancel finished in ${((Date.now() - cancelStarted) / 1000).toFixed(1)}s: removed ${incompleteHashes.length} incomplete torrent(s) across ${affectedTargets.length} release(s), ${deleteFiles ? 'deleted downloaded files' : 'preserved downloaded files'}; pruned ${staleHashes.length} stale ledger entr${staleHashes.length === 1 ? 'y' : 'ies'}`)
-      return sendJson(response, 200, { ok: true, count: incompleteHashes.length, targets: affectedTargets })
+      const { job, completion } = await acceptDownloadPlan(loadConfig(), plan, acknowledgeFlags(body), currentResults())
+      await completion
+      const finalJob = downloadJobs.get(job.id)
+      const receipt = finalJob ? receiptFromJob(finalJob) : { error: 'The submission did not settle; check the download client before retrying.' }
+      if ('error' in receipt) return sendJson(response, 502, { ok: false, ...receipt })
+      return sendJson(response, 200, receipt)
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      log('ERROR', `Bulk ${action === 'start' ? 'download' : 'cancel'} failed: ${message}`)
-      return sendJson(response, 502, { ok: false, error: message })
+      if (error instanceof PlanRejected) return sendJson(response, error.status, { ok: false, error: error.message })
+      if (error instanceof DownloadJobConflict) return sendJson(response, 409, { ok: false, error: error.message })
+      throw error
     } finally {
       bulkOperationActive = false
     }
   }
 
-  if (method === 'GET' && path === '/api/download_bulk/cancelable') {
-    const index = indexResultReleases()
-    const records = loadDownloadRecords()
-    const ownedSet = new Set(ownedTorrentsSnapshot())
-    let torrents: JsonObject[] = []
-    if (ownedSet.size) {
-      try {
-        torrents = await qbGetTorrents(loadConfig(), [...ownedSet])
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        log('ERROR', `Cancelable bulk downloads check failed: ${message}`)
-        return sendJson(response, 502, { ok: false, error: message })
-      }
+  if (method === 'POST' && path === '/api/download-jobs') {
+    if (bulkOperationActive || downloadJobs.active()) return sendJson(response, 409, { ok: false, error: 'Another bulk operation is already running' })
+    const body = await readJson(request)
+    const planRead = readPlan(body)
+    if ('error' in planRead) return sendJson(response, planRead.error[0], { ok: false, error: planRead.error[1] })
+    bulkOperationActive = true
+    try {
+      const { job, completion } = await acceptDownloadPlan(loadConfig(), planRead.plan, acknowledgeFlags(body), currentResults())
+      completion.then(
+        (result: BulkSubmissionResult) => log('INFO', `Bulk download job ${job.id} settled: ${result.count}/${result.rows.length} release(s) ready, ${result.failures.length} failure(s)`),
+        (error: unknown) => log('ERROR', `Bulk download job ${job.id} crashed: ${error instanceof Error ? error.message : String(error)}`),
+      ).finally(() => { bulkOperationActive = false })
+      return sendJson(response, 202, { ok: true, job_id: job.id })
+    } catch (error) {
+      if (error instanceof PlanRejected) return sendJson(response, error.status, { ok: false, error: error.message })
+      if (error instanceof DownloadJobConflict) return sendJson(response, 409, { ok: false, error: error.message })
+      bulkOperationActive = false
+      throw error
     }
-    // One row per (result, release): every still-incomplete torrent the app
-    // added for that release, so bulk cancel can offer torrent selection just
-    // like the bulk download dialog offers release selection.
-    const byTarget = new Map<string, CancelableDownload>()
-    for (const torrent of torrents) {
-      const hash = String(torrent.hash || '').toLowerCase()
-      if (!/^[0-9a-f]{40}$/.test(hash) || !ownedSet.has(hash)) continue
-      if (Number(torrent.progress || 0) >= 1) continue
-      const info = trackedDownloadInfo(torrent, records, index)
-      const targetKey = `torrent:${hash}\0${0}`
-      const entry: CancelableDownload = byTarget.get(targetKey) || {
-        key: `torrent:${hash}`,
-        result_keys: [...new Set([
-          info.key,
-          ...(index.byHash.get(hash)?.associations || []).map(association => association.key),
-          ...resultsForRequest().filter(result => (info.associations || [info]).some(association => association.library_key && result.library_key === association.library_key && result.season === association.season)).map(result => String(result.key)),
-        ])],
-        release: 0,
-        title: info.title,
-        season: info.season,
-        part: info.part,
-        release_group: info.releaseGroup,
-        tracker: info.tracker,
-        size: info.size,
-        hashes: [],
-      }
-      entry.hashes.push(hash)
-      byTarget.set(targetKey, entry)
-    }
-    const downloads = [...byTarget.values()].sort((left, right) =>
-      left.title.localeCompare(right.title, undefined, { sensitivity: 'base' }) ||
-      (left.season || 0) - (right.season || 0) ||
-      left.part.localeCompare(right.part),
-    )
-    return sendJson(response, 200, { ok: true, downloads })
   }
 
-  if (method === 'GET' && path === '/api/download_progress/all') {
+  if (method === 'GET' && (path === '/api/download_bulk/status' || path === '/api/download-jobs' || path === '/api/download-jobs/latest' || JOB_STATUS_PATH.test(path))) {
+    const id = path !== '/api/download_bulk/status' && path !== '/api/download-jobs' && path !== '/api/download-jobs/latest' ? path.slice('/api/download-jobs/'.length) : undefined
+    const job = downloadJobs.get(id)
+    if (id && !job) return sendJson(response, 404, { error: 'Download job not found' })
+    return sendJson(response, 200, { ok: true, ...(job || { id: null, finished: true, pending: [], added: [], failures: [], existing: [], targets: [] }) }, { 'Cache-Control': 'no-store' })
+  }
+
+  if (method === 'GET' && path === '/api/downloads') {
     try {
-      const torrents = await qbGetTorrents(loadConfig())
-      const byHash = new Map(torrents.map((torrent) => [String(torrent.hash || '').toLowerCase(), torrent]))
-      const downloads: Record<string, JsonObject> = {}
-      for (const result of resultsForRequest()) {
-        if (!result.key) continue
-        for (const [releaseIndex, release] of (result.releases || []).entries()) {
-          const hashes = [...new Set<string>((release.info_hashes || []).map((hash: unknown) => String(hash).toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash)))]
-          const matches = hashes.map((hash: string) => byHash.get(hash)).filter(Boolean) as JsonObject[]
-          if (matches.length) downloads[`${result.key}\0${releaseIndex}`] = { ...summarizeTorrentProgress(matches, hashes.length), identity: releaseIdentity(release) }
-        }
-      }
-      return sendJson(response, 200, { ok: true, downloads })
+      return sendJson(response, 200, await collectDownloadProgress(loadConfig()), { 'Cache-Control': 'no-store' })
     } catch (error) {
       return sendJson(response, 502, { ok: false, error: error instanceof Error ? error.message : String(error) })
     }
   }
 
-  if (method === 'GET' && path === '/api/download_progress') {
-    const key = String(url.searchParams.get('key') || '').trim()
-    const releaseIndex = parseReleaseIndex(url.searchParams.get('release') || '0')
-    if (!key) return sendJson(response, 400, { ok: false, error: 'No key provided' })
-    if (releaseIndex === null) return sendJson(response, 400, { ok: false, error: 'Release must be a non-negative integer' })
-    const found = findResult(key, releaseIndex)
-    if (found.error) return sendJson(response, found.error[0], { ok: false, error: found.error[1] })
-    const progressKey = `${key}\0${releaseIndex}`
-    const details = releaseDetails(found.result!, found.release!, releaseIndex)
-    const hashes = [...new Set<string>((found.release!.info_hashes || []).map((hash: string) => hash.toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash)))]
-    if (!hashes.length) return sendJson(response, 400, { ok: false, error: 'No magnet available for this release' })
-    let torrents: JsonObject[]
-    try { torrents = await qbGetTorrents(loadConfig(), hashes) }
-    catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      const now = Date.now()
-      const previous = downloadProgressFailures.get(progressKey)
-      if (!previous || previous.message !== message || now - previous.lastLogged >= 30_000) {
-        const suppressed = previous?.suppressed ? `; ${previous.suppressed} repeated error${previous.suppressed === 1 ? '' : 's'} suppressed` : ''
-        log('ERROR', `Download status check failed: ${details} (${message}${suppressed})`)
-        downloadProgressFailures.set(progressKey, { message, lastLogged: now, suppressed: 0 })
-      } else {
-        previous.suppressed += 1
-      }
-      return sendJson(response, 502, { ok: false, error: message })
+  if (method === 'GET' && path === '/api/downloads/cancelable') {
+    try {
+      return sendJson(response, 200, await listCancelable(loadConfig()), { 'Cache-Control': 'no-store' })
+    } catch (error) {
+      return sendJson(response, 502, { ok: false, error: error instanceof Error ? error.message : String(error) })
     }
-    const previousFailure = downloadProgressFailures.get(progressKey)
-    if (previousFailure) {
-      log('INFO', `Download status checks recovered: ${details}${previousFailure.suppressed ? ` (${previousFailure.suppressed} repeated error${previousFailure.suppressed === 1 ? '' : 's'} were suppressed)` : ''}`)
-      downloadProgressFailures.delete(progressKey)
+  }
+
+  if (method === 'POST' && path === '/api/downloads/cancel') {
+    const body = await readJson(request)
+    if (bulkOperationActive || downloadJobs.active()) return sendJson(response, 409, { ok: false, error: 'A bulk operation is running; wait for it to finish before cancelling' })
+    bulkOperationActive = true
+    try {
+      const result = await cancelRecords(loadConfig(), body.record_ids, body.remove_files === true)
+      return sendJson(response, 200, result)
+    } catch (error) {
+      return sendJson(response, 502, { ok: false, error: error instanceof Error ? error.message : String(error) })
+    } finally {
+      bulkOperationActive = false
     }
-    const summary: JsonObject = { ...summarizeTorrentProgress(torrents, hashes.length), identity: releaseIdentity(found.release!) }
-    const foundAny = Boolean(summary.found)
-    const progress = Number(summary.progress)
-    const state = String(summary.state)
-    const previousState = downloadProgressStates.get(progressKey)
-    if (foundAny && previousState !== state) {
-      log('INFO', `Download state ${previousState ? `${previousState} → ` : ''}${state}: ${details} (${(progress * 100).toFixed(1)}%; ${formatBytes(Number(summary.downloaded))}/${formatBytes(Number(summary.total_size))}; ${formatBytes(Number(summary.speed))}/s)`)
-      downloadProgressStates.set(progressKey, state)
-    } else if (!foundAny && previousState) {
-      log('INFO', `Download no longer present in qBittorrent: ${details} (previous state: ${previousState})`)
-      downloadProgressStates.delete(progressKey)
-    }
-    return sendJson(response, 200, summary)
   }
 
   if (method === 'POST' && path === '/api/download_control') {
-    const data = await readJson(request)
-    const key = String(data.key || '').trim()
-    const releaseIndex = parseReleaseIndex(data.release ?? 0)
-    const action = String(data.action || '')
-    if (!key) return sendJson(response, 400, { ok: false, error: 'No key provided' })
-    if (releaseIndex === null) return sendJson(response, 400, { ok: false, error: 'Release must be a non-negative integer' })
-    if (action !== 'pause' && action !== 'resume' && action !== 'remove') {
-      return sendJson(response, 400, { ok: false, error: 'Unknown torrent action' })
-    }
-    const found = findResult(key, releaseIndex)
-    if (found.error) return sendJson(response, found.error[0], { ok: false, error: found.error[1] })
-    if (data.identity && data.identity !== releaseIdentity(found.release!)) return sendJson(response, 409, { error: 'This release changed. Open Downloads to control the original torrent.' })
-    const hashes = (found.release!.info_hashes || []).map((hash: string) => hash.toLowerCase()).filter((hash: string) => /^[0-9a-f]{40}$/.test(hash))
-    if (!hashes.length) return sendJson(response, 400, { ok: false, error: 'No torrent hashes available for this release' })
-    const deleteFiles = action === 'remove' && data.delete_files === true
-    const started = Date.now()
-    const details = releaseDetails(found.result!, found.release!, releaseIndex)
-    log('INFO', `Torrent ${action} requested: ${details} (torrents: ${hashes.length}${action === 'remove' ? `; delete files: ${deleteFiles ? 'yes' : 'no'}` : ''})`)
+    const body = await readJson(request)
+    const recordId = typeof body.record_id === 'string' ? body.record_id.trim() : ''
+    const action = String(body.action || '')
+    if (!recordId) return sendJson(response, 400, { ok: false, error: 'A download record id is required' })
     try {
-      await qbControlTorrents(loadConfig(), hashes, action, deleteFiles)
+      await controlRecord(loadConfig(), recordId, action, body.delete_files === true)
+      return sendJson(response, 200, { ok: true })
     } catch (error) {
+      if (error instanceof OwnershipError) {
+        const message = error.message
+        const status = message === 'Download record not found.' ? 404 : message === 'Unknown download action' ? 400 : 409
+        return sendJson(response, status, { ok: false, error: message })
+      }
       const message = error instanceof Error ? error.message : String(error)
-      log('ERROR', `Torrent ${action} failed after ${((Date.now() - started) / 1000).toFixed(1)}s: ${details} (${message})`)
+      log('ERROR', `Download control failed: ${message}`)
       return sendJson(response, 502, { ok: false, error: message })
     }
-    if (action === 'remove') {
-      forgetOwnedTorrents(hashes)
-      downloadProgressStates.delete(`${key}\0${releaseIndex}`)
-      downloadProgressFailures.delete(`${key}\0${releaseIndex}`)
-    }
-    const detail = action === 'remove' ? (deleteFiles ? ' and deleted its files' : ' and preserved its files') : ''
-    log('INFO', `Torrent ${action} finished in ${((Date.now() - started) / 1000).toFixed(1)}s: ${details}${detail}`)
-    return sendJson(response, 200, { ok: true })
   }
 
   sendJson(response, 404, { error: 'Not found' })

@@ -2,16 +2,80 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { DATA_DIR } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
-import { errorMessage, log } from './logging.js'
-import { planTorrents } from '../shared/download-plan.js'
-import { jobResult, type DownloadJob, type DownloadSelection } from '../shared/download-jobs.js'
-import { downloadCategory } from './config.js'
-import { indexResultReleases, type BulkDownloadTarget } from './downloads.js'
-import { qbGetTorrents, qbBulkAddTorrents } from './qbittorrent.js'
-import { forgetOwnedTorrents, recordOwnedDownload } from './download-store.js'
-import type { Config, JsonObject } from './types.js'
+import type { DownloadJob, DownloadProtocol, DownloadSelection, DownloadUnitEntry, DownloadUnitFailure } from '../shared/download-contracts.js'
+import { jobResult } from '../shared/download-contracts.js'
 
 export class DownloadJobConflict extends Error {}
+
+const RESTART_MESSAGE = 'The server restarted before this download settled. Check the download client before retrying.'
+
+interface UnitSeed { unit_id: string; protocol: DownloadProtocol; source_hash: string; label: string }
+
+const object = (value: unknown): Record<string, unknown> | null => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+const isHash = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{40}$/i.test(value)
+const validProtocol = (value: unknown): value is DownloadProtocol => value === 'torrent' || value === 'usenet'
+const text = (value: unknown, fallback = ''): string => typeof value === 'string' && value ? value : fallback
+
+const validEntry = (value: unknown): value is DownloadUnitEntry => {
+  const entry = object(value)
+  return Boolean(entry && typeof entry.unit_id === 'string' && validProtocol(entry.protocol) && typeof entry.source_hash === 'string' && Array.isArray(entry.selections))
+}
+
+const validFailure = (value: unknown): value is DownloadUnitFailure => {
+  const failure = object(value)
+  return Boolean(failure && validProtocol(failure.protocol) && typeof failure.label === 'string' && typeof failure.error === 'string' && Array.isArray(failure.selections))
+}
+
+const validTargets = (value: unknown): value is DownloadSelection[] => Array.isArray(value) && value.every(raw => {
+  const target = object(raw)
+  return Boolean(target && typeof target.key === 'string' && Number.isInteger(target.release) && (target.release as number) >= 0)
+})
+
+/** One legacy v1 hash entry into a protocol-neutral unit; selections fall back to the job's rows. */
+function legacyUnit(value: unknown, label: string, fallbackSelections: { key: string; release: number }[]): DownloadUnitEntry | null {
+  if (!isHash(value)) return null
+  const hash = value.toLowerCase()
+  return { unit_id: `torrent:${hash}`, protocol: 'torrent', source_hash: hash, native_id: hash, label: label || hash, selections: fallbackSelections }
+}
+
+/** Loads the current v2 envelope or migrates a legacy v1 hash-array file without losing outcomes. */
+function decodeJobs(value: unknown): DownloadJob[] {
+  const container = object(value)
+  const rawJobs: unknown[] = Array.isArray(value) ? value : container && container.version === 2 && Array.isArray(container.jobs) ? container.jobs : []
+  return rawJobs.flatMap(raw => {
+    const job = object(raw)
+    if (!job || typeof job.id !== 'string' || typeof job.finished !== 'boolean' || !validTargets(job.targets)) return []
+    const targets = job.targets as DownloadSelection[]
+    const rows = targets.map(({ key, release }) => ({ key, release }))
+    const labelsByHash = new Map<string, string>()
+    if (Array.isArray(job.failures)) for (const rawFailure of job.failures) {
+      const failure = object(rawFailure)
+      if (failure && isHash(failure.hash)) labelsByHash.set(failure.hash.toLowerCase(), text(failure.label, failure.hash.toLowerCase()))
+    }
+    const mapEntries = (items: unknown): DownloadUnitEntry[] => Array.isArray(items) ? items.flatMap(item => {
+      if (validEntry(item)) return [item]
+      const unit = legacyUnit(item, isHash(item) ? labelsByHash.get(item.toLowerCase()) || '' : '', rows)
+      return unit ? [unit] : []
+    }) : []
+    const failures: DownloadUnitFailure[] = Array.isArray(job.failures) ? job.failures.flatMap(failure => {
+      if (validFailure(failure)) return [failure]
+      const legacy = object(failure)
+      if (legacy && isHash(legacy.hash) && typeof legacy.error === 'string') {
+        const hash = legacy.hash.toLowerCase()
+        return [{
+          unit_id: `torrent:${hash}`, protocol: 'torrent' as const, source_hash: hash, label: text(legacy.label, hash),
+          code: 'failed', error: legacy.error, selections: rows,
+        }]
+      }
+      return []
+    }) : []
+    return [{
+      id: job.id, finished: job.finished === true,
+      pending: mapEntries(job.pending), added: mapEntries(job.added), existing: mapEntries(job.existing),
+      failures, targets,
+    }]
+  })
+}
 
 export function createDownloadJobStore(storage: { read: () => unknown; write: (jobs: DownloadJob[]) => void }) {
   let jobs: DownloadJob[] = []
@@ -23,50 +87,52 @@ export function createDownloadJobStore(storage: { read: () => unknown; write: (j
     if (!job) throw new Error('Download job not found')
     mutate(job); save(next); return structuredClone(job)
   }
-  const validJob = (value: unknown): value is DownloadJob => {
-    if (!value || typeof value !== 'object') return false
-    const job = value as Record<string, unknown>
-    const hashes = (items: unknown): boolean => Array.isArray(items) && items.every(hash => typeof hash === 'string' && /^[0-9a-f]{40}$/.test(hash))
-    return typeof job.id === 'string' && typeof job.finished === 'boolean' && hashes(job.pending) && hashes(job.added) && hashes(job.existing)
-      && Array.isArray(job.targets) && job.targets.every(target => target && typeof target.key === 'string' && Number.isInteger(target.release) && target.release >= 0)
-      && Array.isArray(job.failures) && job.failures.every(failure => failure && typeof failure.hash === 'string' && typeof failure.label === 'string' && typeof failure.error === 'string')
-  }
+  const mutateUnit = (id: string, unitId: string, settle: (job: DownloadJob, unit: DownloadUnitEntry) => void): DownloadJob => update(id, job => {
+    const unit = job.pending.find(unit => unit.unit_id === unitId)
+    if (!unit) return
+    job.pending = job.pending.filter(candidate => candidate.unit_id !== unitId)
+    settle(job, unit)
+  })
   return {
     restore() {
       if (restored) return
       restored = true
-      const saved = storage.read()
-      if (!Array.isArray(saved)) return
-      const next = structuredClone(saved.filter(validJob).slice(-20))
+      const next = decodeJobs(storage.read()).slice(-20)
       let interrupted = false
       for (const job of next) if (!job.finished) {
         interrupted = true
-        job.failures.push(...job.pending.map(hash => ({ hash, label: hash, error: 'Server restarted before this torrent settled. Check qBittorrent before retrying.' })))
+        job.failures.push(...job.pending.map(unit => ({ ...unit, code: 'interrupted', error: RESTART_MESSAGE })))
         job.pending = []; job.finished = true
       }
       if (interrupted) save(next); else jobs = next
     },
     get(id?: string): DownloadJob | null { const job = id ? jobs.find(job => job.id === id) : jobs.at(-1); return job ? structuredClone(job) : null },
     active(): boolean { return jobs.some(job => !job.finished) },
-    begin(targets: DownloadSelection[], hashes: string[]): DownloadJob {
+    begin(targets: DownloadSelection[], units: UnitSeed[], initial?: { existing?: DownloadUnitEntry[]; failures?: DownloadUnitFailure[] }): DownloadJob {
       restored = true
       if (jobs.some(job => !job.finished)) throw new DownloadJobConflict('Another bulk operation is already running')
-      const job: DownloadJob = { id: randomUUID(), finished: false, pending: [...new Set(hashes)], added: [], failures: [], existing: [], targets: structuredClone(targets) }
+      const job: DownloadJob = {
+        id: randomUUID(), finished: false,
+        pending: units.map(unit => ({ ...unit, selections: targets.map(({ key, release }) => ({ key, release })) })),
+        added: [], failures: structuredClone(initial?.failures || []), existing: structuredClone(initial?.existing || []), targets: structuredClone(targets),
+      }
       save([...jobs.slice(-19), job]); return structuredClone(job)
     },
-    existing(id: string, hashes: string[]) {
-      return update(id, job => { job.existing = hashes; job.pending = job.pending.filter(hash => !hashes.includes(hash)) })
+    existing(id: string, unitId: string, extra?: { record_id?: string; native_id?: string }) {
+      return mutateUnit(id, unitId, (job, unit) => { job.existing.push({ ...unit, ...extra }) })
     },
-    settle(id: string, hash: string, label: string, error: string | null) {
+    added(id: string, unitId: string, extra?: { record_id?: string; native_id?: string }) {
+      return mutateUnit(id, unitId, (job, unit) => { job.added.push({ ...unit, ...extra }) })
+    },
+    failure(id: string, failure: DownloadUnitFailure) {
       return update(id, job => {
-        if (!job.pending.includes(hash)) return
-        job.pending = job.pending.filter(value => value !== hash)
-        if (error) job.failures.push({ hash, label, error }); else job.added.push(hash)
+        job.pending = job.pending.filter(unit => unit.unit_id !== failure.unit_id)
+        job.failures.push(failure)
       })
     },
-    finish(id: string, error = 'Torrent did not settle; check qBittorrent before retrying.') {
+    finish(id: string, error = 'The download did not settle; check the client before retrying.') {
       return update(id, job => {
-        job.failures.push(...job.pending.map(hash => ({ hash, label: hash, error })))
+        job.failures.push(...job.pending.map(unit => ({ ...unit, code: 'unsettled', error })))
         job.pending = []; job.finished = true
       })
     },
@@ -74,37 +140,10 @@ export function createDownloadJobStore(storage: { read: () => unknown; write: (j
 }
 
 const JOBS_FILE = join(DATA_DIR, 'download_jobs.json')
-export const downloadJobs = createDownloadJobStore({ read: () => readJson<unknown>(JOBS_FILE, []), write: jobs => writeJsonAtomic(JOBS_FILE, jobs) })
+export const downloadJobs = createDownloadJobStore({
+  read: () => readJson<unknown>(JOBS_FILE, []),
+  write: jobs => writeJsonAtomic(JOBS_FILE, { version: 2, jobs }),
+})
 
-/** Captures the complete plan and its associations before starting external work. */
-export function submitDownloadJob(config: Config, targets: BulkDownloadTarget[], results: JsonObject[]) {
-  results = structuredClone(results)
-  const plan = planTorrents(targets.map(target => {
-    const result = results.find(result => result.key === target.key)!
-    return { release: result.releases[target.release], category: downloadCategory(config, target.arr), label: `${result.title || target.key}${target.part ? ` · ${target.part}` : ''}` }
-  }))
-  const index = indexResultReleases(results, targets)
-  const job = downloadJobs.begin(targets.map(({ key, release }) => ({ key, release })), plan.map(torrent => torrent.hash))
-  const completion = (async () => {
-    try {
-      if (!plan.length) return jobResult(downloadJobs.finish(job.id))
-      const existing = new Set((await qbGetTorrents(config, undefined, true)).map(torrent => String(torrent.hash).toLowerCase()))
-      downloadJobs.existing(job.id, plan.filter(torrent => existing.has(torrent.hash)).map(torrent => torrent.hash))
-      await qbBulkAddTorrents(config, plan.filter(torrent => !existing.has(torrent.hash)).map(torrent => ({ ...torrent, label: torrent.labels.join(' / ') || torrent.hash })), {
-        onSettle: (hash, error) => downloadJobs.settle(job.id, hash, plan.find(torrent => torrent.hash === hash)!.labels.join(' / '), error),
-        ownership: {
-          record: hash => recordOwnedDownload(hash, index.byHash.get(hash)!),
-          forget: hash => forgetOwnedTorrents([hash]),
-        },
-      })
-      return jobResult(downloadJobs.finish(job.id))
-    } catch (error) {
-      const message = errorMessage(error)
-      log('ERROR', `Download job ${job.id} failed: ${message}`)
-      return jobResult(downloadJobs.finish(job.id, message))
-    }
-  })()
-  // HTTP clients may disconnect after acceptance; completion belongs to the service.
-  void completion.catch(error => log('ERROR', `Could not persist download job ${job.id}: ${errorMessage(error)}`))
-  return { job, completion }
-}
+export { jobResult }
+export type { DownloadJob }

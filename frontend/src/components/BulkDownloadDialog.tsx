@@ -2,14 +2,14 @@ import { upgradeParts } from '../../../shared/download-plan'
 import { ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { ResultItem, Release } from '../types'
 import { formatBytes, resultGroupKey, seasonLabel } from '../utils'
-import { buttonBase, cx } from '../styles'
+import { cx } from '../styles'
 import Icon from './Icons'
 import * as api from '../api'
-import type { BulkDownloadTarget } from '../api'
 import Modal from './Modal'
 import { bulkDialog } from './bulk-dialog-styles'
 import { releaseIdentity } from '../../../shared/releases'
-import { estimateDownloads, type DownloadPreflight } from '../../../shared/download-estimate'
+import { jobResult, type SubmissionRow, type DownloadJobStatus, type DownloadMode, type DownloadProtocol, type DownloadPreflight } from '../api'
+import { DiskLine } from './PlanReview'
 
 interface IndexedRelease {
   index: number
@@ -29,13 +29,13 @@ interface Review {
   blocked: ReviewGroup[]
 }
 
-function buildReview(results: ResultItem[]): Review {
+function buildReview(results: ResultItem[], usenetEligible: (release: Release) => boolean): Review {
   const ready: ReviewGroup[] = []
   const blocked: ReviewGroup[] = []
 
   for (const result of results) for (const part of upgradeParts(result)) {
     const group = { id: `${result.key}::${part.part || 'all'}`, result, part: part.part, options: part.options }
-    if (part.downloadable) ready.push(group)
+    if (part.torrent_available || group.options.some(({ release }) => usenetEligible(release))) ready.push(group)
     else blocked.push(group)
   }
 
@@ -44,23 +44,17 @@ function buildReview(results: ResultItem[]): Review {
 
 type ViewId = 'ready' | 'unavailable'
 
-export interface BulkOutcome {
-  requested: Set<string>
-  failed: Set<string>
-  /** Hashes whose torrent has not settled yet (metadata still being fetched). */
-  pending: Set<string>
-  /** True while the bulk add request is still in flight. */
-  inflight: boolean
-}
-
 interface Props {
   open: boolean
   results: ResultItem[]
   scopeControl: ReactNode
   hiddenKeys: Set<string>
   busy: boolean
-  outcome?: BulkOutcome | null
-  onConfirm: (selections: BulkDownloadTarget[]) => void
+  /** Live/last bulk submission state while the dialog stays open. */
+  job: DownloadJobStatus | null
+  downloadMode: DownloadMode
+  sabEnabled: boolean
+  onConfirm: (plan_id: string, acknowledge: { whole_source?: boolean; disk_space?: boolean }) => void
   onClose: () => void
 }
 
@@ -73,68 +67,93 @@ function ReleaseSummary({ release }: { release: Release }) {
   return <span className="block min-w-0 text-xs text-ink/75 wrap-anywhere"><strong className="font-semibold text-ink">{release.releaseGroup}</strong> · {release.tracker}{tags.length > 0 && ` · ${tags.join(' · ')}`}</span>
 }
 
-function OutcomeLabel({ status }: { status: 'success' | 'failure' | 'pending' | null }) {
-  return status ? <span className={cx('basis-full text-xs font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : 'text-accent-bright')}>{status === 'success' ? 'Added to qBittorrent' : status === 'failure' ? 'Could not be added — review the operation error details' : 'Waiting for qBittorrent'}</span> : null
+function OutcomeLabel({ status, protocols }: { status: 'success' | 'failure' | 'pending' | 'existing' | 'partial' | null; protocols: DownloadProtocol[] }) {
+  if (!status) return null
+  const clients = [...new Set(protocols.map(protocol => protocol === 'usenet' ? 'SABnzbd' : 'qBittorrent'))].join(' and ') || 'the download client'
+  const copy = status === 'success' ? `Sent to ${clients}`
+    : status === 'existing' ? 'Already queued in the client'
+    : status === 'partial' ? `Partly sent — see Operation Center`
+    : status === 'failure' ? 'Could not be added — review the operation error details'
+    : `Waiting for ${clients}`
+  const tone = status === 'success' ? 'text-good' : status === 'existing' ? 'text-muted' : status === 'failure' ? 'text-bad' : status === 'partial' ? 'text-warn' : 'text-accent-bright'
+  return <span className={cx('basis-full text-xs font-semibold', tone)}>{copy}</span>
 }
 
-export default function BulkDownloadDialog({ open, results, scopeControl, hiddenKeys, busy, outcome, onConfirm, onClose }: Props) {
+export default function BulkDownloadDialog({ open, results, scopeControl, hiddenKeys, busy, job, downloadMode, sabEnabled, onConfirm, onClose }: Props) {
   // Review a fixed snapshot until the dialog closes. The server checks release
-  // identities before adding anything if recommendations change meanwhile.
-  const review = useMemo(() => buildReview(results), [results])
+  // identities again when the plan is accepted.
+  const usenetEligible = useMemo(() => (release: Release) => downloadMode !== 'torrent_only' && sabEnabled && (release.info_hashes?.length || 0) > 0, [downloadMode, sabEnabled])
+  const review = useMemo(() => buildReview(results, usenetEligible), [results, usenetEligible])
   const [selected, setSelected] = useState<Record<string, number>>({})
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})
+  const [protocols, setProtocols] = useState<Record<string, DownloadProtocol>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [view, setView] = useState<ViewId>('ready')
   const cancelRef = useRef<HTMLButtonElement>(null)
-  const diskRef = useRef<HTMLElement>(null)
   const [preflight, setPreflight] = useState<{ signature: string; result: DownloadPreflight } | null>(null)
   const [preflightError, setPreflightError] = useState<{ signature: string; message: string } | null>(null)
   const [retry, setRetry] = useState(0)
-  const [acceptSpaceWarning, setAcceptSpaceWarning] = useState(false)
+  const [refresh, setRefresh] = useState(false)
+  const [wholeSource, setWholeSource] = useState(false)
+  const [diskSpace, setDiskSpace] = useState(false)
   const enabledGroups = useMemo(() => review.ready.filter(group => enabled[group.id] !== false), [review, enabled])
   const selectedGroups = useMemo(() => enabledGroups.filter(group => selected[group.id] !== undefined), [enabledGroups, selected])
   const selectedOptions = useMemo(() => selectedGroups.map(group => group.options.find(option => option.index === selected[group.id]) || group.options[0]), [selectedGroups, selected])
-  const selections = useMemo(() => selectedGroups.map((group, index) => ({ key: group.result.key, release: selectedOptions[index].index, identity: releaseIdentity(selectedOptions[index].release) })), [selectedGroups, selectedOptions])
+  const protocolFor = (group: ReviewGroup, option: IndexedRelease): DownloadProtocol => {
+    if (downloadMode === 'usenet_only') return 'usenet'
+    const chosen = protocols[group.id]
+    if (chosen === 'usenet' && usenetEligible(option.release)) return 'usenet'
+    if (chosen === 'torrent' && option.release.torrent_available) return 'torrent'
+    if (!option.release.torrent_available && usenetEligible(option.release)) return 'usenet'
+    return 'torrent'
+  }
+  const selections = useMemo(() => selectedGroups.map((group, index) => {
+    const option = selectedOptions[index]
+    return { key: group.result.key, release: option.index, identity: releaseIdentity(option.release), protocol: protocolFor(group, option) }
+  }), [selectedGroups, selectedOptions, protocols, downloadMode, sabEnabled])
   const signature = JSON.stringify(selections)
 
   useEffect(() => {
-    if (!open || busy || outcome) return
+    if (!open || busy || job?.id && job.finished) return
     const controller = new AbortController()
     setPreflight(null)
     setPreflightError(null)
-    setAcceptSpaceWarning(false)
+    setWholeSource(false)
+    setDiskSpace(false)
     const timer = window.setTimeout(() => {
-      void api.getBulkDownloadPreflight(JSON.parse(signature), AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]))
+      void api.preflightDownload(JSON.parse(signature), refresh, controller.signal)
         .then(result => { if (!controller.signal.aborted) setPreflight({ signature, result }) })
         .catch(error => { if (!controller.signal.aborted) setPreflightError({ signature, message: error instanceof Error ? error.message : 'Could not check downloads' }) })
     }, 300)
     return () => { controller.abort(); window.clearTimeout(timer) }
-  }, [open, signature, retry, busy, outcome])
+  }, [open, signature, retry, busy, job])
 
   useEffect(() => {
-    if (!open || busy || outcome) return
+    if (!open || busy || job) return
     // Only single-option groups get an automatic pick. Multi-option groups stay
     // pending (collapsed + highlighted) until the user actively chooses one.
     setSelected(Object.fromEntries(review.ready.filter((group) => group.options.length === 1).map((group) => [group.id, group.options[0].index])))
     setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, !hiddenKeys.has(hiddenKey(group.result))])))
+    setProtocols({})
     setExpanded({})
     setView(review.ready.length || !review.blocked.length ? 'ready' : 'unavailable')
     cancelRef.current?.focus()
   }, [open, review])
 
-
   if (!open) return null
-  const locked = busy || Boolean(outcome)
+  const locked = busy || Boolean(job)
+  const finished = Boolean(job?.finished)
 
   const currentPreflight = preflight?.signature === signature ? preflight.result : null
   const checkError = preflightError?.signature === signature ? preflightError.message : null
-  const checking = !currentPreflight && !checkError && !outcome
-  const estimate = currentPreflight || estimateDownloads(selectedOptions.map(option => ({ release: option.release, category: '' })))
+  const checking = !currentPreflight && !checkError && !job
   const lowSpace = currentPreflight?.disk_space.some(check => check.sufficient === false)
-  const unverifiedSpace = Boolean(checkError || estimate.unknown_torrents || estimate.approximate_torrents || (currentPreflight && estimate.new_torrents > 0 && (!currentPreflight.disk_space.length || currentPreflight.disk_space.some(check => check.sufficient !== true))))
-  const diskTone = checking ? 'border-accent/35 bg-accent/6' : lowSpace ? 'border-bad/45 bg-bad/6' : unverifiedSpace ? 'border-warn/40 bg-warn/6' : estimate.new_torrents > 0 ? 'border-good/35 bg-good/6' : 'border-line bg-canvas-soft'
-  const diskTextTone = checking ? 'text-accent-bright' : lowSpace ? 'text-bad' : unverifiedSpace ? 'text-warn' : estimate.new_torrents > 0 ? 'text-good' : 'text-muted'
-  const sizeText = estimate.unknown_torrents ? `${formatBytes(estimate.new_bytes) || '0 B'} + unknown` : estimate.new_bytes === 0 ? '0 B' : `${estimate.approximate_torrents ? '≈ ' : ''}${formatBytes(estimate.new_bytes)}`
+  const unverifiedSpace = Boolean(checkError || currentPreflight?.requires_space_ack)
+  const diskTone = checking ? 'border-accent/35 bg-accent/6' : lowSpace ? 'border-bad/45 bg-bad/6' : unverifiedSpace ? 'border-warn/40 bg-warn/6' : currentPreflight && currentPreflight.new_torrents + currentPreflight.new_nzbs > 0 ? 'border-good/35 bg-good/6' : 'border-line bg-canvas-soft'
+  const diskTextTone = checking ? 'text-accent-bright' : lowSpace ? 'text-bad' : unverifiedSpace ? 'text-warn' : currentPreflight && currentPreflight.new_torrents + currentPreflight.new_nzbs > 0 ? 'text-good' : 'text-muted'
+  const sizeText = currentPreflight
+    ? `${currentPreflight.approximate_bytes ? '≈ ' : ''}${formatBytes(currentPreflight.total_new_bytes) || '0 B'}${currentPreflight.unknown_bytes ? ' + unknown' : ''}`
+    : ''
   const pendingChoices = review.choices.filter((group) => enabled[group.id] !== false && selected[group.id] === undefined).length
   const blockedSorted = [...review.blocked].sort((a, b) =>
     a.result.title.localeCompare(b.result.title, undefined, { sensitivity: 'base' }) ||
@@ -146,24 +165,28 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
     (a.result.season || 0) - (b.result.season || 0) ||
     a.part.localeCompare(b.part),
   )
+  const serverBlocked = currentPreflight?.blocked || []
+  const serverBlockedIds = new Set(serverBlocked.map(row => `${row.key}\u0000${row.release}`))
 
-  // Per-title live outcome while the bulk add is in flight (and after it
-  // finishes): red when any of the selected release's hashes failed, green
-  // when it was sent to qBittorrent, and a "working" state while it is still
-  // waiting on metadata.
-  const groupStatus = (group: ReviewGroup): 'success' | 'failure' | 'pending' | null => {
-    if (!outcome || enabled[group.id] === false || selected[group.id] === undefined) return null
+  // Per-row live outcome while the batch is in flight (and after it finishes).
+  const result = job ? jobResult(job) : null
+  const groupStatus = (group: ReviewGroup): 'success' | 'failure' | 'pending' | 'existing' | 'partial' | null => {
+    if (!result || enabled[group.id] === false || selected[group.id] === undefined) return null
     const index = selected[group.id] ?? group.options[0].index
-    const release = group.options.find(({ index: optionIndex }) => optionIndex === index)?.release || group.options[0].release
-    const hashes = (release.info_hashes || []).map((hash) => String(hash).toLowerCase())
-    if (hashes.some((hash) => outcome.failed.has(hash))) return 'failure'
-    if (hashes.some((hash) => outcome.pending.has(hash))) return 'pending'
-    if (hashes.length > 0 && hashes.every((hash) => outcome.requested.has(hash))) return 'success'
-    return null
+    const row = result.rows.find(entry => entry.key === group.result.key && entry.release === index)
+    if (!row) return null
+    return row.status === 'added' ? 'success' : row.status === 'existing' ? 'existing' : row.status === 'partial' ? 'partial' : row.status === 'failed' ? 'failure' : 'pending'
   }
-  const inflightProgress = outcome?.inflight
-    ? { settled: outcome.requested.size + outcome.failed.size, total: outcome.requested.size + outcome.failed.size + (outcome.pending?.size || 0) }
+  const rowProtocols = (group: ReviewGroup): DownloadProtocol[] => {
+    const index = selected[group.id] ?? group.options[0].index
+    return result?.rows.find((entry: SubmissionRow) => entry.key === group.result.key && entry.release === index)?.protocols || []
+  }
+  const inflightProgress = job && !job.finished
+    ? { settled: job.added.length + job.existing.length + job.failures.length, total: job.added.length + job.existing.length + job.failures.length + job.pending.length }
     : null
+  const needsWhole = currentPreflight?.requires_whole_ack === true
+  const needsSpace = currentPreflight?.requires_space_ack === true
+  const newUnits = (currentPreflight?.new_torrents || 0) + (currentPreflight?.new_nzbs || 0)
 
   return (
     <Modal open={open} labelledBy="bulk-download-title" onClose={onClose}>
@@ -174,15 +197,22 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
             <h2 id="bulk-download-title" className="m-0 text-lg font-extrabold">Review bulk downloads</h2>
           </div>
           <button type="button" className={bulkDialog.closeButton} onClick={onClose} aria-label={busy ? 'Continue batch in background' : 'Close'}><Icon name="close" size={18}/></button>
-          <p className="m-0 basis-full text-sm text-muted">{outcome?.inflight ? 'Sending your fixed selection to qBittorrent. Closing this review keeps the batch running in the background.' : outcome ? 'Review the submitted selection and each outcome below. Operation Center shows the batch results and any error details.' : 'Choose a best release for each season or cour you want to upgrade.'}</p>
+          <p className="m-0 basis-full text-sm text-muted">{job && !job.finished ? 'Sending your fixed selection to the download clients. Closing this review keeps the batch running in the background.' : finished ? 'Review the submitted selection and each outcome below. Operation Center shows the batch results and any error details.' : 'Choose a release and download method for each season or cour you want to upgrade.'}</p>
         </header>
 
         <div className={bulkDialog.body}>
           {scopeControl}
           <div className="flex flex-wrap gap-2 text-xs font-bold">
             <button type="button" className={cx('touch-target cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'ready' ? 'border-good/60 bg-good/25 text-ink' : 'border-good/30 bg-good/10 text-ink hover:bg-good/18')} onClick={() => setView('ready')} aria-pressed={view === 'ready'}>{review.ready.length} eligible</button>
-            {review.blocked.length > 0 && <button type="button" className={cx('touch-target cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'unavailable' ? 'border-warn/60 bg-warn/25 text-ink' : 'border-warn/30 bg-warn/10 text-ink hover:bg-warn/18')} onClick={() => setView('unavailable')} aria-pressed={view === 'unavailable'}>{review.blocked.length} unavailable</button>}
+            {(review.blocked.length > 0 || serverBlocked.length > 0) && <button type="button" className={cx('touch-target cursor-pointer rounded-full border px-3 py-1.5 transition-colors', view === 'unavailable' ? 'border-warn/60 bg-warn/25 text-ink' : 'border-warn/30 bg-warn/10 text-ink hover:bg-warn/18')} onClick={() => setView('unavailable')} aria-pressed={view === 'unavailable'}>{Math.max(review.blocked.length, serverBlocked.length)} unavailable</button>}
             {review.ready.length > 0 && <div className="ml-auto flex gap-2"><button type="button" className="touch-target cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 rounded-full border border-accent/50 bg-accent/15 px-3 py-1.5 font-extrabold text-accent-bright transition-colors hover:bg-accent/25" disabled={locked} onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, true])))}>Check all</button><button type="button" className="touch-target cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 rounded-full border border-line-strong bg-panel px-3 py-1.5 text-ink transition-colors hover:border-ink/25 hover:bg-canvas-soft" disabled={locked} onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, false])))}>Uncheck all</button></div>}
+            {downloadMode === 'choose' && <div className="flex gap-2">
+              <button type="button" className="touch-target cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 rounded-full border border-accent/50 bg-accent/12 px-3 py-1.5 font-extrabold text-accent-bright transition-colors hover:bg-accent/20" disabled={locked || !review.ready.length} title="Use qBittorrent for every eligible group" onClick={() => setProtocols(Object.fromEntries(review.ready.map((group) => [group.id, 'torrent' as DownloadProtocol])))}>All torrents</button>
+              <button type="button" className="touch-target cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 rounded-full border border-sky/50 bg-sky/12 px-3 py-1.5 font-extrabold text-sky transition-colors hover:bg-sky/20" disabled={locked || !review.ready.length || !sabEnabled} title="Use SABnzbd wherever the release is available on Usenet" onClick={() => setProtocols(Object.fromEntries(review.ready.map((group) => {
+                const option = group.options.find(({ index }) => index === selected[group.id]) || group.options[0]
+                return [group.id, usenetEligible(option.release) ? 'usenet' : 'torrent'] as const
+              })))}>All Usenet where available</button>
+            </div>}
           </div>
 
           {view === 'ready' && (
@@ -192,29 +222,37 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                   {readySorted.map((group) => {
                     const isHidden = hiddenKeys.has(hiddenKey(group.result))
                     const isChoice = group.options.length > 1
+                    const status = groupStatus(group)
+                    const statusClass = status === 'success' ? 'border-good/50 bg-good/8' : status === 'failure' ? 'border-bad/50 bg-bad/8' : status === 'pending' ? 'border-accent/45 bg-accent/8' : status === 'partial' ? 'border-warn/50 bg-warn/8' : ''
+                    const statusIcon = status === 'success' ? <Icon name="check" size={13} className="text-good"/> : status === 'failure' ? <Icon name="alert" size={13} className="text-bad"/> : status === 'pending' ? <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/> : status === 'partial' ? <Icon name="alert" size={13} className="text-warn"/> : null
+                    const statusText = status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : status === 'partial' ? 'text-warn' : 'text-ink'
+                    const protocolButtons = (option: IndexedRelease) => downloadMode === 'choose' ? <span className="flex shrink-0 items-center gap-1" role="radiogroup" aria-label={`Download method for ${group.result.title}`}>
+                      <button type="button" role="radio" aria-checked={protocolFor(group, option) === 'torrent'} disabled={locked || !option.release.torrent_available} title={option.release.torrent_available ? 'Send to qBittorrent' : 'No magnet available (private tracker)'} onClick={() => setProtocols(current => ({ ...current, [group.id]: 'torrent' }))} className={cx('cursor-pointer rounded-md border px-2 py-1 text-[0.6875rem] font-bold', protocolFor(group, option) === 'torrent' ? 'border-accent bg-accent/15 text-accent-bright' : 'border-line text-muted hover:text-ink', (!option.release.torrent_available || locked) && 'cursor-not-allowed opacity-50')}>Torrent</button>
+                      <button type="button" role="radio" aria-checked={protocolFor(group, option) === 'usenet'} disabled={locked || !usenetEligible(option.release)} title={usenetEligible(option.release) ? 'Send to SABnzbd (whole Usenet source)' : 'Not available over Usenet'} onClick={() => setProtocols(current => ({ ...current, [group.id]: 'usenet' }))} className={cx('cursor-pointer rounded-md border px-2 py-1 text-[0.6875rem] font-bold', protocolFor(group, option) === 'usenet' ? 'border-sky bg-sky/15 text-sky' : 'border-line text-muted hover:text-ink', (!usenetEligible(option.release) || locked) && 'cursor-not-allowed opacity-50')}>Usenet</button>
+                    </span> : null
                     if (!isChoice) {
                       const option = group.options.find(({ index }) => index === (selected[group.id] ?? group.options[0].index)) || group.options[0]
                       const release = option.release
                       const localSize = group.part ? (group.result.local_size_by_part?.[group.part] || 0) : group.result.local_size
                       const delta = release.size && localSize ? release.size - localSize : null
-                      const status = groupStatus(group)
+                      const isServerBlocked = serverBlockedIds.has(`${group.result.key}\u0000${option.index}`)
                       return (
-                        <label key={group.id} className={cx(bulkDialog.row, locked ? 'cursor-default' : 'cursor-pointer', status === 'success' && 'border-good/50 bg-good/8', status === 'failure' && 'border-bad/50 bg-bad/8', status === 'pending' && 'border-accent/45 bg-accent/8', !status && (enabled[group.id] !== false ? bulkDialog.rowSelected : bulkDialog.rowUnchecked))}>
+                        <label key={group.id} className={cx(bulkDialog.row, locked ? 'cursor-default' : 'cursor-pointer', statusClass, !status && (isServerBlocked ? 'border-warn/40 bg-warn/6' : enabled[group.id] !== false ? bulkDialog.rowSelected : bulkDialog.rowUnchecked))}>
                           <input type="checkbox" disabled={locked} className="size-3.5 shrink-0 accent-good" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} />
-                          {status === 'success' && <Icon name="check" size={13} className="text-good"/>}
-                          {status === 'failure' && <Icon name="alert" size={13} className="text-bad"/>}
-                          {status === 'pending' && <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/>}
-                          <span className={cx('font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : 'text-ink')}>{group.result.title}</span>
+                          {statusIcon}
+                          <span className={cx('font-semibold', statusText)}>{group.result.title}</span>
                           <span className={bulkDialog.seasonBadge}>{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
                           {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                           <span className="ml-auto flex items-center gap-1.5 tabular-nums" title={`${release.releaseGroup} · ${release.tracker}`}>
                             <span className="text-ink/70" title="Current local size">{formatBytes(localSize) || '—'}</span>
                             <span className="text-ink/60">→</span>
-                            <span className="font-bold text-ink" title="Selected best release size">{formatBytes(release.size) || 'Unknown'}</span>
+                            <span className="font-bold text-ink" title="Selected release size">{formatBytes(release.size) || 'Unknown'}</span>
                             {delta !== null && delta !== 0 && <span className="text-ink/60">({delta > 0 ? '+' : '−'}{formatBytes(Math.abs(delta))})</span>}
                           </span>
+                          {protocolButtons(option)}
                           <span className="basis-full"><ReleaseSummary release={release}/></span>
-                          <OutcomeLabel status={status}/>
+                          {isServerBlocked && !status && <span className="basis-full text-xs font-semibold text-warn">{serverBlocked.find(row => row.key === group.result.key && row.release === option.index)?.reason}</span>}
+                          <OutcomeLabel status={status} protocols={rowProtocols(group)}/>
                         </label>
                       )
                     }
@@ -225,16 +263,13 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                     const isExpanded = expanded[group.id] === true
                     const chosenOption = group.options.find(({ index }) => index === chosenIndex) || null
                     const localSize = group.part ? (group.result.local_size_by_part?.[group.part] || 0) : group.result.local_size
-                    const status = groupStatus(group)
                     return (
-                      <div key={group.id} className={cx('overflow-hidden rounded-lg border transition-colors', status === 'success' ? 'border-good/50 bg-good/8' : status === 'failure' ? 'border-bad/50 bg-bad/8' : status === 'pending' ? 'border-accent/45 bg-accent/8' : isPending ? 'border-warn/55 bg-warn/8' : enabled[group.id] !== false ? bulkDialog.rowSelected : bulkDialog.rowUnchecked)}>
+                      <div key={group.id} className={cx('overflow-hidden rounded-lg border transition-colors', statusClass || (isPending ? 'border-warn/55 bg-warn/8' : enabled[group.id] !== false ? bulkDialog.rowSelected : bulkDialog.rowUnchecked))}>
                         <div className="flex items-center gap-2 px-3 py-2">
                           <label className="touch-target grid size-8 shrink-0 cursor-pointer place-items-center rounded-lg hover:bg-panel-raised"><input type="checkbox" disabled={locked} className="size-4 accent-good" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} aria-label={`Include ${group.result.title} · ${seasonLabel(group.result)}${group.part ? ` · ${group.part}` : ''}`} /></label>
                           <button type="button" className="flex min-h-11 min-w-0 flex-1 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 text-left text-xs" onClick={() => setExpanded((current) => ({ ...current, [group.id]: !isExpanded }))} aria-expanded={isExpanded}>
-                            {status === 'success' && <Icon name="check" size={13} className="text-good"/>}
-                            {status === 'failure' && <Icon name="alert" size={13} className="text-bad"/>}
-                            {status === 'pending' && <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/>}
-                            <span className={cx('font-semibold', status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : 'text-ink')}>{group.result.title}</span>
+                            {statusIcon}
+                            <span className={cx('font-semibold', statusText)}>{group.result.title}</span>
                             <span className={bulkDialog.seasonBadge}>{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
                             {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                             {chosen ? (
@@ -243,7 +278,7 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                               <span className={cx('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-extrabold', enabled[group.id] !== false ? 'border-warn/45 bg-warn/15 text-warn' : 'border-line-strong bg-canvas-soft text-muted')}><Icon name="alert" size={12}/>Choose 1 of {group.options.length}</span>
                             )}
                             {chosenOption && <span className="basis-full"><ReleaseSummary release={chosenOption.release}/></span>}
-                            <OutcomeLabel status={status}/>
+                            <OutcomeLabel status={status} protocols={rowProtocols(group)}/>
                             <span className="ml-auto flex items-center gap-1.5">
                               {chosenOption && (
                                 <span className="flex items-center gap-1.5 tabular-nums" title={`${chosenOption.release.releaseGroup} · ${chosenOption.release.tracker}`}>
@@ -254,6 +289,7 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                               <Icon name="chevron-right" size={15} className={cx('shrink-0 text-muted transition-transform', isExpanded ? 'rotate-90' : '')}/>
                             </span>
                           </button>
+                          {chosenOption && protocolButtons(chosenOption)}
                         </div>
                         {isExpanded && (
                           <div className="border-t border-line px-3 py-3">
@@ -285,35 +321,32 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
           {view === 'ready' && review.ready.length > 0 && <>
             <dl className="m-0 grid grid-cols-2 gap-x-4 gap-y-2 border-y border-line py-3 sm:grid-cols-5">
               <div><dt className="text-xs text-muted">Selected releases</dt><dd className="m-0 text-sm font-bold text-accent-bright tabular-nums">{selections.length}</dd></div>
-              <div><dt className="text-xs text-muted">New torrents</dt><dd className="m-0 text-sm font-bold tabular-nums">{estimate.new_torrents}</dd></div>
-              <div><dt className="text-xs text-muted">New download size</dt><dd className={cx('m-0 text-sm font-bold tabular-nums', estimate.unknown_torrents ? 'text-warn' : 'text-accent-bright')} data-testid="bulk-download-size">{checking ? 'Checking…' : sizeText}</dd></div>
-              <div><dt className="text-xs text-muted">File scope</dt><dd className="m-0 text-sm font-bold tabular-nums">{estimate.selected_file_count > 0 ? `${estimate.selected_file_count} file${estimate.selected_file_count === 1 ? '' : 's'}${estimate.whole_torrents ? ` + ${estimate.whole_torrents} whole` : ''}` : `${estimate.whole_torrents} whole torrent${estimate.whole_torrents === 1 ? '' : 's'}`}</dd></div>
-              <div className="col-span-2 flex items-baseline gap-2 sm:col-span-1 sm:block"><dt className="text-xs text-muted">Already in qBittorrent</dt><dd className={cx('m-0 text-sm font-bold tabular-nums', checkError ? 'text-warn' : 'text-ink')}>{checking || checkError ? 'Unknown' : estimate.existing_torrents}</dd></div>
+              <div><dt className="text-xs text-muted">New torrents</dt><dd className="m-0 text-sm font-bold tabular-nums">{currentPreflight?.new_torrents ?? '—'}</dd></div>
+              <div><dt className="text-xs text-muted">New NZBs</dt><dd className="m-0 text-sm font-bold tabular-nums">{currentPreflight?.new_nzbs ?? '—'}</dd></div>
+              <div><dt className="text-xs text-muted">New download size</dt><dd className={cx('m-0 text-sm font-bold tabular-nums', currentPreflight?.unknown_bytes ? 'text-warn' : 'text-accent-bright')} data-testid="bulk-download-size">{checking ? 'Checking…' : currentPreflight ? sizeText : '—'}</dd></div>
+              <div className="col-span-2 flex items-baseline gap-2 sm:col-span-1 sm:block"><dt className="text-xs text-muted">Already queued</dt><dd className={cx('m-0 text-sm font-bold tabular-nums', checkError ? 'text-warn' : 'text-ink')}>{checking || checkError ? 'Unknown' : currentPreflight?.existing_units}</dd></div>
             </dl>
-            {!outcome && <section ref={diskRef} className={cx('space-y-2 rounded-xl border p-3 text-xs transition-colors', diskTone)} aria-label="Download disk space" aria-live="polite">
+            {!finished && <section className={cx('space-y-2 rounded-xl border p-3 text-xs transition-colors', diskTone)} aria-label="Download storage and scope" aria-live="polite">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="m-0 text-xs font-bold">Disk space</h3>
+                <h3 className="m-0 text-xs font-bold">Storage &amp; source scope</h3>
                 <span className={cx('inline-flex items-center gap-1.5 font-semibold', diskTextTone)}>
                   {checking ? <span className="size-3 animate-spin rounded-full border-2 border-accent/30 border-t-accent"/> : <Icon name={lowSpace || unverifiedSpace ? 'alert' : 'check'} size={13}/>}
-                  {checking ? 'Checking…' : lowSpace ? 'Low space' : unverifiedSpace ? 'Unverified' : estimate.new_torrents > 0 ? 'Space available' : 'No new torrents'}
+                  {checking ? 'Checking…' : lowSpace ? 'Low space' : unverifiedSpace ? 'Needs acknowledgement' : newUnits > 0 ? 'Space available' : 'Nothing new to send'}
                 </span>
               </div>
-              {checking && <p className="m-0 text-ink/80">Checking qBittorrent download paths and existing torrents…</p>}
-              {checkError && <p className="m-0 text-warn">Check unavailable: {checkError}. Existing torrents and available space could not be verified.</p>}
-              {currentPreflight?.disk_space.map((check, index) => <div key={index} className={cx('break-words', check.sufficient === false ? 'text-bad' : check.sufficient === true ? 'text-ink/80' : 'text-warn')}>
-                <span className="font-bold">{check.path || 'Download path unavailable'}</span>: {check.free_bytes === null ? 'Free space unavailable' : `${formatBytes(check.free_bytes) || '0 B'} free`} · {formatBytes(check.required_bytes) || '0 B'} needed{check.unknown_torrents ? ' + unverified sizes' : ''}
-                {check.sufficient === false && <span className="block font-bold">Not enough space for these downloads.</span>}
-                {check.reason && <span className="block">{check.reason}</span>}
-              </div>)}
-              {currentPreflight && !estimate.new_torrents && <p className="m-0 text-muted">No new torrents to add. Existing torrents are kept unchanged.</p>}
-              {(estimate.unknown_torrents > 0 || estimate.approximate_torrents > 0) && <p className="m-0 text-warn">Some saved releases lack file sizes. Run a new scan for a more accurate estimate.</p>}
-              <button type="button" className="touch-target cursor-pointer rounded-lg px-2 py-1 font-bold text-accent-bright hover:bg-accent/10 disabled:opacity-50" disabled={checking || busy} onClick={() => setRetry(current => current + 1)}>Refresh check</button>
-              {lowSpace && <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-warn/40 bg-warn/8 p-3 text-warn"><input type="checkbox" className="size-4 shrink-0 accent-warn" checked={acceptSpaceWarning} onChange={event => setAcceptSpaceWarning(event.target.checked)}/>Continue despite the disk space warning</label>}
+              {checking && <p className="m-0 text-ink/80">Checking download clients, existing acquisitions, and Usenet sources…</p>}
+              {checkError && <p className="m-0 text-warn">Check unavailable: {checkError}. Run the review again before starting the batch.</p>}
+              {currentPreflight?.disk_space.length ? <ul className="m-0 list-none divide-y divide-line">{currentPreflight.disk_space.map((check, index) => <DiskLine key={`${check.client}-${index}`} check={check}/>)}</ul> : <p className="m-0 text-muted">No disk-space data available from the configured clients.</p>}
+              {currentPreflight && !newUnits && <p className="m-0 text-muted">Nothing new to send. Existing acquisitions are kept unchanged.</p>}
+              {currentPreflight?.approximate_bytes && <p className="m-0 text-muted">Usenet source sizes are provider estimates.</p>}
+              <button type="button" className="touch-target cursor-pointer rounded-lg px-2 py-1 font-bold text-accent-bright hover:bg-accent/10 disabled:opacity-50" disabled={checking || busy} onClick={() => { setRefresh(true); setRetry(current => current + 1) }}>Refresh review</button>
+              {needsWhole && <label className="flex min-h-11 cursor-pointer items-start gap-2 rounded-lg border border-warn/40 bg-warn/8 p-3 text-warn"><input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-warn" checked={wholeSource} onChange={event => setWholeSource(event.target.checked)}/><span className="min-w-0"><span className="block font-bold">Download whole Usenet sources</span><span className="mt-0.5 block text-[0.6875rem] text-muted">Usenet sources cannot be split per episode. Files beyond the selected episodes will also be downloaded.</span></span></label>}
+              {needsSpace && <label className="flex min-h-11 cursor-pointer items-start gap-2 rounded-lg border border-warn/40 bg-warn/8 p-3 text-warn"><input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-warn" checked={diskSpace} onChange={event => setDiskSpace(event.target.checked)}/><span className="min-w-0"><span className="block font-bold">Continue without confirmed free space</span><span className="mt-0.5 block text-[0.6875rem] text-muted">The client could not confirm enough space. Some downloads may fail until space is available.</span></span></label>}
             </section>}
           </>}
           {view === 'unavailable' && (
             <section>
-              <h3 className="mb-3 text-xs font-extrabold tracking-[0.12em] text-warn uppercase">Unavailable from private indexers</h3>
+              <h3 className="mb-3 text-xs font-extrabold tracking-[0.12em] text-warn uppercase">Not downloadable right now</h3>
               <div className="space-y-1.5">
                 {blockedSorted.map((group) => {
                   const isHidden = hiddenKeys.has(hiddenKey(group.result))
@@ -326,6 +359,17 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                     </div>
                   )
                 })}
+                {serverBlocked.map((row) => {
+                  const item = results.find(entry => entry.key === row.key)
+                  if (!item) return null
+                  return (
+                    <div key={`${row.key}\u0000${row.release}`} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warn/25 bg-warn/6 px-3 py-2 text-xs">
+                      <span className="font-semibold text-ink">{item.title}</span>
+                      <span className="rounded border border-warn/25 px-1.5 py-0.5 text-xs font-extrabold text-warn">{seasonLabel(item)}</span>
+                      <span className="ml-auto min-w-0 text-muted">{row.reason}</span>
+                    </div>
+                  )
+                })}
               </div>
             </section>
           )}
@@ -333,16 +377,16 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
 
         <footer className={bulkDialog.footer}>
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
-            {!outcome && pendingChoices > 0 && <span className="inline-flex items-center gap-1 font-bold text-warn"><Icon name="alert" size={13}/>Resolve {pendingChoices} release choice{pendingChoices === 1 ? '' : 's'} first</span>}
-            {!outcome && lowSpace && !acceptSpaceWarning && <button type="button" className="touch-target cursor-pointer rounded-lg px-2 py-1 font-bold text-warn underline hover:bg-warn/10" onClick={() => diskRef.current?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.focus()}>Review disk space warning</button>}
+            {!job && pendingChoices > 0 && <span className="inline-flex items-center gap-1 font-bold text-warn"><Icon name="alert" size={13}/>Resolve {pendingChoices} release choice{pendingChoices === 1 ? '' : 's'} first</span>}
+            {!job && serverBlocked.length > 0 && <span className="text-muted">{serverBlocked.length} selected row{serverBlocked.length === 1 ? '' : 's'} will be skipped</span>}
           </span>
           <div className={bulkDialog.footerActions}>
-            {outcome?.inflight ? (
-              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2"><span className="text-xs text-muted" role="status">Sending… {inflightProgress ? `${inflightProgress.settled}/${inflightProgress.total} torrents` : ''}</span><button type="button" className={cx(buttonBase, 'border-accent/35 bg-accent/12 text-accent-bright')} onClick={onClose}>Continue in background</button></div>
+            {inflightProgress ? (
+              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2"><span className="text-xs text-muted" role="status">Sending… {inflightProgress.settled}/{inflightProgress.total}</span><button type="button" className={cx('touch-target inline-flex items-center gap-2 rounded-control border border-accent/35 bg-accent/12 px-4 py-2.5 text-sm font-bold text-accent-bright transition-colors')} onClick={onClose}>Continue in background</button></div>
             ) : (
               <>
-                <button ref={cancelRef} type="button" className={bulkDialog.neutralButton} onClick={onClose} disabled={busy}>{outcome ? 'Close' : 'Cancel'}</button>
-                {!outcome && <button type="button" className={bulkDialog.downloadButton} onClick={() => onConfirm(selections)} disabled={busy || checking || selections.length === 0 || pendingChoices > 0 || estimate.new_torrents === 0 || Boolean(lowSpace && !acceptSpaceWarning)}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}Download {estimate.new_torrents} torrent{estimate.new_torrents === 1 ? '' : 's'}</button>}
+                <button ref={cancelRef} type="button" className={bulkDialog.neutralButton} onClick={onClose} disabled={busy}>{finished ? 'Close' : 'Cancel'}</button>
+                {!finished && <button type="button" className={bulkDialog.downloadButton} onClick={() => currentPreflight && onConfirm(currentPreflight.plan_id, { whole_source: wholeSource || undefined, disk_space: diskSpace || undefined })} disabled={busy || checking || !currentPreflight || selections.length === 0 || newUnits === 0 || pendingChoices > 0 || (needsWhole && !wholeSource) || (needsSpace && !diskSpace)} title={!currentPreflight ? 'Waiting for the review to finish' : newUnits === 0 ? 'Nothing new to send' : 'Start the download batch'}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-good/35 border-t-good"/> : <Icon name="download" size={17}/>}Start {newUnits || ''} download{newUnits === 1 ? '' : 's'}</button>}
               </>
             )}
           </div>

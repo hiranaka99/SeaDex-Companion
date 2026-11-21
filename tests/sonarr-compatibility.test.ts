@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { createServer, type RequestListener } from 'node:http'
 import { test } from 'node:test'
-import { DEFAULT_CONFIG, localItems, testIntegration } from '../server/app.js'
+import { DEFAULT_CONFIG, localItems } from '../server/app.js'
+import { testIntegration } from '../server/integration-tests.js'
 
 async function serve(handler: RequestListener) {
   const server = createServer(handler)

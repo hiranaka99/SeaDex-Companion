@@ -4,13 +4,14 @@ import { test } from 'node:test'
 import {
   api, alMedia, anilistChain, anilistLookup, autoNotifyNew, autocheckState, CACHE_FILE, CONFIG_FILE, DEFAULT_CONFIG,
   DATA_DIR, ENCRYPTED_SECRETS_FILE, getState, HISTORY_FILE, loadCache, loadConfig, loadLastResults,
-  loadScanHistory, loadUserRules, LOG_FILE, normalizeQbStates, pickAniListSearchResult, qbGetTorrents, readLogTail,
+  loadScanHistory, loadUserRules, LOG_FILE, pickAniListSearchResult, qbGetTorrents, readLogTail,
   resetRuntimeForTests, RESULTS_FILE, runScan, cancelScan, setState, USER_RULES_FILE, mergeComplementaryCandidates,
   loadLocalLibrary, seadexBest, scopeReleaseToPart,
 } from '../server/app.js'
 import { processAutocheck, processWebhookScans, queueWebhookScan, refreshAutocheckSchedule, resetWebhookScanState, startScheduler } from '../server/index.js'
 import { join } from 'node:path'
 import { assessSeason } from '../server/assessment.js'
+import { qbPhase } from '../server/download-progress.js'
 
 async function preserveFiles(files: string[], action: () => void | Promise<void>) {
   const saved = files.map(file => existsSync(file) ? readFileSync(file) : null)
@@ -330,9 +331,9 @@ test('queued scheduled scans survive restart and clear persistence when absorbed
   })
 })
 
-test('missing qBittorrent files remain an error even when another torrent is complete', () => {
-  assert.equal(normalizeQbStates(['missingFiles']), 'error')
-  assert.equal(normalizeQbStates(['uploading', 'missingFiles']), 'error')
+test('missing qBittorrent files remain an error at any progress', () => {
+  assert.equal(qbPhase('missingFiles', 0), 'error')
+  assert.equal(qbPhase('missingFiles', 0.5), 'error')
 })
 
 test('release uploads without known episode coverage stay separate from complementary batches', () => {

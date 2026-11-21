@@ -1,8 +1,47 @@
-import type { AllDownloadProgress, BulkDownloadTarget, BulkDownloadResult, BulkDownloadStatus, CancelableDownload } from '../../shared/download-contracts.js'
-export type { DownloadProgress, AllDownloadProgress, BulkDownloadTarget, BulkDownloadFailure, BulkDownloadResult, BulkDownloadStatus, CancelableDownload } from '../../shared/download-contracts.js'
-import { waitForDownloadJob } from './bulk-job-store.js'
-export { watchBulkDownloadStatus } from './bulk-job-store.js'
+import type {
+  AllDownloadProgress,
+  CancelableDownload,
+  DownloadCancelResult,
+  DownloadJobStatus,
+  DownloadPreflight,
+  DownloadProtocol,
+  DownloadReceipt,
+  DownloadSubmission,
+} from '../../shared/download-contracts.js'
+
+export { jobResult } from '../../shared/download-contracts.js'
+
+export type {
+  AllDownloadProgress,
+  CancelableDownload,
+  DownloadCancelResult,
+  DownloadCapabilities,
+  DownloadJob,
+  DownloadJobStatus,
+  DownloadMode,
+  DownloadPhase,
+  DownloadPreflight,
+  DownloadProgress,
+  DownloadProtocol,
+  DownloadReceipt,
+  DownloadSubmission,
+  DownloadUnitEntry,
+  DownloadUnitFailure,
+  DiskSpaceCheck,
+  PlannedUnit,
+  PreflightBlocked,
+  SubmissionRow,
+} from '../../shared/download-contracts.js'
+import type { ConfigUpdate } from '../../shared/contracts.js'
 import type { AuthState, Config, ResultItem, ScanHistoryEntry, ScannedDataInfo, Status } from './types.js'
+
+export const DOWNLOAD_ACTIONS = ['pause', 'resume', 'remove'] as const
+export type DownloadAction = typeof DOWNLOAD_ACTIONS[number]
+
+export type DownloadAcknowledge = NonNullable<DownloadSubmission['acknowledge']>
+
+import { followDownloadJob, waitForDownloadJob, watchDownloadJob } from './bulk-job-store.js'
+export { waitForDownloadJob, watchDownloadJob }
 
 export const AUTH_REQUIRED_EVENT = 'seadex:authentication-required'
 
@@ -15,15 +54,30 @@ async function api<T = unknown>(path: string, opts: RequestInit = {}, timeoutMs 
       window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT))
     }
     let msg = `Request failed (${r.status})`
+    let detail: Record<string, unknown> | null = null
     try {
       const j = await r.json()
-      if (j && j.error) msg = j.error
+      if (typeof j?.error === 'string') msg = j.error
+      else if (typeof j?.error?.message === 'string') { msg = j.error.message; detail = j }
+      else if (typeof j?.message === 'string') msg = j.message
     } catch {
       /* body was not JSON */
     }
-    throw new Error(msg)
+    throw new SubmissionError(msg, detail)
   }
   return r.json()
+}
+
+/** HTTP failure whose JSON body may carry structured fields (e.g. acceptance_unknown). */
+export class SubmissionError extends Error {
+  readonly status: number
+  readonly detail: Record<string, unknown> | null
+  constructor(message: string, detail: Record<string, unknown> | null, status = 500) {
+    super(message)
+    this.name = 'SubmissionError'
+    this.detail = detail
+    this.status = status
+  }
 }
 
 export const getAuthStatus = () => api<AuthState>('/api/auth/status')
@@ -46,7 +100,8 @@ export const logout = () => api<{ ok: boolean }>('/api/auth/logout', { method: '
 
 export const updateAccount = (username: string, currentPassword: string, newPassword: string) =>
   api<AuthState>('/api/auth/account', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, current_password: currentPassword, new_password: newPassword }),
   })
 
@@ -57,15 +112,16 @@ export const clearScannedData = () =>
 
 export const getScannedDataInfo = () => api<{ ok: boolean } & ScannedDataInfo>('/api/scanned-data')
 
-export const saveConfig = (cfg: import('../../shared/contracts.js').ConfigUpdate) =>
+export const saveConfig = (cfg: ConfigUpdate) =>
   api<Config>('/api/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg),
   })
 
+export type IntegrationService = 'sonarr' | 'radarr' | 'qbittorrent' | 'discord' | 'sabnzbd' | 'animetosho' | 'amenzb'
 
-export const testConnection = (service: 'sonarr' | 'radarr' | 'qbittorrent' | 'discord', config: import('../../shared/contracts.js').ConfigUpdate) =>
+export const testConnection = (service: IntegrationService, config: ConfigUpdate) =>
   api<{ ok: boolean; message: string }>('/api/config/test', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -101,20 +157,17 @@ export const searchAniList = (query: string) =>
 
 export const setMappingOverride = (libraryKey: string, anilistId: number | null) =>
   api<{ ok: boolean; anilist_id: number | null }>('/api/mapping-overrides', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ library_key: libraryKey, anilist_id: anilistId }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ library_key: libraryKey, anilist_id: anilistId }),
   })
 
 export const setSeasonMappingOverride = (libraryKey: string, season: number, anilistIds: number[] | null) =>
   api<{ ok: boolean; season: number; anilist_ids: number[] | null }>('/api/mapping-overrides', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ library_key: libraryKey, season, anilist_ids: anilistIds }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ library_key: libraryKey, season, anilist_ids: anilistIds }),
   })
 
 export const setExclusion = (libraryKey: string, season: number | null, part: string, excluded: boolean) =>
   api<{ ok: boolean; excluded: boolean }>('/api/exclusions', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ library_key: libraryKey, season, part, excluded }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ library_key: libraryKey, season, part, excluded }),
   })
 
 export const getLogs = (lines = 500) =>
@@ -128,24 +181,31 @@ export const cancelScan = () =>
 
 export const setHidden = (key: string, hidden: boolean) =>
   api<{ ok: boolean; hidden: string[] }>('/api/hidden', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, hidden }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, hidden }),
   })
 
-export const download = (key: string, release: number, identity?: string) =>
-  api<{ ok: boolean; error?: string }>('/api/download', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, release, identity }),
-  })
+// ---------------------------------------------------------------------------
+// Downloads
+// ---------------------------------------------------------------------------
+
+/** Browser-side download selection: a result key + release index, with the
+ * release identity (hash) and, in `choose` mode, the chosen protocol. */
+export interface SelectionInput {
+  key: string
+  release: number
+  identity?: string
+  protocol?: DownloadProtocol
+}
+
+export type { UsenetAvailabilityResponse, UsenetAvailabilityResult, UsenetHashAvailability, UsenetUnitState } from '../../shared/usenet-contracts.js'
+import type { UsenetAvailabilityResponse } from '../../shared/usenet-contracts.js'
 
 let allDownloadProgressRequest: Promise<AllDownloadProgress> | null = null
 
-/** Coalesce concurrent reads of the authoritative qBittorrent snapshot. */
+/** Coalesce concurrent reads of the authoritative client snapshot. */
 export const getAllDownloadProgress = (): Promise<AllDownloadProgress> => {
   if (!allDownloadProgressRequest) {
-    const request = api<AllDownloadProgress>('/api/download_progress/all')
+    const request = api<AllDownloadProgress>('/api/downloads')
       .finally(() => { if (allDownloadProgressRequest === request) allDownloadProgressRequest = null })
     allDownloadProgressRequest = request
   }
@@ -155,44 +215,51 @@ export const getAllDownloadProgress = (): Promise<AllDownloadProgress> => {
 export const DOWNLOAD_PROGRESS_INVALIDATED_EVENT = 'seadex:download-progress-invalidated'
 export const invalidateDownloadProgress = () => {
   allDownloadProgressRequest = null
-  if (typeof window !== 'undefined') window.dispatchEvent?.(new Event(DOWNLOAD_PROGRESS_INVALIDATED_EVENT))
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new Event(DOWNLOAD_PROGRESS_INVALIDATED_EVENT))
 }
 
-export type DownloadAction = 'pause' | 'resume' | 'remove'
-
-export const controlDownload = (key: string, release: number, action: DownloadAction, deleteFiles = false, identity?: string) =>
+export const controlDownload = (record_id: string, action: DownloadAction, deleteFiles = false) =>
   api<{ ok: boolean; error?: string }>('/api/download_control', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, release, action, delete_files: deleteFiles, identity }),
+    body: JSON.stringify({ record_id, action, delete_files: deleteFiles }),
   })
 
 export const DOWNLOADS_CHANGED_EVENT = 'seadex:downloads-changed'
 
-export const getBulkDownloadPreflight = (selections: BulkDownloadTarget[], signal?: AbortSignal) =>
-  api<import('../../shared/download-estimate.js').DownloadPreflight>('/api/download_bulk/preflight', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections }), signal,
-  })
+export const preflightDownload = (selections: SelectionInput[], refresh = false, signal?: AbortSignal) =>
+  api<DownloadPreflight>('/api/download_bulk/preflight', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections, refresh: refresh || undefined }), signal,
+  }, 60_000)
 
-export const getBulkDownloadStatus = (id?: string) =>
-  api<BulkDownloadStatus>(`/api/download-jobs/${id ? encodeURIComponent(id) : 'latest'}`)
+export const usenetAvailability = (selections: SelectionInput[], refresh = false) =>
+  api<UsenetAvailabilityResponse>('/api/usenet/availability', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections, refresh: refresh || undefined }),
+  }, 60_000)
 
-export const getCancelableBulkDownloads = () =>
-  api<{ ok: boolean; downloads: CancelableDownload[]; error?: string }>('/api/download_bulk/cancelable')
+/** One-shot submission of a reviewed plan. Awaits the full client mutation. */
+export const submitDownload = (plan_id: string, acknowledge?: DownloadAcknowledge) =>
+  api<DownloadReceipt>('/api/download', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan_id, acknowledge }),
+  }, 120_000)
 
-export async function bulkDownloads(action: 'start' | 'cancel', selections: BulkDownloadTarget[] = [], deleteFiles = false, onProgress?: (job: BulkDownloadStatus) => void): Promise<BulkDownloadResult> {
-  let result: BulkDownloadResult
-  if (action === 'start') {
-    const accepted = await api<BulkDownloadStatus & { id: string }>('/api/download-jobs', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections }),
-    })
-    const job = await waitForDownloadJob(accepted, onProgress)
-    result = { ok: job.added.length > 0, count: job.added.length, targets: job.targets, failures: job.failures, existing: job.existing }
-  } else {
-    result = await api<BulkDownloadResult>('/api/download_bulk', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, selections, delete_files: deleteFiles }),
-    })
-  }
-  window.dispatchEvent(new CustomEvent(DOWNLOADS_CHANGED_EVENT, { detail: { action, targets: result.targets } }))
-  return result
-}
+/** Background submission of a reviewed plan. */
+export const startDownloadJob = (plan_id: string, acknowledge?: DownloadAcknowledge) =>
+  api<{ ok: true; job_id: string }>('/api/download-jobs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan_id, acknowledge }),
+  }, 60_000)
+
+export const getDownloadJobStatus = (id?: string) =>
+  api<DownloadJobStatus>(`/api/download-jobs/${id ? encodeURIComponent(id) : 'latest'}`)
+
+export const getCancelableDownloads = () =>
+  api<{ ok: boolean; items: CancelableDownload[]; error?: string }>('/api/downloads/cancelable')
+
+export const cancelDownloads = (record_ids: string[] | undefined, removeFiles: boolean) =>
+  api<DownloadCancelResult>('/api/downloads/cancel', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ record_ids, remove_files: removeFiles }),
+  }, 120_000)
+
+/** Resume/await observation of a running bulk job by id. */
+export const followJob = followDownloadJob

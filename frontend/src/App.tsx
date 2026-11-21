@@ -167,11 +167,10 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   const openHistoryResult = (key: string) => { setOpenResultKey(key); changeTab('anime') }
 
   useEffect(() => {
-    return api.watchBulkDownloadStatus(batch => {
-      if (!batch.id) return
-      const existing = batch.existing?.length || 0
-      const settled = batch.added.length + batch.failures.length + existing
-      setBulkOperation({ action: 'start', phase: batch.finished ? batch.failures.length ? 'warning' : 'success' : 'running', settled, total: settled + batch.pending.length, added: batch.added.length, failed: batch.failures.length, failures: batch.failures, message: `${batch.added.length} added${existing ? ` · ${existing} already in qBittorrent` : ''} · ${batch.pending.length} pending · ${batch.failures.length} failed` })
+    return api.watchDownloadJob(job => {
+      if (!job.id) return
+      const settled = job.added.length + job.existing.length + job.failures.length
+      setBulkOperation({ action: 'start', phase: job.finished ? job.failures.length ? 'warning' : 'success' : 'running', settled, total: settled + job.pending.length, added: job.added.length, failed: job.failures.length, failures: job.failures, message: `${job.added.length} sent${job.existing.length ? ` · ${job.existing.length} already queued` : ''} · ${job.pending.length} pending · ${job.failures.length} failed` })
     })
   }, [])
 

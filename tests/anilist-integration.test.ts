@@ -7,8 +7,7 @@ import { DEFAULT_CONFIG } from '../server/config.js'
 import { buildScanHistoryEntry } from '../server/history.js'
 import { runScan } from '../server/scan.js'
 import { getState, setState } from '../server/scan-state.js'
-import { bulkDownloadTargets } from '../server/downloads.js'
-import { planTorrents } from '../shared/download-plan.js'
+import { planTorrents, upgradeParts } from '../shared/download-plan.js'
 import { groupResults } from '../frontend/src/utils.js'
 import type { ChainEntry, LocalItem, LocalSeason, ReleaseCandidate, SeaDexEntry } from '../server/types.js'
 
@@ -176,8 +175,8 @@ test('a full continuous-series scan resolves all seasons and publishes the corre
     assert.deepEqual(results[16].anilist_ids, [101, 102, 103, 104])
     assert.equal(results[1].releases[0].selected_files?.[0], 'Anime - 021.mkv')
     assert.equal(results[15].releases[0].selected_files?.at(-1), 'Anime - 366.mkv')
-    const targets = bulkDownloadTargets(results)
-    const plan = planTorrents(targets.map(target => ({ release: results.find(result => result.key === target.key)!.releases[target.release], category: 'anime' })))
+    const parts = results.flatMap(result => upgradeParts(result).map(part => ({ result, part })))
+    const plan = planTorrents(parts.map(({ result, part }) => ({ release: result.releases[part.options[0]!.index], category: 'anime' })))
     assert.equal(plan.length, 5, 'Sixteen original seasons share one torrent; four sequel cours keep their own torrents')
     assert.equal(plan.find(torrent => torrent.hash === (100).toString(16).padStart(40, '0'))?.selectedFiles?.length, 366)
   }

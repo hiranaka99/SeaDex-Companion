@@ -1,438 +1,184 @@
 import assert from 'node:assert/strict'
-import { spawn, type ChildProcess } from 'node:child_process'
-import { once } from 'node:events'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { createServer, type Server } from 'node:http'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { after, before, test } from 'node:test'
-import { releaseIdentity } from '../shared/releases.js'
+import { after, test } from 'node:test'
+import type { NewDownloadRecord } from '../server/download-store.js'
 
-let child: ChildProcess
-let mock: Server
-let dir = ''
-let base = ''
-let session = ''
-const hashes = ['a', 'b', 'c', 'd'].map(letter => letter.repeat(40))
-let torrents = hashes.map((hash, index) => ({ hash, name: `Torrent ${index}`, progress: index === 2 ? 1 : 0.5, size: 100, dlspeed: 10, state: index === 2 ? 'uploading' : 'downloading' }))
-const actions: { path: string; body: URLSearchParams }[] = []
-const loginPasswords: string[] = []
-let heldAdd: Promise<void> | null = null
-let heldFiles: Promise<void> | null = null
-let torrentFilesRequested: (() => void) | null = null
-let torrentFiles: Record<string, { name: string; index: number }[]> = {}
-const release = { kind: 'best', releaseGroup: 'New group', tracker: 'Nyaa', info_hashes: ['e'.repeat(40)], downloadable: true, size: 500, selected_files: ['01.mkv'], torrent_files: [{ hash: 'e'.repeat(40), files: [{ name: '01.mkv', length: 300 }, { name: 'extra.mkv', length: 200 }] }] }
-const mergedRelease = { kind: 'best', releaseGroup: 'Merged group', tracker: 'Nyaa', info_hashes: [hashes[3], 'f'.repeat(40)], downloadable: true, size: 500, torrent_files: [{ hash: hashes[3], files: [{ name: '02.mkv', length: 100 }] }, { hash: 'f'.repeat(40), files: [{ name: '03.mkv', length: 400 }] }] }
-const legacyRelease = { kind: 'best', releaseGroup: 'Legacy group', tracker: 'Nyaa', info_hashes: ['1'.repeat(40)], downloadable: true, size: 123 }
-let freeSpace: unknown = 1000
-let preferences = { auto_tmm_enabled: false, save_path: '/downloads', temp_path_enabled: false, temp_path: '/incomplete' }
-let pathSpace: number | null = null
-let storageFailure = false
-const selection = { key: 'new-result', release: 0, identity: releaseIdentity(release) }
+// Static import cannot work here: the ledger freezes DATA_DIR-derived file paths at module load,
+// so the temp directory must be set on the environment before this module is evaluated.
+const dataDir = process.env.DATA_DIR || mkdtempSync(join(tmpdir(), 'seadex-ledger-'))
+process.env.DATA_DIR = dataDir
+mkdirSync(dataDir, { recursive: true })
+const {
+  addDownloadRecord, allDownloadRecords, downloadRecords, downloadRows, findAcquisitionRecord,
+  findSabnzbdRecord, findTorrentRecord, markDownloadRemoved, migrateOwnedDownloads,
+  resetOwnedRuntime, setDownloadNative, setDownloadPhase, setDownloadRows,
+} = await import('../server/download-store.js')
 
-const request = (path: string, body?: unknown) => fetch(base + path, { method: body ? 'POST' : 'GET', headers: { Cookie: session, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })
+const ownedFile = join(dataDir, 'owned_torrents.json')
+const detailsFile = join(dataDir, 'download_records.json')
+const ledgerFile = join(dataDir, 'owned_downloads.json')
+const endpoint = 'http://localhost:8080'
+const h1 = 'a'.repeat(40), h2 = 'b'.repeat(40), h3 = 'c'.repeat(40), h4 = 'd'.repeat(40), h5 = 'e'.repeat(40), h6 = 'f'.repeat(40)
 
-before(async () => {
-  mock = createServer(async (req, res) => {
-    if (req.url === '/api/v2/auth/login') {
-      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk))
-      loginPasswords.push(new URLSearchParams(Buffer.concat(chunks).toString()).get('password') || '')
-      res.setHeader('Set-Cookie', 'SID=test; Path=/'); res.end('Ok.'); return
-    }
-    const url = new URL(req.url || '/', 'http://localhost')
-    if (url.pathname === '/api/v2/torrents/info') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(url.searchParams.has('hashes') ? torrents.filter(torrent => url.searchParams.get('hashes')!.split('|').includes(torrent.hash)) : torrents)); return }
-    if (url.pathname === '/api/v2/app/preferences') { if (storageFailure) { res.writeHead(503); res.end(); return }; res.end(JSON.stringify(preferences)); return }
-    if (url.pathname === '/api/v2/sync/maindata') { res.end(JSON.stringify({ server_state: { free_space_on_disk: freeSpace } })); return }
-    if (url.pathname === '/api/v2/torrents/categories') { res.end(JSON.stringify({ 'sonarr-anime': { savePath: '/category' } })); return }
-    if (url.pathname === '/api/v2/app/getFreeSpaceAtPath') { if (pathSpace === null) { res.writeHead(404); res.end() } else res.end(String(pathSpace)); return }
-    if (url.pathname === '/api/v2/torrents/files') {
-      torrentFilesRequested?.()
-      if (heldFiles) await heldFiles
-      res.end(JSON.stringify(torrentFiles[url.searchParams.get('hash') || ''] || [])); return
-    }
-    const chunks: Buffer[] = []
-    for await (const chunk of req) chunks.push(Buffer.from(chunk))
-    const body = new URLSearchParams(Buffer.concat(chunks).toString())
-    actions.push({ path: req.url || '', body })
-    if (req.url === '/api/v2/torrents/add' && heldAdd) await heldAdd
-    if (req.url === '/api/v2/torrents/delete') torrents = torrents.filter(torrent => !body.get('hashes')?.split('|').includes(torrent.hash))
-    res.end('Ok.')
+// Each section starts from a pristine ledger so ordering within the shared process never matters.
+const cleanLedger = () => {
+  for (const file of [ownedFile, detailsFile, ledgerFile]) rmSync(file, { force: true })
+  resetOwnedRuntime()
+}
+after(cleanLedger)
+
+test('migration derives cards and associations from the legacy array-form ledger and is idempotent', () => {
+  cleanLedger()
+  writeFileSync(ownedFile, JSON.stringify([h1, h2]), 'utf8')
+  writeFileSync(detailsFile, JSON.stringify({
+    [h1]: {
+      title: 'Title One', season: 1, part: 'Cour 1', releaseGroup: 'Group A', tracker: 'Nyaa', size: 123,
+      key: 'Sonarr:1:1:Title One', release: 2,
+      associations: [{ key: 'Sonarr:1:2:Title One', season: 2 }, { key: 'legacy-row', season: null }],
+    },
+  }), 'utf8')
+  migrateOwnedDownloads(endpoint)
+  const records = downloadRecords()
+  assert.deepEqual(records.map(record => record.id).sort(), [`t:${h1}`, `t:${h2}`].sort())
+  const first = findTorrentRecord(h1)!
+  assert.equal(first.protocol, 'torrent')
+  assert.equal(first.client, 'qbittorrent')
+  assert.equal(first.endpoint, endpoint)
+  assert.equal(first.native_id, h1)
+  assert.equal(first.state, 'accepted')
+  assert.equal(first.removed_at, undefined)
+  assert.equal(first.card?.title, 'Title One')
+  assert.equal(first.card?.season, 1)
+  assert.equal(first.card?.part, 'Cour 1')
+  assert.equal(first.card?.release_group, 'Group A')
+  assert.equal(first.card?.tracker, 'Nyaa')
+  assert.equal(first.card?.size, 123)
+  assert.deepEqual(downloadRows(`t:${h1}`), [
+    { key: 'Sonarr:1:1:Title One', release: 2 },
+    { key: 'Sonarr:1:2:Title One', release: 0 },
+    { key: 'legacy-row', release: 0 },
+  ], 'The card row and every association survive migration')
+  const second = findTorrentRecord(h2)!
+  assert.equal(second.card, undefined, 'A bare hash without details has no card')
+  assert.deepEqual(downloadRows(`t:${h2}`), [{ key: `torrent:${h2}`, release: 0 }], 'Detail-less hashes get a fallback association')
+  assert.ok(!!first.added_at && !!first.updated_at)
+
+  migrateOwnedDownloads(endpoint)
+  assert.equal(downloadRecords().length, 2)
+  resetOwnedRuntime()
+  migrateOwnedDownloads(endpoint)
+  assert.equal(downloadRecords().length, 2, 'Re-running migration after a reload never duplicates records')
+  assert.deepEqual(JSON.parse(readFileSync(ledgerFile, 'utf8')).records.length, 2)
+  assert.ok(downloadRecords().some(record => record.id === `t:${h1}` && record.endpoint === endpoint))
+})
+
+test('migration reads the versioned dict-form ledger with inline cards', () => {
+  cleanLedger()
+  writeFileSync(ownedFile, JSON.stringify({
+    version: 1,
+    torrents: {
+      [h3]: {
+        title: 'Dict Title', season: null, part: '', releaseGroup: 'Group B', tracker: 'Private', size: 50,
+        key: 'dict-row', release: 1, associations: [{ key: 'dict-row-2', season: 2 }],
+      },
+    },
+  }), 'utf8')
+  migrateOwnedDownloads(endpoint)
+  const records = downloadRecords()
+  assert.equal(records.length, 1)
+  assert.equal(records[0].id, `t:${h3}`)
+  assert.equal(records[0].card?.title, 'Dict Title')
+  assert.equal(records[0].card?.release_group, 'Group B')
+  assert.deepEqual(downloadRows(`t:${h3}`), [{ key: 'dict-row', release: 1 }, { key: 'dict-row-2', release: 0 }])
+  assert.equal(findTorrentRecord(h3)!.endpoint, endpoint)
+})
+
+test('torrent records are keyed by hash, idempotent, and re-adding clears the removal tombstone', () => {
+  cleanLedger()
+  const input: NewDownloadRecord = { protocol: 'torrent', client: 'qbittorrent', endpoint, native_id: h1, state: 'accepted', source_hash: h1, category: 'anime', labels: ['upgrade'], rows: [{ key: 'row-a', release: 0 }] }
+  const added = addDownloadRecord(input)
+  assert.equal(added.id, `t:${h1}`)
+  assert.equal(added.native_id, h1)
+  assert.deepEqual(added.labels, ['upgrade'])
+  assert.deepEqual(downloadRows(`t:${h1}`), [{ key: 'row-a', release: 0 }])
+  const again = addDownloadRecord({ ...input, category: 'anime-hd' })
+  assert.equal(allDownloadRecords().filter(record => record.id === `t:${h1}`).length, 1, 'Re-adding the same hash must not duplicate the record')
+  assert.equal(findTorrentRecord(h1)!.added_at, added.added_at, 'The original acceptance time survives re-adds')
+  assert.equal(again.category, 'anime-hd')
+  assert.equal(findTorrentRecord(h1)!.category, 'anime-hd')
+
+  const removed = markDownloadRemoved(`t:${h1}`)!
+  assert.ok(removed.removed_at)
+  assert.equal(findTorrentRecord(h1), null)
+  assert.equal(downloadRecords().some(record => record.id === `t:${h1}`), false)
+  const readded = addDownloadRecord(input)
+  assert.equal(readded.removed_at, undefined, 'Re-adding a removed torrent resets the tombstone')
+  assert.equal(findTorrentRecord(h1)?.id, `t:${h1}`)
+  assert.equal(findTorrentRecord(h1)!.category, 'anime', 'The fresh add replaces the record fields')
+})
+
+test('acquisition lookups are protocol-filtered and skip removed records', () => {
+  cleanLedger()
+  addDownloadRecord({ protocol: 'torrent', client: 'qbittorrent', endpoint, native_id: h4, state: 'accepted', source_hash: h4, category: 'anime', labels: [] })
+  const usenet = addDownloadRecord({ protocol: 'usenet', client: 'sabnzbd', endpoint, native_id: 'nzo-1', state: 'accepted', source_hash: h4, category: 'anime', provider: 'animetosho', entry_id: '900', nzb_name: 'show.nzb', labels: [] })
+  assert.match(usenet.id, new RegExp(`^u:${h4.slice(0, 12)}:`), 'Usenet records carry a hash prefix and a unique suffix')
+  assert.notEqual(findAcquisitionRecord(h4)!.id, usenet.id, 'Without a protocol the earliest acquisition answers')
+  assert.equal(findAcquisitionRecord(h4, 'torrent')!.protocol, 'torrent')
+  assert.equal(findAcquisitionRecord(h4, 'usenet')!.id, usenet.id)
+  assert.equal(findSabnzbdRecord('nzo-1')!.id, usenet.id)
+  assert.equal(usenet.provider, 'animetosho')
+  assert.equal(usenet.entry_id, '900')
+  assert.equal(usenet.nzb_name, 'show.nzb')
+  markDownloadRemoved(`t:${h4}`)
+  assert.equal(findTorrentRecord(h4), null)
+  assert.equal(findAcquisitionRecord(h4)!.id, usenet.id, 'After the torrent is removed the usenet acquisition still guards the hash')
+  assert.equal(findAcquisitionRecord(h4, 'torrent'), null)
+  assert.equal(findAcquisitionRecord('9'.repeat(40)), null)
+})
+
+test('setDownloadNative confirms acceptance and clones one record per extra native job', () => {
+  cleanLedger()
+  const pending = addDownloadRecord({ protocol: 'usenet', client: 'sabnzbd', endpoint, native_id: '', state: 'acceptance_unknown', source_hash: h5, category: 'anime', provider: 'amenzb', labels: ['retry'] })
+  assert.equal(pending.state, 'acceptance_unknown')
+  assert.equal(pending.native_id, '')
+  assert.equal(findSabnzbdRecord('nzo-missing'), null)
+  const updated = setDownloadNative(pending.id, ['nzo-a', 'nzo-b'])!
+  assert.equal(updated.state, 'accepted', 'Native ids flip acceptance')
+  assert.equal(updated.native_id, 'nzo-a', 'The first native id owns the base record')
+  const clones = downloadRecords().filter(record => record.source_hash === h5)
+  assert.equal(clones.length, 2)
+  const clone = clones.find(record => record.id !== pending.id)!
+  assert.equal(clone.native_id, 'nzo-b')
+  assert.equal(clone.state, 'accepted')
+  assert.equal(clone.category, 'anime')
+  assert.deepEqual(clone.labels, ['retry'])
+  assert.match(clone.id, new RegExp(`^u:${h5.slice(0, 12)}:`))
+  setDownloadNative(pending.id, ['nzo-a', 'nzo-b'])
+  assert.equal(downloadRecords().filter(record => record.source_hash === h5).length, 2, 'Already-recorded native ids never duplicate')
+  assert.equal(setDownloadNative(pending.id, []), null)
+  setDownloadPhase(pending.id, 'downloading')
+  assert.equal(findSabnzbdRecord('nzo-a')!.last_phase, 'downloading')
+  setDownloadPhase(pending.id, 'downloading')
+  assert.equal(findSabnzbdRecord('nzo-a')!.last_phase, 'downloading', 'Repeated identical phase writes are skipped')
+})
+
+test('removal keeps an audit record outside the active ledger and row projections stay scoped', () => {
+  cleanLedger()
+  const record = addDownloadRecord({
+    protocol: 'torrent', client: 'qbittorrent', endpoint, native_id: h6, state: 'accepted', source_hash: h6, category: 'anime',
+    scope: ['Cour 1/01.mkv'], labels: [], rows: [{ key: 'row-a', release: 1 }, { key: 'row-b', release: 0 }, { key: 'row-a', release: 1 }],
   })
-  mock.listen(0, '127.0.0.1')
-  await once(mock, 'listening')
-  const mockAddress = mock.address()
-  assert.ok(mockAddress && typeof mockAddress !== 'string')
-  dir = mkdtempSync(join(tmpdir(), 'seadex-downloads-'))
-  writeFileSync(join(dir, 'config.json'), JSON.stringify({ qbittorrent_url: `http://127.0.0.1:${mockAddress.port}`, qbittorrent_user: 'test', qbittorrent_pass: 'test', scan_schedule: { enabled: false } }))
-  writeFileSync(join(dir, 'owned_torrents.json'), JSON.stringify(hashes.slice(0, 3)))
-  writeFileSync(join(dir, 'download_records.json'), JSON.stringify({ [hashes[0]]: { key: 'removed-result', release: 2, title: 'Original anime', season: 1, part: '', releaseGroup: 'Old group', tracker: 'Nyaa', size: 100 } }))
-  writeFileSync(join(dir, 'last_results.json'), JSON.stringify({ results: [{ key: 'new-result', arr: 'Sonarr', title: 'New anime', status: 'upgrade', releases: [release] }, { key: 'merged-result', arr: 'Sonarr', title: 'Merged anime', status: 'upgrade', releases: [mergedRelease] }, { key: 'legacy-result', arr: 'Radarr', title: 'Legacy movie', status: 'upgrade', releases: [legacyRelease] }], last_run: '2026-10-02 12:00:00' }))
-  // A temporary listener reserves an available port without assuming a deployment port.
-  const reservation = createServer()
-  reservation.listen(0, '127.0.0.1')
-  await once(reservation, 'listening')
-  const address = reservation.address()
-  assert.ok(address && typeof address !== 'string')
-  base = `http://127.0.0.1:${address.port}`
-  reservation.close()
-  await once(reservation, 'close')
-  child = spawn(process.execPath, ['dist/server/index.js'], { env: { ...process.env, DATA_DIR: dir, PORT: String(address.port) }, stdio: 'pipe', windowsHide: true })
-  for (let attempt = 0; attempt < 100; attempt++) {
-    try { if ((await fetch(base + '/healthz')).ok) break } catch { /* startup */ }
-    if (child.exitCode !== null) throw new Error('Test server exited during startup')
-    await new Promise(resolve => setTimeout(resolve, 50))
-  }
-  const setup = await request('/api/auth/setup', { username: 'tester', password: 'test password for local fixtures' })
-  assert.equal(setup.status, 201)
-  session = setup.headers.get('set-cookie')!.split(';')[0]
-})
-
-after(async () => {
-  if (child && child.exitCode === null) { child.kill(); await once(child, 'exit') }
-  if (mock) await new Promise<void>(resolve => mock.close(() => resolve()))
-  if (dir) rmSync(dir, { recursive: true, force: true })
-})
-
-test('cancellation includes orphaned and legacy app-owned torrents', async () => {
-  const cancelable = await (await request('/api/download_bulk/cancelable')).json()
-  assert.equal(cancelable.downloads.length, 2)
-  assert.deepEqual(cancelable.downloads.map((item: { key: string }) => item.key).sort(), hashes.slice(0, 2).map(hash => `torrent:${hash}`))
-})
-
-test('status restores the last scan timestamp after a server restart', async () => {
-  const status = await (await request('/api/status')).json()
-  assert.equal(status.last_run, '2026-10-02 12:00:00')
-})
-
-test('integration tests honor explicitly cleared credentials while blank fields preserve saved values', async () => {
-  assert.equal((await request('/api/config/test', { service: 'qbittorrent', config: { qbittorrent_pass: '' } })).status, 200)
-  const cleared = await request('/api/config/test', { service: 'qbittorrent', config: { qbittorrent_pass: '', clear_secrets: ['qbittorrent_pass'] } })
-  assert.equal(cleared.status, 502)
-  assert.match(String((await cleared.json()).error), /password.*required/)
-})
-
-test('qBittorrent passwords preserve intentional leading and trailing spaces when tested or saved', async () => {
-  const password = ' padded password '
-  assert.equal((await request('/api/config/test', { service: 'qbittorrent', config: { qbittorrent_pass: password } })).status, 200)
-  assert.equal(loginPasswords.at(-1), password)
-  try {
-    assert.equal((await request('/api/config', { qbittorrent_pass: password })).status, 200)
-    assert.equal((await request('/api/config/test', { service: 'qbittorrent', config: {} })).status, 200)
-    assert.equal(loginPasswords.at(-1), password)
-  } finally { await request('/api/config', { qbittorrent_pass: 'test' }) }
-})
-
-test('changed release identities are rejected before any qBittorrent action', async () => {
-  const count = actions.length
-  const identity = releaseIdentity({ ...release, selected_files: ['02.mkv'] })
-  assert.equal((await request('/api/download', { key: 'new-result', release: 0, identity })).status, 409)
-  assert.equal((await request('/api/download_control', { key: 'new-result', release: 0, identity, action: 'remove', delete_files: true })).status, 409)
-  assert.equal((await request('/api/download_bulk', { action: 'start', selections: [{ key: 'new-result', release: 0, identity }] })).status, 409)
-  assert.equal((await request('/api/download_bulk/preflight', { selections: [{ key: 'new-result', release: 0, identity }] })).status, 409)
-  assert.equal(actions.length, count)
-})
-
-test('bulk preflight uses scoped bytes, aggregates shared paths, and excludes existing hashes', async () => {
-  const count = actions.length
-  freeSpace = 500
-  const response = await request('/api/download_bulk/preflight', { selections: [selection, { key: 'merged-result', release: 0 }] })
-  assert.equal(response.status, 200)
-  const estimate = await response.json()
-  assert.equal(estimate.new_bytes, 700)
-  assert.equal(estimate.new_torrents, 2)
-  assert.equal(estimate.existing_torrents, 1)
-  assert.equal(estimate.disk_space.length, 1)
-  assert.equal(estimate.disk_space[0].required_bytes, 700)
-  assert.equal(estimate.disk_space[0].free_bytes, 500)
-  assert.equal(estimate.disk_space[0].sufficient, false)
-  assert.equal(actions.length, count, 'The estimate only reads qBittorrent')
-  freeSpace = 1000
-})
-
-test('disk checks preserve zero space and report invalid values or unavailable paths honestly', async () => {
-  freeSpace = 0
-  let estimate = await (await request('/api/download_bulk/preflight', { selections: [selection] })).json()
-  assert.equal(estimate.disk_space[0].free_bytes, 0)
-  assert.equal(estimate.disk_space[0].sufficient, false)
-  for (const invalid of [-1, null, '', 'invalid']) {
-    freeSpace = invalid
-    estimate = await (await request('/api/download_bulk/preflight', { selections: [selection] })).json()
-    assert.equal(estimate.disk_space[0].free_bytes, null)
-    assert.equal(estimate.disk_space[0].sufficient, null)
-  }
-  freeSpace = 1000
-  preferences.auto_tmm_enabled = true
-  estimate = await (await request('/api/download_bulk/preflight', { selections: [selection] })).json()
-  assert.equal(estimate.disk_space[0].path, '/category')
-  assert.equal(estimate.disk_space[0].free_bytes, null, 'Default path free space cannot validate another path')
-  pathSpace = 500
-  estimate = await (await request('/api/download_bulk/preflight', { selections: [selection] })).json()
-  assert.equal(estimate.disk_space[0].free_bytes, 500)
-  assert.equal(estimate.disk_space[0].sufficient, true)
-  preferences.temp_path_enabled = true
-  estimate = await (await request('/api/download_bulk/preflight', { selections: [selection] })).json()
-  assert.deepEqual(estimate.disk_space.map((check: { path: string }) => check.path).sort(), ['/category', '/incomplete'])
-  preferences.auto_tmm_enabled = false
-  preferences.temp_path_enabled = false
-  pathSpace = null
-  storageFailure = true
-  estimate = await (await request('/api/download_bulk/preflight', { selections: [selection] })).json()
-  assert.equal(estimate.new_bytes, 300)
-  assert.equal(estimate.disk_space[0].path, null)
-  assert.equal(estimate.disk_space[0].sufficient, null)
-  storageFailure = false
-})
-
-test('different categories sharing a path are combined and unverified sizes never imply enough space', async () => {
-  const estimate = await (await request('/api/download_bulk/preflight', { selections: [selection, { key: 'legacy-result', release: 0 }] })).json()
-  assert.equal(estimate.new_bytes, 423)
-  assert.equal(estimate.approximate_torrents, 1)
-  assert.equal(estimate.disk_space.length, 1)
-  assert.deepEqual(estimate.disk_space[0].categories.sort(), ['radarr-anime', 'sonarr-anime'])
-  assert.equal(estimate.disk_space[0].required_bytes, 423)
-  assert.equal(estimate.disk_space[0].sufficient, null)
-  const empty = await (await request('/api/download_bulk/preflight', { selections: [] })).json()
-  assert.equal(empty.new_torrents, 0)
-  assert.deepEqual(empty.disk_space, [])
-})
-
-test('bulk adding a partially existing release only adds the missing torrent without claiming the existing one', async () => {
-  const count = actions.length
-  const response = await request('/api/download_bulk', { action: 'start', selections: [{ key: 'merged-result', release: 0 }] })
-  assert.equal(response.status, 200)
-  const result = await response.json()
-  assert.equal(result.count, 1)
-  assert.deepEqual(result.existing, [hashes[3]])
-  const additions = actions.slice(count).filter(action => action.path === '/api/v2/torrents/add')
-  assert.equal(additions.length, 1)
-  assert.ok(additions[0].body.get('urls')!.includes('f'.repeat(40)))
-})
-
-test('bulk cancellation rejects malformed selections without widening or truncating their scope', async () => {
-  const file = join(dir, 'last_results.json')
-  const original = readFileSync(file)
-  writeFileSync(file, JSON.stringify({ results: [{ key: 'cancel-validation', arr: 'Sonarr', title: 'Cancel validation', releases: [{ ...legacyRelease, info_hashes: [hashes[1]] }] }], last_run: null }))
-  const count = actions.length
-  const originalLedger = readFileSync(join(dir, 'owned_torrents.json'), 'utf8')
-  try {
-    for (const selections of [null, 'invalid', { key: 'cancel-validation', release: 0 }]) {
-      assert.equal((await request('/api/download_bulk', { action: 'cancel', selections, delete_files: true })).status, 400)
-    }
-    for (const key of ['cancel-validation', `torrent:${hashes[1]}`]) {
-      for (const release of ['0garbage', 0.5, -1, null, false]) {
-        const response = await request('/api/download_bulk', { action: 'cancel', selections: [{ key, release }], delete_files: true })
-        assert.equal(response.status, 400)
-        assert.match(String((await response.json()).error), /non-negative integer/)
-      }
-    }
-    assert.equal(actions.length, count, 'Malformed cancellation requests must not mutate qBittorrent')
-    assert.equal(readFileSync(join(dir, 'owned_torrents.json'), 'utf8'), originalLedger)
-    assert.ok(torrents.some(torrent => torrent.hash === hashes[1]))
-  } finally { writeFileSync(file, original) }
-})
-
-test('bulk cancellation refreshes cached progress before deciding which owned torrents to delete', async () => {
-  const originalTorrents = structuredClone(torrents)
-  try {
-    await request('/api/config', { qbittorrent_user: 'test' })
-    const cancelable = await (await request('/api/download_bulk/cancelable')).json()
-    assert.ok(cancelable.downloads.some((download: { key: string }) => download.key === `torrent:${hashes[1]}`))
-    torrents = torrents.map(torrent => torrent.hash === hashes[1] ? { ...torrent, progress: 1, state: 'uploading' } : torrent)
-    const count = actions.length
-    const response = await request('/api/download_bulk', { action: 'cancel', selections: [{ key: `torrent:${hashes[1]}`, release: 0 }], delete_files: true })
-    assert.equal(response.status, 200)
-    assert.equal((await response.json()).count, 0)
-    assert.equal(actions.length, count, 'A torrent completed since the dialog opened must not be deleted')
-    assert.ok(torrents.some(torrent => torrent.hash === hashes[1]))
-    const ledger = JSON.parse(readFileSync(join(dir, 'owned_torrents.json'), 'utf8'))
-    assert.ok(hashes[1] in ledger.torrents, 'The completed download remains app-owned')
-  } finally { torrents = originalTorrents; await request('/api/config', { qbittorrent_user: 'test' }) }
-})
-
-test('bulk submission refreshes cached existing torrents after a torrent was removed externally', async () => {
-  const file = join(dir, 'last_results.json')
-  const original = readFileSync(file)
-  const originalTorrents = structuredClone(torrents)
-  const hash = '5'.repeat(40)
-  const selected = { ...legacyRelease, info_hashes: [hash] }
-  writeFileSync(file, JSON.stringify({ results: [{ key: 'removed-existing', arr: 'Sonarr', title: 'Removed torrent', status: 'upgrade', releases: [selected] }], last_run: null }))
-  try {
-    torrents.push({ hash, name: 'Existing torrent', progress: 0.5, size: 100, dlspeed: 0, state: 'downloading' })
-    await request('/api/config', { qbittorrent_user: 'test' })
-    const selections = [{ key: 'removed-existing', release: 0 }]
-    const preflight = await (await request('/api/download_bulk/preflight', { selections })).json()
-    assert.equal(preflight.existing_torrents, 1)
-    torrents = torrents.filter(torrent => torrent.hash !== hash)
-    const count = actions.length
-    const response = await request('/api/download_bulk', { action: 'start', selections })
-    assert.equal(response.status, 200)
-    const result = await response.json()
-    assert.equal(result.count, 1)
-    assert.deepEqual(result.existing, [])
-    assert.deepEqual(result.failures, [])
-    assert.deepEqual(actions.slice(count).filter(action => action.path === '/api/v2/torrents/add').map(action => action.body.get('urls')), [`magnet:?xt=urn:btih:${hash}`])
-  } finally {
-    await request('/api/download_control', { key: 'removed-existing', release: 0, action: 'remove' })
-    torrents = originalTorrents; writeFileSync(file, original)
-    await request('/api/config', { qbittorrent_user: 'test' })
-  }
-})
-
-test('progress deduplicates hashes, waits for missing batch torrents, and preserves errors or incomplete downloads', async () => {
-  const file = join(dir, 'last_results.json')
-  const original = readFileSync(file)
-  const originalTorrents = structuredClone(torrents)
-  const fixture = (info_hashes: string[]) => writeFileSync(file, JSON.stringify({ results: [{ key: 'progress-test', title: 'Progress', arr: 'Sonarr', releases: [{ ...release, info_hashes }] }], last_run: '2026-10-02 12:00:00' }))
-  const progress = async () => (await request('/api/download_progress?key=progress-test&release=0')).json()
-  let invalidationUser = 'test'
-  const invalidate = async () => { invalidationUser = invalidationUser === 'test' ? 'invalidate' : 'test'; await request('/api/config', { qbittorrent_user: invalidationUser }) }
-  try {
-    fixture([hashes[2], hashes[2]])
-    let result = await progress()
-    assert.equal(result.total_size, 100)
-    assert.equal(result.state, 'complete')
-    fixture([hashes[2], 'f'.repeat(40)])
-    result = await progress()
-    assert.equal(result.missing_torrents, 1)
-    assert.equal(result.state, 'waiting')
-    const all = await (await request('/api/download_progress/all')).json()
-    assert.equal(all.downloads['progress-test\0' + 0].state, 'waiting')
-    fixture([hashes[2]])
-    torrents = torrents.map(torrent => torrent.hash === hashes[2] ? { ...torrent, state: 'missingFiles' } : torrent)
-    await invalidate()
-    assert.equal((await progress()).state, 'error')
-    torrents = torrents.map(torrent => torrent.hash === hashes[2] ? { ...torrent, state: 'downloading', progress: 0.99999, size: 1_000_000 } : torrent)
-    await invalidate()
-    result = await progress()
-    assert.equal(result.state, 'downloading')
-    assert.ok(result.progress < 1)
-    const cancelable = await (await request('/api/download_bulk/cancelable')).json()
-    assert.ok(cancelable.downloads.some((download: { hashes: string[] }) => download.hashes.includes(hashes[2])))
-  } finally { writeFileSync(file, original); torrents = originalTorrents; await invalidate() }
-})
-
-test('bulk cancellation uses stable hashes and preserves files by default after results disappear', async () => {
-  writeFileSync(join(dir, 'last_results.json'), JSON.stringify({ results: [], last_run: null }))
-  const response = await request('/api/download_bulk', { action: 'cancel', selections: [{ key: `torrent:${hashes[0]}`, release: 0 }] })
-  assert.equal(response.status, 200)
-  assert.equal((await response.json()).count, 1)
-  assert.equal(actions.at(-1)!.body.get('hashes'), hashes[0])
-  assert.equal(actions.at(-1)!.body.get('deleteFiles'), 'false')
-  assert.ok(torrents.some(torrent => torrent.hash === hashes[3]))
-  assert.ok(torrents.some(torrent => torrent.hash === hashes[2]))
-})
-
-
-test('accepted download jobs survive disconnects, preserve captured associations, and expose status by ID', async () => {
-  const file = join(dir, 'last_results.json')
-  const original = readFileSync(file)
-  const hash = '2'.repeat(40)
-  const selected = { ...release, info_hashes: [hash], selected_files: undefined, torrent_files: undefined }
-  writeFileSync(file, JSON.stringify({ results: [{ key: 'job-result', library_key: 'Sonarr:item99', season: 1, arr: 'Sonarr', title: 'Captured title', status: 'upgrade', releases: [selected] }], last_run: null }))
-  let releaseAdd!: () => void
-  heldAdd = new Promise(resolve => { releaseAdd = resolve })
-  try {
-    const selection = { key: 'job-result', release: 0, identity: releaseIdentity(selected) }
-    const accepted = await request('/api/download-jobs', { selections: [selection] })
-    assert.equal(accepted.status, 202)
-    const job = await accepted.json()
-    assert.equal(typeof job.id, 'string')
-    assert.equal(job.finished, false)
-    assert.equal((await request('/api/download-jobs', { selections: [selection] })).status, 409)
-    // Recommendations may change after acceptance. The executing job owns its snapshot.
-    writeFileSync(file, JSON.stringify({ results: [], last_run: null }))
-    let current = await (await request(`/api/download-jobs/${job.id}`)).json()
-    assert.equal(current.finished, false)
-    assert.deepEqual(current.pending, [hash])
-    releaseAdd(); heldAdd = null
-    for (let attempt = 0; attempt < 100; attempt++) {
-      current = await (await request(`/api/download-jobs/${job.id}`)).json()
-      if (current.finished) break
-      await new Promise(resolve => setTimeout(resolve, 10))
-    }
-    assert.equal(current.finished, true)
-    assert.deepEqual(current.added, [hash])
-    const ledger = JSON.parse(readFileSync(join(dir, 'owned_torrents.json'), 'utf8'))
-    assert.equal(ledger.torrents[hash].title, 'Captured title')
-    assert.equal(ledger.torrents[hash].library_key, 'Sonarr:item99')
-    // A new recommendation key still associates with the original download by stable library ID.
-    writeFileSync(file, JSON.stringify({ results: [{ key: 'changed-result', library_key: 'Sonarr:item99', season: 1, arr: 'Sonarr', title: 'Changed title', releases: [] }], last_run: null }))
-    torrents.push({ hash, name: 'raw name', progress: 0.5, size: 100, dlspeed: 0, state: 'downloading' })
-    const downloads = (await (await request('/api/download_bulk/cancelable')).json()).downloads
-    const row = downloads.find((download: { key: string }) => download.key === `torrent:${hash}`)
-    assert.ok(row.result_keys.includes('changed-result'))
-    assert.equal(row.title, 'Captured title')
-  } finally { releaseAdd(); heldAdd = null; torrents = torrents.filter(torrent => torrent.hash !== hash); writeFileSync(file, original) }
-})
-
-test('individual downloads, progress, and controls honor the selected per-torrent scope', async () => {
-  const file = join(dir, 'last_results.json')
-  const original = readFileSync(file)
-  const originalTorrents = structuredClone(torrents)
-  const wanted = '3'.repeat(40), unrelated = '4'.repeat(40)
-  const scoped = { ...release, info_hashes: [wanted, unrelated], selected_files: ['01.mkv'], torrent_files: [
-    { hash: wanted, files: [{ name: '01.mkv', length: 300 }] },
-    { hash: unrelated, files: [{ name: '02.mkv', length: 200 }] },
-  ] }
-  torrentFiles = { [wanted]: [{ name: '01.mkv', index: 0 }], [unrelated]: [{ name: '02.mkv', index: 0 }] }
-  writeFileSync(file, JSON.stringify({ results: [{ key: 'scoped-result', arr: 'Sonarr', title: 'Scoped anime', status: 'upgrade', releases: [scoped] }], last_run: null }))
-  try {
-    const count = actions.length
-    const latest = await (await request('/api/results')).json()
-    const response = await request('/api/download', { key: 'scoped-result', release: 0, identity: releaseIdentity(latest.results[0].releases[0]) })
-    assert.equal(response.status, 200, JSON.stringify(await response.json()))
-    assert.deepEqual(actions.slice(count).filter(action => action.path === '/api/v2/torrents/add').map(action => action.body.get('urls')), [`magnet:?xt=urn:btih:${wanted}`])
-    torrents = [{ hash: wanted, name: 'Selected cour', progress: 1, size: 300, dlspeed: 0, state: 'uploading' }]
-    await request('/api/config', { qbittorrent_user: 'test' })
-    const progress = await (await request('/api/download_progress?key=scoped-result&release=0')).json()
-    assert.equal(progress.state, 'complete')
-    assert.equal(progress.missing_torrents, 0)
-    const all = await (await request('/api/download_progress/all')).json()
-    assert.equal(all.downloads['scoped-result\0' + 0].state, 'complete')
-    const controlled = await request('/api/download_control', { key: 'scoped-result', release: 0, action: 'remove' })
-    assert.equal(controlled.status, 200)
-    assert.equal(actions.at(-1)!.body.get('hashes'), wanted)
-    assert.equal(actions.at(-1)!.body.get('deleteFiles'), 'false')
-  } finally { torrentFiles = {}; torrents = originalTorrents; writeFileSync(file, original); await request('/api/config', { qbittorrent_user: 'test' }) }
-})
-
-test('failed selected-file setup removes the torrent and invalidates progress cached during metadata loading', async () => {
-  const file = join(dir, 'last_results.json')
-  const original = readFileSync(file)
-  const originalTorrents = structuredClone(torrents)
-  const hash = '6'.repeat(40)
-  const selected = { ...release, info_hashes: [hash], torrent_files: [{ hash, files: [{ name: '01.mkv', length: 300 }] }] }
-  writeFileSync(file, JSON.stringify({ results: [{ key: 'failed-selection', arr: 'Sonarr', title: 'Failed selection', status: 'upgrade', releases: [selected] }], last_run: null }))
-  torrentFiles = { [hash]: [{ name: 'other.mkv', index: 0 }] }
-  const { promise: filesGate, resolve: releaseFiles } = Promise.withResolvers<void>()
-  heldFiles = filesGate
-  const { promise: filesRequested, resolve: onFilesRequested } = Promise.withResolvers<void>()
-  torrentFilesRequested = onFilesRequested
-  const downloading = request('/api/download', { key: 'failed-selection', release: 0 })
-  try {
-    await Promise.race([filesRequested, downloading.then(() => assert.fail('Download settled before requesting metadata'))])
-    torrents.push({ hash, name: 'Pending metadata', progress: 0, size: 300, dlspeed: 0, state: 'downloading' })
-    await request('/api/config', { qbittorrent_user: 'test' })
-    const pending = await (await request('/api/download_progress?key=failed-selection&release=0')).json()
-    assert.equal(pending.found, true)
-    const count = actions.length
-    releaseFiles(); heldFiles = null
-    const response = await downloading
-    assert.equal(response.status, 502)
-    const error = String((await response.json()).error)
-    assert.match(error, /selected cour files could not be matched/)
-    const removals = actions.slice(count).filter(action => action.path === '/api/v2/torrents/delete')
-    assert.equal(removals.length, 1)
-    assert.equal(removals[0].body.get('hashes'), hash)
-    assert.equal(removals[0].body.get('deleteFiles'), 'false')
-    const progress = await (await request('/api/download_progress?key=failed-selection&release=0')).json()
-    assert.equal(progress.found, false, 'The deleted torrent must not remain visible in a cached progress snapshot')
-    const ledger = JSON.parse(readFileSync(join(dir, 'owned_torrents.json'), 'utf8'))
-    assert.ok(!(hash in ledger.torrents))
-  } finally {
-    releaseFiles(); heldFiles = null; torrentFilesRequested = null
-    await downloading
-    torrentFiles = {}; torrents = originalTorrents; writeFileSync(file, original)
-    await request('/api/config', { qbittorrent_user: 'test' })
-  }
+  assert.deepEqual(record.scope, ['Cour 1/01.mkv'])
+  assert.deepEqual(downloadRows(record.id), [{ key: 'row-a', release: 1 }, { key: 'row-b', release: 0 }], 'Rows are deduplicated on write')
+  setDownloadRows(record.id, [{ key: 'row-a', release: 1 }, { key: 'row-c', release: 2 }])
+  assert.deepEqual(downloadRows(record.id), [{ key: 'row-a', release: 1 }, { key: 'row-c', release: 2 }])
+  setDownloadRows(`t:${'9'.repeat(40)}`, [{ key: 'orphan', release: 0 }])
+  assert.deepEqual(downloadRows(`t:${'9'.repeat(40)}`), [], 'Rows never attach to records that do not exist')
+  markDownloadRemoved(record.id)
+  assert.equal(downloadRecords().some(candidate => candidate.id === record.id), false)
+  const kept = allDownloadRecords().find(candidate => candidate.id === record.id)
+  assert.ok(kept?.removed_at, 'Removed acquisitions remain in the audit ledger')
+  assert.equal(kept!.card, undefined)
 })

@@ -1,4 +1,4 @@
-import { useCardDownloads } from '../useCardDownloads'
+import { useCardDownloads, useSeasonAvailability } from '../useCardDownloads'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { GroupedCard, ResultItem, Config } from '../types'
 import { seasonLabel, STATUS_LABEL, cardSizeDelta, isSeasonUpgradable } from '../utils'
@@ -7,7 +7,9 @@ import { buttonBase, cx } from '../styles'
 import Icon, { IconName } from './Icons'
 import BrandLogo from './BrandLogo'
 import { useToast } from './Toast'
-import DownloadsPanel, { DownloadEntry } from './DownloadsPanel'
+import DownloadsPanel, { clientName, DownloadEntry } from './DownloadsPanel'
+import SinglePlanDialog from './SinglePlanDialog'
+import type { DownloadProtocol } from '../api'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
 
@@ -106,7 +108,21 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
     if (!active) { setDetailsOpen(false); setMappingOpen(false); setRemoveTarget(null) }
     else if (openRequested) { handleOpenDetails(); onOpened?.() }
   }, [active, openRequested])
-  const { dlBySeason, activeDownloads, busyDownload, handleDownload, handleDownloadAction } = useCardDownloads(group, toast.show)
+  const { dlBySeason, activeDownloads, busyDownload, handleDownload, handleDownloadAction, singleFlow } = useCardDownloads(group, toast.show)
+  const usenetEnabled = Boolean(config) && config?.download_mode !== 'torrent_only'
+  const { availability, load: loadAvailability } = useSeasonAvailability(usenetEnabled)
+  const [protocols, setProtocols] = useState<Record<string, DownloadProtocol>>({})
+  const availabilityLoaded = useRef(new Set<string>())
+  useEffect(() => { if (!detailsOpen) availabilityLoaded.current = new Set() }, [detailsOpen])
+  const protocolKey = (seasonKey: string, index: number) => `${seasonKey}\u0000${index}`
+  const protocolFor = (season: ResultItem, index: number): DownloadProtocol => {
+    const chosen = protocols[protocolKey(season.key, index)]
+    if (chosen) return chosen
+    const seasonAvailability = availability[season.key]
+    // Default to Usenet only when the torrent path is a dead end.
+    if (!season.releases[index]?.torrent_available && seasonAvailability?.sabnzbdConfigured && seasonAvailability.byRelease[index]?.aggregate === 'available') return 'usenet'
+    return 'torrent'
+  }
 
   const seasonCount = group.seasons.length
   const unseenChanges = useMemo(() => groupReleaseChanges(group), [group.seasons])
@@ -299,7 +315,13 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
                   config={config}
                   dl={dlBySeason[season.key] || {}}
                   busyDownload={busyDownload}
-                  onDownload={(release) => void handleDownload(season.key, release)}
+                  usenetEnabled={usenetEnabled}
+                  availability={availability[season.key]}
+                  protocolFor={index => protocolFor(season, index)}
+                  onProtocol={(index, protocol) => setProtocols(current => ({ ...current, [protocolKey(season.key, index)]: protocol }))}
+                  onRefreshAvailability={() => void loadAvailability(season, true)}
+                  onOpened={() => { if (!availabilityLoaded.current.has(season.key)) { availabilityLoaded.current.add(season.key); void loadAvailability(season) } }}
+                  onDownload={(release) => void handleDownload(season.key, release, config?.download_mode === 'usenet_only' ? 'usenet' : protocolFor(season, release))}
                   onPause={(entry) => void handleDownloadAction(entry, 'pause')}
                   onResume={(entry) => void handleDownloadAction(entry, 'resume')}
                   onRemove={(entry) => { setDeleteFiles(false); setRemoveTarget(entry) }}
@@ -314,19 +336,20 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
         </div>
       </Modal>
     )}
+    <SinglePlanDialog flow={singleFlow}/>
     <ConfirmDialog
       open={removeTarget !== null}
-      title="Remove torrent?"
-      description="The torrent will be removed from qBittorrent. Its downloaded files are kept unless you choose to delete them below."
-      confirmLabel="Remove torrent"
+      title={removeTarget ? `Remove download from ${clientName(removeTarget.client)}?` : 'Remove download?'}
+      description={removeTarget ? `The download will be removed from ${clientName(removeTarget.client)}. Its downloaded files are kept unless you choose to delete them below.` : ''}
+      confirmLabel={removeTarget ? `Remove from ${clientName(removeTarget.client)}` : 'Remove'}
       dangerous
-      onConfirm={async () => { if (removeTarget && !await handleDownloadAction(removeTarget, 'remove', deleteFiles)) throw new Error('Could not remove this torrent. Please retry or open qBittorrent to manage it.') }}
+      onConfirm={async () => { if (removeTarget && !await handleDownloadAction(removeTarget, 'remove', deleteFiles)) throw new Error(`Could not remove this download. Please retry or open ${clientName(removeTarget.client)} to manage it.`) }}
       onClose={() => { setRemoveTarget(null); setDeleteFiles(false) }}
     >
-      <label className="mb-5 flex cursor-pointer items-center gap-3 rounded-xl border border-bad/25 bg-bad/7 p-3 text-sm text-ink">
+      {removeTarget?.capabilities.remove_files && <label className="mb-5 flex cursor-pointer items-center gap-3 rounded-xl border border-bad/25 bg-bad/7 p-3 text-sm text-ink">
         <input type="checkbox" className="size-4 accent-bad" checked={deleteFiles} onChange={(event) => setDeleteFiles(event.target.checked)} />
         <span><span className="block font-bold text-bad">Also delete downloaded files</span><span className="mt-0.5 block text-xs text-muted">This cannot be undone.</span></span>
-      </label>
+      </label>}
     </ConfirmDialog>
     <MappingDialog open={mappingOpen} title={group.title} season={mappingSeason?.season || undefined} currentAniListId={mappingSeason ? mappingSeason.anilist_id : group.anilist_id} currentAniListIds={mappingSeason?.anilist_ids} hasOverride={mappingSeason ? Boolean(mappingSeason.season_mapping_override) : group.seasons.some((season) => season.mapping_override)} onApply={applyMapping} onClose={() => setMappingOpen(false)}/>
   </>

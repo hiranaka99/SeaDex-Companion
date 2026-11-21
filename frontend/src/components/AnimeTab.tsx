@@ -2,8 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ResultItem, Config, Status, GroupedCard } from '../types'
 import { groupResults, seasonLabel, cardSizeDelta, hasCardUpgrade } from '../utils'
 import Card from './Card'
-import BulkDownloadDialog, { BulkOutcome } from './BulkDownloadDialog'
+import BulkDownloadDialog from './BulkDownloadDialog'
 import BulkCancelDialog from './BulkCancelDialog'
+import type { DownloadJobStatus, DownloadUnitFailure } from '../api'
 import Icon, { IconName } from './Icons'
 import { useToast } from './Toast'
 import * as api from '../api'
@@ -72,11 +73,10 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   const [bulkConfirm, setBulkConfirm] = useState<'start' | 'cancel' | null>(null)
   const [bulkBusy, setBulkBusy] = useState<'start' | 'cancel' | null>(null)
   const bulkInFlight = useRef(false)
-  const [bulkOutcome, setBulkOutcome] = useState<BulkOutcome | null>(null)
+  const [bulkJob, setBulkJob] = useState<DownloadJobStatus | null>(null)
   const [bulkScope, setBulkScope] = useState<BulkScope>('filtered')
   const [bulkReview, setBulkReview] = useState<{ filtered: ResultItem[]; all: ResultItem[]; description: string } | null>(null)
   const reviewResults = useMemo(() => bulkReview ? bulkScope === 'filtered' ? bulkReview.filtered : bulkReview.all : [], [bulkReview, bulkScope])
-  const reviewKeys = useMemo(() => new Set(reviewResults.map(result => result.key)), [reviewResults])
   const reviewCounts = useMemo(() => bulkReview ? {
     filtered: groupResults(bulkReview.filtered).length,
     all: groupResults(bulkReview.all).length,
@@ -249,77 +249,80 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
     onBulkReviewReset()
     setBulkScope('filtered')
     setBulkReview({ filtered: groups.flatMap(group => group.seasons), all: [...results], description: activeFilters.join(' · ') || 'Current library results' })
-    setBulkOutcome(null)
+    setBulkJob(null)
     setBulkConfirm(action)
   }
-  const scopeControl = <BulkScopeSelector value={bulkScope} onChange={setBulkScope} filteredCount={reviewCounts.filtered} allCount={reviewCounts.all} description={bulkReview?.description || 'Current library results'} showDescription={bulkConfirm === 'cancel'} allLabel={bulkConfirm === 'cancel' ? 'All tracked downloads' : undefined} allDescription={bulkConfirm === 'cancel' ? 'All incomplete downloads tracked by SeaDex Companion, regardless of library filters.' : undefined} disabled={bulkBusy !== null || Boolean(bulkOutcome)}/>
+  const scopeControl = <BulkScopeSelector value={bulkScope} onChange={setBulkScope} filteredCount={reviewCounts.filtered} allCount={reviewCounts.all} description={bulkReview?.description || 'Current library results'} disabled={bulkBusy !== null || Boolean(bulkJob)}/>
 
-  const describeBulkFailures = (failures: api.BulkDownloadFailure[]): string => {
+  const describeBulkFailures = (failures: DownloadUnitFailure[]): string => {
     const shown = failures.slice(0, 3).map((failure) => `${failure.label} — ${failure.error}`)
     return shown.join('; ') + (failures.length > 3 ? `; and ${failures.length - 3} more` : '')
   }
 
-  const hashesForSelection = (selection: api.BulkDownloadTarget): string[] => {
-    const item = (bulkReview?.all || results).find((entry) => entry.key === selection.key)
-    return (item?.releases?.[selection.release]?.info_hashes || []).map((hash: string) => String(hash).toLowerCase())
-  }
-
-  const handleBulkDownloads = async (action: 'start' | 'cancel', selections: api.BulkDownloadTarget[] = [], deleteFiles = false) => {
+  const handleBulkStart = async (plan_id: string, acknowledge: { whole_source?: boolean; disk_space?: boolean }) => {
     if (bulkInFlight.current || bulkOperationActive) return
     bulkInFlight.current = true
-    setBulkBusy(action)
+    setBulkBusy('start')
     try {
-      if (action === 'start') {
-        const allHashes = new Set<string>()
-        for (const selection of selections) for (const hash of hashesForSelection(selection)) allHashes.add(hash)
-        onBulkOperationChange({ action, phase: 'running', settled: 0, total: allHashes.size, added: 0, failed: 0, message: `Preparing ${allHashes.size} torrent${allHashes.size === 1 ? '' : 's'}…` })
-        setBulkOutcome({ requested: new Set(), failed: new Set(), pending: new Set(allHashes), inflight: true })
-        const result = await api.bulkDownloads('start', selections, false, job => {
-          const requested = new Set([...job.added, ...(job.existing || [])])
-          setBulkOutcome({ requested, failed: new Set(job.failures.map(failure => failure.hash)), pending: new Set(job.pending), inflight: !job.finished })
-        })
-        const failures = result.failures || []
-        if (result.count > 0) {
-          toast.show(`Sent ${result.count} torrent${result.count === 1 ? '' : 's'} to qBittorrent`, 'success')
-        } else if (!failures.length) {
-          toast.show(result.existing?.length ? 'Selected torrents are already in qBittorrent' : 'No downloadable upgrades found', 'info')
-        }
-        if (failures.length) {
-          toast.show(`${failures.length} torrent${failures.length === 1 ? '' : 's'} could not be added: ${describeBulkFailures(failures)}`, 'error')
-        }
-        const requested = new Set(allHashes)
-        setBulkOutcome({ requested, failed: new Set(failures.map(failure => failure.hash)), pending: new Set(), inflight: false })
+      onBulkOperationChange({ action: 'start', phase: 'running', settled: 0, total: 0, added: 0, failed: 0, message: 'Starting downloads…' })
+      const { job_id } = await api.startDownloadJob(plan_id, acknowledge)
+      const job = await api.followJob(job_id, current => {
+        setBulkJob(current)
+        const settled = current.added.length + current.existing.length + current.failures.length
         onBulkOperationChange({
-          action,
-          phase: failures.length ? 'warning' : 'success',
-          settled: allHashes.size,
-          total: allHashes.size,
-          added: result.count,
-          failed: failures.length,
-          failures,
-          message: `${result.count} added${result.existing?.length ? ` · ${result.existing.length} already in qBittorrent` : ''}${failures.length ? ` · ${failures.length} failed` : ''}`,
+          action: 'start',
+          phase: 'running',
+          settled,
+          total: settled + current.pending.length,
+          added: current.added.length,
+          failed: current.failures.length,
+          message: `${current.added.length} sent · ${current.existing.length} already queued · ${current.pending.length} pending`,
         })
-      } else {
-        onBulkOperationChange({ action, phase: 'running', settled: 0, total: selections.length, added: 0, failed: 0, message: `Removing selected incomplete downloads…` })
-        const result = await api.bulkDownloads(action, selections, deleteFiles)
-        toast.show(result.count
-          ? `Cancelled ${result.count} download${result.count === 1 ? '' : 's'}; ${deleteFiles ? 'downloaded files were deleted' : 'files were kept'}`
-          : 'No active bulk downloads found', result.count ? 'success' : 'info')
-        onBulkOperationChange({ action, phase: 'success', settled: selections.length, total: selections.length, added: 0, failed: 0, message: result.count ? `Removed ${result.count} torrent${result.count === 1 ? '' : 's'}; ${deleteFiles ? 'files deleted' : 'files preserved'}` : 'No active bulk downloads were found' })
-        setBulkConfirm(null)
-      }
+      })
+      const result = api.jobResult(job)
+      const failures = result.failures
+      if (result.count > 0 && !failures.length) toast.show(`Sent ${result.count} download${result.count === 1 ? '' : 's'}`, 'success')
+      else if (result.count > 0) toast.show(`Sent ${result.count} download${result.count === 1 ? '' : 's'}; ${failures.length} failed: ${describeBulkFailures(failures)}`, 'info')
+      else if (!failures.length) toast.show('Selected releases are already queued or no longer upgradable', 'info')
+      else toast.show(`${failures.length} download${failures.length === 1 ? '' : 's'} could not be added: ${describeBulkFailures(failures)}`, 'error')
+      const settled = job.added.length + job.existing.length + failures.length
+      onBulkOperationChange({
+        action: 'start',
+        phase: failures.length ? 'warning' : 'success',
+        settled,
+        total: settled,
+        added: job.added.length,
+        failed: failures.length,
+        failures,
+        message: `${job.added.length} sent · ${job.existing.length} already queued${failures.length ? ` · ${failures.length} failed` : ''}`,
+      })
+      api.invalidateDownloadProgress()
     } catch (error: any) {
-      toast.show(`Bulk ${action === 'start' ? 'download' : 'cancel'} failed: ${error.message}`, 'error')
-      onBulkOperationChange({ action, phase: 'error', settled: 0, total: selections.length, added: 0, failed: selections.length, message: error.message })
-      if (action === 'start') {
-        // The request itself failed (for example qBittorrent is unreachable):
-        // show every selected title in red so the user sees what was affected.
-        const failed = new Set<string>()
-        for (const selection of selections) for (const hash of hashesForSelection(selection)) failed.add(hash)
-        setBulkOutcome({ requested: new Set(), failed, pending: new Set(), inflight: false })
-      } else {
-        setBulkConfirm(null)
-      }
+      toast.show(`Bulk download failed: ${error.message}`, 'error')
+      onBulkOperationChange({ action: 'start', phase: 'error', settled: 0, total: 0, added: 0, failed: 0, message: error.message })
+    } finally {
+      bulkInFlight.current = false
+      setBulkBusy(null)
+    }
+  }
+
+  const handleBulkCancel = async (record_ids: string[] | undefined, deleteFiles: boolean) => {
+    if (bulkInFlight.current || bulkOperationActive) return
+    bulkInFlight.current = true
+    setBulkBusy('cancel')
+    try {
+      onBulkOperationChange({ action: 'cancel', phase: 'running', settled: 0, total: record_ids?.length || 0, added: 0, failed: 0, message: 'Removing selected incomplete downloads…' })
+      const result = await api.cancelDownloads(record_ids, deleteFiles)
+      const failed = result.failures.length
+      toast.show(result.removed.length
+        ? `Cancelled ${result.removed.length} download${result.removed.length === 1 ? '' : 's'}; ${deleteFiles ? 'downloaded files were deleted' : 'files were kept'}${failed ? `; ${failed} could not be removed` : ''}`
+        : 'No downloads were removed', failed ? 'info' : 'success')
+      onBulkOperationChange({ action: 'cancel', phase: failed ? 'warning' : 'success', settled: result.removed.length + failed, total: record_ids?.length || result.removed.length + failed, added: 0, failed, failures: result.failures.map(failure => ({ label: failure.label, error: failure.error })), message: result.removed.length ? `Removed ${result.removed.length} download${result.removed.length === 1 ? '' : 's'}; ${deleteFiles ? 'files deleted' : 'files preserved'}` : 'No downloads were found' })
+      api.invalidateDownloadProgress()
+      if (!failed) setBulkConfirm(null)
+    } catch (error: any) {
+      toast.show(`Bulk cancel failed: ${error.message}`, 'error')
+      onBulkOperationChange({ action: 'cancel', phase: 'error', settled: 0, total: record_ids?.length || 0, added: 0, failed: record_ids?.length || 0, message: error.message })
     } finally {
       bulkInFlight.current = false
       setBulkBusy(null)
@@ -382,16 +385,16 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
         scopeControl={scopeControl}
         hiddenKeys={hiddenKeys}
         busy={bulkBusy === 'start'}
-        outcome={bulkOutcome}
-        onConfirm={(selections) => void handleBulkDownloads('start', selections)}
+        job={bulkJob}
+        downloadMode={config?.download_mode || 'torrent_only'}
+        sabEnabled={Boolean(config?.sabnzbd_url && config?.sabnzbd_key_configured)}
+        onConfirm={(plan_id, acknowledge) => void handleBulkStart(plan_id, acknowledge)}
         onClose={() => setBulkConfirm(null)}
       />
       <BulkCancelDialog
         open={active && bulkConfirm === 'cancel'}
         busy={bulkBusy === 'cancel'}
-        scopeControl={scopeControl}
-        resultKeys={bulkScope === 'filtered' ? reviewKeys : undefined}
-        onConfirm={(selections, deleteFiles) => void handleBulkDownloads('cancel', selections, deleteFiles)}
+        onConfirm={(record_ids, deleteFiles) => void handleBulkCancel(record_ids, deleteFiles)}
         onClose={() => { if (!bulkBusy) setBulkConfirm(null) }}
       />
     </section>

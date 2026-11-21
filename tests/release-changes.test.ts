@@ -12,7 +12,7 @@ import { groupReleaseChanges, latestReleaseChange } from '../frontend/src/releas
 import type { Release, ResultItem } from '../shared/contracts.js'
 
 const release = (overrides: Partial<Release> = {}): Release => ({ kind: 'best', releaseGroup: 'Group A', tracker: 'Nyaa', quality: '1080p',
-  tags: [], size: 100, info_hashes: ['a'.repeat(40)], downloadable: true, ...overrides })
+  tags: [], size: 100, info_hashes: ['a'.repeat(40)], torrent_available: true, ...overrides })
 const result = (overrides: Partial<ResultItem> = {}): ResultItem => normalizeResults([{ key: 'Sonarr:1:1:Group A', library_key: 'Sonarr:item1',
   title: 'Example anime', arr: 'Sonarr', season: 1, status: 'upgrade', best_group: 'Group A', anilist_id: 1, releases: [release()], ...overrides }]).map(item => ({ ...item, ...(overrides.unseen_changes ? { unseen_changes: overrides.unseen_changes } : {}) }))[0]
 const alternative = release({ kind: 'alt', releaseGroup: 'Group B', info_hashes: ['b'.repeat(40)] })

@@ -22,10 +22,10 @@ export const countBadge =
 
 /** Status text uses the same meaning on cards, details, and the downloads page. */
 export function downloadTextTone(state: string): string {
-  if (state === 'complete') return 'text-good'
-  if (state === 'error') return 'text-bad'
-  if (state === 'paused') return 'text-warn'
-  if (state === 'downloading' || state === 'sending') return 'text-accent-bright'
+  if (state === 'complete' || state === 'seeding') return 'text-good'
+  if (state === 'error' || state === 'missing') return 'text-bad'
+  if (state === 'paused' || state === 'acceptance_unknown' || state === 'unavailable') return 'text-warn'
+  if (state === 'downloading' || state === 'sending' || state === 'queued' || state === 'verifying' || state === 'repairing' || state === 'unpacking' || state === 'post_processing') return 'text-accent-bright'
   return 'text-muted'
 }
 

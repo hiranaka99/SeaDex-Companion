@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { jobResult } from '../shared/download-contracts.js'
 import { waitForDownloadJob } from '../frontend/src/bulk-job-store.js'
-import { getDownloadSnapshot, refreshDownloads, sendDownload, subscribeDownloads } from '../frontend/src/download-store.js'
-import { invalidateDownloadProgress, type BulkDownloadStatus } from '../frontend/src/api.js'
+import { controlDownload, getDownloadSnapshot, refreshDownloads, subscribeDownloads } from '../frontend/src/download-store.js'
+import { invalidateDownloadProgress, type DownloadJobStatus, type DownloadProgress } from '../frontend/src/api.js'
+
+const unit = { unit_id: 'torrent:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:anime', protocol: 'torrent' as const, source_hash: 'a'.repeat(40), label: 'Show', selections: [{ key: 'show-1', release: 0 }] }
 
 test('one job observer retries connectivity failures and follows the accepted ID', async () => {
   const originalWindow = globalThis.window, originalFetch = globalThis.fetch
   const timers: (() => void)[] = []
   globalThis.window = { setTimeout: (callback: () => void) => { timers.push(callback); return timers.length }, clearTimeout: () => {} } as unknown as Window & typeof globalThis
-  const accepted: BulkDownloadStatus = { id: 'accepted-job', existing: [], targets: [], ok: true, finished: false, pending: ['a'.repeat(40)], added: [], failures: [] }
-  const finished = { ...accepted, finished: true, pending: [], added: accepted.pending }
+  const accepted: DownloadJobStatus = { id: 'accepted-job', existing: [], targets: [{ key: 'show-1', release: 0 }], ok: true, finished: false, pending: [unit], added: [], failures: [] }
+  const finished = { ...accepted, finished: true, pending: [], added: [unit] }
   const paths: string[] = []
   let attempts = 0
   globalThis.fetch = (async input => {
@@ -30,28 +33,52 @@ test('one job observer retries connectivity failures and follows the accepted ID
   } finally { globalThis.window = originalWindow; globalThis.fetch = originalFetch }
 })
 
-test('download commands and their retained state survive card unsubscription', async () => {
+test('record-keyed snapshot reloads after control commands even without subscribers', async () => {
   const originalWindow = globalThis.window, originalFetch = globalThis.fetch
   globalThis.window = { setTimeout: () => 1, clearTimeout: () => {}, dispatchEvent: () => true } as unknown as Window & typeof globalThis
-  let accept!: (value: Response) => void
-  let added = false
-  const id = 'retained-result\0' + 0
+  const recordId = 't:' + 'a'.repeat(40)
+  const row: DownloadProgress = {
+    record_id: recordId, protocol: 'torrent', client: 'qbittorrent', source_hash: 'a'.repeat(40), native_id: 'a'.repeat(40),
+    phase: 'downloading', state: 'downloading', category: 'anime', labels: [], title: 'Show', season: 1, part: '', release_group: 'Group', tracker: 'Nyaa',
+    size: 100, key: 'show-1', release: 0, progress: 0.5, downloaded: 50, total_size: 100, speed: 10,
+    capabilities: { pause: true, resume: true, remove: true, remove_files: true }, updated_at: new Date().toISOString(),
+  }
+  let acceptControl!: (value: Response) => void
+  let removed = false
   globalThis.fetch = (async input => {
-    if (String(input) === '/api/download') return new Promise<Response>(resolve => { accept = resolve })
-    return Response.json({ ok: true, downloads: added ? { [id]: { ok: true, found: true, identity: 'identity', state: 'downloading', progress: 0.5, downloaded: 50, total_size: 100, speed: 10 } } : {} })
+    if (String(input) === '/api/download_control') return new Promise<Response>(resolve => { acceptControl = resolve })
+    return Response.json({ ok: true, downloads: removed ? {} : { [recordId]: row } })
   }) as typeof fetch
   try {
     invalidateDownloadProgress()
     const unsubscribe = subscribeDownloads(() => {})
-    const command = sendDownload('retained-result', 0, 'identity')
-    assert.equal(getDownloadSnapshot()[id].state, 'sending')
+    const command = controlDownload(recordId, 'remove', false)
     unsubscribe()
-    added = true; accept(Response.json({ ok: true })); await command
-    assert.equal(getDownloadSnapshot()[id].state, 'downloading')
-    assert.equal(getDownloadSnapshot()[id].progress, 0.5)
+    removed = true
+    acceptControl(Response.json({ ok: true }))
+    await command
+    assert.equal(getDownloadSnapshot()[recordId], undefined, 'A removed record leaves the snapshot after reload')
     const again = subscribeDownloads(() => {})
+    await new Promise(resolve => setImmediate(resolve))
+    removed = false
     await refreshDownloads()
-    assert.equal(getDownloadSnapshot()[id].identity, 'identity')
+    assert.equal(getDownloadSnapshot()[recordId]?.phase, 'downloading')
     again()
   } finally { globalThis.window = originalWindow; globalThis.fetch = originalFetch; invalidateDownloadProgress() }
+})
+
+test('jobResult reports in-flight units as pending rows and settles them once added', () => {
+  const unitB = { unit_id: 'usenet:bbbbbbbbbbbb:anime', protocol: 'usenet' as const, source_hash: 'b'.repeat(40), label: 'Show 2', selections: [{ key: 'show-2', release: 1 }] }
+  const inflight = { ok: true, finished: false, targets: [{ key: 'show-1', release: 0 }, { key: 'show-2', release: 1 }], pending: [unit, unitB], existing: [], added: [], failures: [] }
+  const running = jobResult(inflight)
+  const row = running.rows.find(item => item.key === 'show-1' && item.release === 0)
+  assert.ok(row, 'A still-pending unit keeps a visible row')
+  assert.equal(row!.status, 'pending')
+  assert.deepEqual(row!.protocols, ['torrent'])
+  assert.equal(running.rows.find(item => item.key === 'show-2')?.status, 'pending')
+  assert.equal(running.count, 0)
+  const settled = jobResult({ ...inflight, finished: true, pending: [], added: [unit], existing: [unitB] })
+  assert.equal(settled.rows.find(item => item.key === 'show-1')?.status, 'added')
+  assert.equal(settled.rows.find(item => item.key === 'show-2')?.status, 'existing')
+  assert.equal(settled.count, 2)
 })

@@ -160,7 +160,7 @@ export function releaseDict(kind: 'best' | 'alt', release: ReleaseCandidate, par
   const result: Release = {
     kind, releaseGroup: release.releaseGroup, tracker: release.tracker, quality: release.quality,
     tags: release.tags || [], dual_audio: Boolean(release.dual_audio), size: release.size || 0,
-    info_hashes: [...(release.info_hashes || [])], downloadable: isDownloadable(release),
+    info_hashes: [...(release.info_hashes || [])], torrent_available: isDownloadable(release),
   }
   if (part) result.part = part
   if (url) result.url = url

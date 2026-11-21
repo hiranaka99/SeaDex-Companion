@@ -1,3 +1,5 @@
+import type { DownloadMode } from './download-contracts.js'
+
 export interface AuthState {
   setup_required: boolean
   authenticated: boolean
@@ -15,7 +17,8 @@ export interface Release {
   dual_audio?: boolean
   size: number
   info_hashes: string[]
-  downloadable: boolean
+  /** Static availability of usable torrent hashes. Usenet availability is a separate lookup. */
+  torrent_available: boolean
   selected_files?: string[]
   torrent_files?: import('./download-estimate.js').TorrentFiles[]
 }
@@ -125,6 +128,16 @@ export interface Config {
   qbittorrent_url: string
   qbittorrent_user: string
   qbittorrent_pass: string
+  download_mode: DownloadMode
+  sabnzbd_url: string
+  sabnzbd_key: string
+  sabnzbd_sonarr_category: string
+  sabnzbd_radarr_category: string
+  animetosho_enabled: boolean
+  animetosho_url: string
+  amenzb_enabled: boolean
+  amenzb_url: string
+  amenzb_key: string
   webhook: string
   notify_enabled: boolean
   unhide_on_new_best: boolean
@@ -136,10 +149,12 @@ export interface PublicConfig extends Config {
   sonarr_key_configured: boolean
   radarr_key_configured: boolean
   qbittorrent_pass_configured: boolean
+  sabnzbd_key_configured: boolean
+  amenzb_key_configured: boolean
   webhook_configured: boolean
 }
 
-export type SecretConfigKey = 'sonarr_key' | 'radarr_key' | 'qbittorrent_pass' | 'webhook'
+export type SecretConfigKey = 'sonarr_key' | 'radarr_key' | 'qbittorrent_pass' | 'sabnzbd_key' | 'amenzb_key' | 'webhook'
 export type ConfigUpdate = Partial<Config> & { clear_secrets?: SecretConfigKey[] }
 
 export interface Status {

@@ -31,20 +31,6 @@ export interface DownloadEstimate {
   whole_torrents: number
 }
 
-export interface DiskSpaceCheck {
-  path: string | null
-  categories: string[]
-  required_bytes: number
-  unknown_torrents: number
-  free_bytes: number | null
-  sufficient: boolean | null
-  reason?: string
-}
-
-export interface DownloadPreflight extends DownloadEstimate {
-  disk_space: DiskSpaceCheck[]
-}
-
 const validBytes = (size: unknown): size is number => typeof size === 'number' && Number.isSafeInteger(size) && size >= 0
 
 /** Mirrors bulk add: a hash is added once, file scopes are united, and any whole-torrent request wins. */

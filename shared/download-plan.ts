@@ -7,7 +7,7 @@ export interface RecommendationRelease extends EstimatableRelease {
   kind: 'best' | 'alt'
   part?: string
   releaseGroup: string
-  downloadable: boolean
+  torrent_available: boolean
 }
 
 export interface RecommendationSeason<R extends RecommendationRelease = RecommendationRelease> {
@@ -30,8 +30,8 @@ export function releaseOwned(season: Pick<RecommendationSeason, 'precise_part_ow
   return groups.some(group => group.trim().toLowerCase() === release.releaseGroup.trim().toLowerCase())
 }
 
-/** One eligibility policy for review, preflight validation, and submission. */
-export function upgradeParts<R extends RecommendationRelease>(season: RecommendationSeason<R>): { part: string; options: { index: number; release: R }[]; downloadable: boolean }[] {
+/** One eligibility policy for review, preflight validation, and submission. Torrent availability only. */
+export function upgradeParts<R extends RecommendationRelease>(season: RecommendationSeason<R>): { part: string; options: { index: number; release: R }[]; torrent_available: boolean }[] {
   if (!isSeasonUpgradable(season) || season.excluded) return []
   const parts = new Map<string, { index: number; release: R }[]>()
   season.releases.forEach((release, index) => {
@@ -40,8 +40,8 @@ export function upgradeParts<R extends RecommendationRelease>(season: Recommenda
     parts.set(part, [...(parts.get(part) || []), { index, release }])
   })
   return [...parts].filter(([, options]) => !options.some(({ release }) => releaseOwned(season, release))).map(([part, options]) => {
-    const available = options.filter(({ release }) => release.downloadable && torrentHashes(release).length > 0)
-    return { part, options: available.length ? available : options, downloadable: available.length > 0 }
+    const available = options.filter(({ release }) => release.torrent_available && torrentHashes(release).length > 0)
+    return { part, options: available.length ? available : options, torrent_available: available.length > 0 }
   })
 }
 

@@ -1,13 +1,13 @@
-import { getBulkDownloadStatus, type BulkDownloadStatus } from './api.js'
+import { getDownloadJobStatus, type DownloadJobStatus } from './api.js'
 
-const subscribers = new Set<(job: BulkDownloadStatus) => void>()
-let latest: BulkDownloadStatus | null = null
+const subscribers = new Set<(job: DownloadJobStatus) => void>()
+let latest: DownloadJobStatus | null = null
 let timer: number | undefined
 let generation = 0
 let watching = false
 let selectedId: string | undefined
 
-function publish(job: BulkDownloadStatus): void {
+function publish(job: DownloadJobStatus): void {
   if (JSON.stringify(job) === JSON.stringify(latest)) return
   latest = job
   for (const callback of [...subscribers]) callback(job)
@@ -15,7 +15,7 @@ function publish(job: BulkDownloadStatus): void {
 
 async function poll(current = generation): Promise<void> {
   try {
-    const job = await getBulkDownloadStatus(selectedId)
+    const job = await getDownloadJobStatus(selectedId)
     if (current !== generation) return
     publish(job)
     if (job.finished) selectedId = undefined
@@ -29,7 +29,7 @@ async function poll(current = generation): Promise<void> {
 }
 
 /** Submission progress and reload recovery share one observer and one timer. */
-export function watchBulkDownloadStatus(callback: (job: BulkDownloadStatus) => void): () => void {
+export function watchDownloadJob(callback: (job: DownloadJobStatus) => void): () => void {
   subscribers.add(callback)
   if (latest) callback(latest)
   if (!watching) { watching = true; void poll() }
@@ -39,18 +39,35 @@ export function watchBulkDownloadStatus(callback: (job: BulkDownloadStatus) => v
   }
 }
 
-export function waitForDownloadJob(job: BulkDownloadStatus, onProgress?: (job: BulkDownloadStatus) => void): Promise<BulkDownloadStatus> {
+export function waitForDownloadJob(job: DownloadJobStatus, onProgress?: (job: DownloadJobStatus) => void): Promise<DownloadJobStatus> {
   selectedId = job.id || undefined
   window.clearTimeout(timer); generation += 1
   publish(job)
   return new Promise(resolve => {
-    const callback = (status: BulkDownloadStatus) => {
+    const callback = (status: DownloadJobStatus) => {
       if (status.id !== job.id) return
       onProgress?.(status)
       if (status.finished) { subscribers.delete(callback); resolve(status) }
     }
     subscribers.add(callback)
     callback(job)
+    watching = true
+    void poll()
+  })
+}
+
+/** Point the shared poller at a freshly started job and resolve when it finishes. */
+export function followDownloadJob(id: string, onProgress?: (job: DownloadJobStatus) => void): Promise<DownloadJobStatus> {
+  selectedId = id
+  window.clearTimeout(timer); generation += 1
+  latest = null
+  return new Promise(resolve => {
+    const callback = (status: DownloadJobStatus) => {
+      if (status.id !== id) return
+      onProgress?.(status)
+      if (status.finished) { subscribers.delete(callback); resolve(status) }
+    }
+    subscribers.add(callback)
     watching = true
     void poll()
   })
