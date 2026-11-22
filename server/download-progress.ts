@@ -131,6 +131,16 @@ async function adoptUnconfirmedUsenet(config: Config, records: OwnedDownloadReco
   return adopted
 }
 
+/** An accepted torrent is given time to appear in the client before an absence is treated as meaningful. */
+const UNOBSERVED_GRACE_MS = 10 * 60_000
+
+/** True for an accepted record that no client read has ever confirmed and that is past the grace period. */
+function isStaleUnobserved(record: OwnedDownloadRecord): boolean {
+  if (record.last_phase || record.state !== 'accepted') return false
+  const added = Date.parse(record.added_at)
+  return Number.isFinite(added) && Date.now() - added > UNOBSERVED_GRACE_MS
+}
+
 async function readDownloadProgress(config: Config, records: OwnedDownloadRecord[]): Promise<{ progress: AllDownloadProgress; sabQueueIds: Set<string> }> {
   if (await adoptUnconfirmedUsenet(config, records)) records = records.map(record => findDownloadRecord(record.id) || record)
   const downloads: Record<string, DownloadProgress> = {}
@@ -160,6 +170,7 @@ async function readDownloadProgress(config: Config, records: OwnedDownloadRecord
     view.error = 'Saved from a different qBittorrent URL; controls are disabled until it is restored.'
     downloads[record.id] = view
   }
+  let retired = 0
   for (let record of qbBound) {
     // A torrent's identity is its hash, so an unconfirmed submission that qBittorrent holds is confirmed.
     if (record.state === 'acceptance_unknown' && torrentsByHash.has(record.source_hash)) record = setDownloadNative(record.id, [record.source_hash]) || record
@@ -172,6 +183,13 @@ async function readDownloadProgress(config: Config, records: OwnedDownloadRecord
       continue
     }
     const torrent = torrentsByHash.get(record.native_id)
+    if (!torrent && qbReadComplete && isStaleUnobserved(record)) {
+      // Carried over from the pre-ledger torrent list, or sent long ago: qBittorrent never held it while we watched,
+      // so there is nothing to warn about. Only our tracking entry is dropped; qBittorrent and its files are untouched.
+      markDownloadRemoved(record.id)
+      retired++
+      continue
+    }
     if (!torrent) {
       view.phase = qbReadComplete ? 'missing' : (record.last_phase || 'unavailable')
       if (!qbReadComplete) view.error = 'qBittorrent could not be reached; showing the last known state.'
@@ -194,6 +212,7 @@ async function readDownloadProgress(config: Config, records: OwnedDownloadRecord
     downloads[record.id] = view
     setDownloadPhase(record.id, view.phase)
   }
+  if (retired) log('INFO', `Stopped tracking ${retired} torrent(s) that were never seen in qBittorrent; the client was not changed`)
 
   const sabRecords = records.filter(record => record.protocol === 'usenet')
   const sabBound = sabRecords.filter(record => record.endpoint && record.endpoint === currentSab && record.native_id)
