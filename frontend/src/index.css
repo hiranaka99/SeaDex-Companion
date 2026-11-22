@@ -151,9 +151,6 @@ html.sidebar-resizing .app-shell { transition: none; }
 .operation-center { flex-shrink: 0; }
 .operation-center:has(details[open]) { position: relative; top: auto; }
 
-/* Preserve native open/closed arrows while keeping section metadata aligned. */
-.configuration-disclosures > details > summary { display: list-item; }
-.configuration-disclosures > details > summary > span { float: right; margin-left: .75rem; }
 .operation-diagnostics { max-height: min(12rem, 30dvh); }
 .library-results { scroll-margin-top: 1rem; }
 
@@ -316,6 +313,7 @@ html.sidebar-resizing .app-shell { transition: none; }
   @container library-tools (max-width: 60rem) {
     .toolbar-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
     .toolbar-controls > label { grid-column: 1 / -1; }
+    .toolbar-controls > [role="group"] { grid-column: 1 / -1; }
     .toolbar-controls select { width: 100%; }
     .toolbar-controls button { justify-content: center; }
   }
@@ -606,5 +604,38 @@ html.sidebar-resizing .app-shell { transition: none; }
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---- Library tab refinements (preview) ---- */
+.library-status-upgrades { font-size: 12px; }
+.library-card-readable[data-needs-action="true"] { border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-line)); }
+.library-card-readable[data-library-status="review"] { border-color: color-mix(in srgb, var(--color-warn) 50%, var(--color-line)); }
+.library-card-readable[data-needs-action="false"] { background: var(--color-canvas-soft); }
+.library-summary {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px;
+  margin: 0 0 14px; font-size: .875rem; color: var(--color-muted);
+}
+.library-summary strong { color: var(--color-ink); font-weight: 800; font-variant-numeric: tabular-nums; }
+.library-summary-count { margin-left: auto; font-size: .75rem; color: var(--color-muted-dim); }
+.library-section-label {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 10px;
+  margin: 10px 0 0; font-size: .8125rem; font-weight: 700; letter-spacing: 0; color: var(--color-ink);
+}
+.library-section-label:first-child { margin-top: 0; }
+.library-section-label > span { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--color-muted-dim); }
+.library-section-label::after { content: ''; flex: 1; height: 1px; background: var(--color-line); order: 3; }
+@media (max-width: 600px) {
+  .library-summary { margin-bottom: 10px; gap: 2px 12px; }
+  .library-summary-count { margin-left: 0; }
+  /* The summary already names what leads the list; save the row on phones. */
+  .library-section-label:first-child { display: none; }
+}
+.library-grid { align-items: start; }
+@media (min-width: 601px) {
+  @container library-tools (max-width: 60rem) and (min-width: 40.01rem) {
+    .toolbar-controls { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1.3fr) auto; }
+    .toolbar-controls select { min-width: 0; }
+    .toolbar-controls button { white-space: nowrap; }
   }
 }

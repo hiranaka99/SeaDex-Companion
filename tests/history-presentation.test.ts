@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { historyDetails, historyStatus } from '../frontend/src/history.js'
+import { groupChanges, historyDetails, historyStatus, matchesHistoryQuery, pluralize, scanTimes, summarizeChanges } from '../frontend/src/history.js'
 import { releaseChangeDetail } from '../frontend/src/release-changes.js'
 import type { ScanHistoryChange } from '../shared/contracts.js'
 
@@ -35,4 +35,38 @@ test('legacy history without details describes new, removed, resolved, and upgra
   assert.deepEqual(historyDetails(change({ from: 'best', to: 'best', details: [] })), [{ summary: 'Release recommendation updated', release: '-ZR-' }])
   assert.deepEqual(historyDetails(change({ type: 'resolved', to: 'missing', details: [] })), [{ summary: 'Library status changed' }])
   assert.deepEqual(historyDetails(change({ type: 'upgrade', from: 'best', details: [] })), [{ summary: 'An upgrade is now available', release: '-ZR-' }])
+})
+
+test('long runs of bare library additions and removals fold into one group behind the changes that matter', () => {
+  const removed = Array.from({ length: 6 }, (_, index) => change({ key: 'gone' + index, title: 'Gone ' + index, type: 'removed', to: null, details: [] }))
+  const rows = groupChanges([...removed, change({ key: 'added', type: 'new', from: null, details: [] }), change({ key: 'upgrade', type: 'upgrade', from: 'best', to: 'upgrade', details: [] }), change({ key: 'edited' })])
+  assert.deepEqual(rows.map(row => row.kind === 'group' ? row.type + ':' + row.changes.length : row.change.key), ['upgrade', 'edited', 'added', 'removed:6'])
+  const few = groupChanges(removed.slice(0, 4))
+  assert.equal(few.length, 4, 'Short runs stay as individual rows')
+  const detailed = groupChanges([...removed, change({ key: 'gone-detail', type: 'removed', to: null, details: ['Group (Nyaa) · Torrent changed'] })])
+  assert.equal(detailed.filter(row => row.kind === 'change').length, 1, 'Removals that carry release details are never folded away')
+})
+
+test('scan summaries lead with actionable change types and pluralize counts', () => {
+  const changes = [change({ type: 'removed' }), change({ type: 'upgrade' }), change({ type: 'removed' }), change({ type: 'resolved' })]
+  assert.deepEqual(summarizeChanges(changes).map(item => item.count + ' ' + item.label), ['1 upgradable', '1 resolved', '2 removed'])
+  assert.equal(pluralize(1, 'title'), '1 title')
+  assert.equal(pluralize(3, 'title'), '3 titles')
+})
+
+test('history search matches titles and season tokens', () => {
+  assert.equal(matchesHistoryQuery(change(), '  EXAMPLE '), true)
+  assert.equal(matchesHistoryQuery(change(), 's02'), true)
+  assert.equal(matchesHistoryQuery(change(), 'Season 2'), true)
+  assert.equal(matchesHistoryQuery(change(), 's03'), false)
+  assert.equal(matchesHistoryQuery(change(), 'other'), false)
+})
+
+test('scan times name the day and the recent age', () => {
+  const now = new Date(2026, 10, 22, 18, 0, 0)
+  assert.deepEqual([scanTimes('2026-11-22 17:30:00', now).dayLabel, scanTimes('2026-11-22 17:30:00', now).age], ['Today', '30 min ago'])
+  assert.equal(scanTimes('2026-11-21 23:00:00', now).dayLabel, 'Yesterday')
+  assert.equal(scanTimes('2026-11-21 23:00:00', now).age, '19 h ago')
+  assert.equal(scanTimes('2026-11-10 09:00:00', now).age, null)
+  assert.equal(scanTimes('not a date', now).dayKey, 'unknown')
 })

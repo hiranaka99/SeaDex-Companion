@@ -10,7 +10,7 @@ const APP_VERSION = `v${pkg.version.replace(/\.0$/, '')}`
 
 const NAV: { id: TabId; icon: IconName; label: string }[] = [
   { id: 'anime', icon: 'library', label: 'Library' },
-  { id: 'history', icon: 'clock', label: 'Scan history' },
+  { id: 'history', icon: 'history', label: 'Scan history' },
   { id: 'config', icon: 'settings', label: 'Configuration' },
   { id: 'log', icon: 'logs', label: 'Server log' },
 ]

@@ -80,13 +80,15 @@ All integrations are configured in the WebUI; no integration credentials need to
 2. Add qBittorrent credentials to enable downloads.
 3. Optionally add a Discord webhook for upgrade notifications.
 4. Test each configured integration, save, and select **Scan library**.
-5. Configure automatic scans under **Configuration → Automation & webhooks**.
+5. Configure automatic scans under **Configuration → Automation**.
 
 Use addresses reachable from the SeaDex Companion container. Inside a container, `localhost` refers to that container, so it usually cannot reach Sonarr or qBittorrent running elsewhere through `localhost`.
 
 Sonarr v3, v4, and v5 are supported. Enter each service's base URL, including any reverse-proxy path, such as `http://sonarr:8989/sonarr`. If your proxy redirects to a different address or from HTTP to HTTPS, enter the final URL directly.
 
 ## Review your library
+
+The library opens with a one-line summary of what you can act on: how many shown titles can be upgraded, the estimated size change if you download all of them, and how many matches need review. In the recommended order, titles are grouped under a heading for each status, with matches that need review first. Cards that need action have an accent border; titles that are already on their best release sit flatter. Every season badge shows a symbol as well as a color (an up arrow for upgradable, a check for the best release owned, a minus for not on SeaDex, a warning for partial coverage), and selecting a badge opens **Details** at that season.
 
 Open **Details** on an anime to see its quality verdict, the release groups in your files, and the recommended upgrades. Expand a season or cour to compare releases and download options. A cour is one part of a split season.
 
@@ -127,11 +129,11 @@ If the connection to SABnzbd or qBittorrent drops before it confirms a download,
 
 ## Automatic scans and notifications
 
-Set an interval, daily times, or weekdays under **Configuration → Automation & webhooks**. Choose the timezone and what should happen if a scan was missed while SeaDex Companion was offline.
+Set an interval, daily times, or weekdays under **Configuration → Automation**. Choose the timezone and what should happen if a scan was missed while SeaDex Companion was offline.
 
 **Unhide anime with new best releases** is off by default. Enable it to bring hidden titles back when a scan finds a new best release. Alternative releases do not trigger this setting. Add a Discord webhook under **Configuration** if you want upgrade notifications.
 
-Under **Configuration → Automation & webhooks** you can also set the **Date & time format** used for scan times, history, and detected changes. Build a pattern from the tokens `YYYY YY MM M DD D HH H mm m ss s` — for example `DD.MM.YYYY HH:mm:ss` shows `21.11.2026 18:40:29`. A live preview updates as you type, and the default is `YYYY-MM-DD HH:mm:ss`.
+Under **Configuration → General** you can set the **Date & time format** used for scan times, history, and detected changes. Build a pattern from the tokens `YYYY YY MM M DD D HH H mm m ss s` — for example `DD.MM.YYYY HH:mm:ss` shows `21.11.2026 18:40:29`. A live preview updates as you type, and the default is `YYYY-MM-DD HH:mm:ss`.
 
 To scan newly added titles sooner, add these webhook connections in Sonarr and Radarr using HTTP Basic Authentication with your SeaDex Companion username and password:
 
@@ -143,6 +145,10 @@ Enable Sonarr `SeriesAdd` or Radarr `MovieAdded` events for the corresponding co
 Scans reuse recent AniList information and refresh known titles together to reduce waiting while respecting API limits. Titles with manual matches skip unnecessary automatic searches. Your first scan, scans with many new titles, and scans that refresh older information can take longer. Season information refreshes after 24 hours, on the next scan; newly added seasons are checked sooner. You can cancel a scan at any time.
 
 Temporary SeaDex connection problems are retried automatically. If a scan still fails, your previous results remain available. Check **Scan history** or **Server log** for details before trying again later.
+
+## Scan history
+
+**Scan history** lists your scans under Today, Yesterday, and earlier dates. Only the latest scan with changes starts open; each scan shows its trigger, duration, and any failed, partial, or cancelled outcome, with the actionable changes summarized first. Long runs of titles that were only added or removed fold into one group. Filter by library app, by scans with changes or failed scans, or search a title, release group, or season such as **S02**. Older scans and long change lists load in steps.
 
 ## Reviewing release changes
 

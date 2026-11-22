@@ -178,6 +178,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
     setDetailsVisible(false)
     setDetailsOpen(true)
   }
+  const handleSeasonSelect = (index: number) => { handleOpenDetails(); window.setTimeout(() => jumpToDetails(`${titleId}-season-${index}`), 280) }
 
   const toggleExclusion = async (season: ResultItem, part: string, excluded: boolean) => {
     if (!season.library_key) return
@@ -215,6 +216,8 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
   return <>
     <article
       data-library-key={String(group.anilist_id ?? `${group.arr}:${group.title}`)}
+      data-library-status={group.status}
+      data-needs-action={group.status === 'review' || upgradableSeasonCount > 0 ? 'true' : 'false'}
       className={cx(
         CARD_BASE, 'library-card-readable',
         hiding && 'library-card-hiding pointer-events-none opacity-0',
@@ -235,8 +238,8 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
         </div>
       </div>
         <div className="library-card-seasons flex flex-wrap gap-1.5 px-3.5 pb-3.5 max-[600px]:px-3 max-[600px]:pb-3" aria-label={`${seasonCount} seasons`}>
-          {group.seasons.slice(0, 6).map((season) => <SeasonBadge key={season.key} season={season} fallback={st} animeTitle={group.title} className="rounded-md border px-2 py-1 text-xs font-extrabold"/>)}
-          {seasonCount > 6 && <span className="relative rounded-md border border-line bg-panel-raised px-2 py-1 text-xs font-bold text-muted" title={`View all ${seasonCount} seasons in Details`}>+{seasonCount - 6}<span className="sr-only"> more seasons; open Details to view all {seasonCount} seasons</span></span>}
+          {group.seasons.slice(0, 6).map((season, seasonIndex) => <SeasonBadge key={season.key} season={season} onSelect={() => handleSeasonSelect(seasonIndex)} fallback={st} animeTitle={group.title} className="rounded-md border px-2 py-1 text-xs font-extrabold"/>)}
+          {seasonCount > 6 && <button type="button" className="relative cursor-pointer rounded-md border border-line bg-panel-raised px-2 py-1 text-xs font-bold text-muted hover:text-ink" onClick={handleOpenDetails} title={`View all ${seasonCount} seasons in Details`}>+{seasonCount - 6}<span className="sr-only"> more seasons; open Details to view all {seasonCount} seasons</span></button>}
         </div>
       {unseenChanges.length > 0 && <div className="library-unseen-summary mx-3.5 mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 max-[600px]:mx-3" aria-label={`Unseen changes for ${group.title}`}>
         <div className="min-w-0 flex-1 space-y-1">
@@ -256,7 +259,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
       </div>}
         <footer className="mt-auto flex shrink-0 flex-wrap items-center gap-2 border-t border-line px-3.5 py-3 max-[600px]:px-3">
           <div className="flex min-w-0 grow basis-24 flex-wrap items-center gap-x-2 gap-y-1 wrap-anywhere">
-            {delta !== 0 ? <LibrarySizeChange delta={delta} title={group.title}/> : <span className="text-xs text-muted-dim">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span>}
+            {delta !== 0 ? <LibrarySizeChange delta={delta} title={group.title} note={delta > 0 ? 'if upgraded' : undefined}/> : <span className="text-xs text-muted-dim">{seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}</span>}
             {group.seasons.some(season => (season.missing_episode_count || 0) > 0) && <span className="text-xs text-warn">{group.seasons.reduce((sum, season) => sum + (season.missing_episode_count || 0), 0)} episodes missing</span>}
           </div>
           <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1">

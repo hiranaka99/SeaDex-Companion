@@ -387,7 +387,7 @@ try {
   // Observe real browser animation calls while exercising title continuity.
   // Leave enough vertical room that a late download row cannot change the
   // scrollbar width during this test of card reordering.
-  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1100, deviceScaleFactor: 1, mobile: false })
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1500, deviceScaleFactor: 1, mobile: false })
   await wait(`document.querySelector('[aria-label="Active downloads"]')`)
   await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
   await evaluate(`(() => { window.libraryMotionCalls = []; const original = Element.prototype.animate; Element.prototype.animate = function(frames, options) { if (this.matches('article[data-library-key]')) window.libraryMotionCalls.push({ key: this.dataset.libraryKey, frames, options }); return original.call(this, frames, options) }; window.restoreLibraryMotion = () => { Element.prototype.animate = original } })()`)
@@ -998,7 +998,7 @@ try {
 
   await click('Configuration')
   await wait(`document.querySelector('input[name=sonarr_url]')`)
-  await click('Automation & webhooks')
+  await click('Automation')
   const unhideSwitch = '[role=switch][aria-labelledby=unhide-on-new-best-label]'
   assert.equal(await evaluate(`document.querySelector('${unhideSwitch}').getAttribute('aria-checked')`), 'false')
   await evaluate(`document.querySelector('${unhideSwitch}').focus()`)
@@ -1042,15 +1042,18 @@ try {
   await wait(`document.querySelector('input[name=download_mode]')`)
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('input[name=download_mode]')].map(input => [input.closest('label').textContent.trim(), input.checked])`),
     [['Torrents only (qBittorrent)', true], ['Usenet only (SABnzbd)', false], ['Choose per release', false]], 'Download method offers three modes with torrents only selected')
-  assert.ok(await evaluate(`document.querySelector('[role="radiogroup"][aria-label="Download method"]').getClientRects().length > 0`), 'The download method choice is reachable without extra expansion')
-  assert.ok(await evaluate(`(() => { const card = [...document.querySelectorAll('section')].find(section => section.querySelector('h2')?.textContent === 'SABnzbd'); return Boolean(card && card.querySelector('input[name=sabnzbd_url]') && card.querySelector('input[name=sabnzbd_key]') && card.querySelector('input[name=sabnzbd_sonarr_category]') && card.querySelector('input[name=sabnzbd_radarr_category]')) })()`), 'The SABnzbd card collects its URL, key, and per-app categories')
-  await evaluate(`(() => { [...document.querySelectorAll('details > summary')].find(summary => summary.textContent.includes('Usenet sources')).click(); return true })()`)
+  assert.ok(await evaluate(`document.querySelector('input[name=download_mode]').closest('[role=radiogroup]').getClientRects().length > 0`), 'The download method choice is reachable without extra expansion')
+  assert.ok(await evaluate(`Boolean(document.querySelector('input[name=qbittorrent_url]')) && !document.querySelector('input[name=sabnzbd_url]') && !document.querySelector('input[name=animetosho_url]')`), 'Torrents-only mode shows qBittorrent and hides the SABnzbd and Usenet indexer cards')
+  await evaluate(`document.querySelectorAll('input[name=download_mode]')[2].click()`)
+  await wait(`document.querySelector('input[name=sabnzbd_url]') && document.querySelector('input[name=qbittorrent_url]')`)
+  assert.ok(await evaluate(`(() => { const card = [...document.querySelectorAll('section')].find(section => section.querySelector('h3')?.textContent === 'SABnzbd'); return Boolean(card && card.querySelector('input[name=sabnzbd_url]') && card.querySelector('input[name=sabnzbd_key]') && card.querySelector('input[name=sabnzbd_sonarr_category]') && card.querySelector('input[name=sabnzbd_radarr_category]')) })()`), 'The SABnzbd card collects its URL, key, and per-app categories')
   await wait(`document.body.textContent.includes('Search AnimeTosho for NZBs') && document.body.textContent.includes('Search AmeNZB for NZBs')`)
   assert.ok(await evaluate(`Boolean(document.querySelector('input[name=animetosho_url]') && document.querySelector('input[name=amenzb_url]') && document.querySelector('input[name=amenzb_key]'))`), 'Both Usenet sources are configurable')
   assert.ok(await evaluate(`!document.body.textContent.includes('Usenet-only mode needs a working SABnzbd connection.')`), 'Torrents-only mode shows no Usenet warning')
   await evaluate(`document.querySelectorAll('input[name=download_mode]')[1].click()`)
   await wait(`document.body.textContent.includes('Usenet-only mode needs a working SABnzbd connection.')`)
-  assert.ok(await evaluate(`document.querySelector('[role="radiogroup"][aria-label="Download method"]').closest('section').textContent.includes('Usenet-only mode needs a working SABnzbd connection.')`), 'The warning sits with the download method choice')
+  assert.ok(await evaluate(`!document.querySelector('input[name=qbittorrent_url]') && Boolean(document.querySelector('input[name=sabnzbd_url]'))`), 'Usenet-only mode hides the qBittorrent card')
+  assert.ok(await evaluate(`document.querySelector('input[name=download_mode]').closest('[role=radiogroup]').closest('details').textContent.includes('Usenet-only mode needs a working SABnzbd connection.')`), 'The warning sits with the download method choice')
   await capture('settings-usenet-warning')
   await evaluate(`document.querySelectorAll('input[name=download_mode]')[0].click()`)
   await wait(`document.querySelector('input[name=download_mode]').checked && !document.body.textContent.includes('Usenet-only mode needs a working SABnzbd connection.')`)
@@ -1073,6 +1076,40 @@ try {
   await capture('history-clear-mobile')
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
   console.log('PASS action-first history details and unchanged-status context on desktop and mobile')
+
+  const historyRoot = `[...document.querySelectorAll('h1')].find(heading => heading.textContent === 'Scan history').closest('section')`
+  const historyCards = `[...${historyRoot}.querySelectorAll('article')]`
+  fixtureHistory = [
+    { id: 'long-0', run_at: '2026-11-18 10:35:34', trigger: 'manual', counts: { best: 3 }, changes: [] },
+    { id: 'long-1', run_at: '2026-11-18 10:00:00', trigger: 'scheduled', counts: { best: 3 }, changes: [
+      { key: 'u1', title: 'Upgrade target', arr: 'Sonarr', season: 2, type: 'upgrade', from: 'best', to: 'upgrade', best_group: 'Group' },
+      ...Array.from({ length: 6 }, (_, index) => ({ key: 'r' + index, title: 'Removed title ' + index, arr: 'Radarr', season: 0, type: 'removed', from: 'best', to: null })),
+    ] },
+    { id: 'long-failed', run_at: '2026-11-17 09:00:00', outcome: 'failed', error: 'Fixture catalog failure', counts: {}, changes: [] },
+    ...Array.from({ length: 11 }, (_, index) => ({ id: 'long-old-' + index, run_at: `2026-11-16 08:${String(10 + index)}:00`, trigger: 'manual', counts: {}, changes: [
+      { key: 'o' + index, title: 'Older title ' + index, arr: 'Sonarr', season: 1, type: 'changed', from: 'best', to: 'best', details: ['Group (Nyaa) · Torrent changed'] },
+    ] })),
+  ]
+  await evaluate(`[...${historyRoot}.querySelectorAll('button')].find(button => button.textContent.trim() === 'Refresh').click()`)
+  await wait(`${historyCards}.length === 10`)
+  assert.equal(await evaluate(`${historyCards}.filter(card => card.querySelector('[aria-expanded="true"]')).length`), 1, 'Only the newest scan with changes opens by default')
+  assert.ok(await evaluate(`(() => { const open = ${historyCards}.find(card => card.querySelector('[aria-expanded="true"]')); return open.textContent.includes('Upgrade target') && open.textContent.includes('6 titles removed from your library') && open.querySelectorAll(':scope > div > ul > li').length === 2 })()`), 'Six bare removals fold into one group beneath the upgrade')
+  assert.ok(await evaluate(`${historyRoot}.textContent.includes('1 upgradable') && ${historyRoot}.textContent.includes('6 removed') && ${historyRoot}.textContent.includes('Fixture catalog failure')`), 'Scan headers summarize change types and keep failure reasons visible')
+  assert.ok(await evaluate(`[...${historyRoot}.querySelectorAll('button')].some(button => button.textContent.includes('Show 4 older scans'))`), 'Older scans are paged')
+  await evaluate(`[...${historyRoot}.querySelectorAll('button')].find(button => button.textContent.includes('Show 4 older scans')).click()`)
+  await wait(`${historyCards}.length === 14`)
+  await fill('[placeholder^="Search titles or season"]', 's02')
+  await wait(`${historyCards}.length === 1`)
+  assert.ok(await evaluate(`${historyCards}[0].textContent.includes('Upgrade target') && ${historyRoot}.textContent.includes('Showing 1 of 7 changes')`), 'A season search narrows scans and rows')
+  await evaluate(`[...${historyRoot}.querySelectorAll('button')].find(button => button.textContent.trim() === 'Reset filters').click()`)
+  await wait(`${historyCards}.length === 10`)
+  await evaluate(`(() => { const select = ${historyRoot}.querySelector('select[aria-label="Scans shown"]'); select.value = 'attention'; select.dispatchEvent(new Event('change', { bubbles: true })) })()`)
+  await wait(`${historyCards}.length === 1 && ${historyCards}[0].textContent.includes('Failed')`)
+  assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth`), 'Filtered history fits the viewport')
+  console.log('PASS collapsed history cards, change summaries, folded removals, paging, and season, scan and reset filters')
+  fixtureHistory = readableHistory()
+  await evaluate(`(() => { const root = ${historyRoot}; const select = root.querySelector('select[aria-label="Scans shown"]'); select.value = 'all'; select.dispatchEvent(new Event('change', { bubbles: true })); [...root.querySelectorAll('button')].find(button => button.textContent.trim() === 'Refresh').click() })()`)
+  await wait(`document.body.textContent.includes('Still upgradable')`)
   fixtureHistory = null
   await click('Example anime')
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('Correct match')`)
@@ -1535,8 +1572,12 @@ try {
     await pause(200)
     await evaluate(`document.querySelector('main > .app-scrollbar').scrollTop = 0`)
     const badgeSelector = '.library-card-seasons .season-badge[title*="Cour 1"]'
-    assert.ok(await evaluate(`(() => { const badge = document.querySelector(${JSON.stringify(badgeSelector)}); return badge && badge.tagName === 'SPAN' && !badge.querySelector('svg') && !badge.hasAttribute('tabindex') && badge.textContent.includes('Cour 1') && badge.textContent.includes('Cour 2') })()`), 'Season pills retain accessible cour statuses without icons or an interactive control')
+    assert.ok(await evaluate(`(() => { const badge = document.querySelector(${JSON.stringify(badgeSelector)}); return badge && badge.tagName === 'BUTTON' && badge.type === 'button' && !!badge.querySelector('.season-badge-glyphs[aria-hidden="true"] svg') && badge.textContent.includes('Cour 1') && badge.textContent.includes('Cour 2') })()`), 'Season pills retain accessible cour statuses, carry decorative status glyphs, and are buttons')
     await evaluate(`document.querySelector(${JSON.stringify(badgeSelector)}).click()`)
+    await wait(`document.querySelector('.anime-details-panel') && document.activeElement?.id?.includes('-season-')`)
+    assert.ok(await evaluate(`document.activeElement.closest('.anime-details-body') !== null`), 'A season pill opens Details focused on that season')
+    await evaluate(`document.querySelector('button[aria-label="Close details"]').click()`)
+    await wait(`!document.querySelector('.anime-details-panel')`)
     assert.ok(await evaluate(`!document.querySelector('.season-status-popover, .season-badge[popovertarget]') && !document.querySelector('[popover]:popover-open')`), 'Season pills do not open a popover')
     await capture(`review-${width}-season-pills`)
     await evaluate(`(() => { const card = [...document.querySelectorAll('article')].find(card => card.textContent.includes(${JSON.stringify(example.title)})); [...card.querySelectorAll('button')].find(button => button.textContent.trim() === 'Details').click() })()`)
@@ -1570,7 +1611,7 @@ try {
     await capture(`review-${width}-bulk-expanded`)
     await key('Escape')
   }
-  console.log('PASS responsive configuration clearance, long release identities, noninteractive season pills, and nested mapping at 320/390/900/1440px')
+  console.log('PASS responsive configuration clearance, long release identities, season pill buttons, and nested mapping at 320/390/900/1440px')
   anilistSearchResults = [200, 201].map(id => ({ id, title: `Example anime Season 2${id === 201 ? ' Part 2' : ''}`, year: 2026, format: 'ONA', episodes: 6, cover: null }))
   config.hidden = []
   progressMode = 'absent'
