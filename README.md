@@ -39,7 +39,7 @@ docker run -d \
 
 Open [http://localhost:8080](http://localhost:8080), create the administrator account, then configure your services under **Configuration**.
 
-Keep the `seadex-data` volume: it stores your settings, account, integration credentials, matching corrections, and scan history. Both installation examples limit access to the host computer. See [Security](#security) before setting up access from other devices.
+Keep the `seadex-data` volume: it stores your settings, account, integration credentials, matching corrections, scan history, and cached Usenet availability. Both installation examples limit access to the host computer. See [Security](#security) before setting up access from other devices.
 
 ### Docker Compose
 
@@ -118,7 +118,8 @@ To download over Usenet:
 
 - Connect SABnzbd with its server URL and API key, set the Sonarr and Radarr categories, and confirm **Test connection**.
 - AnimeTosho is enabled by default and needs no account. Optionally enable AmeNZB and add the API key from your amenzb.moe profile.
-- Release details report whether an enabled Usenet source carries the release, with its size, and offer a re-check. Availability is refreshed in the background after each scan, at a request rate the indexers tolerate; opening a card or reviewing a plan uses the latest result immediately. In **Let me choose per release** mode, pick **Torrent** or **Usenet** per release; releases without a public magnet can become Usenet-only, and releases no source carries stay torrent-only.
+- Release details report the last-known Usenet source, its size, and when the provider checked it. Cached results survive restarts and remain visible while older or missing information is checked in the background. In **Let me choose per release** mode, pick **Torrent** or **Usenet** per release; releases without a public magnet can become Usenet-only, and releases no source carries stay torrent-only.
+- Use **Re-check** in release details or **Refresh review** in bulk downloads to force a new check. A failed refresh keeps the previous result with a warning rather than clearing it. Downloads still require a valid review and a validated NZB before anything is sent to SABnzbd.
 
 Usenet sources cannot be split per episode: the whole upload is downloaded, including files beyond the selected episodes. The review lists the known extra files and requires your acknowledgement before sending. If the connection to SABnzbd drops before it confirms a download, SeaDex Companion never re-submits it automatically; the entry remains listed with **Awaiting confirmation**, so check SABnzbd before retrying.
 

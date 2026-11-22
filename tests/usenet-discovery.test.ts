@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { setImmediate as nextTurn } from 'node:timers/promises'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { bumpGeneration } from '../server/config-generation.js'
-import { aggregateHashStates, invalidateUsenetLookups, raceWithWallClockGuard, resolveUsenetHash, resolveUsenetRelease, setUsenetProviderMinIntervalMs, UsenetSelectionError, usenetAvailability } from '../server/usenet.js'
+import { aggregateHashStates, resetUsenetLookups, raceWithWallClockGuard, resolveUsenetHash, resolveUsenetRelease, setUsenetProviderMinIntervalMs, UsenetSelectionError, usenetAvailability } from '../server/usenet.js'
 import { releaseIdentity } from '../shared/releases.js'
 import type { Release, ResultItem } from '../server/types.js'
 
@@ -54,7 +54,7 @@ const animetoshoMatch = () => Response.json({
 
 function isolation() {
   const original = globalThis.fetch
-  invalidateUsenetLookups()
+  resetUsenetLookups()
   setUsenetProviderMinIntervalMs('animetosho', 0)
   setUsenetProviderMinIntervalMs('amenzb', 0)
   const generation = bumpGeneration()
@@ -78,7 +78,7 @@ test('a hash matched by AnimeTosho resolves as available with the provider manif
   } finally { restore(original) }
 })
 
-test('successful lookups are cached until invalidated', async () => {
+test('successful lookups are cached until explicitly reset', async () => {
   const { original } = isolation()
   let hits = 0
   const routed = router({ animetosho: () => { hits++; return animetoshoMatch() } })
@@ -86,9 +86,9 @@ test('successful lookups are cached until invalidated', async () => {
     await resolveUsenetHash(config(), HASH)
     await resolveUsenetHash(config(), HASH)
     assert.equal(hits, 1, 'positive results must be served from the cache')
-    invalidateUsenetLookups()
+    resetUsenetLookups()
     await resolveUsenetHash(config(), HASH)
-    assert.equal(hits, 2, 'invalidation forces a fresh lookup')
+    assert.equal(hits, 2, 'an explicit test reset forces a fresh lookup')
     assert.equal(routed.calls.length, 2)
   } finally { restore(original) }
 })
@@ -166,6 +166,7 @@ test('availability resolves the release identity and reports the checked hash se
   const { original } = isolation()
   router({ animetosho: animetoshoMatch })
   try {
+    await resolveUsenetHash(config(), HASH)
     const results = [{ key: 'show-1', releases: [release()] }] as unknown as ResultItem[]
     const availability = await usenetAvailability(config(), [{ key: 'show-1', release: 0 }], false, results)
     assert.equal(availability.length, 1)
@@ -298,7 +299,7 @@ test('invalidation cancels active and queued work without leaking global permits
   try {
     await nextTurn()
     assert.equal(requests, 4)
-    invalidateUsenetLookups()
+    resetUsenetLookups()
     const cancelled = await Promise.all(pending)
     assert.ok(cancelled.every(state => state.state === 'lookup_failed'))
     assert.equal(requests, 4, 'queued cancelled lookups must not issue provider requests')
@@ -309,7 +310,7 @@ test('invalidation cancels active and queued work without leaking global permits
     assert.equal((await resolveUsenetHash(settings, HASH)).state, 'available')
     await Promise.all(Array.from({ length: 8 }, (_, index) => resolveUsenetHash(settings, (index + 20).toString(16).padStart(40, '0'))))
   } finally {
-    invalidateUsenetLookups()
+    resetUsenetLookups()
     await Promise.all(pending)
     restore(original)
   }

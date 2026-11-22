@@ -1,7 +1,7 @@
 import { refreshDownloads, subscribeDownloads } from '../frontend/src/download-store.js'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { cancelDownloads, getAllDownloadProgress, getStatus, invalidateDownloadProgress, preflightDownload, SubmissionError, submitDownload, usenetAvailability } from '../frontend/src/api.js'
+import { cancelDownloads, getAllDownloadProgress, getStatus, getConfig, invalidateDownloadProgress, getUsenetAvailabilityRevision, saveConfig, subscribeUsenetAvailability, preflightDownload, SubmissionError, submitDownload, usenetAvailability } from '../frontend/src/api.js'
 
 test('progress probes share a request but cannot reuse a stale request after results change', async () => {
   const original = globalThis.fetch
@@ -100,5 +100,62 @@ test('whole-library preflight sends every selected row in one plan', async () =>
   try {
     await preflightDownload(selections)
     assert.deepEqual(bodies, [{ selections }])
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('availability reads preserve provider timestamps and only manual refresh requests force work', async () => {
+  const originalFetch = globalThis.fetch
+  const requests: unknown[] = []
+  const checkedAt = '2026-11-18T10:00:00.000Z'
+  const identity = 'cached-release'
+  const cached = { key: 'show', release: 0, identity, aggregate: 'available', checked_at: checkedAt, stale: true, refreshing: true, hashes: [{ hash: 'a'.repeat(40), state: 'available', checked_at: checkedAt, stale: true, refreshing: true }] }
+  globalThis.fetch = (async (_input, init) => {
+    requests.push(JSON.parse(String(init?.body)))
+    return Response.json({ ok: true, config_generation: 7, sabnzbd_configured: true, providers_enabled: { animetosho: true, amenzb: false }, results: [cached, { key: 'missing', release: 0, identity: 'unknown-release', aggregate: 'not_checked', checked_at: '', stale: false, refreshing: true, hashes: [{ hash: 'b'.repeat(40), state: 'not_checked', refreshing: true }] }] })
+  }) as typeof fetch
+  try {
+    const selections = [{ key: 'show', release: 0, identity }, { key: 'missing', release: 0, identity: 'unknown-release' }]
+    const first = await usenetAvailability(selections)
+    assert.equal(first.results[0].checked_at, checkedAt)
+    assert.equal(first.results[0].stale, true)
+    assert.equal(first.results[1].aggregate, 'not_checked')
+    assert.equal(first.results[1].checked_at, '')
+    await usenetAvailability(selections, true)
+    const poll = await usenetAvailability(selections)
+    assert.equal(poll.results[0].checked_at, checkedAt, 'Reading a snapshot never invents a new provider check')
+    assert.deepEqual(requests, [{ selections }, { selections, refresh: true }, { selections }])
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('successful configuration saves invalidate availability even when a secret stays configured', async () => {
+  const originalFetch = globalThis.fetch
+  const before = getUsenetAvailabilityRevision()
+  let notifications = 0
+  const unsubscribe = subscribeUsenetAvailability(() => { notifications += 1 })
+  globalThis.fetch = (async () => Response.json({ amenzb_key_configured: true })) as typeof fetch
+  try {
+    await saveConfig({ amenzb_key: 'replacement-fixture-key' })
+    assert.equal(getUsenetAvailabilityRevision(), before + 1)
+    assert.equal(notifications, 1)
+    await saveConfig({ datetime_format: 'YYYY-MM-DD HH:mm:ss' })
+    assert.equal(getUsenetAvailabilityRevision(), before + 1, 'Unrelated settings preserve compatible availability')
+    globalThis.fetch = (async () => Response.json({ error: 'Fixture save failed' }, { status: 503 })) as typeof fetch
+    await assert.rejects(saveConfig({ amenzb_key: 'another-fixture-key' }))
+    assert.equal(getUsenetAvailabilityRevision(), before + 1, 'Failed saves leave the active scope unchanged')
+  } finally { unsubscribe(); globalThis.fetch = originalFetch }
+})
+
+test('provider URL changes rebind availability while repeated config reads preserve its scope', async () => {
+  const originalFetch = globalThis.fetch
+  let url = 'https://fixture-provider.invalid'
+  globalThis.fetch = (async () => Response.json({ animetosho_enabled: true, animetosho_url: url, amenzb_key_configured: true })) as typeof fetch
+  try {
+    await getConfig()
+    const before = getUsenetAvailabilityRevision()
+    await getConfig()
+    assert.equal(getUsenetAvailabilityRevision(), before)
+    url = 'https://replacement-provider.invalid'
+    await saveConfig({ animetosho_url: url })
+    assert.equal(getUsenetAvailabilityRevision(), before + 1)
   } finally { globalThis.fetch = originalFetch }
 })

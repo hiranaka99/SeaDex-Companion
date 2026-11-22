@@ -12,7 +12,7 @@ import { acceptDownloadPlan, PlanRejected, receiptFromJob } from '../server/down
 import { downloadJobs } from '../server/download-jobs.js'
 import { addDownloadRecord, allDownloadRecords, downloadRecords, findDownloadRecord, findTorrentRecord, resetOwnedRuntime } from '../server/download-store.js'
 import { collectDownloadProgress, cancelRecords, controlRecord, OwnershipError, historyPhase, qbPhase, queuePhase } from '../server/download-progress.js'
-import { invalidateUsenetLookups } from '../server/usenet.js'
+import { resetUsenetLookups } from '../server/usenet.js'
 import { resetQbRuntime } from '../server/qbittorrent.js'
 import type { Config, ResultItem } from '../server/types.js'
 import fs from 'node:fs'
@@ -68,7 +68,7 @@ function installRouter(state: RouterState): () => void {
   const original = globalThis.fetch
   resetQbRuntime()
   resetOwnedRuntime()
-  invalidateUsenetLookups()
+  resetUsenetLookups()
   purgeTestDataDir()
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
@@ -127,7 +127,7 @@ function installRouter(state: RouterState): () => void {
     }
     throw new Error(`unexpected request: ${url}`)
   }) as typeof fetch
-  return () => { globalThis.fetch = original; resetQbRuntime(); resetOwnedRuntime(); purgeTestDataDir() }
+  return () => { globalThis.fetch = original; resetUsenetLookups(); resetQbRuntime(); resetOwnedRuntime(); purgeTestDataDir() }
 }
 
 import { existsSync, rmSync } from 'node:fs'
@@ -514,7 +514,7 @@ test('live disk and whole-source acknowledgements are checked before any intent 
     assert.ok('review' in scoped)
     assert.equal(scoped.plan.requires_whole_ack, false)
     state.animetosho = animetoshoMatch
-    invalidateUsenetLookups()
+    resetUsenetLookups()
     await assert.rejects(acceptDownloadPlan(baseConfig(), consumePlan(scoped.plan.id)!, { disk_space: true }, scopedResults), /whole Usenet sources/)
     assert.deepEqual(downloadRecords(), [])
     assert.equal(state.calls.some(call => /POST .*torrents\/add|POST .*sab\.test/.test(call)), false)
@@ -778,5 +778,30 @@ test('an incomplete presence read blocks an accepted source instead of proving i
     assert.deepEqual(built.review.blocked.map(row => row.code), ['acceptance_unknown'])
     assert.deepEqual(built.review.units, [])
     assert.equal(downloadRecords().length, 1)
+  } finally { globalThis.fetch = router; cleanup() }
+})
+
+test('invalid provider NZB bytes never reach SABnzbd even after a matched review', async () => {
+  const state: RouterState = { calls: [], animetosho: animetoshoMatch }
+  const cleanup = installRouter(state)
+  const router = globalThis.fetch
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('animetosho.net/nzb/')) {
+        state.calls.push(`GET ${input}`)
+        return new Response('<html><body>Provider login required</body></html>', { headers: { 'content-type': 'text/html' } })
+      }
+      return router(input, init)
+    }) as typeof fetch
+    const results = [resultFixture([releaseFixture()])] as unknown as ResultItem[]
+    const built = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'usenet' }], { results })
+    assert.ok('review' in built)
+    const { completion } = await acceptDownloadPlan(baseConfig(), consumePlan(built.plan.id)!, { disk_space: true }, results)
+    const outcome = await completion
+    assert.equal(outcome.ok, false)
+    assert.equal(outcome.count, 0)
+    assert.equal(outcome.failures.length, 1)
+    assert.equal(state.calls.some(call => /POST .*sab\.test/.test(call)), false)
+    assert.equal(downloadRecords().some(record => record.state === 'accepted'), false)
   } finally { globalThis.fetch = router; cleanup() }
 })

@@ -100,7 +100,7 @@ export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, 
         <DetailsQuality status={quality}/><Icon name="chevron-right" size={16} className="details-disclosure-chevron text-muted"/>
       </summary>
       <div className="details-season-content">
-        {availability?.error && <p className="mb-3 text-xs text-warn wrap-anywhere" role="alert">Usenet check failed: {availability.error}. Re-check the sources before choosing Usenet.</p>}
+        {availability?.error && <p className="mb-3 text-xs text-warn wrap-anywhere" role="alert">Usenet refresh failed: {availability.error}. Last-known results remain visible. Re-check the sources to try again.</p>}
         {!split && (r.status === 'missing' || r.status === 'uncovered') && <p className="mb-3 text-sm text-muted">{quality.kind === 'review' ? 'Confirm the AniList match to check this release.' : r.status === 'uncovered' ? 'This season has no releases on SeaDex.' : 'Not listed on seadex.moe.'}</p>}
         {!split && <RecommendationNotes notes={r.notes}/>}
         {groups.length === 0 && r.status !== 'missing' && r.status !== 'uncovered' && <p className="mb-3 text-sm text-muted">No release details are available. Run a new library scan to refresh this title.</p>}

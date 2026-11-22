@@ -1,7 +1,7 @@
 import { currentGeneration } from './config-generation.js'
 import { log } from './logging.js'
 import { loadLastResults } from './results.js'
-import { sabnzbdConfigured, usenetAvailability, usenetProvidersEnabled } from './usenet.js'
+import { resolveUsenetRelease, sabnzbdConfigured, usenetProvidersEnabled } from './usenet.js'
 import type { Config, ResultItem } from './types.js'
 
 /**
@@ -62,7 +62,7 @@ async function runSweep(epoch: number, generation: number, config: Config, resul
       if (!ownsProgress()) return
       const rows = result.releases || []
       if (!rows.length) continue
-      await usenetAvailability(config, rows.map((_, index) => ({ key: result.key, release: index })), false, [result], true)
+      await Promise.all(rows.map(release => resolveUsenetRelease(config, release, false, true)))
       if (!ownsProgress()) return
       checked += rows.length
       progress = { running: true, checked, total: releases }
