@@ -44,6 +44,11 @@ export interface ProviderSettings {
 export const LOOKUP_TIMEOUT_MS = 15_000
 export const NZB_TIMEOUT_MS = 30_000
 export const LOOKUP_MAX_BYTES = 512 * 1024
+/**
+ * AnimeTosho hash lookups carry per-file hashes and media info (observed up to
+ * ~45 KB per file), so complete batches routinely exceed the generic cap.
+ */
+export const ANIMETOSHO_LOOKUP_MAX_BYTES = 16 * 1024 * 1024
 export const NZB_MAX_BYTES = 16 * 1024 * 1024
 
 /** Normalized source hash shape (SHA-1 torrent info hash). */
