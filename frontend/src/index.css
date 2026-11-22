@@ -507,6 +507,8 @@ html.sidebar-resizing .app-shell { transition: none; }
   .configuration-footer { padding-top: .5rem; }
   .configuration-footer > div { flex-direction: row; align-items: center; gap: .5rem; }
   .log-view > header { align-items: center; }
+  .log-subtitle, .log-meta { display: none; }
+  .log-toolbar { padding-block: .5rem; }
 }
 
 @media (width < 900px) and (max-height: 600px) {
@@ -557,6 +559,40 @@ html.sidebar-resizing .app-shell { transition: none; }
 }
 .app-scrollbar::-webkit-scrollbar-track,
 .log-scrollbar::-webkit-scrollbar-track { background: transparent; }
+
+/* Server log: one entry per block; the message hangs at the same column when it wraps. */
+.log-output { font-size: .8125rem; line-height: 1.6; color: var(--color-muted); }
+.log-entry {
+  display: block;
+  margin-inline: -.5rem;
+  padding: 1px .5rem 1px calc(.5rem + 20ch);
+  text-indent: -20ch;
+  border-radius: 6px;
+}
+.log-entry[data-level="error"] { background: color-mix(in srgb, var(--color-bad) 11%, transparent); }
+.log-entry[data-level="warn"] { background: color-mix(in srgb, var(--color-warn) 8%, transparent); }
+.log-time, .log-level { display: inline-block; text-indent: 0; white-space: nowrap; }
+.log-time { width: 9ch; color: var(--color-muted-dim); }
+.log-level { min-width: 9ch; font-weight: 700; color: var(--color-muted-dim); }
+.log-level[data-empty] { min-width: 10ch; }
+.log-entry[data-level="error"] .log-level { color: var(--color-bad); }
+.log-entry[data-level="warn"] .log-level { color: var(--color-warn); }
+.log-entry:not([data-level="info"]) .log-message { color: var(--color-ink); }
+.log-continuation { display: block; text-indent: 0; color: var(--color-muted-dim); }
+.log-date { display: block; margin-top: .75rem; font-weight: 700; color: var(--color-muted-dim); }
+.log-date:first-child { margin-top: 0; }
+.log-output mark { border-radius: 3px; background: color-mix(in srgb, var(--color-accent) 40%, transparent); color: var(--color-ink); }
+.log-search::-webkit-search-cancel-button { display: none; }
+
+@media (max-width: 700px) {
+  /* Narrow screens give the message the full width under a short header line. */
+  .log-entry { padding-left: .5rem; text-indent: 0; }
+  .log-time { width: auto; }
+  .log-level { min-width: 0; }
+  .log-level[data-empty] { display: none; }
+  .log-message { display: block; }
+  .log-continuation { padding-left: 2ch; }
+}
 
 .download-scrollbar {
   scrollbar-width: thin;
