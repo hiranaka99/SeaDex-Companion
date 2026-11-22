@@ -83,6 +83,7 @@ const cancelableFor = (item, index) => ({
 let preflightMode = 'low'
 let singleSendMode = 'ok'
 let availabilityMode = 'available'
+let availabilityDelay = 0
 const availabilityRequests = []
 const expiredPlanMessage = 'This review has expired or was already used. Re-run the review before submitting.'
 const preflightPlans = new Map()
@@ -184,6 +185,7 @@ const server = createServer(async (req, res) => {
     }
     else if (path === '/api/usenet/availability') {
       availabilityRequests.push(body)
+      if (availabilityDelay) await new Promise(resolve => setTimeout(resolve, availabilityDelay))
       response = {
         ok: true, config_generation: 1,
         providers_enabled: { animetosho: config.animetosho_enabled, amenzb: config.amenzb_enabled },
@@ -192,9 +194,10 @@ const server = createServer(async (req, res) => {
           const item = itemFor(selection)
           const release = item?.releases?.[selection.release]
           const hash = release?.info_hashes?.[0] || 'a'.repeat(40)
-          const match = availabilityMode === 'available'
+          const state = availabilityMode === 'mixed' ? release?.usenet_state || 'no_match' : availabilityMode
+          const match = state === 'available'
             ? { state: 'available', provider: 'animetosho', entry_id: `animetosho-${hash.slice(0, 8)}`, title: `${item?.title || 'Release'} complete season`, total_bytes: 1_400_000_000, files_known: true, file_count: 12 }
-            : { state: availabilityMode }
+            : { state }
           return { key: selection.key, release: selection.release, identity: selection.identity, hashes: [{ hash, ...match }], aggregate: match.state, checked_at: '2026-11-20T10:00:00.000Z' }
         }),
       }
@@ -654,6 +657,66 @@ try {
   await evaluate(`location.reload()`)
   await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
   console.log('PASS Usenet availability rows, whole-source warnings, cached versus refreshed lookups, and per-release protocol choice')
+
+  // Bulk Usenet availability: only confirmed sources may be offered or selected.
+  const beforeBulkUsenet = { config, fixtureResults, progressMode, preflightMode }
+  const bulkAnime = (title, hash, state, torrentAvailable = true) => ({ ...example, key: `Sonarr:bulk:${title}`, group_id: title, library_key: `Sonarr:bulk:${title}`, title,
+    releases: [{ ...release(title, hash), torrent_available: torrentAvailable, usenet_state: state }] })
+  const bulkChoice = { ...bulkAnime('Choice anime', '6', 'available'), releases: [
+    { ...release('Available first release', '6'), usenet_state: 'available' },
+    { ...release('Unavailable alternative', '7'), usenet_state: 'no_match' },
+  ] }
+  fixtureResults = [bulkAnime('Available anime', '1', 'available'), bulkAnime('Torrent-only anime', '2', 'no_match'),
+    bulkAnime('Processing anime', '3', 'processing'), bulkAnime('Incomplete anime', '4', 'incomplete'),
+    bulkAnime('Failed lookup anime', '5', 'lookup_failed'), bulkChoice,
+    bulkAnime('Private available anime', '8', 'available', false), bulkAnime('Private unavailable anime', '9', 'no_match', false)]
+  config = { ...config, download_mode: 'choose', sabnzbd_url: 'http://sab.local', sabnzbd_key_configured: true }
+  progressMode = 'absent'
+  preflightMode = 'enough'
+  availabilityMode = 'mixed'
+  availabilityDelay = 1000
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('h1')?.textContent === 'Anime library' && document.body.textContent.includes('Available anime')`)
+  await click('Bulk download')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Checking Usenet availability')`)
+  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'All Usenet where available').disabled`), 'The preset waits for confirmed availability')
+  await evaluate(`document.querySelector('dialog[open] button[aria-expanded]').click()`)
+  await wait(`document.querySelectorAll('dialog[open] input[type=radio]').length === 2`)
+  await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].click()`)
+  await wait(`!document.querySelector('dialog[open]')?.textContent.includes('Checking Usenet availability')`)
+  assert.ok(await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].checked`), 'Availability results preserve a release selected while the lookup was pending')
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('dialog[open] [role=radiogroup]')].filter(group => [...group.querySelectorAll('[role=radio]')].some(button => button.textContent.trim() === 'Usenet')).map(group => group.getAttribute('aria-label')).sort()`),
+    ['Download method for Available anime', 'Download method for Private available anime'], 'Only confirmed Usenet releases expose the Usenet method')
+  await click('All Usenet where available')
+  await wait(`[...document.querySelectorAll('dialog[open] dt')].find(label => label.textContent === 'New NZBs')?.nextElementSibling?.textContent === '2'`)
+  assert.deepEqual([...preflightPlans.values()].at(-1).selections.map(selection => [itemFor(selection).title, selection.protocol]).sort(), [
+    ['Available anime', 'usenet'], ['Choice anime', 'torrent'], ['Failed lookup anime', 'torrent'], ['Incomplete anime', 'torrent'],
+    ['Private available anime', 'usenet'], ['Processing anime', 'torrent'], ['Torrent-only anime', 'torrent'],
+  ].sort(), 'The batch keeps missing, partial, processing, and failed sources on torrents and excludes unavailable private releases')
+  await capture('bulk-usenet-mixed-desktop')
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+  assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth && document.querySelector('dialog[open]').scrollWidth <= document.querySelector('dialog[open]').clientWidth`), 'Mixed Usenet availability fits the mobile review')
+  await capture('bulk-usenet-mixed-mobile')
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[0].click()`)
+  await wait(`document.querySelector('[role=radiogroup][aria-label="Download method for Choice anime"]')?.textContent.includes('Usenet')`)
+  await click('All Usenet where available')
+  await wait(`[...document.querySelectorAll('dialog[open] dt')].find(label => label.textContent === 'New NZBs')?.nextElementSibling?.textContent === '3'`)
+  await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].click()`)
+  await wait(`[...document.querySelectorAll('dialog[open] dt')].find(label => label.textContent === 'New NZBs')?.nextElementSibling?.textContent === '2'`)
+  assert.ok(await evaluate(`!document.querySelector('[role=radiogroup][aria-label="Download method for Choice anime"]')?.textContent.includes('Usenet')`), 'Changing to an unavailable alternative removes Usenet and restores the torrent method')
+  availabilityMode = 'no_match'
+  availabilityDelay = 0
+  await click('Refresh review')
+  await wait(`!document.querySelector('dialog[open]')?.textContent.includes('Checking Usenet availability') && ![...document.querySelectorAll('dialog[open] [role=radio]')].some(button => button.textContent.trim() === 'Usenet')`)
+  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'All Usenet where available').disabled`), 'No matches disable the preset and remove every Usenet method')
+  await key('Escape')
+  ;({ config, fixtureResults, progressMode, preflightMode } = beforeBulkUsenet)
+  availabilityMode = 'available'
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
+  console.log('PASS bulk Usenet mixed availability, pending choices, private sources, release changes, refresh, and mobile layout')
+  // End bulk Usenet availability.
 
   preflightMode = 'low'
   await click('Bulk download')

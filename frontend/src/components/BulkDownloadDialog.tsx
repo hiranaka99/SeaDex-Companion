@@ -29,13 +29,13 @@ interface Review {
   blocked: ReviewGroup[]
 }
 
-function buildReview(results: ResultItem[], usenetEligible: (release: Release) => boolean): Review {
+function buildReview(results: ResultItem[], usenetEligible: (result: ResultItem, option: IndexedRelease) => boolean): Review {
   const ready: ReviewGroup[] = []
   const blocked: ReviewGroup[] = []
 
   for (const result of results) for (const part of upgradeParts(result)) {
     const group = { id: `${result.key}::${part.part || 'all'}`, result, part: part.part, options: part.options }
-    if (part.torrent_available || group.options.some(({ release }) => usenetEligible(release))) ready.push(group)
+    if (part.torrent_available || group.options.some(option => usenetEligible(result, option))) ready.push(group)
     else blocked.push(group)
   }
 
@@ -82,7 +82,16 @@ function OutcomeLabel({ status, protocols }: { status: 'success' | 'failure' | '
 export default function BulkDownloadDialog({ open, results, scopeControl, hiddenKeys, busy, job, downloadMode, sabEnabled, onConfirm, onClose }: Props) {
   // Review a fixed snapshot until the dialog closes. The server checks release
   // identities again when the plan is accepted.
-  const usenetEligible = useMemo(() => (release: Release) => downloadMode !== 'torrent_only' && sabEnabled && (release.info_hashes?.length || 0) > 0, [downloadMode, sabEnabled])
+  const usenetEnabled = downloadMode !== 'torrent_only' && sabEnabled
+  const reviewCandidates = useMemo(() => buildReview(results, (_result, { release }) => usenetEnabled && (release.info_hashes?.length || 0) > 0), [results, usenetEnabled])
+  const usenetSelections = useMemo(() => usenetEnabled ? reviewCandidates.ready.flatMap(group => group.options
+    .filter(({ release }) => (release.info_hashes?.length || 0) > 0)
+    .map(option => ({ key: group.result.key, release: option.index, identity: releaseIdentity(option.release) }))) : [], [reviewCandidates, usenetEnabled])
+  const usenetSignature = JSON.stringify(usenetSelections)
+  const [usenetAvailability, setUsenetAvailability] = useState<{ signature: string; available: Set<string>; error: string | null } | null>(null)
+  const currentAvailability = usenetAvailability?.signature === usenetSignature ? usenetAvailability : null
+  const usenetChecking = usenetEnabled && usenetSelections.length > 0 && !currentAvailability
+  const usenetEligible = useMemo(() => (result: ResultItem, option: IndexedRelease) => usenetEnabled && currentAvailability?.available.has(`${result.key}\u0000${option.index}`) === true, [usenetEnabled, currentAvailability])
   const review = useMemo(() => buildReview(results, usenetEligible), [results, usenetEligible])
   const [selected, setSelected] = useState<Record<string, number>>({})
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})
@@ -102,16 +111,38 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
   const protocolFor = (group: ReviewGroup, option: IndexedRelease): DownloadProtocol => {
     if (downloadMode === 'usenet_only') return 'usenet'
     const chosen = protocols[group.id]
-    if (chosen === 'usenet' && usenetEligible(option.release)) return 'usenet'
+    if (chosen === 'usenet' && usenetEligible(group.result, option)) return 'usenet'
     if (chosen === 'torrent' && option.release.torrent_available) return 'torrent'
-    if (!option.release.torrent_available && usenetEligible(option.release)) return 'usenet'
+    if (!option.release.torrent_available && usenetEligible(group.result, option)) return 'usenet'
     return 'torrent'
   }
   const selections = useMemo(() => selectedGroups.map((group, index) => {
     const option = selectedOptions[index]
     return { key: group.result.key, release: option.index, identity: releaseIdentity(option.release), protocol: protocolFor(group, option) }
-  }), [selectedGroups, selectedOptions, protocols, downloadMode, sabEnabled])
+  }), [selectedGroups, selectedOptions, protocols, downloadMode, usenetEligible])
   const signature = JSON.stringify(selections)
+
+  useEffect(() => {
+    if (!open || !usenetEnabled || !usenetSelections.length) return
+    let cancelled = false
+    setUsenetAvailability(null)
+    void (async () => {
+      const available = new Set<string>()
+      // The availability endpoint accepts at most 200 selections per request.
+      for (let offset = 0; offset < usenetSelections.length; offset += 200) {
+        const response = await api.usenetAvailability(usenetSelections.slice(offset, offset + 200), refresh)
+        if (cancelled) return
+        if (!response.ok) throw new Error(response.error || 'Could not check Usenet sources')
+        if (response.sabnzbd_configured) for (const row of response.results) {
+          if (row.aggregate === 'available') available.add(`${row.key}\u0000${row.release}`)
+        }
+      }
+      setUsenetAvailability({ signature: usenetSignature, available, error: null })
+    })().catch(error => {
+      if (!cancelled) setUsenetAvailability({ signature: usenetSignature, available: new Set(), error: error instanceof Error ? error.message : 'Could not check Usenet sources' })
+    })
+    return () => { cancelled = true }
+  }, [open, usenetSignature, usenetEnabled, retry])
 
   useEffect(() => {
     if (!open || busy || job?.id && job.finished) return
@@ -132,13 +163,13 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
     if (!open || busy || job) return
     // Only single-option groups get an automatic pick. Multi-option groups stay
     // pending (collapsed + highlighted) until the user actively chooses one.
-    setSelected(Object.fromEntries(review.ready.filter((group) => group.options.length === 1).map((group) => [group.id, group.options[0].index])))
-    setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, !hiddenKeys.has(hiddenKey(group.result))])))
+    setSelected(Object.fromEntries(reviewCandidates.ready.filter((group) => group.options.length === 1).map((group) => [group.id, group.options[0].index])))
+    setEnabled(Object.fromEntries(reviewCandidates.ready.map((group) => [group.id, !hiddenKeys.has(hiddenKey(group.result))])))
     setProtocols({})
     setExpanded({})
-    setView(review.ready.length || !review.blocked.length ? 'ready' : 'unavailable')
+    setView(reviewCandidates.ready.length || !reviewCandidates.blocked.length ? 'ready' : 'unavailable')
     cancelRef.current?.focus()
-  }, [open, review])
+  }, [open, reviewCandidates])
 
   if (!open) return null
   const locked = busy || Boolean(job)
@@ -208,12 +239,14 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
             {review.ready.length > 0 && <div className="ml-auto flex gap-2"><button type="button" className="touch-target cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 rounded-full border border-accent/50 bg-accent/15 px-3 py-1.5 font-extrabold text-accent-bright transition-colors hover:bg-accent/25" disabled={locked} onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, true])))}>Check all</button><button type="button" className="touch-target cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 rounded-full border border-line-strong bg-panel px-3 py-1.5 text-ink transition-colors hover:border-ink/25 hover:bg-canvas-soft" disabled={locked} onClick={() => setEnabled(Object.fromEntries(review.ready.map((group) => [group.id, false])))}>Uncheck all</button></div>}
             {downloadMode === 'choose' && <div className="flex gap-2">
               <button type="button" className="touch-target cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 rounded-full border border-accent/50 bg-accent/12 px-3 py-1.5 font-extrabold text-accent-bright transition-colors hover:bg-accent/20" disabled={locked || !review.ready.length} title="Use qBittorrent for every eligible group" onClick={() => setProtocols(Object.fromEntries(review.ready.map((group) => [group.id, 'torrent' as DownloadProtocol])))}>All torrents</button>
-              <button type="button" className="touch-target cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 rounded-full border border-sky/50 bg-sky/12 px-3 py-1.5 font-extrabold text-sky transition-colors hover:bg-sky/20" disabled={locked || !review.ready.length || !sabEnabled} title="Use SABnzbd wherever the release is available on Usenet" onClick={() => setProtocols(Object.fromEntries(review.ready.map((group) => {
+              <button type="button" className="touch-target cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 rounded-full border border-sky/50 bg-sky/12 px-3 py-1.5 font-extrabold text-sky transition-colors hover:bg-sky/20" disabled={locked || usenetChecking || !review.ready.some(group => group.options.some(option => usenetEligible(group.result, option)))} title="Use SABnzbd wherever the release is available on Usenet" onClick={() => setProtocols(Object.fromEntries(review.ready.map((group) => {
                 const option = group.options.find(({ index }) => index === selected[group.id]) || group.options[0]
-                return [group.id, usenetEligible(option.release) ? 'usenet' : 'torrent'] as const
+                return [group.id, usenetEligible(group.result, option) ? 'usenet' : 'torrent'] as const
               })))}>All Usenet where available</button>
             </div>}
           </div>
+          {usenetChecking && <p className="m-0 text-xs text-muted" role="status">Checking Usenet availability…</p>}
+          {currentAvailability?.error && <p className="m-0 text-xs text-warn" role="status">Usenet check unavailable: {currentAvailability.error}. Refresh the review to try again.</p>}
 
           {view === 'ready' && (
             <section>
@@ -228,7 +261,7 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                     const statusText = status === 'success' ? 'text-good' : status === 'failure' ? 'text-bad' : status === 'pending' ? 'text-accent-bright' : status === 'partial' ? 'text-warn' : 'text-ink'
                     const protocolButtons = (option: IndexedRelease) => downloadMode === 'choose' ? <span className="flex shrink-0 items-center gap-1" role="radiogroup" aria-label={`Download method for ${group.result.title}`}>
                       <button type="button" role="radio" aria-checked={protocolFor(group, option) === 'torrent'} disabled={locked || !option.release.torrent_available} title={option.release.torrent_available ? 'Send to qBittorrent' : 'No magnet available (private tracker)'} onClick={() => setProtocols(current => ({ ...current, [group.id]: 'torrent' }))} className={cx('cursor-pointer rounded-md border px-2 py-1 text-[0.6875rem] font-bold', protocolFor(group, option) === 'torrent' ? 'border-accent bg-accent/15 text-accent-bright' : 'border-line text-muted hover:text-ink', (!option.release.torrent_available || locked) && 'cursor-not-allowed opacity-50')}>Torrent</button>
-                      <button type="button" role="radio" aria-checked={protocolFor(group, option) === 'usenet'} disabled={locked || !usenetEligible(option.release)} title={usenetEligible(option.release) ? 'Send to SABnzbd (whole Usenet source)' : 'Not available over Usenet'} onClick={() => setProtocols(current => ({ ...current, [group.id]: 'usenet' }))} className={cx('cursor-pointer rounded-md border px-2 py-1 text-[0.6875rem] font-bold', protocolFor(group, option) === 'usenet' ? 'border-sky bg-sky/15 text-sky' : 'border-line text-muted hover:text-ink', (!usenetEligible(option.release) || locked) && 'cursor-not-allowed opacity-50')}>Usenet</button>
+                      {usenetEligible(group.result, option) && <button type="button" role="radio" aria-checked={protocolFor(group, option) === 'usenet'} disabled={locked} title="Send to SABnzbd (whole Usenet source)" onClick={() => setProtocols(current => ({ ...current, [group.id]: 'usenet' }))} className={cx('cursor-pointer rounded-md border px-2 py-1 text-[0.6875rem] font-bold', protocolFor(group, option) === 'usenet' ? 'border-sky bg-sky/15 text-sky' : 'border-line text-muted hover:text-ink', locked && 'cursor-not-allowed opacity-50')}>Usenet</button>}
                     </span> : null
                     if (!isChoice) {
                       const option = group.options.find(({ index }) => index === (selected[group.id] ?? group.options[0].index)) || group.options[0]
@@ -314,7 +347,7 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                     )
                   })}
                 </div>
-              ) : <p className="m-0 text-xs text-muted">No eligible upgrades in this scope. Change the review scope to check other library titles.</p>}
+              ) : <p className="m-0 text-xs text-muted">{usenetChecking ? 'Checking whether these upgrades are available on Usenet…' : 'No eligible upgrades in this scope. Change the review scope to check other library titles.'}</p>}
             </section>
           )}
 
