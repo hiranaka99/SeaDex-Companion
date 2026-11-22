@@ -87,7 +87,7 @@ async function search(settings: ProviderSettings, requested: string, fetchImpl: 
   catch (error) { return failedFrom(error, settings, 'lookup') }
 
   const status = httpStatusFailure(response, 'AmeNZB')
-  if (status) return failedLookup(status.code, status.message)
+  if (status) return failedLookup(status.code, status.message, status.retryAfterMs)
 
   let document: unknown
   try { document = parseProviderXml(decodeText(await readResponseCapped(response, LOOKUP_MAX_BYTES))) }

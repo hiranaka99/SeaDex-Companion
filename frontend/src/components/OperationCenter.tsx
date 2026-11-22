@@ -1,6 +1,7 @@
 import { Status } from '../types'
 import { buttonBase, cx } from '../styles'
 import { displayDateTime } from '../datetime'
+import { usenetPauseText } from '../utils'
 import Icon from './Icons'
 
 export interface BulkOperationState {
@@ -70,6 +71,7 @@ export default function OperationCenter({ status, scanCompleted, scanCancelledDi
             <span className="shrink-0 text-xs font-bold tabular-nums text-muted-dim">{usenet.checked}/{usenet.total}</span>
           </div>
           <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-panel-raised"><div className="h-full rounded-full bg-sky transition-[width] duration-500" style={{ width: `${Math.max(usenet.total ? Math.round(usenet.checked / usenet.total * 100) : 0, 2)}%` }}/></div>
+          {usenetPauseText(usenet.paused) && <div className="mt-1 text-xs text-muted-dim">{usenetPauseText(usenet.paused)}</div>}
         </div>
       )}
 

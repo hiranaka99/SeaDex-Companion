@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { appendFileSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { DATA_DIR } from './paths.js'
 import { log } from './logging.js'
@@ -7,8 +8,10 @@ import { AMENZB_ENTRY_PATTERN, ANIMETOSHO_ENTRY_PATTERN, HASH_PATTERN, isRecord,
 import type { UsenetFailureCode, UsenetProvider } from '../shared/usenet-contracts.js'
 
 export const USENET_CACHE_FILE = join(DATA_DIR, 'usenet_cache.json')
-export const USENET_CACHE_LIMIT = 4000
-const WRITE_DELAY_MS = 1000
+/** Safety bound only; normal pruning keeps the hashes of the current results. */
+export const USENET_CACHE_LIMIT = 20_000
+/** Snapshot compaction delay. Observations are already durable in the journal. */
+const COMPACT_DELAY_MS = 30_000
 const WRITE_RETRY_MS = 60_000
 const FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/
 const FAILURE_CODES: Record<UsenetFailureCode, true> = { network: true, timeout: true, invalid_response: true, unauthorized: true, rate_limited: true, server: true, invalid_config: true }
@@ -24,6 +27,12 @@ export interface UsenetCacheRecord {
   retryAt: number
   lookup?: Observation
   failure?: Failure
+  /** Consecutive absent observations (no match or deleted); drives the absence refresh interval. */
+  negativeStreak?: number
+}
+
+export function usenetCacheJournalFile(file: string): string {
+  return `${file.replace(/\.json$/, '')}.journal.jsonl`
 }
 
 export function providerFingerprint(provider: UsenetProvider, settings: ProviderSettings): string {
@@ -87,36 +96,68 @@ function storedRecord(value: unknown): UsenetCacheRecord | undefined {
   const failure = isRecord(value.failure) && typeof value.failure.code === 'string' && Object.hasOwn(FAILURE_CODES, value.failure.code)
     ? { kind: 'failed' as const, code: value.failure.code as UsenetFailureCode, message: `Provider lookup failed (${value.failure.code})` } : undefined
   if ((!lookup && !failure) || (lookup && !value.checkedAt)) return undefined
-  return { provider: value.provider, fingerprint: value.fingerprint, hash: value.hash, checkedAt: value.checkedAt as number, lastAttemptAt: value.lastAttemptAt as number, retryAt: value.retryAt as number, ...(lookup ? { lookup } : {}), ...(failure ? { failure } : {}) }
+  const streak = typeof value.negativeStreak === 'number' && Number.isSafeInteger(value.negativeStreak) && value.negativeStreak > 0 ? value.negativeStreak : undefined
+  return {
+    provider: value.provider, fingerprint: value.fingerprint, hash: value.hash, checkedAt: value.checkedAt as number, lastAttemptAt: value.lastAttemptAt as number, retryAt: value.retryAt as number,
+    ...(lookup ? { lookup } : {}), ...(failure ? { failure } : {}), ...(streak ? { negativeStreak: streak } : {}),
+  }
 }
 
-/** Retained observations have no age eviction. Only the capacity bound removes old entries. */
+/**
+ * Provider observations persist as an atomic snapshot plus an append-only
+ * journal. Each successful observation is appended synchronously before it is
+ * exposed, so it survives a process killed without shutdown hooks; the
+ * snapshot is rewritten in batches and on shutdown, which truncates the journal.
+ */
 export class PersistentUsenetCache {
   private records = new Map<string, UsenetCacheRecord>()
   private persisted = new Map<string, UsenetCacheRecord>()
   private loaded = false
   private dirty = false
   private timer?: NodeJS.Timeout
+  private readonly journal: string
 
-  constructor(private readonly file = USENET_CACHE_FILE) {}
+  constructor(private readonly file = USENET_CACHE_FILE) {
+    this.journal = usenetCacheJournalFile(file)
+  }
+
+  private restore(record: UsenetCacheRecord, journaled: boolean): void {
+    const key = usenetCacheKey(record.provider, record.fingerprint, record.hash)
+    // A journal left behind by an interrupted compaction must not roll back newer snapshot state.
+    const existing = this.records.get(key)
+    if (journaled && existing && existing.lastAttemptAt > record.lastAttemptAt) return
+    this.records.set(key, record)
+    this.persisted.set(key, record)
+  }
 
   private load(): void {
     if (this.loaded) return
     this.loaded = true
     const stored = readJson<unknown>(this.file, undefined, 'Usenet cache could not be restored')
-    if (stored === undefined) return
-    if (!isRecord(stored) || stored.version !== 1 || !Array.isArray(stored.records)) {
-      log('WARNING', 'Usenet cache could not be restored (invalid schema)')
-      return
+    if (stored !== undefined) {
+      if (!isRecord(stored) || stored.version !== 1 || !Array.isArray(stored.records)) log('WARNING', 'Usenet cache could not be restored (invalid schema)')
+      else for (const value of stored.records) {
+        const record = storedRecord(value)
+        if (!record) { log('WARNING', 'Usenet cache ignored an invalid record'); continue }
+        this.restore(record, false)
+      }
     }
-    for (const value of stored.records) {
-      const record = storedRecord(value)
-      if (!record) { log('WARNING', 'Usenet cache ignored an invalid record'); continue }
-      const key = usenetCacheKey(record.provider, record.fingerprint, record.hash)
-      this.records.set(key, record)
-      this.persisted.set(key, record)
+    let journaled = 0
+    if (existsSync(this.journal)) {
+      let lines: string[] = []
+      try { lines = readFileSync(this.journal, 'utf8').split('\n') }
+      catch (error) { log('WARNING', `Usenet cache journal could not be read: ${error instanceof Error ? error.message : 'unknown error'}`) }
+      for (const line of lines) {
+        if (!line.trim()) continue
+        // A torn final line from an abrupt exit is expected and skipped.
+        let value: unknown
+        try { value = JSON.parse(line) } catch { continue }
+        const record = storedRecord(value)
+        if (record) { this.restore(record, true); journaled++ }
+      }
     }
     this.bound()
+    if (journaled) this.changed()
   }
 
   get(key: string): UsenetCacheRecord | undefined { this.load(); return this.records.get(key) }
@@ -129,29 +170,53 @@ export class PersistentUsenetCache {
       const url = new URL(settings.baseUrl)
       secrets.push(decodeURIComponent(url.username), decodeURIComponent(url.password), ...url.searchParams.values())
     } catch { /* Invalid provider configuration has no credential fields to extract. */ }
-    this.records.set(key, record)
-    this.persisted.set(key, {
+    const persisted: UsenetCacheRecord = {
       provider: record.provider, fingerprint: record.fingerprint, hash: record.hash,
       checkedAt: record.checkedAt, lastAttemptAt: record.lastAttemptAt, retryAt: record.retryAt,
       ...(record.lookup ? { lookup: observation(record.lookup, record.provider, record.hash, secrets) } : {}),
       ...(record.failure ? { failure: { kind: 'failed', code: record.failure.code, message: `Provider lookup failed (${record.failure.code})` } } : {}),
-    })
+      ...(record.negativeStreak ? { negativeStreak: record.negativeStreak } : {}),
+    }
+    this.records.set(key, record)
+    this.persisted.set(key, persisted)
     this.bound()
     this.changed()
-    if (record.lookup && !record.failure) this.flush()
+    if (record.lookup && !record.failure) this.checkpoint(persisted)
+  }
+
+  /** Durably record one observation without rewriting the snapshot. */
+  private checkpoint(record: UsenetCacheRecord): void {
+    try {
+      appendFileSync(this.journal, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 })
+    } catch (error) {
+      log('WARNING', `Usenet cache journal could not be written: ${error instanceof Error ? error.message : 'unknown error'}`)
+      this.flush()
+    }
   }
 
   retainCompatible(fingerprints: Record<UsenetProvider, string>): void {
+    this.prune(record => record.fingerprint === fingerprints[record.provider])
+  }
+
+  /** Drop observations for source hashes the current results no longer reference. */
+  retainHashes(hashes: ReadonlySet<string>): number {
+    return this.prune(record => hashes.has(record.hash))
+  }
+
+  private prune(keep: (record: UsenetCacheRecord) => boolean): number {
     this.load()
-    let changed = false
+    let removed = 0
     for (const [key, record] of this.records) {
-      if (record.fingerprint === fingerprints[record.provider]) continue
+      if (keep(record)) continue
       this.records.delete(key)
       this.persisted.delete(key)
-      changed = true
+      removed++
     }
-    if (changed) this.changed()
+    if (removed) this.changed()
+    return removed
   }
+
+  get size(): number { this.load(); return this.records.size }
 
   private bound(): void {
     if (this.records.size <= USENET_CACHE_LIMIT) return
@@ -159,7 +224,7 @@ export class PersistentUsenetCache {
     for (const [key] of oldest) { this.records.delete(key); this.persisted.delete(key) }
   }
 
-  private changed(): void { this.dirty = true; this.schedule(WRITE_DELAY_MS) }
+  private changed(): void { this.dirty = true; this.schedule(COMPACT_DELAY_MS) }
 
   private schedule(delay: number): void {
     if (this.timer) return
@@ -167,6 +232,7 @@ export class PersistentUsenetCache {
     this.timer.unref?.()
   }
 
+  /** Rewrite the snapshot and truncate the journal it now contains. */
   flush(): boolean {
     clearTimeout(this.timer)
     this.timer = undefined
@@ -174,12 +240,14 @@ export class PersistentUsenetCache {
     try {
       writeJsonAtomic(this.file, { version: 1, records: [...this.persisted.values()] }, false, 0o600)
       this.dirty = false
-      return true
     } catch (error) {
       log('ERROR', `Usenet cache could not be persisted: ${error instanceof Error ? error.message : 'unknown error'}`)
       this.schedule(WRITE_RETRY_MS)
       return false
     }
+    try { rmSync(this.journal, { force: true }) }
+    catch (error) { log('WARNING', `Usenet cache journal could not be truncated: ${error instanceof Error ? error.message : 'unknown error'}`) }
+    return true
   }
 
   /** Tests can clear RAM without deleting persisted data, or reload it to simulate a restart. */

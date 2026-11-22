@@ -298,11 +298,11 @@ test('invalidation cancels active and queued work without leaking global permits
   const pending = Array.from({ length: 8 }, (_, index) => resolveUsenetHash(settings, index === 0 ? HASH : index.toString(16).padStart(40, '0'), false, true))
   try {
     await nextTurn()
-    assert.equal(requests, 4)
+    assert.equal(requests, 3, 'background work leaves one slot reserved for interactive lookups')
     resetUsenetLookups()
     const cancelled = await Promise.all(pending)
     assert.ok(cancelled.every(state => state.state === 'lookup_failed'))
-    assert.equal(requests, 4, 'queued cancelled lookups must not issue provider requests')
+    assert.equal(requests, 3, 'queued cancelled lookups must not issue provider requests')
     router({ animetosho: animetoshoMatch })
     assert.equal((await resolveUsenetHash(settings, HASH)).state, 'available')
     stalled.resolve(new Response('nope', { status: 404 }))

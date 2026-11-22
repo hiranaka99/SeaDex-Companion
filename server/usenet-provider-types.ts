@@ -32,7 +32,7 @@ export type ProviderLookup =
   | { kind: 'deleted'; provider: UsenetProvider; entry_id: string }
   | { kind: 'no_match' }
   /** message: safe bounded text, never HTML/provider markup and never a credential */
-  | { kind: 'failed'; code: UsenetFailureCode; message: string }
+  | { kind: 'failed'; code: UsenetFailureCode; message: string; retry_after_ms?: number }
 
 export interface ProviderSettings {
   /** No trailing slash; credential-bearing requests never leave this origin. */
@@ -73,7 +73,19 @@ export class ProviderProtocolError extends Error {}
 
 export interface NewznabError { code: number }
 /** Classified transport/HTTP failure: typed code plus safe text, no lookup kind. */
-export interface ProviderFailure { code: UsenetFailureCode; message: string }
+export interface ProviderFailure { code: UsenetFailureCode; message: string; retryAfterMs?: number }
+
+/** Upper bound for a provider-requested pause; a hostile or broken header cannot park lookups for days. */
+const RETRY_AFTER_LIMIT_MS = 60 * 60_000
+
+/** `Retry-After` as delta-seconds or an HTTP date, bounded; undefined when absent or unusable. */
+export function retryAfterMs(response: Response, now = Date.now()): number | undefined {
+  const value = response.headers.get('retry-after')?.trim()
+  if (!value) return undefined
+  const delay = /^\d+$/.test(value) ? Number(value) * 1000 : Date.parse(value) - now
+  if (!Number.isFinite(delay) || delay <= 0) return undefined
+  return Math.min(delay, RETRY_AFTER_LIMIT_MS)
+}
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -102,8 +114,8 @@ export function safeText(value: string, limit = SAFE_MESSAGE_LIMIT): string {
   return `${collapsed.slice(0, limit - 1)}…`
 }
 
-export function failedLookup(code: UsenetFailureCode, message: string): ProviderLookup {
-  return { kind: 'failed', code, message: safeText(message) }
+export function failedLookup(code: UsenetFailureCode, message: string, retryAfter?: number): ProviderLookup {
+  return { kind: 'failed', code, message: safeText(message), ...(retryAfter ? { retry_after_ms: retryAfter } : {}) }
 }
 
 export function decodeText(bytes: Uint8Array): string {
@@ -162,8 +174,9 @@ export function httpStatusFailure(response: Response, provider: string): Provide
   if (response.ok) return null
   const detail = `${provider} returned HTTP ${response.status}`
   if (response.status === 401 || response.status === 403) return { code: 'unauthorized', message: `${detail} — check the API key and pinned API IP` }
-  if (response.status === 429) return { code: 'rate_limited', message: `${provider} rate limited the request` }
-  if (response.status >= 500) return { code: 'server', message: detail }
+  const retryAfter = retryAfterMs(response)
+  if (response.status === 429) return { code: 'rate_limited', message: `${provider} rate limited the request`, ...(retryAfter ? { retryAfterMs: retryAfter } : {}) }
+  if (response.status >= 500) return { code: 'server', message: detail, ...(retryAfter ? { retryAfterMs: retryAfter } : {}) }
   return { code: 'invalid_response', message: detail }
 }
 
