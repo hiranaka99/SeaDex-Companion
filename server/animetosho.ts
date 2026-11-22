@@ -4,7 +4,7 @@
 
 import type { UsenetProvider } from '../shared/usenet-contracts.js'
 import {
-  ANIMETOSHO_ENTRY_PATTERN, HASH_PATTERN, LOOKUP_MAX_BYTES, LOOKUP_TIMEOUT_MS, NZB_TIMEOUT_MS,
+  ANIMETOSHO_ENTRY_PATTERN, ANIMETOSHO_LOOKUP_MAX_BYTES, HASH_PATTERN, LOOKUP_MAX_BYTES, LOOKUP_TIMEOUT_MS, NZB_TIMEOUT_MS,
   ProviderProtocolError, ResponseTooLargeError, classifyFailure, decodeText, failedFrom, failedLookup, httpStatusFailure,
   isRecord, parseProviderXml, providerRequest, readNzbBody, readResponseCapped, safeByteSize, safeText, text, validateNzbBytes,
 } from './usenet-provider-types.js'
@@ -60,7 +60,7 @@ export async function lookupAnimeTosho(settings: ProviderSettings, hash: string,
   if (status) return failedLookup(status.code, status.message, status.retryAfterMs)
 
   let bytes: Uint8Array
-  try { bytes = await readResponseCapped(response, LOOKUP_MAX_BYTES) }
+  try { bytes = await readResponseCapped(response, ANIMETOSHO_LOOKUP_MAX_BYTES) }
   catch (error) {
     if (error instanceof ResponseTooLargeError) return failedLookup('invalid_response', safeText(error.message))
     return failedFrom(error, settings, 'lookup')

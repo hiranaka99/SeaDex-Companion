@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { fetchAnimeToshoNzb, lookupAnimeTosho, testAnimeTosho } from '../server/animetosho.js'
 import { fetchAmeNZBNzb, lookupAmeNZB, testAmeNZB } from '../server/amenzb.js'
-import { LOOKUP_MAX_BYTES, NZB_MAX_BYTES, validateNzbBytes } from '../server/usenet-provider-types.js'
+import { ANIMETOSHO_LOOKUP_MAX_BYTES, LOOKUP_MAX_BYTES, NZB_MAX_BYTES, validateNzbBytes } from '../server/usenet-provider-types.js'
 import type { ProviderSettings, UsenetMatch } from '../server/usenet-provider-types.js'
 
 const HASH = 'd4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d'
@@ -408,9 +408,17 @@ test('A file-compressed AmeNZB NZB is inflated exactly once', async () => {
 // --- shared limits, cancellation and NZB validation ------------------------------
 
 test('Response byte caps are enforced while streaming, for lookups and NZBs alike', async () => {
-  const lookup = await lookupAnimeTosho(ANIMETOSHO, HASH, recorder(() => new Response(streamBytes(LOOKUP_MAX_BYTES + 1))).fetchImpl)
+  const lookup = await lookupAnimeTosho(ANIMETOSHO, HASH, recorder(() => new Response(streamBytes(ANIMETOSHO_LOOKUP_MAX_BYTES + 1))).fetchImpl)
   assert.ok(lookup.kind === 'failed' && lookup.code === 'invalid_response')
   if (lookup.kind === 'failed') assert.match(lookup.message, /byte limit/)
+
+  // Real batch entries carry per-file hashes and media info well past the generic lookup cap.
+  const info = 'x'.repeat(45_000)
+  const files = Array.from({ length: 13 }, (_, index) => ({ name: `Show ${index + 1}.mkv`, size: 100, info }))
+  const large = JSON.stringify({ id: 123, info_hash: HASH, nzb_url: '/nzb/123', title: 'Large batch', num_files: files.length, files, total_size: 1300 })
+  assert.ok(large.length > LOOKUP_MAX_BYTES)
+  const batch = await lookupAnimeTosho(ANIMETOSHO, HASH, recorder(() => new Response(large)).fetchImpl)
+  assert.ok(batch.kind === 'match' && batch.match.files_complete && batch.match.files?.length === 13)
 
   await assert.rejects(
     fetchAnimeToshoNzb(ANIMETOSHO, ANIMETOSHO_MATCH, recorder(() => new Response(streamBytes(NZB_MAX_BYTES + 1))).fetchImpl),
