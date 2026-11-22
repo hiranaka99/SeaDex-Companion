@@ -10,8 +10,7 @@ import { bulkDialog } from './bulk-dialog-styles'
 interface Props {
   open: boolean
   busy: boolean
-  /** undefined record_ids = cancel everything listed. */
-  onConfirm: (record_ids: string[] | undefined, deleteFiles: boolean) => void
+  onConfirm: (record_ids: string[], deleteFiles: boolean) => void
   onClose: () => void
 }
 
@@ -112,7 +111,7 @@ export default function BulkCancelDialog({ open, busy, onConfirm, onClose }: Pro
           </span>
           <div className={bulkDialog.footerActions}>
             <button ref={cancelRef} type="button" className={bulkDialog.neutralButton} onClick={onClose} disabled={busy}>Keep</button>
-            <button type="button" className={bulkDialog.removeButton} onClick={() => onConfirm(enabledItems.length === downloads.length ? undefined : enabledItems.map((item) => item.record_id), deleteFiles)} disabled={busy || enabledItems.length === 0}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}Remove {enabledItems.length || ''} download{enabledItems.length === 1 ? '' : 's'}</button>
+            <button type="button" className={bulkDialog.removeButton} onClick={() => onConfirm(enabledItems.map((item) => item.record_id), deleteFiles && removeFilesOffered)} disabled={busy || enabledItems.length === 0}>{busy ? <span className="size-4 animate-spin rounded-full border-2 border-bad/35 border-t-bad"/> : <Icon name="trash" size={17}/>}Remove {enabledItems.length || ''} download{enabledItems.length === 1 ? '' : 's'}</button>
           </div>
         </footer>
       </section>

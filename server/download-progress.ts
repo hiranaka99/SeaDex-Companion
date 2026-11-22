@@ -7,17 +7,17 @@ import { qbEndpointId, sabEndpoint } from './client-identity.js'
 import { resultsForRequest } from './downloads.js'
 import { errorMessage, log } from './logging.js'
 
-const QUEUED_STATES = new Set(['queuedDL', 'queuedUP', 'metaDL', 'forcedDL'])
-const DOWNLOADING_STATES = new Set(['downloading', 'stalledDL', 'allocating', 'forceDownloading'])
-const PAUSED_DOWNLOAD_STATES = new Set(['pausedDL', 'stoppedDL'])
-const VERIFYING_STATES = new Set(['checkingDL', 'checkingUP', 'checking'])
-const ERROR_STATES = new Set(['error', 'missingFiles'])
+const QUEUED_STATES: Record<string, true> = { queuedDL: true, queuedUP: true, metaDL: true }
+const DOWNLOADING_STATES: Record<string, true> = { downloading: true, stalledDL: true, allocating: true, forcedDL: true }
+const PAUSED_DOWNLOAD_STATES: Record<string, true> = { pausedDL: true, stoppedDL: true }
+const VERIFYING_STATES: Record<string, true> = { checkingDL: true, checkingUP: true, checking: true }
+const ERROR_STATES: Record<string, true> = { error: true, missingFiles: true }
 
 function qbCapabilities(state: string, progress: number): DownloadCapabilities {
-  const paused = PAUSED_DOWNLOAD_STATES.has(state)
+  const paused = Object.hasOwn(PAUSED_DOWNLOAD_STATES, state)
   const complete = progress >= 1
   return {
-    pause: !paused && !complete && DOWNLOADING_STATES.has(state),
+    pause: !paused && !complete && (Object.hasOwn(DOWNLOADING_STATES, state) || state === 'queuedDL' || state === 'metaDL'),
     resume: paused,
     remove: true,
     remove_files: true,
@@ -25,16 +25,16 @@ function qbCapabilities(state: string, progress: number): DownloadCapabilities {
 }
 
 export function qbPhase(state: string, progress: number): DownloadPhase {
-  if (ERROR_STATES.has(state)) return 'error'
-  if (PAUSED_DOWNLOAD_STATES.has(state)) return 'paused'
-  if (VERIFYING_STATES.has(state)) return 'verifying'
+  if (Object.hasOwn(ERROR_STATES, state)) return 'error'
+  if (Object.hasOwn(PAUSED_DOWNLOAD_STATES, state)) return 'paused'
+  if (Object.hasOwn(VERIFYING_STATES, state)) return 'verifying'
   if (progress >= 1) return state === 'uploading' || state === 'stalledUP' ? 'seeding' : 'complete'
-  if (QUEUED_STATES.has(state)) return 'queued'
+  if (Object.hasOwn(QUEUED_STATES, state)) return 'queued'
   return 'downloading'
 }
 
 export function queuePhase(status: string): DownloadPhase {
-  const normalized = status.toLowerCase()
+  const normalized = status.trim().toLowerCase()
   if (normalized === 'paused') return 'paused'
   if (normalized === 'downloading' || normalized === 'fetching') return 'downloading'
   if (normalized === 'queued' || normalized === 'propagating') return 'queued'
@@ -42,7 +42,7 @@ export function queuePhase(status: string): DownloadPhase {
 }
 
 export function historyPhase(status: string): DownloadPhase {
-  const normalized = status.toLowerCase()
+  const normalized = status.trim().toLowerCase()
   switch (normalized) {
     case 'quickcheck': case 'verifying': return 'verifying'
     case 'repairing': return 'repairing'
@@ -77,7 +77,8 @@ function baseProgress(record: OwnedDownloadRecord): DownloadProgress {
     season: record.card?.season ?? null, part: record.card?.part || '',
     release_group: record.card?.release_group || '', tracker: record.card?.tracker || '',
     size: record.card?.size || 0,
-    ...(() => { const [row] = downloadRows(record.id); return row ? { key: row.key, release: row.release } : {} })(),
+    associations: downloadRows(record.id),
+    ...(record.scope ? { scope: [...record.scope] } : {}),
     progress: 0, downloaded: 0, total_size: 0, speed: 0,
     capabilities: { pause: false, resume: false, remove: false, remove_files: false },
     updated_at: record.updated_at,
@@ -90,7 +91,10 @@ function baseProgress(record: OwnedDownloadRecord): DownloadProgress {
  * never controlled, and failed reads preserve the persisted last-known phase.
  */
 export async function collectDownloadProgress(config: Config): Promise<AllDownloadProgress> {
-  const records = downloadRecords()
+  return (await readDownloadProgress(config, downloadRecords())).progress
+}
+
+async function readDownloadProgress(config: Config, records: OwnedDownloadRecord[]): Promise<{ progress: AllDownloadProgress; sabQueueIds: Set<string> }> {
   const downloads: Record<string, DownloadProgress> = {}
   const unavailable_clients: AllDownloadProgress['unavailable_clients'] = []
   const currentQb = qbEndpointId(config)
@@ -103,7 +107,7 @@ export async function collectDownloadProgress(config: Config): Promise<AllDownlo
   let qbReadComplete = true
   if (qbBound.length) {
     try {
-      const torrents = await qbGetTorrents(config, qbBound.map(record => record.native_id))
+      const torrents = await qbGetTorrents(config, qbBound.map(record => record.native_id), true)
       for (const torrent of torrents) torrentsByHash.set(String(torrent.hash || '').toLowerCase(), torrent)
     } catch (error) {
       qbReadComplete = false
@@ -131,6 +135,7 @@ export async function collectDownloadProgress(config: Config): Promise<AllDownlo
       view.phase = qbReadComplete ? 'missing' : (record.last_phase || 'unavailable')
       if (!qbReadComplete) view.error = 'qBittorrent could not be reached; showing the last known state.'
       else view.error = 'This torrent is no longer in qBittorrent.'
+      if (qbReadComplete) view.capabilities.remove = true
       downloads[record.id] = view
       continue
     }
@@ -189,12 +194,19 @@ export async function collectDownloadProgress(config: Config): Promise<AllDownlo
   }
   for (const record of sabBound) {
     const view = baseProgress(record)
+    if (record.state === 'acceptance_unknown') {
+      view.phase = 'acceptance_unknown'
+      view.error = 'Submission status unknown. Check SABnzbd before retrying.'
+      downloads[record.id] = view
+      continue
+    }
     const queueJob = queueById.get(record.native_id)
     const historyJob = historyById.get(record.native_id)
     const job = queueJob || historyJob
     if (!job) {
       view.phase = sabReadComplete ? 'missing' : (record.last_phase || 'unavailable')
       view.error = sabReadComplete ? 'This job is no longer in SABnzbd.' : 'SABnzbd could not be reached; showing the last known state.'
+      if (sabReadComplete) view.capabilities.remove = true
       downloads[record.id] = view
       continue
     }
@@ -203,10 +215,10 @@ export async function collectDownloadProgress(config: Config): Promise<AllDownlo
       view.state = queueJob.status
       view.total_size = queueJob.total_bytes
       view.downloaded = queueJob.downloaded_bytes
-      view.progress = queueJob.total_bytes > 0 ? Math.floor((queueJob.downloaded_bytes / queueJob.total_bytes) * 10_000) / 10_000 : Math.floor(queueJob.percentage) / 10_000
+      view.progress = queueJob.total_bytes > 0 ? Math.floor((queueJob.downloaded_bytes / queueJob.total_bytes) * 10_000) / 10_000 : Math.floor(queueJob.percentage * 100) / 10_000
       view.speed = queueJob.speed_bytes_per_sec
       if (queueJob.name && !view.title.startsWith('usenet:')) view.title = queueJob.name
-      view.capabilities = { pause: queueJob.status !== 'Paused', resume: queueJob.status === 'Paused', remove: true, remove_files: true }
+      view.capabilities = { pause: view.phase !== 'paused', resume: view.phase === 'paused', remove: true, remove_files: true }
     } else if (historyJob) {
       view.phase = historyPhase(historyJob.status)
       view.state = historyJob.status
@@ -214,25 +226,28 @@ export async function collectDownloadProgress(config: Config): Promise<AllDownlo
       view.downloaded = historyJob.downloaded_bytes
       view.progress = historyJob.total_bytes > 0 ? Math.floor((historyJob.downloaded_bytes / historyJob.total_bytes) * 10_000) / 10_000 : 1
       if (historyJob.name && !view.title.startsWith('usenet:')) view.title = historyJob.name
-      if (historyJob.status === 'Failed' && historyJob.fail_message) view.error = historyJob.fail_message
-      view.capabilities = { pause: false, resume: false, remove: !historyJob.loaded, remove_files: historyJob.status === 'Failed' }
+      if (view.phase === 'error' && historyJob.fail_message) view.error = historyJob.fail_message
+      view.capabilities = { pause: false, resume: false, remove: !historyJob.loaded, remove_files: !historyJob.loaded && view.phase === 'error' }
     }
     if (view.total_size && !view.size) view.size = view.total_size
     downloads[record.id] = view
     setDownloadPhase(record.id, view.phase)
   }
 
-  return { ok: true, downloads, ...(unavailable_clients.length ? { unavailable_clients } : {}) }
+  return { progress: { ok: true, downloads, ...(unavailable_clients.length ? { unavailable_clients } : {}) }, sabQueueIds: new Set(queueById.keys()) }
 }
 
-const CANCELABLE_PHASES = new Set<DownloadPhase>(['queued', 'downloading', 'paused', 'verifying', 'repairing', 'unpacking', 'post_processing', 'error', 'acceptance_unknown'])
+const CANCELABLE_PHASES: Partial<Record<DownloadPhase, true>> = {
+  queued: true, downloading: true, paused: true, verifying: true, repairing: true,
+  unpacking: true, post_processing: true, error: true, acceptance_unknown: true, missing: true,
+}
 
 export async function listCancelable(config: Config): Promise<CancelableDownloads> {
   const progress = await collectDownloadProgress(config)
   const context: ProgressContext = { results: resultsForRequest() }
   const items: CancelableDownload[] = []
   for (const view of Object.values(progress.downloads)) {
-    if (!CANCELABLE_PHASES.has(view.phase) || !view.capabilities.remove) continue
+    if (!CANCELABLE_PHASES[view.phase] || !view.capabilities.remove) continue
     const associations = associationTitles(context, view.record_id)
     items.push({
       record_id: view.record_id, protocol: view.protocol, client: view.client, native_id: view.native_id,
@@ -253,28 +268,18 @@ export async function listCancelable(config: Config): Promise<CancelableDownload
 export async function cancelRecords(config: Config, recordIds: unknown, removeFiles: boolean): Promise<DownloadCancelResult> {
   const wanted = recordIds === undefined ? null : Array.isArray(recordIds) ? recordIds.map(String) : null
   if (recordIds !== undefined && !Array.isArray(recordIds)) throw new Error('record_ids must be an array')
-  const progress = await collectDownloadProgress(config)
+  const { progress, sabQueueIds } = await readDownloadProgress(config, downloadRecords())
   const removed: DownloadCancelResult['removed'] = []
   const failures: DownloadCancelResult['failures'] = []
-  const { apiUrl, endpointId: currentSab } = sabEndpoint(config)
+  const { endpointId: currentSab } = sabEndpoint(config)
   for (const view of Object.values(progress.downloads)) {
     if (wanted && !wanted.includes(view.record_id)) continue
     if (view.state === 'unbound') { failures.push({ record_id: view.record_id, client: view.client, label: view.title, error: 'This download belongs to a different client URL.' }); continue }
-    if (!CANCELABLE_PHASES.has(view.phase)) { if (wanted?.includes(view.record_id)) failures.push({ record_id: view.record_id, client: view.client, label: view.title, error: 'This download already finished.' }); continue }
+    if (!CANCELABLE_PHASES[view.phase]) { if (wanted?.includes(view.record_id)) failures.push({ record_id: view.record_id, client: view.client, label: view.title, error: view.error || 'This download already finished.' }); continue }
     const record = findDownloadRecord(view.record_id)
     if (!record) continue
     try {
-      if (view.protocol === 'torrent') {
-        await qbControlTorrents(config, [record.native_id], 'remove', removeFiles)
-      } else if (!apiUrl || !config.sabnzbd_key) {
-        throw new Error('SABnzbd is not configured.')
-      } else {
-        const settings = { apiUrl, apiKey: config.sabnzbd_key }
-        const inQueue = await hasQueueJob(settings, record.native_id)
-        if (inQueue) await sabDeleteQueueJob(settings, record.native_id, removeFiles, globalThis.fetch)
-        else await sabDeleteHistoryJob(settings, record.native_id, removeFiles && view.phase === 'error', globalThis.fetch)
-      }
-      markDownloadRemoved(record.id)
+      await removeRecord(config, record, view, sabQueueIds.has(record.native_id), removeFiles)
       removed.push({ record_id: record.id, client: record.client })
     } catch (error) {
       failures.push({ record_id: record.id, client: record.client, label: view.title, error: errorMessage(error) })
@@ -284,41 +289,45 @@ export async function cancelRecords(config: Config, recordIds: unknown, removeFi
   return { ok: failures.length === 0, removed, failures }
 }
 
-async function hasQueueJob(settings: { apiUrl: string; apiKey: string }, nzoId: string): Promise<boolean> {
-  const read = await sabQueueJobs(settings, [nzoId], globalThis.fetch)
-  return read.jobs.some(job => job.nzo_id === nzoId)
+async function removeRecord(config: Config, record: OwnedDownloadRecord, view: DownloadProgress, inSabQueue: boolean, deleteFiles: boolean): Promise<void> {
+  if (record.state === 'acceptance_unknown') throw new OwnershipError('Submission status is unknown; check the download client before removing this record.')
+  if (!view.capabilities.remove) throw new OwnershipError(view.error || 'This download cannot be removed in its current state.')
+  // Only a fresh complete read can expose ledger-only removal. Files stay untouched.
+  if (view.phase !== 'missing') {
+    const removeFiles = deleteFiles && view.capabilities.remove_files
+    if (record.protocol === 'torrent') await qbControlTorrents(config, [record.native_id], 'remove', removeFiles)
+    else {
+      const { apiUrl } = sabEndpoint(config)
+      if (!apiUrl || !config.sabnzbd_key) throw new OwnershipError('SABnzbd is not configured.')
+      const settings = { apiUrl, apiKey: config.sabnzbd_key }
+      if (inSabQueue) await sabDeleteQueueJob(settings, record.native_id, removeFiles, globalThis.fetch)
+      else await sabDeleteHistoryJob(settings, record.native_id, removeFiles, globalThis.fetch)
+    }
+  }
+  markDownloadRemoved(record.id)
 }
 
-/** Single-record pause/resume/remove; ownership and endpoint are enforced here, never from browser identity data. */
+/** Single-record controls use the saved ownership and a fresh client read. */
 export async function controlRecord(config: Config, recordId: string, action: string, deleteFiles: boolean): Promise<{ ok: true }> {
   const record = findDownloadRecord(recordId)
-  if (!record) throw new OwnershipError('Download record not found.')
-  const currentQb = qbEndpointId(config)
-  if (record.protocol === 'torrent') {
-    if (record.endpoint !== currentQb) throw new OwnershipError('This download was added through a different qBittorrent URL; controls are disabled.')
-    if (action !== 'pause' && action !== 'resume' && action !== 'remove') throw new OwnershipError('Unknown download action')
-    await qbControlTorrents(config, [record.native_id], action, action === 'remove' && deleteFiles)
-    if (action === 'remove') markDownloadRemoved(record.id)
-    return { ok: true }
+  if (!record || record.removed_at) throw new OwnershipError('Download record not found.')
+  if (action !== 'pause' && action !== 'resume' && action !== 'remove') throw new OwnershipError('Unknown download action')
+  const endpoint = record.protocol === 'torrent' ? qbEndpointId(config) : sabEndpoint(config).endpointId
+  if (!record.endpoint || record.endpoint !== endpoint) throw new OwnershipError('This download was added through a different client URL; controls are disabled.')
+  if (record.state === 'acceptance_unknown') throw new OwnershipError('Submission status is unknown; check the download client before controlling this record.')
+  const { progress, sabQueueIds } = await readDownloadProgress(config, [record])
+  const view = progress.downloads[record.id]
+  if (action === 'remove') await removeRecord(config, record, view, sabQueueIds.has(record.native_id), deleteFiles)
+  else if (record.protocol === 'torrent') {
+    if (!view.state) throw new OwnershipError(view.error || 'This torrent is no longer in qBittorrent.')
+    await qbControlTorrents(config, [record.native_id], action)
+  } else {
+    if (!sabQueueIds.has(record.native_id)) throw new OwnershipError(view.error || 'This job is not in the SABnzbd queue anymore.')
+    const { apiUrl } = sabEndpoint(config)
+    const settings = { apiUrl, apiKey: config.sabnzbd_key }
+    if (action === 'pause') await sabPauseJob(settings, record.native_id, globalThis.fetch)
+    else await sabResumeJob(settings, record.native_id, globalThis.fetch)
   }
-  if (record.endpoint !== sabEndpoint(config).endpointId) throw new OwnershipError('This download was added through a different SABnzbd URL; controls are disabled.')
-  const { apiUrl } = sabEndpoint(config)
-  if (!apiUrl || !config.sabnzbd_key) throw new OwnershipError('SABnzbd is not configured.')
-  const settings = { apiUrl, apiKey: config.sabnzbd_key }
-  if (action === 'pause' || action === 'resume') {
-    if (!record.native_id) throw new OwnershipError('Submission status is unknown; open SABnzbd to check before controlling this job.')
-    if (await hasQueueJob(settings, record.native_id)) {
-      if (action === 'pause') await sabPauseJob(settings, record.native_id, globalThis.fetch)
-      else await sabResumeJob(settings, record.native_id, globalThis.fetch)
-      return { ok: true }
-    }
-    throw new OwnershipError('This job is not in the SABnzbd queue anymore.')
-  }
-  if (action !== 'remove') throw new OwnershipError('Unknown download action')
-  if (!record.native_id) throw new OwnershipError('Submission status is unknown; open SABnzbd to check before removing this job.')
-  if (await hasQueueJob(settings, record.native_id)) await sabDeleteQueueJob(settings, record.native_id, deleteFiles, globalThis.fetch)
-  else await sabDeleteHistoryJob(settings, record.native_id, deleteFiles, globalThis.fetch)
-  markDownloadRemoved(record.id)
   return { ok: true }
 }
 

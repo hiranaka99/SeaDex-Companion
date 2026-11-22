@@ -9,7 +9,7 @@ export class DownloadJobConflict extends Error {}
 
 const RESTART_MESSAGE = 'The server restarted before this download settled. Check the download client before retrying.'
 
-interface UnitSeed { unit_id: string; protocol: DownloadProtocol; source_hash: string; label: string }
+interface UnitSeed { unit_id: string; protocol: DownloadProtocol; source_hash: string; label: string; selections: DownloadUnitEntry['selections'] }
 
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 const isHash = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{40}$/i.test(value)
@@ -113,7 +113,7 @@ export function createDownloadJobStore(storage: { read: () => unknown; write: (j
       if (jobs.some(job => !job.finished)) throw new DownloadJobConflict('Another bulk operation is already running')
       const job: DownloadJob = {
         id: randomUUID(), finished: false,
-        pending: units.map(unit => ({ ...unit, selections: targets.map(({ key, release }) => ({ key, release })) })),
+        pending: structuredClone(units),
         added: [], failures: structuredClone(initial?.failures || []), existing: structuredClone(initial?.existing || []), targets: structuredClone(targets),
       }
       save([...jobs.slice(-19), job]); return structuredClone(job)

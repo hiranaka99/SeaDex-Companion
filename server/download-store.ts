@@ -16,7 +16,7 @@ const nonNegativeNumber = (value: unknown): number => typeof value === 'number' 
 /**
  * The authoritative app-owned acquisition ledger. One protocol-neutral record per
  * accepted client job; `t:<hash>` records double as legacy torrent ledger entries.
- * Records are only ever added or annotated here — deleting one loses ownership.
+ * Records retain ownership until explicit removal records an audit tombstone.
  */
 export interface OwnedDownloadRecord {
   id: string
@@ -108,7 +108,7 @@ function decodeRows(value: unknown): Record<string, AssociationRow[]> {
       if (!row || typeof row !== 'object') return []
       const candidate = row as Record<string, unknown>
       return typeof candidate.key === 'string' && candidate.key && Number.isInteger(candidate.release) && (candidate.release as number) >= 0 ? [{ key: candidate.key, release: candidate.release as number }] : []
-    }).slice(0, 64)
+    })
     if (list.length) rows[recordId] = list
   }
   return rows
@@ -200,8 +200,7 @@ export function migrateOwnedDownloads(qbEndpoint: string): void {
     const unique = [...new Map(associated.map(row => [`${row.key}\u0000${row.release}`, row])).values()]
     if (unique.length) rows[id] = unique
   }
-  ledger = { version: 2, records, rows }
-  writeJsonAtomic(OWNED_DOWNLOADS_FILE, ledger, true, 0o600)
+  commit({ version: 2, records, rows })
   log('INFO', `Migrated ${records.length} owned torrent record(s) to the versioned acquisition ledger`)
 }
 
@@ -213,14 +212,18 @@ function current(): RecordFile {
   return ledger
 }
 
-function commit(): void { writeJsonAtomic(OWNED_DOWNLOADS_FILE, current(), true, 0o600) }
+function commit(next: RecordFile): void {
+  writeJsonAtomic(OWNED_DOWNLOADS_FILE, next, true, 0o600)
+  ledger = next
+}
 
 function mutate(id: string, change: (record: OwnedDownloadRecord) => void): OwnedDownloadRecord | null {
-  const record = current().records.find(record => record.id === id)
-  if (!record) return null
+  if (!current().records.some(record => record.id === id)) return null
+  const next = structuredClone(current())
+  const record = next.records.find(record => record.id === id)!
   change(record)
   record.updated_at = now()
-  commit()
+  commit(next)
   return structuredClone(record)
 }
 
@@ -245,7 +248,7 @@ export interface NewDownloadRecord {
 export function addDownloadRecord(input: NewDownloadRecord): OwnedDownloadRecord {
   const sourceHash = normalizeInfoHash(input.source_hash)
   if (!sourceHash) throw new Error('Invalid source hash')
-  const file = current()
+  const file = structuredClone(current())
   const id = input.protocol === 'torrent' ? `t:${sourceHash}` : `u:${sourceHash.slice(0, 12)}:${randomUUID()}`
   const timestamp = now()
   const record: OwnedDownloadRecord = {
@@ -257,17 +260,18 @@ export function addDownloadRecord(input: NewDownloadRecord): OwnedDownloadRecord
     ...(input.entry_id ? { entry_id: input.entry_id.slice(0, 80) } : {}),
     ...(input.nzb_name ? { nzb_name: input.nzb_name } : {}),
     added_at: timestamp, updated_at: timestamp,
-    ...(input.card ? { card: input.card } : {}),
+    ...(input.card ? { card: structuredClone(input.card) } : {}),
     labels: [...new Set(input.labels || [])].slice(0, 16),
   }
   const existing = file.records.find(candidate => candidate.id === id)
-  if (existing) Object.assign(existing, record, { added_at: existing.added_at, removed_at: undefined })
+  if (existing) Object.assign(record, { added_at: existing.added_at })
+  if (existing) file.records[file.records.indexOf(existing)] = record
   else file.records.push(record)
   if (input.rows?.length) {
-    const unique = [...new Map(input.rows.map(row => [`${row.key}\u0000${row.release}`, row])).values()]
+    const unique = [...new Map(input.rows.map(({ key, release }) => [`${key}\u0000${release}`, { key, release }])).values()]
     if (unique.length) file.rows[id] = unique
   }
-  commit()
+  commit(file)
   return structuredClone(record)
 }
 
@@ -305,22 +309,23 @@ export function allDownloadRecords(): OwnedDownloadRecord[] {
 }
 
 export function setDownloadNative(id: string, nativeIds: string[]): OwnedDownloadRecord | null {
-  const accepted = nativeIds.map(value => value.trim()).filter(Boolean)
+  const accepted = [...new Set(nativeIds.map(value => value.trim()).filter(Boolean))]
   const first = accepted[0]
-  if (!first) return null
-  const updated = mutate(id, record => {
-    record.native_id = record.protocol === 'torrent' ? record.source_hash : first
-    record.state = 'accepted'
-  })
-  // A single accepted NZB submission can produce several native jobs; record each extra ID.
-  const file = current()
-  const parent = file.records.find(record => record.id === id)
-  if (parent) for (const nativeId of accepted.slice(1)) {
-    if (file.records.some(record => record.client === parent.client && record.native_id === nativeId && !record.removed_at)) continue
-    file.records.push(structuredClone({ ...parent, id: `u:${parent.source_hash.slice(0, 12)}:${randomUUID()}`, native_id: nativeId, state: 'accepted', removed_at: undefined, added_at: now(), updated_at: now() }))
+  if (!first || !current().records.some(record => record.id === id)) return null
+  const file = structuredClone(current())
+  const parent = file.records.find(record => record.id === id)!
+  parent.native_id = parent.protocol === 'torrent' ? parent.source_hash : first
+  parent.state = 'accepted'
+  parent.updated_at = now()
+  // One accepted NZB submission can create several native jobs with the same associations.
+  if (parent.protocol === 'usenet') for (const nativeId of accepted.slice(1)) {
+    if (file.records.some(record => record.client === parent.client && record.endpoint === parent.endpoint && record.native_id === nativeId && !record.removed_at)) continue
+    const clone = structuredClone({ ...parent, id: `u:${parent.source_hash.slice(0, 12)}:${randomUUID()}`, native_id: nativeId, added_at: parent.updated_at })
+    file.records.push(clone)
+    if (file.rows[id]) file.rows[clone.id] = structuredClone(file.rows[id])
   }
-  commit()
-  return updated
+  commit(file)
+  return structuredClone(parent)
 }
 
 export function markDownloadRemoved(id: string): OwnedDownloadRecord | null {
@@ -328,23 +333,21 @@ export function markDownloadRemoved(id: string): OwnedDownloadRecord | null {
 }
 
 export function setDownloadPhase(id: string, phase: DownloadPhase): void {
-  const file = current()
-  const record = file.records.find(record => record.id === id)
+  const record = current().records.find(record => record.id === id)
   if (!record || record.last_phase === phase) return
-  record.last_phase = phase
-  commit()
+  mutate(id, record => { record.last_phase = phase })
 }
 
-/** Review-row associations retained for card projection after rescans replace rows. */
+/** Saved review-row associations survive recommendation rescans. */
 export function setDownloadRows(id: string, rows: AssociationRow[]): void {
-  const file = current()
-  if (!file.rows[id]) return
-  file.rows[id] = [...new Map(rows.map(row => [`${row.key}\u0000${row.release}`, row])).values()].slice(0, 64)
-  commit()
+  if (!current().records.some(record => record.id === id)) return
+  const file = structuredClone(current())
+  file.rows[id] = [...new Map(rows.map(({ key, release }) => [`${key}\u0000${release}`, { key, release }])).values()]
+  commit(file)
 }
 
 export function downloadRows(id: string): AssociationRow[] {
-  return [...(current().rows[id] || [])]
+  return structuredClone(current().rows[id] || [])
 }
 
 export function resetOwnedRuntime(): void { ledger = null }

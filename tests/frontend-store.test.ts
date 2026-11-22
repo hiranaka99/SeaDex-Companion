@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { jobResult } from '../shared/download-contracts.js'
 import { waitForDownloadJob } from '../frontend/src/bulk-job-store.js'
-import { controlDownload, getDownloadSnapshot, refreshDownloads, subscribeDownloads } from '../frontend/src/download-store.js'
+import { controlDownload, currentDownloadAssociations, getDownloadSnapshot, refreshDownloads, subscribeDownloads } from '../frontend/src/download-store.js'
 import { invalidateDownloadProgress, type DownloadJobStatus, type DownloadProgress } from '../frontend/src/api.js'
+import type { ResultItem } from '../frontend/src/types.js'
 
 const unit = { unit_id: 'torrent:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:anime', protocol: 'torrent' as const, source_hash: 'a'.repeat(40), label: 'Show', selections: [{ key: 'show-1', release: 0 }] }
 
@@ -40,7 +41,7 @@ test('record-keyed snapshot reloads after control commands even without subscrib
   const row: DownloadProgress = {
     record_id: recordId, protocol: 'torrent', client: 'qbittorrent', source_hash: 'a'.repeat(40), native_id: 'a'.repeat(40),
     phase: 'downloading', state: 'downloading', category: 'anime', labels: [], title: 'Show', season: 1, part: '', release_group: 'Group', tracker: 'Nyaa',
-    size: 100, key: 'show-1', release: 0, progress: 0.5, downloaded: 50, total_size: 100, speed: 10,
+    size: 100, associations: [{ key: 'show-1', release: 0 }], progress: 0.5, downloaded: 50, total_size: 100, speed: 10,
     capabilities: { pause: true, resume: true, remove: true, remove_files: true }, updated_at: new Date().toISOString(),
   }
   let acceptControl!: (value: Response) => void
@@ -81,4 +82,21 @@ test('jobResult reports in-flight units as pending rows and settles them once ad
   assert.equal(settled.rows.find(item => item.key === 'show-1')?.status, 'added')
   assert.equal(settled.rows.find(item => item.key === 'show-2')?.status, 'existing')
   assert.equal(settled.count, 2)
+})
+
+test('shared records attach to all covered current releases without duplicate associations', () => {
+  const hash = 'a'.repeat(40)
+  const release = { kind: 'best', releaseGroup: 'Current', tracker: 'Nyaa', info_hashes: [hash], selected_files: ['01.mkv'], torrent_available: true, size: 100 }
+  const seasons = [{ key: 'one', releases: [release] }, { key: 'two', releases: [{ ...release, selected_files: ['02.mkv'] }] }] as ResultItem[]
+  const associations = [{ key: 'one', release: 0 }, { key: 'two', release: 0 }, { key: 'one', release: 0 }]
+  const progress = { record_id: 'original-record', protocol: 'torrent', source_hash: hash, category: 'anime', associations, scope: ['01.mkv', '02.mkv'] } as DownloadProgress
+  assert.deepEqual(currentDownloadAssociations(progress, seasons), associations.slice(0, 2))
+  assert.deepEqual(currentDownloadAssociations({ ...progress, scope: ['01.mkv'] }, seasons), associations.slice(0, 1), 'A partial acquisition cannot cover a different cour')
+  assert.deepEqual(currentDownloadAssociations({ ...progress, scope: undefined }, seasons), associations.slice(0, 2), 'A whole source covers each saved current association')
+  assert.deepEqual(currentDownloadAssociations(progress, [{ key: 'one', releases: [{ ...release, selected_files: undefined }] }] as ResultItem[]), [], 'A scoped acquisition cannot block a new whole-source recommendation')
+  const replaced = [{ key: 'one', releases: [{ ...release, info_hashes: ['b'.repeat(40)] }] }] as ResultItem[]
+  assert.deepEqual(currentDownloadAssociations(progress, replaced), [], 'An obsolete hash stays an original record rather than blocking its replacement')
+  assert.equal(progress.record_id, 'original-record')
+  assert.deepEqual(progress.associations, associations, 'Resolving the current recommendation does not rewrite the original acquisition')
+  assert.deepEqual(currentDownloadAssociations({ ...progress, protocol: 'usenet', scope: undefined }, seasons), associations.slice(0, 2))
 })

@@ -10,6 +10,7 @@ import ReleaseDetails from './ReleaseDetails'
 import type { DetailsDownloadState } from '../useCardDownloads'
 import DetailsQuality from './DetailsQuality'
 import type { DownloadProtocol } from '../api'
+import { releaseIdentity } from '../../../shared/releases'
 
 export function detailsSeasonName(season: ResultItem): string {
   return season.arr === 'Radarr' || season.season === 0 ? 'Movie' : typeof season.season === 'number' ? `Season ${season.season}` : 'Release'
@@ -54,6 +55,10 @@ export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, 
   const ignored = Boolean(r.excluded)
   const sources = (r.urls?.length ? r.urls : r.url ? [{ label: 'seadex.moe', url: r.url }] : []).filter(source => source.label === 'seadex.moe')
   const activeReleases = Object.entries(dl).filter(([, state]) => state.transfers.some(transfer => transfer.phase !== 'complete')).map(([index]) => index).join(',')
+  const releaseSignature = JSON.stringify(r.releases.map(releaseIdentity))
+  useEffect(() => {
+    if (usenetEnabled && root.current?.querySelector<HTMLDetailsElement>('.details-season-disclosure')?.open) onOpened()
+  }, [releaseSignature, usenetEnabled])
 
   useEffect(() => {
     if (!activeReleases || !root.current) return
@@ -73,9 +78,9 @@ export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, 
     return <button type="button" className={cx(buttonBase, 'min-h-11 min-w-0 max-w-full px-3 text-xs', excluded ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line bg-panel text-muted hover:bg-panel-raised hover:text-ink')} aria-pressed={excluded} aria-label={`${excluded ? 'Include' : 'Ignore'} ${name} in bulk downloads and notifications`} title={part && ignored ? 'Restore the season to change individual cour rules.' : !r.library_key ? 'Run a new scan to enable season rules' : undefined} disabled={!r.library_key || Boolean(ruleBusy) || Boolean(part && ignored)} onClick={() => onToggleExclusion(part, !excluded)}><Icon name="ban" size={15}/>{excluded ? 'Ignored for bulk' : 'Ignore for bulk'}</button>
   }
 
-  const renderReleases = (items: typeof groups[number]['items']) => <div className="flex min-w-0 flex-col gap-3">{items.map(({ rel, index }) => <div key={index} data-release-index={index}>
+  const renderReleases = (items: typeof groups[number]['items']) => <div className="flex min-w-0 flex-col gap-3">{items.map(({ rel, index }) => <div key={releaseIdentity(rel)} data-release-index={index}>
     <ReleaseDetails result={r} release={rel} config={config} state={dl[index] || IDLE_DOWNLOAD} busy={busyDownload !== null}
-      protocol={protocolFor(index)} availability={availability?.byRelease[index]} availabilityLoading={Boolean(availability?.loading)} sabnzbdConfigured={Boolean(availability?.sabnzbdConfigured)}
+      protocol={protocolFor(index)} availability={availability?.byRelease[index]?.identity === releaseIdentity(rel) ? availability.byRelease[index] : undefined} availabilityLoading={Boolean(availability?.loading)} sabnzbdConfigured={Boolean(availability?.sabnzbdConfigured)}
       onProtocol={protocol => onProtocol(index, protocol)} onRefreshAvailability={onRefreshAvailability}
       onDownload={() => onDownload(index)} onPause={onPause} onResume={onResume} onRemove={onRemove}/>
   </div>)}</div>
@@ -95,6 +100,7 @@ export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, 
         <DetailsQuality status={quality}/><Icon name="chevron-right" size={16} className="details-disclosure-chevron text-muted"/>
       </summary>
       <div className="details-season-content">
+        {availability?.error && <p className="mb-3 text-xs text-warn wrap-anywhere" role="alert">Usenet check failed: {availability.error}. Re-check the sources before choosing Usenet.</p>}
         {!split && (r.status === 'missing' || r.status === 'uncovered') && <p className="mb-3 text-sm text-muted">{quality.kind === 'review' ? 'Confirm the AniList match to check this release.' : r.status === 'uncovered' ? 'This season has no releases on SeaDex.' : 'Not listed on seadex.moe.'}</p>}
         {!split && <RecommendationNotes notes={r.notes}/>}
         {groups.length === 0 && r.status !== 'missing' && r.status !== 'uncovered' && <p className="mb-3 text-sm text-muted">No release details are available. Run a new library scan to refresh this title.</p>}

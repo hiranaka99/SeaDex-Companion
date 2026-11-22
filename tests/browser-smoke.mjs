@@ -14,6 +14,7 @@ const profile = mkdtempSync(join(tmpdir(), 'seadex-browser-'))
 const root = resolve('static')
 const appVersion = `v${JSON.parse(readFileSync('frontend/package.json', 'utf8')).version.replace(/\.0$/, '')}`
 const release = (group, hash) => ({ kind: 'best', releaseGroup: group, tracker: 'Nyaa', quality: '1080p', tags: [], size: 200, info_hashes: [hash.repeat(40)], torrent_available: true, selected_files: hash === 'a' ? ['01.mkv'] : ['01.mkv', '02.mkv'], torrent_files: [{ hash: hash.repeat(40), files: [{ name: '01.mkv', length: 120 }, { name: '02.mkv', length: 80 }] }] })
+const canonicalIdentity = release => JSON.stringify([release.part || '', release.releaseGroup || '', release.tracker || '', [...(release.info_hashes || [])].map(hash => hash.toLowerCase()).sort(), [...(release.selected_files || [])].sort()])
 const example = { key: 'Sonarr:1:1:Example', group_id: 1, library_key: 'Sonarr:item1', title: 'Example anime', arr: 'Sonarr', season: 1, status: 'upgrade', match_status: 'matched', have: ['Old group'], local_size: 100, best_size: 200, best_group: 'Example', anilist_id: 1, image: null, banner: null, url: null, notes: null, arr_url: null, releases: [release('Example', 'a'), release('Alternative', 'b')] }
 let anilistSearchResults = [{ id: 1, title: 'Example anime', year: 2026, format: 'TV', episodes: 12, cover: null }]
 const mappingRequests = []
@@ -58,7 +59,7 @@ const scanRequests = []
 const controlRequests = []
 const capabilities = { pause: true, resume: true, remove: true, remove_files: true }
 const itemFor = selection => (fixtureResults || [example]).find(item => item.key === selection.key)
-// Client progress is record-keyed; the server attaches it to one release.
+// Client progress retains every original association; the browser resolves current recommendations.
 const progressRelease = () => example.releases[1]
 const progressRecord = () => `record-${progressRelease().info_hashes[0]}`
 const progressFor = () => {
@@ -68,7 +69,7 @@ const progressFor = () => {
   return {
     record_id: progressRecord(), protocol: 'torrent', client: 'qbittorrent', source_hash: release.info_hashes[0], native_id: release.info_hashes[0],
     phase, state: stateText, category: 'sonarr-anime', labels: [release.releaseGroup], title: example.title, season: example.season, part: release.part || '',
-    release_group: release.releaseGroup, tracker: release.tracker, size: release.size, key: example.key, release: 1,
+    release_group: release.releaseGroup, tracker: release.tracker, size: release.size, associations: [{ key: example.key, release: 1 }],
     progress: phase === 'complete' ? 1 : 0.5, downloaded: phase === 'complete' ? 200 : 100, total_size: 200, speed: phase === 'error' ? 0 : 10,
     ...(phase === 'error' ? { error: 'Fixture client error: the torrent is incomplete.' } : {}),
     capabilities, updated_at: '2026-11-20T10:00:00.000Z',
@@ -85,56 +86,68 @@ let singleSendMode = 'ok'
 let availabilityMode = 'available'
 let availabilityDelay = 0
 const availabilityRequests = []
+const singleRequests = []
+const cancelRequests = []
+const preflightRequests = []
+let progressOverrides = null
+let holdNextAvailability = false
+let releaseAvailability = null
 const expiredPlanMessage = 'This review has expired or was already used. Re-run the review before submitting.'
 const preflightPlans = new Map()
 let planCount = 0
-const plannedUnit = (planId, selection, index) => {
+const plannedUnit = (selection, index) => {
   const item = itemFor(selection)
   const release = item?.releases?.[selection.release]
-  const protocol = preflightMode === 'usenet' || preflightMode === 'whole' ? 'usenet' : selection.protocol || 'torrent'
+  const protocol = config.download_mode === 'usenet_only' ? 'usenet' : config.download_mode === 'torrent_only' ? 'torrent' : selection.protocol || 'torrent'
   const existing = preflightMode === 'existing'
   return {
-    unit_id: `${planId}-u${index}`, protocol, client: protocol === 'usenet' ? 'sabnzbd' : 'qbittorrent',
-    source_hash: release?.info_hashes?.[0] || 'a'.repeat(40), category: protocol === 'usenet' ? config.sabnzbd_sonarr_category : 'sonarr-anime',
+    unit_id: `${protocol}:${release.info_hashes[0]}:${protocol === 'usenet' ? config.sabnzbd_sonarr_category : 'sonarr-anime'}`, protocol, client: protocol === 'usenet' ? 'sabnzbd' : 'qbittorrent',
+    source_hash: release.info_hashes[0], category: protocol === 'usenet' ? config.sabnzbd_sonarr_category : 'sonarr-anime',
     status: existing ? 'existing' : 'new',
-    ...(existing ? { existing_record_id: `record-existing-${index}`, existing_native_id: release?.info_hashes?.[0] } : {}),
-    whole_source: protocol === 'usenet', scope_expanded: false,
-    size_bytes: existing ? null : selection.release === 1 ? 200 : 120,
-    approximate: false,
-    ...(protocol === 'usenet' ? { provider: 'animetosho', nzb_name: `${item?.title || 'Release'}.nzb`, extra_file_count: 4 } : {}),
-    labels: [release?.releaseGroup || item?.title || 'Release'], selections: [{ key: selection.key, release: selection.release }],
+    ...(existing ? { existing_record_id: `record-existing-${index}`, existing_native_id: release.info_hashes[0] } : {}),
+    whole_source: protocol === 'usenet', scope_expanded: protocol === 'usenet' && Boolean(release.selected_files?.length),
+    size_bytes: existing ? null : protocol === 'usenet' ? 200 : selection.release === 1 ? 200 : 120,
+    approximate: protocol === 'usenet',
+    ...(protocol === 'usenet' ? { provider: 'animetosho', nzb_name: `${item.title}.nzb`, known_extra_files: ['03.mkv', '04.mkv', '05.mkv', '06.mkv'], extra_file_count: 4 } : {}),
+    labels: [release.releaseGroup || item.title], selections: [{ key: selection.key, release: selection.release }],
   }
 }
 const preflightFor = body => {
   const planId = `plan-${++planCount}`
-  const units = body.selections.map((selection, index) => plannedUnit(planId, selection, index))
+  const bySource = new Map()
+  for (const [index, selection] of body.selections.entries()) {
+    const unit = plannedUnit(selection, index)
+    const existing = bySource.get(unit.unit_id)
+    if (existing) {
+      if (!existing.selections.some(ref => ref.key === selection.key && ref.release === selection.release)) existing.selections.push({ key: selection.key, release: selection.release })
+      existing.labels = [...new Set([...existing.labels, ...unit.labels])]
+    } else bySource.set(unit.unit_id, unit)
+  }
+  const units = [...bySource.values()]
   const newUnits = units.filter(unit => unit.status === 'new')
   const totalNewBytes = newUnits.reduce((total, unit) => total + (unit.size_bytes || 0), 0)
   const freeBytes = preflightMode === 'unavailable' ? null : preflightMode === 'low' ? 100 : 1000
   const diskSpace = newUnits.length ? [...new Set(newUnits.map(unit => unit.client))].map(client => ({
     client, path: client === 'sabnzbd' ? '/sab/downloads' : '/downloads', categories: [client === 'sabnzbd' ? config.sabnzbd_sonarr_category : 'sonarr-anime'],
-    required_bytes: totalNewBytes, unknown_units: 0, free_bytes: freeBytes, sufficient: freeBytes === null ? null : freeBytes >= totalNewBytes,
+    required_bytes: newUnits.filter(unit => unit.client === client).reduce((total, unit) => total + (unit.size_bytes || 0), 0), unknown_units: newUnits.filter(unit => unit.client === client && unit.approximate).length, free_bytes: freeBytes,
+    sufficient: freeBytes === null ? null : freeBytes < newUnits.filter(unit => unit.client === client).reduce((total, unit) => total + (unit.size_bytes || 0), 0) ? false : newUnits.some(unit => unit.client === client && unit.approximate) ? null : true,
     reason: freeBytes === null ? 'Client cannot report space for this path.' : undefined,
   })) : []
   const preflight = {
     ok: true, plan_id: planId, expires_in: 300, mode: config.download_mode, selection_count: body.selections.length, units,
     new_torrents: newUnits.filter(unit => unit.protocol === 'torrent').length, new_nzbs: newUnits.filter(unit => unit.protocol === 'usenet').length,
-    existing_units: units.length - newUnits.length, blocked: [], requires_whole_ack: units.some(unit => unit.whole_source),
+    existing_units: units.length - newUnits.length, blocked: [], requires_whole_ack: newUnits.some(unit => unit.scope_expanded),
     requires_space_ack: diskSpace.some(check => check.sufficient !== true),
-    total_new_bytes: totalNewBytes, unknown_bytes: 0, approximate_bytes: false, disk_space: diskSpace,
+    total_new_bytes: totalNewBytes, unknown_bytes: 0, approximate_bytes: newUnits.some(unit => unit.approximate), disk_space: diskSpace,
   }
-  preflightPlans.set(planId, { selections: body.selections.map(selection => ({ ...selection })) })
+  preflightPlans.set(planId, { selections: body.selections.map(selection => ({ ...selection })), preflight })
   return preflight
 }
-const jobUnit = (selection, index) => {
-  const item = itemFor(selection)
-  const release = item?.releases?.[selection.release]
-  const sourceHash = release?.info_hashes?.[0] || 'a'.repeat(40)
-  return {
-    unit_id: `job-unit-${index}`, protocol: selection.protocol || 'torrent', record_id: `record-${sourceHash}`, native_id: sourceHash,
-    source_hash: sourceHash, label: item?.title || selection.key, selections: [{ key: selection.key, release: selection.release }],
-  }
-}
+const jobUnit = unit => ({
+  unit_id: unit.unit_id, protocol: unit.protocol, record_id: `record-${unit.source_hash}`,
+  native_id: unit.protocol === 'usenet' ? `SABnzbd_nzo_${unit.source_hash.slice(0, 8)}` : unit.source_hash,
+  source_hash: unit.source_hash, label: unit.selections.map(ref => itemFor(ref).title).join(' / '), selections: unit.selections,
+})
 const saved = []
 const errors = []
 const server = createServer(async (req, res) => {
@@ -177,65 +190,84 @@ const server = createServer(async (req, res) => {
         response = { ok: true, reviewed: reviewed.size }
       }
     }
-    else if (path === '/api/downloads') response = { ok: true, downloads: progressMode === 'absent' ? {} : { [progressRecord()]: progressFor() } }
+    else if (path === '/api/downloads') response = { ok: true, downloads: progressOverrides || (progressMode === 'absent' ? {} : { [progressRecord()]: progressFor() }) }
     else if (path === '/api/logs') { if (logFailure) { res.statusCode = 503; response = { error: 'Fixture log unavailable' } } else response = { lines: fixtureLogs } }
     else if (path === '/api/download_bulk/preflight') {
-      if (preflightMode === 'failure') { res.statusCode = 503; response = { error: 'Fixture storage unavailable' } }
+      preflightRequests.push(body)
+      const stale = body.selections.some(selection => !itemFor(selection)?.releases?.[selection.release] || selection.identity !== canonicalIdentity(itemFor(selection).releases[selection.release]))
+      if (stale) { res.statusCode = 409; response = { ok: false, error: 'A selected release changed. Re-open the review.' } }
+      else if (preflightMode === 'failure') { res.statusCode = 503; response = { error: 'Fixture storage unavailable' } }
       else response = preflightFor(body)
     }
     else if (path === '/api/usenet/availability') {
       availabilityRequests.push(body)
-      if (availabilityDelay) await new Promise(resolve => setTimeout(resolve, availabilityDelay))
-      response = {
+      const stale = body.selections.some(selection => !itemFor(selection)?.releases?.[selection.release] || selection.identity !== canonicalIdentity(itemFor(selection).releases[selection.release]))
+      if (stale) { res.statusCode = 409; response = { ok: false, error: 'A selected release changed. Re-open the review.' } }
+      else response = {
         ok: true, config_generation: 1,
         providers_enabled: { animetosho: config.animetosho_enabled, amenzb: config.amenzb_enabled },
         sabnzbd_configured: Boolean(config.sabnzbd_url && config.sabnzbd_key_configured),
-        results: body.selections.map(selection => {
+        results: body.selections.map((selection, index) => {
           const item = itemFor(selection)
-          const release = item?.releases?.[selection.release]
-          const hash = release?.info_hashes?.[0] || 'a'.repeat(40)
-          const state = availabilityMode === 'mixed' ? release?.usenet_state || 'no_match' : availabilityMode
+          const release = item.releases[selection.release]
+          const hash = release.info_hashes[0]
+          const state = availabilityMode === 'mixed' ? release.usenet_state || 'no_match' : availabilityMode
           const match = state === 'available'
-            ? { state: 'available', provider: 'animetosho', entry_id: `animetosho-${hash.slice(0, 8)}`, title: `${item?.title || 'Release'} complete season`, total_bytes: 1_400_000_000, files_known: true, file_count: 12 }
-            : { state }
-          return { key: selection.key, release: selection.release, identity: selection.identity, hashes: [{ hash, ...match }], aggregate: match.state, checked_at: '2026-11-20T10:00:00.000Z' }
+            ? { state: 'available', provider: 'animetosho', entry_id: String(100 + index), title: `${item.title} complete season`, total_bytes: 1_400_000_000, files_known: true, file_count: 12, file_names: Array.from({ length: 12 }, (_, index) => `${String(index + 1).padStart(2, '0')}.mkv`) }
+            : state === 'lookup_failed' ? { state, error_code: 'timeout', error: 'Fixture provider timed out', providers_failed: ['animetosho'] } : { state }
+          return { key: selection.key, release: selection.release, identity: canonicalIdentity(release), hashes: [{ hash, ...match }], aggregate: match.state, checked_at: '2026-11-20T10:00:00.000Z' }
         }),
       }
+      if (holdNextAvailability) {
+        holdNextAvailability = false
+        const deferred = Promise.withResolvers()
+        releaseAvailability = deferred.resolve
+        await deferred.promise
+      }
+      if (availabilityDelay) await pause(availabilityDelay)
     }
     else if (path === '/api/download') {
+      singleRequests.push(body)
       const plan = preflightPlans.get(body.plan_id)
-      if (!plan || singleSendMode === 'expired') { res.statusCode = 410; response = { error: expiredPlanMessage } }
+      preflightPlans.delete(body.plan_id)
+      if (!plan || singleSendMode === 'expired') { res.statusCode = 410; response = { ok: false, error: expiredPlanMessage } }
+      else if (plan.preflight.requires_whole_ack && !body.acknowledge?.whole_source || plan.preflight.requires_space_ack && !body.acknowledge?.disk_space) { res.statusCode = 409; response = { ok: false, error: 'Confirm the whole-source and disk-space acknowledgements before sending.' } }
+      else if (plan.selections.some(selection => selection.identity !== canonicalIdentity(itemFor(selection)?.releases?.[selection.release] || {}))) { res.statusCode = 409; response = { ok: false, error: 'A selected release changed. Re-open the review.' } }
+      else if (singleSendMode === 'transient') { res.statusCode = 502; response = { ok: false, error: 'Fixture client temporarily unavailable' } }
       else {
         const selection = plan.selections[0]
-        const item = itemFor(selection)
-        const sourceHash = item?.releases?.[selection.release]?.info_hashes?.[0] || 'a'.repeat(40)
-        const usenet = singleSendMode === 'unknown' || selection.protocol === 'usenet'
+        const sourceHash = itemFor(selection).releases[selection.release].info_hashes[0]
+        const usenet = selection.protocol === 'usenet'
         response = {
-          ok: true, record_id: `record-${sourceHash}`, native_id: sourceHash, source_hash: sourceHash,
+          ok: singleSendMode !== 'unknown', record_id: `record-${sourceHash}`, native_id: usenet ? `SABnzbd_nzo_${sourceHash.slice(0, 8)}` : sourceHash, source_hash: sourceHash,
           protocol: usenet ? 'usenet' : 'torrent', client: usenet ? 'sabnzbd' : 'qbittorrent',
           category: usenet ? config.sabnzbd_sonarr_category : 'sonarr-anime',
-          ...(singleSendMode === 'unknown' ? { acceptance_unknown: true } : {}),
+          ...(singleSendMode === 'unknown' ? { acceptance_unknown: true, error: `${usenet ? 'SABnzbd' : 'qBittorrent'} was asked to start this download but did not confirm it.` } : {}),
         }
+        if (response.acceptance_unknown) res.statusCode = 502
       }
     }
     else if (path === '/api/download-jobs' && req.method === 'POST') {
       const plan = preflightPlans.get(body.plan_id)
-      if (!plan) { res.statusCode = 410; response = { error: expiredPlanMessage } }
+      preflightPlans.delete(body.plan_id)
+      if (!plan) { res.statusCode = 410; response = { ok: false, error: expiredPlanMessage } }
+      else if (plan.preflight.requires_whole_ack && !body.acknowledge?.whole_source || plan.preflight.requires_space_ack && !body.acknowledge?.disk_space) { res.statusCode = 409; response = { ok: false, error: 'Confirm the whole-source and disk-space acknowledgements before sending.' } }
+      else if (plan.selections.some(selection => selection.identity !== canonicalIdentity(itemFor(selection)?.releases?.[selection.release] || {}))) { res.statusCode = 409; response = { ok: false, error: 'A selected release changed. Re-open the review.' } }
       else {
         const targets = plan.selections.map(selection => ({ ...selection }))
         bulkRequests.push({ ...body, action: 'start', selections: targets })
         const id = `fixture-job-${bulkRequests.length}`
-        bulkState = { id, ok: true, finished: false, pending: targets.map(jobUnit), added: [], existing: [], failures: [], targets }
+        bulkState = { id, ok: true, finished: false, pending: plan.preflight.units.map(jobUnit), added: [], existing: [], failures: [], targets }
         const finish = async () => {
           if (holdBulk) await new Promise(resolve => { finishBulk = resolve })
-          const units = targets.map(jobUnit)
+          const units = plan.preflight.units.map(jobUnit)
           const failures = failBulk ? units.slice(0, 1).map(unit => ({ ...unit, code: 'client_error', error: 'Fixture metadata timeout' })) : []
           const sent = failures.length ? units.slice(1) : units
           bulkState = {
             ...bulkState, finished: true, pending: [], failures,
             ok: !failures.length || sent.length > 0,
-            added: failures.length || bulkOutcome === 'existing' ? [] : sent,
-            existing: !failures.length && bulkOutcome === 'existing' ? sent : [],
+            added: bulkOutcome === 'existing' ? [] : sent,
+            existing: bulkOutcome === 'existing' ? sent : [],
           }
         }
         res.statusCode = 202
@@ -246,14 +278,20 @@ const server = createServer(async (req, res) => {
     else if (path === '/api/download-jobs' || path === '/api/download-jobs/latest' || path.startsWith('/api/download-jobs/')) response = bulkState
     else if (path === '/api/downloads/cancelable') response = { ok: true, items: cancelableDownloads }
     else if (path === '/api/downloads/cancel') {
-      const chosen = body.record_ids ? cancelableDownloads.filter(item => body.record_ids.includes(item.record_id)) : cancelableDownloads
-      cancelableDownloads = []
+      cancelRequests.push(body)
+      assert.ok(Array.isArray(body.record_ids), 'UI cancellation must name the reviewed record IDs')
+      const chosen = cancelableDownloads.filter(item => body.record_ids.includes(item.record_id))
+      cancelableDownloads = cancelableDownloads.filter(item => !body.record_ids.includes(item.record_id))
       response = { ok: true, removed: chosen.map(item => ({ record_id: item.record_id, client: item.client })), failures: [] }
     }
     else if (path === '/api/download_control') {
       controlRequests.push(body)
       if (body.action === 'pause') progressMode = 'paused'
       if (body.action === 'resume') progressMode = 'downloading'
+      if (body.action === 'remove') {
+        if (progressOverrides) delete progressOverrides[body.record_id]
+        else progressMode = 'absent'
+      }
       response = { ok: true }
     }
     else if (path === '/api/config/test') response = { ok: true, message: 'Fixture connection successful' }
@@ -642,16 +680,42 @@ try {
   await wait(`document.querySelector('.release-download-button')?.textContent.includes('Download on Usenet')`)
   assert.ok(await evaluate(`(() => { const row = document.querySelectorAll('.release-row')[0]; return row.textContent.includes('Whole Usenet source') && row.textContent.includes('Usenet sources cannot be split') && row.textContent.includes('category: sonarr-anime') && !row.querySelector('details > summary') })()`), 'Usenet warns that the whole unsplittable source lands in the configured category and drops file scoping')
   await evaluate(`document.querySelectorAll('.release-row')[0].querySelector('.release-download-button').click()`)
-  await wait(`document.body.textContent.includes('Send to download client')`)
+  await wait(`document.querySelector('#single-plan-title') && [...document.querySelectorAll('dialog[open]')].at(-1)?.textContent.includes('To send')`)
   assert.ok(await evaluate(`(() => { const dialog = [...document.querySelectorAll('dialog[open]')].find(row => row.textContent.includes('Send to download client')); return dialog.textContent.includes('Whole Usenet source') && dialog.textContent.includes('includes 4 extra files') && dialog.textContent.includes('SABnzbd · sonarr-anime') })()`), 'The single review names the whole Usenet source, its extra files, and the target category')
   assert.ok(await evaluate(`Boolean([...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Send now')?.disabled)`), 'A whole Usenet source cannot be sent before acknowledgement')
   await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Download whole Usenet sources')).querySelector('input').click()`)
-  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Send now')?.disabled`), 'The acknowledgement unlocks the Usenet send')
+  assert.ok(await evaluate(`Boolean([...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Send now')?.disabled)`), 'Approximate Usenet space still needs acknowledgement after accepting the whole source')
+  await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Continue without confirmed free space')).querySelector('input').click()`)
+  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Send now')?.disabled`), 'Both acknowledgements unlock the Usenet send')
   await evaluate(`(() => { const dialog = [...document.querySelectorAll('dialog[open]')].find(row => row.textContent.includes('Send to download client')); [...dialog.querySelectorAll('button')].find(button => button.textContent.trim() === 'Cancel').click(); return true })()`)
   await wait(`!document.body.textContent.includes('Send to download client')`)
   await capture('usenet-release-choice')
   await key('Escape')
   await wait(`!document.querySelector('dialog[open]')`)
+  fixtureResults = [{ ...example, releases: [{ ...release('Original release', 'a'), torrent_available: false }] }]
+  holdNextAvailability = true
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
+  await click('Details')
+  await wait(`document.querySelector('.details-season-disclosure > summary')`)
+  await evaluate(`document.querySelector('.details-season-disclosure > summary').click()`)
+  await wait(`document.querySelector('.release-row')?.textContent.includes('Checking Usenet sources')`)
+  for (let attempt = 0; attempt < 100 && !releaseAvailability; attempt++) await pause(20)
+  assert.ok(releaseAvailability, 'The stale lookup is held before replacing the release')
+  availabilityMode = 'no_match'
+  fixtureResults = [{ ...example, releases: [{ ...release('Replacement release', 'c'), torrent_available: false }] }]
+  revision++
+  await pause(10_500)
+  await wait(`document.querySelector('.release-row')?.textContent.includes('Replacement release') && document.querySelector('.release-row')?.textContent.includes('Not found on Usenet indexers')`)
+  releaseAvailability()
+  releaseAvailability = null
+  await pause(300)
+  assert.ok(await evaluate(`!document.querySelector('.release-row').textContent.includes('Usenet source found') && document.querySelector('.release-download-button').disabled`), 'An old response cannot attach availability to a replacement at the same release index')
+  assert.equal(availabilityRequests.at(-1).selections[0].identity, canonicalIdentity(fixtureResults[0].releases[0]), 'Expanded details request the replacement identity')
+  await key('Escape')
+  await wait(`!document.querySelector('dialog[open]')`)
+  fixtureResults = null
+  availabilityMode = 'available'
   config = { ...config, download_mode: 'torrent_only', sabnzbd_url: '', sabnzbd_key_configured: false }
   progressMode = beforeOverviewProgress
   await evaluate(`location.reload()`)
@@ -711,6 +775,24 @@ try {
   await wait(`!document.querySelector('dialog[open]')?.textContent.includes('Checking Usenet availability') && ![...document.querySelectorAll('dialog[open] [role=radio]')].some(button => button.textContent.trim() === 'Usenet')`)
   assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'All Usenet where available').disabled`), 'No matches disable the preset and remove every Usenet method')
   await key('Escape')
+  fixtureResults = [bulkAnime('Private retry anime', '8', 'lookup_failed', false)]
+  availabilityMode = 'mixed'
+  await evaluate(`location.reload()`)
+  await wait(`document.body.textContent.includes('Private retry anime')`)
+  await click('Bulk download')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Fixture provider timed out')`)
+  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].some(button => button.textContent.trim() === 'Refresh review' && !button.disabled)`), 'A private-only provider failure has a retry outside the eligible section')
+  fixtureResults[0].releases[0].usenet_state = 'no_match'
+  await click('Refresh review')
+  await wait(`!document.querySelector('dialog[open]')?.textContent.includes('Checking Usenet availability') && !document.querySelector('dialog[open]')?.textContent.includes('Fixture provider timed out')`)
+  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].some(button => button.textContent.trim() === 'Refresh review' && !button.disabled)`), 'A private-only no-match review still has a retry')
+  fixtureResults[0].releases[0].usenet_state = 'available'
+  await click('Refresh review')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('1 eligible')`)
+  await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === '1 eligible').click()`)
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('New NZBs')`)
+  assert.ok(await evaluate(`document.querySelector('dialog[open] input[type=checkbox]')?.checked`), 'Private-only retries preserve the selected intent')
+  await key('Escape')
   ;({ config, fixtureResults, progressMode, preflightMode } = beforeBulkUsenet)
   availabilityMode = 'available'
   await evaluate(`location.reload()`)
@@ -730,13 +812,30 @@ try {
   assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Start 1 download').disabled`))
   await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Continue without confirmed free space')).querySelector('input').click()`)
   assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Start 1 download').disabled`))
-  preflightMode = 'whole'
-  await click('Refresh review')
+  await key('Escape')
+  const torrentConfigBeforeWhole = config
+  config = { ...config, download_mode: 'usenet_only', sabnzbd_url: 'http://sab.local', sabnzbd_key_configured: true }
+  preflightMode = 'enough'
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
+  await click('Bulk download')
+  await evaluate(`document.querySelector('dialog[open] button[aria-expanded]').click()`)
+  await wait(`document.querySelector('dialog[open] input[type=radio]')`)
+  await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].click()`)
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('Download whole Usenet sources')`)
-  assert.ok(await evaluate(`(() => { const dialog = document.querySelector('dialog[open]'); return dialog.textContent.includes('Usenet sources cannot be split per episode') && dialog.textContent.includes('New NZBs') && dialog.textContent.includes('SABnzbd') })()`), 'Whole Usenet sources are labelled with their provider count and client before submission')
-  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Start 1 download').disabled`), 'Whole Usenet sources cannot start without acknowledgement')
+  assert.ok(await evaluate(`document.querySelector('dialog[open]').textContent.includes('Usenet sources cannot be split per episode') && document.querySelector('dialog[open]').textContent.includes('SABnzbd')`), 'Whole Usenet sources name their scope and client')
   await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Download whole Usenet sources')).querySelector('input').click()`)
-  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Start 1 download').disabled`), 'The whole-source acknowledgement unlocks submission')
+  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Start 1 download').disabled`), 'Approximate space still requires acknowledgement')
+  await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Continue without confirmed free space')).querySelector('input').click()`)
+  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Start 1 download').disabled`), 'Both acknowledgements unlock submission')
+  await key('Escape')
+  config = torrentConfigBeforeWhole
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
+  await click('Bulk download')
+  await evaluate(`document.querySelector('dialog[open] button[aria-expanded]').click()`)
+  await wait(`document.querySelector('dialog[open] input[type=radio]')`)
+  await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].click()`)
   preflightMode = 'existing'
   await click('Refresh review')
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('Nothing new to send')`)
@@ -876,41 +975,86 @@ try {
   await wait(`document.querySelectorAll('dialog[open]').length === 0 && !document.querySelector('dialog')`)
   console.log('PASS release identity changes, download errors, and removal of completed torrents')
 
+  const beforeSharedProgress = { fixtureResults, progressMode }
+  const sharedRelease = { ...release('Shared current acquisition', 'b'), selected_files: ['01.mkv'] }
+  const sharedSecondSeason = { ...example, key: 'Sonarr:1:2:Shared', season: 2, releases: [{ ...sharedRelease, selected_files: ['02.mkv'] }] }
+  fixtureResults = [{ ...example, releases: [sharedRelease, release('Replacement acquisition', 'd')] }, sharedSecondSeason]
+  const sharedRecord = { ...progressFor(), record_id: 'record-shared', associations: [{ key: example.key, release: 0 }, { key: sharedSecondSeason.key, release: 0 }, { key: example.key, release: 0 }], scope: ['01.mkv', '02.mkv'], release_group: 'Shared current acquisition' }
+  const obsoleteRecord = { ...progressFor(), record_id: 'record-obsolete-original', source_hash: 'c'.repeat(40), native_id: 'c'.repeat(40), associations: [{ key: example.key, release: 1 }], release_group: 'Original obsolete acquisition' }
+  progressOverrides = { [sharedRecord.record_id]: sharedRecord, [obsoleteRecord.record_id]: obsoleteRecord }
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('[aria-label="Active downloads"]')?.textContent.includes('Original obsolete acquisition')`)
+  assert.equal(await evaluate(`document.querySelectorAll('[aria-label="Active downloads"] button[aria-label^="Pause download"]').length`), 2, 'Shared associations do not duplicate record controls on the card')
+  await click('Details')
+  await wait(`document.querySelectorAll('.details-season-disclosure[open]').length === 2`)
+  assert.equal(await evaluate(`document.querySelectorAll('.release-row [role="progressbar"]').length`), 2, 'A shared record supplies progress to every covered current season')
+  assert.ok(await evaluate(`[...document.querySelectorAll('.release-row')].find(row => row.textContent.includes('Replacement acquisition')).querySelector('.release-download-button')?.disabled === false`), 'An obsolete acquisition does not block its replacement')
+  await key('Escape')
+  await wait(`!document.querySelector('dialog[open]')`)
+  await evaluate(`[...document.querySelectorAll('[aria-label="Active downloads"] button')].find(button => button.getAttribute('aria-label')?.includes('Remove download') && button.getAttribute('aria-label')?.includes('Original obsolete acquisition')).click()`)
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Remove download from qBittorrent')`)
+  await click('Remove from qBittorrent')
+  await wait(`!document.querySelector('dialog[open]')`)
+  assert.equal(controlRequests.at(-1).record_id, obsoleteRecord.record_id, 'Obsolete downloads retain control of the original record')
+  assert.equal(controlRequests.at(-1).delete_files, false, 'Original-record cleanup keeps its files by default')
+  progressOverrides = null
+  ;({ fixtureResults, progressMode } = beforeSharedProgress)
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
   // Single release: review first, then send. Failures keep the review usable.
   const sendFirstRelease = () => evaluate(`(() => { const button = document.querySelector('dialog[open] button[title^="Send this release"]'); button.focus(); button.click(); return true })()`)
   const reviewOpen = () => evaluate(`[...document.querySelectorAll('dialog[open]')].some(dialog => dialog.textContent.includes('Send to download client'))`)
-  const sendNowDisabled = () => evaluate(`Boolean([...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Send now')?.disabled)`)
+  const sendNowDisabled = () => evaluate(`(() => { const button = [...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Send now'); return !button || button.disabled })()`)
   const dismissToasts = () => evaluate(`document.querySelectorAll('[aria-label="Dismiss notification"]').forEach(button => button.click())`)
   singleSendMode = 'ok'
   await evaluate(`document.querySelector('button[aria-label="Details for Example anime"]').click()`)
   await wait(`(() => { const details = document.querySelector('dialog[open] .details-season-disclosure'); if (details && !details.open) details.querySelector('summary').click(); return Boolean(details?.open && details.querySelectorAll('button[title^="Send this release"]').length === 2) })()`)
   await sendFirstRelease()
-  await wait(`document.body.textContent.includes('Send to download client')`)
+  await wait(`document.querySelector('#single-plan-title') && [...document.querySelectorAll('dialog[open]')].at(-1)?.textContent.includes('To send')`)
   assert.ok(await evaluate(`(() => { const dialog = [...document.querySelectorAll('dialog[open]')].at(-1); return dialog.textContent.includes('S01 · Example') && dialog.textContent.includes('To send') && dialog.textContent.includes('qBittorrent · sonarr-anime') })()`), 'The review names the release, the unit, its client, and its category')
   assert.equal(await sendNowDisabled(), false, 'A reviewed release can be sent immediately')
   singleSendMode = 'expired'
   await click('Send now')
   await wait(`document.body.textContent.includes('This review has expired or was already used. Re-run the review before submitting.')`)
   assert.ok(await reviewOpen(), 'An expired review stays open for another attempt')
-  assert.equal(await sendNowDisabled(), false, 'The same review can be submitted again')
-  await dismissToasts()
+  assert.equal(await sendNowDisabled(), true, 'A consumed plan no longer offers Send now')
+  const expiredId = singleRequests.at(-1).plan_id
+  assert.equal(preflightPlans.has(expiredId), false, 'The fixture consumes each plan exactly once')
+  const afterExpiredSend = singleRequests.length
+  await pause(300)
+  assert.equal(singleRequests.length, afterExpiredSend, 'A failed send is never replayed automatically')
+  singleSendMode = 'transient'
+  preflightMode = 'low'
+  await click('Refresh review')
+  await wait(`[...document.querySelectorAll('dialog[open] label')].some(label => label.textContent.includes('Continue without confirmed free space'))`)
+  assert.notEqual([...preflightPlans.keys()].at(-1), expiredId, 'Recovery obtains a fresh preflight plan')
+  assert.equal(await sendNowDisabled(), true)
+  await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Continue without confirmed free space')).querySelector('input').click()`)
+  await click('Send now')
+  await wait(`document.body.textContent.includes('Fixture client temporarily unavailable')`)
+  assert.equal(await sendNowDisabled(), true, 'An ordinary failure also consumes its review')
+  await click('Refresh review')
+  await wait(`[...document.querySelectorAll('dialog[open] label')].some(label => label.textContent.includes('Continue without confirmed free space'))`)
+  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Continue without confirmed free space')).querySelector('input').checked`), 'Fresh preflight resets the prior acknowledgement')
+  await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Continue without confirmed free space')).querySelector('input').click()`)
   singleSendMode = 'unknown'
   await click('Send now')
-  await wait(`document.body.textContent.includes('Check SABnzbd before retrying')`)
-  assert.ok(await evaluate(`document.body.textContent.includes('SABnzbd was asked to start this download but did not confirm it. Check SABnzbd before retrying.')`), 'An ambiguous receipt explains the check before any retry')
+  await wait(`document.body.textContent.includes('Check qBittorrent before retrying')`)
+  assert.ok(await evaluate(`document.body.textContent.includes('qBittorrent was asked to start this download but did not confirm it. Check qBittorrent before retrying.')`), 'Structured uncertainty names the actual client')
   await pause(300)
   assert.equal(await reviewOpen(), false, 'An ambiguous send is not repeated while its state is unknown')
   await dismissToasts()
   singleSendMode = 'ok'
+  preflightMode = 'enough'
   await sendFirstRelease()
-  await wait(`document.body.textContent.includes('Send to download client')`)
+  await wait(`document.querySelector('#single-plan-title') && [...document.querySelectorAll('dialog[open]')].at(-1)?.textContent.includes('To send')`)
   await click('Send now')
   await wait(`document.body.textContent.includes('Sent S01 · Example to qBittorrent')`)
   assert.equal(await reviewOpen(), false, 'A confirmed send closes the review')
   await dismissToasts()
   await key('Escape')
   await wait(`document.querySelectorAll('dialog[open]').length === 0`)
-  console.log('PASS single-release review, expired-plan recovery, ambiguous SABnzbd acceptance, and confirmed send')
+  console.log('PASS single-release review, expired and transient plan recovery, client-specific acceptance uncertainty, and confirmed send')
 
   logFailure = true
   await click('Server log')
@@ -1032,11 +1176,42 @@ try {
   assert.ok(await evaluate(`(() => { const dialog = document.querySelector('dialog[open]'); return dialog.textContent.includes('Example anime') && dialog.textContent.includes('qBittorrent') && dialog.textContent.includes('Queued') })()`), 'Cancellation lists what the clients report, each with its client and state')
   assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].some(button => button.textContent.trim() === 'Remove 2 downloads')`), 'The action counts the selected downloads')
   assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Also delete')).querySelector('input').checked`), 'Bulk cancellation keeps files by default')
+  const reviewedCancelIds = cancelableDownloads.map(item => item.record_id)
+  const arrivedAfterReview = { ...cancelableFor(hidden, 2), record_id: 'record-arrived-after-review' }
+  cancelableDownloads.push(arrivedAfterReview)
   await click('Remove 2 downloads')
   await wait(`document.body.textContent.includes('Cancelled 2 downloads; files were kept')`)
   await wait(`document.querySelectorAll('dialog[open]').length === 0 && !document.querySelector('dialog')`)
+  assert.deepEqual(cancelRequests.at(-1).record_ids, reviewedCancelIds, 'All checked submits the exact reviewed list, never an undefined-as-all command')
+  assert.deepEqual(cancelableDownloads.map(item => item.record_id), [arrivedAfterReview.record_id], 'A record arriving after review is not removed')
   await dismissToasts()
   console.log('PASS filtered/all-library bulk scope, hidden defaults, recommendation evidence, immutable background batches, and client-scoped cancellation')
+
+  const beforeLargeScope = { config, fixtureResults, preflightMode, progressMode }
+  config = { ...config, download_mode: 'usenet_only', sabnzbd_url: 'http://sab.local', sabnzbd_key_configured: true, hidden: [] }
+  fixtureResults = Array.from({ length: 201 }, (_, index) => {
+    const hash = (index + 1).toString(16).padStart(40, '0')
+    const rel = { ...release(`Whole-library release ${index}`, 'a'), info_hashes: [hash], torrent_files: [{ hash, files: [{ name: '01.mkv', length: 120 }, { name: '02.mkv', length: 80 }] }] }
+    return { ...example, key: `Sonarr:large:${index}`, group_id: index + 100, library_key: `Sonarr:large:${index}`, title: `Whole-library anime ${index}`, releases: [rel] }
+  })
+  fixtureResults.push({ ...fixtureResults[0], key: 'Sonarr:large:shared', group_id: 999, title: 'Whole-library shared source' })
+  progressMode = 'absent'
+  preflightMode = 'enough'
+  availabilityMode = 'available'
+  await evaluate(`location.hash='anime'; location.reload()`)
+  await wait(`document.querySelector('button[aria-label="Details for Whole-library anime 0"]')`)
+  await click('Bulk download')
+  await select('[aria-label="Bulk action scope"]', 'all')
+  await wait(`[...document.querySelectorAll('dialog[open] dt')].find(label => label.textContent === 'Selected releases')?.nextElementSibling?.textContent === '202' && [...document.querySelectorAll('dialog[open] dt')].find(label => label.textContent === 'New NZBs')?.nextElementSibling?.textContent === '201'`)
+  assert.equal(preflightRequests.at(-1).selections.length, 202, 'Whole-library review keeps 201+ rows in one preflight')
+  assert.ok(await evaluate(`document.querySelector('[data-testid="bulk-download-size"]').textContent.startsWith('≈')`), 'Deduplicated whole-library estimates remain visibly approximate')
+  const acknowledgeLarge = copy => evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes(${JSON.stringify(copy)})).querySelector('input').click()`)
+  await acknowledgeLarge('Download whole Usenet sources')
+  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Start 201 downloads').disabled`), 'Approximate space has an explicit acknowledgement separate from source scope')
+  await acknowledgeLarge('Continue without confirmed free space')
+  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Start 201 downloads').disabled`))
+  await key('Escape')
+  ;({ config, fixtureResults, preflightMode, progressMode } = beforeLargeScope)
 
   config = { ...priorConfig, sonarr_url: '', sonarr_key_configured: false, radarr_url: '', radarr_key_configured: false }
   fixtureResults = []

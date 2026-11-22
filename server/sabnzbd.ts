@@ -247,7 +247,7 @@ function readSection(result: JsonResult, section: 'queue' | 'history', apiKey: s
 
 function parseQueueSlot(slot: unknown, queue: Record<string, unknown>): SabQueueJob | null {
   if (!isRecord(slot)) return null
-  const nzoId = text(slot.nzo_id)
+  const nzoId = text(slot.nzo_id).trim()
   if (nzoId === '') return null
   const total = mbToBytes(slot.mb)
   const remaining = mbToBytes(slot.mbleft)
@@ -272,7 +272,7 @@ function parseQueueSlot(slot: unknown, queue: Record<string, unknown>): SabQueue
 
 function parseHistorySlot(slot: unknown): SabHistoryJob | null {
   if (!isRecord(slot)) return null
-  const nzoId = text(slot.nzo_id)
+  const nzoId = text(slot.nzo_id).trim()
   if (nzoId === '') return null
   const storage = text(slot.storage)
   return {
@@ -303,7 +303,7 @@ export async function sabQueueJobs(
   let readComplete = true
   for (const chunk of chunkIds(nzoIds)) {
     try {
-      const url = buildApiUrl(settings, { ...keyParams(settings), mode: 'queue', nzo_ids: chunk.join(',') })
+      const url = buildApiUrl(settings, { ...keyParams(settings), mode: 'queue', nzo_ids: chunk.join(','), limit: String(chunk.length) })
       const queue = readSection(await requestJson(settings, url, { method: 'GET' }, READ_TIMEOUT_MS, fetchImpl), 'queue', settings.apiKey)
       if (queue.paused_all === true) globalPaused = true
       if (incompleteFreeBytes === null) incompleteFreeBytes = gbToBytes(queue.diskspace1)
@@ -311,12 +311,14 @@ export async function sabQueueJobs(
       if (Array.isArray(queue.slots)) {
         for (const slot of queue.slots) {
           const job = parseQueueSlot(slot, queue)
+          if (!job) readComplete = false
           if (job && !seen.has(job.nzo_id)) {
             seen.add(job.nzo_id)
             jobs.push(job)
           }
         }
       }
+      else readComplete = false
     } catch {
       // A failed chunk is never evidence of absence; keep partial results.
       readComplete = false
@@ -338,19 +340,21 @@ export async function sabHistoryJobs(
     // same nzo_id somehow appears in both.
     for (const archive of [false, true]) {
       try {
-        const params: Record<string, string> = { ...keyParams(settings), mode: 'history', nzo_ids: chunk.join(',') }
+        const params: Record<string, string> = { ...keyParams(settings), mode: 'history', nzo_ids: chunk.join(','), limit: String(chunk.length) }
         if (archive) params.archive = '1'
         const url = buildApiUrl(settings, params)
         const history = readSection(await requestJson(settings, url, { method: 'GET' }, READ_TIMEOUT_MS, fetchImpl), 'history', settings.apiKey)
         if (Array.isArray(history.slots)) {
           for (const slot of history.slots) {
             const job = parseHistorySlot(slot)
+            if (!job) readComplete = false
             if (job && !seen.has(job.nzo_id)) {
               seen.add(job.nzo_id)
               jobs.push(job)
             }
           }
         }
+        else readComplete = false
       } catch {
         readComplete = false
       }
@@ -445,22 +449,25 @@ export async function sabAddNzb(
   } catch (error) {
     throw new SabnzbdAmbiguousError(`SABnzbd NZB submission outcome unknown: ${describeError(error, settings.apiKey)}`, { cause: error })
   }
+  const accepted = isRecord(result.payload) && result.payload.status === true
+  const rawIds = isRecord(result.payload) ? result.payload.nzo_ids : undefined
+  const usable = Array.isArray(rawIds) && rawIds.length > 0 && rawIds.every((id) => typeof id === 'string' && id.trim() !== '')
+  if (accepted && !usable) {
+    throw new SabnzbdAmbiguousError('SABnzbd accepted the NZB but returned no usable nzo_ids. Check SABnzbd before retrying.')
+  }
   const errorText = providerErrorText(result.payload, settings.apiKey)
+  if (accepted && (errorText || !result.ok)) {
+    throw new SabnzbdAmbiguousError(`SABnzbd reported acceptance with an inconsistent response: ${errorText || `HTTP ${result.status}`}. Check SABnzbd before retrying.`)
+  }
   if (errorText) {
     if (isApiKeyRejection(errorText)) throw new SabnzbdAuthError(`SABnzbd rejected the NZB submission: ${errorText}`)
     throw new SabnzbdError(`SABnzbd rejected the NZB submission: ${errorText}`)
   }
   if (!result.ok) throw new SabnzbdError(`SABnzbd NZB submission failed (HTTP ${result.status})`)
-  if (!isRecord(result.payload) || result.payload.status !== true) {
+  if (!accepted) {
     throw new SabnzbdError('SABnzbd did not accept the NZB submission')
   }
-  const rawIds = result.payload.nzo_ids
-  const usable = Array.isArray(rawIds) && rawIds.length > 0 && rawIds.every((id) => typeof id === 'string' && id !== '')
-  if (!usable) {
-    // An accepted job without usable native IDs is not a usable receipt.
-    throw new SabnzbdError('SABnzbd accepted the NZB but returned no usable nzo_ids')
-  }
-  return (rawIds as string[]).slice()
+  return [...new Set((rawIds as string[]).map(id => id.trim()))]
 }
 
 // --- controls ----------------------------------------------------------------

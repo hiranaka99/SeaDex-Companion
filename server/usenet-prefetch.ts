@@ -15,10 +15,11 @@ import type { Config, ResultItem } from './types.js'
 let enabled = false
 let sweepEpoch = 0
 let progress = { running: false, checked: 0, total: 0 }
+let progressGeneration = currentGeneration()
 
 /** Live progress of the background availability sweep, for the sidebar. */
 export function usenetPrefetchProgress(): { running: boolean; checked: number; total: number } {
-  return progress.running ? { ...progress } : { running: false, checked: 0, total: 0 }
+  return progress.running && progressGeneration === currentGeneration() ? { ...progress } : { running: false, checked: 0, total: 0 }
 }
 
 /** Prefetch only runs in the real server; tests opt in explicitly. */
@@ -34,38 +35,45 @@ export function usenetPrefetchEligible(config: Config): boolean {
 
 /** Starts a background sweep over the saved results; any running sweep is superseded. */
 export function prefetchUsenetAvailability(config: Config, results: ResultItem[], reason: string): void {
-  if (!enabled || !usenetPrefetchEligible(config)) return
   const epoch = ++sweepEpoch
-  void runSweep(epoch, config, results, reason)
+  progress = { running: false, checked: 0, total: 0 }
+  progressGeneration = currentGeneration()
+  if (!enabled || !usenetPrefetchEligible(config)) return
+  void runSweep(epoch, progressGeneration, config, results, reason)
 }
 
 /** Cancels any running sweep (scanned data cleared). */
 export function stopUsenetPrefetch(): void {
   sweepEpoch++
+  progress = { running: false, checked: 0, total: 0 }
+  progressGeneration = currentGeneration()
 }
 
-async function runSweep(epoch: number, config: Config, results: ResultItem[], reason: string): Promise<void> {
+async function runSweep(epoch: number, generation: number, config: Config, results: ResultItem[], reason: string): Promise<void> {
+  const ownsProgress = () => epoch === sweepEpoch && currentGeneration() === generation
   const releases = results.reduce((total, result) => total + (result.releases?.length || 0), 0)
-  if (!releases) return
-  const generation = currentGeneration()
+  if (!releases || !ownsProgress()) return
   const started = Date.now()
   progress = { running: true, checked: 0, total: releases }
   log('INFO', `Usenet availability prefetch started (${releases} releases; ${reason})`)
   let checked = 0
-  for (const result of results) {
-    if (epoch !== sweepEpoch || currentGeneration() !== generation) {
-      progress = { running: false, checked: 0, total: 0 }
-      log('INFO', `Usenet availability prefetch superseded after ${checked} releases`)
-      return
+  try {
+    for (const result of results) {
+      if (!ownsProgress()) return
+      const rows = result.releases || []
+      if (!rows.length) continue
+      await usenetAvailability(config, rows.map((_, index) => ({ key: result.key, release: index })), false, [result], true)
+      if (!ownsProgress()) return
+      checked += rows.length
+      progress = { running: true, checked, total: releases }
     }
-    const rows = result.releases || []
-    if (!rows.length) continue
-    await usenetAvailability(config, rows.map((_, index) => ({ key: result.key, release: index })), false, [result], true)
-    checked += rows.length
-    progress = { running: true, checked, total: releases }
+    if (!ownsProgress()) return
+    log('INFO', `Usenet availability prefetch finished (${checked} releases in ${((Date.now() - started) / 1000).toFixed(0)}s)`)
+  } catch {
+    if (ownsProgress()) log('WARNING', 'Usenet availability prefetch failed')
+  } finally {
+    if (ownsProgress()) progress = { running: false, checked: 0, total: 0 }
   }
-  progress = { running: false, checked: 0, total: 0 }
-  log('INFO', `Usenet availability prefetch finished (${checked} releases in ${((Date.now() - started) / 1000).toFixed(0)}s)`)
 }
 
 /** Scan-completion hook wired into the default scan service. */
@@ -75,6 +83,6 @@ export function prefetchAfterScan(config: Config, results: ResultItem[]): void {
 
 /** Re-sweep the persisted results after a configuration change. */
 export function prefetchSavedResults(config: Config): void {
-  const saved = loadLastResults()?.results
-  if (saved) prefetchUsenetAvailability(config, saved, 'configuration saved')
+  const saved = loadLastResults()?.results || []
+  prefetchUsenetAvailability(config, saved, 'configuration saved')
 }

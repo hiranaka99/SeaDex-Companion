@@ -22,6 +22,7 @@ import { QUALITY_ICONS } from './DetailsQuality'
 import { releaseOverview, releaseQuality } from '../release-status'
 import { groupReleaseChanges, presentReleaseChange } from '../release-changes'
 import ReleaseChangeLine from './ReleaseChangeLine'
+import { releaseIdentity } from '../../../shared/releases'
 
 function HideActionIcon({ hidden }: { hidden: boolean }) {
   return <Icon name={hidden ? 'eye' : 'eye-off'} size={18} />
@@ -111,11 +112,11 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
   }, [active, openRequested])
   const { dlBySeason, activeDownloads, busyDownload, handleDownload, handleDownloadAction, singleFlow } = useCardDownloads(group, toast.show)
   const usenetEnabled = Boolean(config) && config?.download_mode !== 'torrent_only'
-  const { availability, load: loadAvailability } = useSeasonAvailability(usenetEnabled)
+  const { availability, load: loadAvailability } = useSeasonAvailability(usenetEnabled, group.seasons, detailsOpen)
   const [protocols, setProtocols] = useState<Record<string, DownloadProtocol>>({})
-  const availabilityLoaded = useRef(new Set<string>())
-  useEffect(() => { if (!detailsOpen) availabilityLoaded.current = new Set() }, [detailsOpen])
-  const protocolKey = (seasonKey: string, index: number) => `${seasonKey}\u0000${index}`
+  const availabilityLoaded = useRef(new Map<string, string>())
+  useEffect(() => { if (!detailsOpen) availabilityLoaded.current.clear() }, [detailsOpen])
+  const protocolKey = (seasonKey: string, index: number) => `${seasonKey}\u0000${releaseIdentity(group.seasons.find(season => season.key === seasonKey)?.releases[index] || {})}`
   const protocolFor = (season: ResultItem, index: number): DownloadProtocol => {
     const chosen = protocols[protocolKey(season.key, index)]
     if (chosen) return chosen
@@ -321,7 +322,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
                   protocolFor={index => protocolFor(season, index)}
                   onProtocol={(index, protocol) => setProtocols(current => ({ ...current, [protocolKey(season.key, index)]: protocol }))}
                   onRefreshAvailability={() => void loadAvailability(season, true)}
-                  onOpened={() => { if (!availabilityLoaded.current.has(season.key)) { availabilityLoaded.current.add(season.key); void loadAvailability(season) } }}
+                  onOpened={() => { const signature = JSON.stringify(season.releases.map(releaseIdentity)); if (availabilityLoaded.current.get(season.key) !== signature) { availabilityLoaded.current.set(season.key, signature); void loadAvailability(season) } }}
                   onDownload={(release) => void handleDownload(season.key, release, config?.download_mode === 'usenet_only' ? 'usenet' : protocolFor(season, release))}
                   onPause={(entry) => void handleDownloadAction(entry, 'pause')}
                   onResume={(entry) => void handleDownloadAction(entry, 'resume')}

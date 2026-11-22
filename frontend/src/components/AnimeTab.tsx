@@ -309,23 +309,23 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
     }
   }
 
-  const handleBulkCancel = async (record_ids: string[] | undefined, deleteFiles: boolean) => {
+  const handleBulkCancel = async (record_ids: string[], deleteFiles: boolean) => {
     if (bulkInFlight.current || bulkOperationActive) return
     bulkInFlight.current = true
     setBulkBusy('cancel')
     try {
-      onBulkOperationChange({ action: 'cancel', phase: 'running', settled: 0, total: record_ids?.length || 0, added: 0, failed: 0, message: 'Removing selected incomplete downloads…' })
+      onBulkOperationChange({ action: 'cancel', phase: 'running', settled: 0, total: record_ids.length, added: 0, failed: 0, message: 'Removing selected incomplete downloads…' })
       const result = await api.cancelDownloads(record_ids, deleteFiles)
       const failed = result.failures.length
       toast.show(result.removed.length
         ? `Cancelled ${result.removed.length} download${result.removed.length === 1 ? '' : 's'}; ${deleteFiles ? 'downloaded files were deleted' : 'files were kept'}${failed ? `; ${failed} could not be removed` : ''}`
         : 'No downloads were removed', failed ? 'info' : 'success')
-      onBulkOperationChange({ action: 'cancel', phase: failed ? 'warning' : 'success', settled: result.removed.length + failed, total: record_ids?.length || result.removed.length + failed, added: 0, failed, failures: result.failures.map(failure => ({ label: failure.label, error: failure.error })), message: result.removed.length ? `Removed ${result.removed.length} download${result.removed.length === 1 ? '' : 's'}; ${deleteFiles ? 'files deleted' : 'files preserved'}` : 'No downloads were found' })
+      onBulkOperationChange({ action: 'cancel', phase: failed ? 'warning' : 'success', settled: result.removed.length + failed, total: record_ids.length, added: 0, failed, failures: result.failures.map(failure => ({ label: failure.label, error: failure.error })), message: result.removed.length ? `Removed ${result.removed.length} download${result.removed.length === 1 ? '' : 's'}; ${deleteFiles ? 'files deleted' : 'files preserved'}` : 'No downloads were found' })
       api.invalidateDownloadProgress()
       if (!failed) setBulkConfirm(null)
     } catch (error: any) {
       toast.show(`Bulk cancel failed: ${error.message}`, 'error')
-      onBulkOperationChange({ action: 'cancel', phase: 'error', settled: 0, total: record_ids?.length || 0, added: 0, failed: record_ids?.length || 0, message: error.message })
+      onBulkOperationChange({ action: 'cancel', phase: 'error', settled: 0, total: record_ids.length, added: 0, failed: record_ids.length, message: error.message })
     } finally {
       bulkInFlight.current = false
       setBulkBusy(null)

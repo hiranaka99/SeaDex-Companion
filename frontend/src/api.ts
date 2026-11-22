@@ -45,9 +45,9 @@ export { waitForDownloadJob, watchDownloadJob }
 
 export const AUTH_REQUIRED_EVENT = 'seadex:authentication-required'
 
-async function api<T = unknown>(path: string, opts: RequestInit = {}, timeoutMs = 30_000): Promise<T> {
-  const timeout = AbortSignal.timeout(timeoutMs)
-  const signal = opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout
+async function api<T = unknown>(path: string, opts: RequestInit = {}, timeoutMs: number | null = 30_000): Promise<T> {
+  const timeout = timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs)
+  const signal = timeout ? (opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout) : opts.signal
   const r = await fetch(path, { ...opts, signal })
   if (!r.ok) {
     if (r.status === 401 && !path.startsWith('/api/auth/')) {
@@ -57,13 +57,14 @@ async function api<T = unknown>(path: string, opts: RequestInit = {}, timeoutMs 
     let detail: Record<string, unknown> | null = null
     try {
       const j = await r.json()
+      if (j && typeof j === 'object') detail = j
       if (typeof j?.error === 'string') msg = j.error
       else if (typeof j?.error?.message === 'string') { msg = j.error.message; detail = j }
       else if (typeof j?.message === 'string') msg = j.message
     } catch {
       /* body was not JSON */
     }
-    throw new SubmissionError(msg, detail)
+    throw new SubmissionError(msg, detail, r.status)
   }
   return r.json()
 }
@@ -231,12 +232,12 @@ export const DOWNLOADS_CHANGED_EVENT = 'seadex:downloads-changed'
 export const preflightDownload = (selections: SelectionInput[], refresh = false, signal?: AbortSignal) =>
   api<DownloadPreflight>('/api/download_bulk/preflight', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections, refresh: refresh || undefined }), signal,
-  }, 60_000)
+  }, null)
 
-export const usenetAvailability = (selections: SelectionInput[], refresh = false) =>
+export const usenetAvailability = (selections: SelectionInput[], refresh = false, signal?: AbortSignal) =>
   api<UsenetAvailabilityResponse>('/api/usenet/availability', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections, refresh: refresh || undefined }),
-  }, 60_000)
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections, refresh: refresh || undefined }), signal,
+  }, null)
 
 /** One-shot submission of a reviewed plan. Awaits the full client mutation. */
 export const submitDownload = (plan_id: string, acknowledge?: DownloadAcknowledge) =>
@@ -256,7 +257,7 @@ export const getDownloadJobStatus = (id?: string) =>
 export const getCancelableDownloads = () =>
   api<{ ok: boolean; items: CancelableDownload[]; error?: string }>('/api/downloads/cancelable')
 
-export const cancelDownloads = (record_ids: string[] | undefined, removeFiles: boolean) =>
+export const cancelDownloads = (record_ids: string[], removeFiles: boolean) =>
   api<DownloadCancelResult>('/api/downloads/cancel', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ record_ids, remove_files: removeFiles }),
   }, 120_000)

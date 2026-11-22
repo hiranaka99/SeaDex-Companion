@@ -8,10 +8,10 @@ import type { Config, Release, ResultItem } from './types.js'
 import { downloadCategory } from './config.js'
 import { currentGeneration } from './config-generation.js'
 import { putPlan, type StoredPlan } from './download-plans.js'
-import { findAcquisitionRecord } from './download-store.js'
+import { downloadRecords, type OwnedDownloadRecord } from './download-store.js'
 import { resolveUsenetRelease, sabnzbdConfigured, usenetConfigured } from './usenet.js'
 import { qbGetDownloadStorage, qbGetTorrents } from './qbittorrent.js'
-import { sabDiskSpace } from './sabnzbd.js'
+import { sabDiskSpace, sabHistoryJobs, sabQueueJobs } from './sabnzbd.js'
 import { qbEndpointId, sabEndpoint } from './client-identity.js'
 import { errorMessage, log } from './logging.js'
 import type { UsenetHashAvailability } from '../shared/usenet-contracts.js'
@@ -21,7 +21,6 @@ export interface SelectionInput { key: string; release: number; identity?: strin
 export interface SubmissionUnit extends UnitDraft { entryId?: string }
 export type PreflightOutcome = { review: DownloadPreflight; plan: StoredPlan; units: SubmissionUnit[] } | { error: [number, string] }
 
-const MAX_SELECTIONS = 200
 const EXTRA_FILE_LIMIT = 10
 
 const rowId = (key: string, release: number) => `${key}\u0000${release}`
@@ -44,7 +43,6 @@ function selectionLabel(result: ResultItem, release: Release): string {
 
 export function parseSelections(raw: unknown): { selections: SelectionInput[]; error?: [number, string] } {
   if (!Array.isArray(raw) || !raw.length) return { selections: [], error: [400, 'No download selections provided'] }
-  if (raw.length > MAX_SELECTIONS) return { selections: [], error: [400, `Reviews are limited to ${MAX_SELECTIONS} selections per request`] }
   const selections: SelectionInput[] = []
   for (const item of raw) {
     const selection = item && typeof item === 'object' ? item as Record<string, unknown> : {}
@@ -73,6 +71,7 @@ const BLOCK_COPY: Record<string, string> = {
   incomplete: 'Usenet is unavailable: some source torrents have no matching NZB.',
   lookup_failed: 'Could not check Usenet availability for this release.',
   conflict: 'The same source was requested through both protocols; choose one acquisition.',
+  acceptance_unknown: 'Submission status could not be confirmed. Check the original download client before retrying.',
 }
 
 interface UnitDraft extends PlannedUnit {
@@ -141,25 +140,17 @@ export async function buildDownloadPlan(
     }
     rows.push({
       key: selection.key, releaseIndex: selection.release, identity: releaseIdentity(release), protocol, result, release,
-      category: downloadCategory(config, result.arr), label: selectionLabel(result, release),
+      category: downloadCategory(config, result.arr, protocol), label: selectionLabel(result, release),
     })
   }
 
-  // Usenet lookups run concurrently per row; provider-level concurrency and caching live in the resolver.
-  const usenetPlans = new Map<string, Promise<UsenetRowPlan>>()
-  for (const row of rows) {
-    if (row.protocol !== 'usenet') continue
-    usenetPlans.set(rowId(row.key, row.releaseIndex), resolveUsenetRelease(config, row.release, options.refresh).then(({ hashes, aggregate }) => {
-      const available = hashes.filter(hash => hash.state === 'available')
-      if (aggregate === 'available') return { aggregate, available }
-      const failedHash = hashes.find(hash => hash.state === 'lookup_failed')
-      const code = aggregate === 'not_configured' ? 'usenet_unconfigured' : aggregate
-      return {
-        aggregate,
-        available: [],
-        reason: { code: code in BLOCK_COPY ? code : 'lookup_failed', detail: failedHash ? `${failedHash.error || 'provider unavailable'}${failedHash.providers_failed?.length ? ` (${failedHash.providers_failed.join(', ')} unresolved)` : ''}` : undefined },
-      }
-    }))
+  const selectedHashes = new Set(rows.flatMap(row => torrentHashes(row.release)))
+  const records = downloadRecords().filter(record => selectedHashes.has(record.source_hash))
+  const unknownHashes = new Set(records.filter(record => record.state === 'acceptance_unknown' || !record.native_id).map(record => record.source_hash))
+  const unknownRows = new Set<string>()
+  for (const row of rows) if (torrentHashes(row.release).some(hash => unknownHashes.has(hash))) {
+    unknownRows.add(rowId(row.key, row.releaseIndex))
+    blocked.push({ key: row.key, release: row.releaseIndex, code: 'acceptance_unknown', reason: BLOCK_COPY.acceptance_unknown })
   }
 
   const units = new Map<string, UnitDraft>()
@@ -172,7 +163,7 @@ export async function buildDownloadPlan(
   }
 
   // Torrent units reuse the shared per-hash deduplication and file-scope union rules.
-  const torrentRows = rows.filter(row => row.protocol === 'torrent')
+  const torrentRows = rows.filter(row => row.protocol === 'torrent' && !unknownRows.has(rowId(row.key, row.releaseIndex)))
   const torrentBlocked = new Set<string>()
   const plannedByRow = new Map<string, PlannedTorrent[]>()
   if (torrentRows.length) {
@@ -187,9 +178,66 @@ export async function buildDownloadPlan(
   }
 
   let qbExisting = new Set<string>()
-  if (torrentRows.length) {
-    try { qbExisting = new Set((await qbGetTorrents(config)).map(torrent => String(torrent.hash || '').toLowerCase())) }
-    catch (error) { log('WARNING', `qBittorrent existing-torrent check failed during preflight: ${errorMessage(error)}`) }
+  let qbReadComplete = false
+  if (torrentRows.length || records.some(record => record.protocol === 'torrent' && rows.some(row => torrentHashes(row.release).includes(record.source_hash)))) {
+    try {
+      qbExisting = new Set((await qbGetTorrents(config, undefined, true)).map(torrent => String(torrent.hash || '').toLowerCase()))
+      qbReadComplete = true
+    } catch (error) { log('WARNING', `qBittorrent existing-torrent check failed during preflight: ${errorMessage(error)}`) }
+  }
+  const sabIds = records.filter(record => record.protocol === 'usenet' && record.state === 'accepted' && record.endpoint === sabEndpoint(config).endpointId && record.native_id).map(record => record.native_id)
+  const { apiUrl, endpointId } = sabEndpoint(config)
+  const sabSettings = { apiUrl, apiKey: config.sabnzbd_key }
+  const [sabQueue, sabHistory] = sabIds.length
+    ? await Promise.all([sabQueueJobs(sabSettings, sabIds, globalThis.fetch), sabHistoryJobs(sabSettings, sabIds, globalThis.fetch)])
+    : [{ jobs: [], read_complete: true }, { jobs: [], read_complete: true }]
+  const sabExisting = new Set([...sabQueue.jobs, ...sabHistory.jobs].map(job => job.nzo_id))
+  const ownership = (hash: string): { record?: OwnedDownloadRecord; unresolved?: boolean } => {
+    const owned = records.filter(record => record.source_hash === hash)
+    if (owned.some(record => record.state === 'acceptance_unknown' || !record.native_id)) return { unresolved: true }
+    const unbound = owned.find(record => !record.endpoint || record.endpoint !== (record.protocol === 'torrent' ? qbEndpointId(config) : endpointId))
+    if (unbound) return { record: unbound }
+    for (const record of owned) {
+      const complete = record.protocol === 'torrent' ? qbReadComplete : sabQueue.read_complete && sabHistory.read_complete
+      if (!complete) return { unresolved: true }
+    }
+    return { record: owned.find(record => record.protocol === 'torrent' ? qbExisting.has(record.native_id) : sabExisting.has(record.native_id)) }
+  }
+  const blockUnknown = (row: ResolvedRow) => {
+    if (!blocked.some(entry => entry.key === row.key && entry.release === row.releaseIndex)) {
+      blocked.push({ key: row.key, release: row.releaseIndex, code: 'acceptance_unknown', reason: BLOCK_COPY.acceptance_unknown })
+    }
+  }
+  // Usenet lookups run concurrently per row; provider-level concurrency and caching live in the resolver.
+  const usenetPlans = new Map<string, Promise<UsenetRowPlan>>()
+  for (const row of rows) {
+    if (row.protocol !== 'usenet' || unknownRows.has(rowId(row.key, row.releaseIndex))) continue
+    const requiredHashes = torrentHashes(row.release)
+    if (!requiredHashes.length) {
+      usenetPlans.set(rowId(row.key, row.releaseIndex), Promise.resolve({ aggregate: 'no_match', available: [], reason: { code: 'no_match' } }))
+      continue
+    }
+    if (requiredHashes.some(hash => ownership(hash).unresolved)) {
+      unknownRows.add(rowId(row.key, row.releaseIndex))
+      blockUnknown(row)
+      continue
+    }
+    const missingHashes = requiredHashes.filter(hash => !ownership(hash).record)
+    if (!missingHashes.length) {
+      usenetPlans.set(rowId(row.key, row.releaseIndex), Promise.resolve({ aggregate: 'available', available: [] }))
+      continue
+    }
+    usenetPlans.set(rowId(row.key, row.releaseIndex), resolveUsenetRelease(config, { ...row.release, info_hashes: missingHashes }, options.refresh).then(({ hashes, aggregate }) => {
+      const available = hashes.filter(hash => hash.state === 'available')
+      if (aggregate === 'available') return { aggregate, available }
+      const failedHash = hashes.find(hash => hash.state === 'lookup_failed')
+      const code = aggregate === 'not_configured' ? 'usenet_unconfigured' : aggregate
+      return {
+        aggregate,
+        available: [],
+        reason: { code: code in BLOCK_COPY ? code : 'lookup_failed', detail: failedHash ? `${failedHash.error || 'provider unavailable'}${failedHash.providers_failed?.length ? ` (${failedHash.providers_failed.join(', ')} unresolved)` : ''}` : undefined },
+      }
+    }))
   }
   const estimate = torrentRows.length
     ? estimateDownloads(torrentRows.filter(row => torrentHashes(row.release).length).map(row => ({ release: row.release, category: row.category })), [...qbExisting])
@@ -202,14 +250,15 @@ export async function buildDownloadPlan(
     const rowPlan = plannedByRow.get(id) || []
     if (!rowPlan.length) { blocked.push({ key: row.key, release: row.releaseIndex, code: 'no_torrent', reason: BLOCK_COPY.no_torrent }); continue }
     for (const entry of rowPlan) {
-      const owned = findAcquisitionRecord(entry.hash, 'torrent')
+      const { record: owned, unresolved } = ownership(entry.hash)
+      if (unresolved) { blockUnknown(row); continue }
       const clientHas = qbExisting.has(entry.hash)
       const estimateEntry = bytesByHash.get(entry.hash)
       const unit: UnitDraft = {
         unit_id: `torrent:${entry.hash}:${entry.category}`, protocol: 'torrent', client: 'qbittorrent',
         source_hash: entry.hash, category: entry.category,
         status: owned || clientHas ? 'existing' : 'new',
-        ...(owned ? { existing_record_id: owned.id, existing_native_id: owned.native_id, existing_unbound: owned.endpoint !== qbEndpointId(config) } : {}),
+        ...(owned ? { existing_record_id: owned.id, existing_native_id: owned.native_id, existing_unbound: owned.protocol !== 'torrent' || owned.endpoint !== qbEndpointId(config) } : {}),
         whole_source: !entry.selectedFiles, scope_expanded: false,
         size_bytes: estimateEntry?.existing ? 0 : estimateEntry?.bytes ?? null,
         approximate: estimateEntry?.approximate ?? true,
@@ -222,13 +271,25 @@ export async function buildDownloadPlan(
   }
 
   for (const row of rows) {
-    if (row.protocol !== 'usenet') continue
+    if (row.protocol !== 'usenet' || unknownRows.has(rowId(row.key, row.releaseIndex))) continue
     const plan = await usenetPlans.get(rowId(row.key, row.releaseIndex))!
     if (plan.reason) {
       blocked.push({ key: row.key, release: row.releaseIndex, code: plan.reason.code as PreflightBlocked['code'], reason: plan.reason.detail ? `${BLOCK_COPY[plan.reason.code]} ${plan.reason.detail}` : BLOCK_COPY[plan.reason.code] })
       continue
     }
     const requested = (row.release.selected_files || []).map(normalizeTorrentPath)
+    for (const hash of torrentHashes(row.release)) {
+      const existing = ownership(hash).record
+      if (!existing) continue
+      addUnit({
+        unit_id: `usenet:${hash}:${row.category}`, protocol: 'usenet', client: 'sabnzbd', source_hash: hash, category: row.category,
+        status: 'existing', existing_record_id: existing.id, existing_native_id: existing.native_id,
+        existing_unbound: existing.protocol !== 'usenet' || existing.endpoint !== endpointId,
+        whole_source: existing.protocol === 'usenet' || !existing.scope?.length, scope_expanded: false,
+        size_bytes: 0, approximate: false, scope_unknown: false,
+        labels: [row.label], selections: [{ key: row.key, release: row.releaseIndex }], requestedPaths: requested, requiresAck: false,
+      })
+    }
     for (const availability of plan.available) {
       const hash = availability.hash
       const filesKnown = availability.files_known === true
@@ -236,12 +297,13 @@ export async function buildDownloadPlan(
       const extraFiles = filesKnown ? manifestNames.filter(name => !requested.includes(normalizeTorrentPath(name))) : []
       const scopeExpanded = requested.length > 0 && (filesKnown ? extraFiles.length > 0 : true)
       const scopeUnknown = requested.length > 0 && !filesKnown
-      const existing = findAcquisitionRecord(hash, 'usenet')
+      const { record: existing, unresolved } = ownership(hash)
+      if (unresolved) { blockUnknown(row); continue }
       const unit: UnitDraft = {
         unit_id: `usenet:${hash}:${row.category}`, protocol: 'usenet', client: 'sabnzbd',
         source_hash: hash, category: row.category,
         status: existing ? 'existing' : 'new',
-        ...(existing ? { existing_record_id: existing.id, existing_native_id: existing.native_id, existing_unbound: existing.endpoint !== sabEndpoint(config).endpointId } : {}),
+        ...(existing ? { existing_record_id: existing.id, existing_native_id: existing.native_id, existing_unbound: existing.protocol !== 'usenet' || existing.endpoint !== endpointId } : {}),
         whole_source: true, scope_expanded: scopeExpanded,
         size_bytes: availability.total_bytes ?? null,
         // Provider totals are encoded payload sizes; PAR2 and unpacking need more, so treat as a lower bound.
@@ -273,6 +335,11 @@ export async function buildDownloadPlan(
         }
       }
     }
+  }
+  const blockedRows = new Set(blocked.map(selection => rowId(selection.key, selection.release)))
+  for (const [id, unit] of units) {
+    unit.selections = unit.selections.filter(selection => !blockedRows.has(rowId(selection.key, selection.release)))
+    if (!unit.selections.length) units.delete(id)
   }
 
   const newUnits = [...units.values()].filter(unit => unit.status === 'new')
@@ -324,7 +391,7 @@ async function collectDiskChecks(config: Config, newUnits: UnitDraft[]): Promise
         check.categories.push(location.category)
         const scoped = torrentUnits.filter(unit => unit.category === location.category)
         check.required_bytes += scoped.reduce((sum, unit) => sum + (unit.size_bytes || 0), 0)
-        check.unknown_units += scoped.filter(unit => unit.size_bytes === null).length
+        check.unknown_units += scoped.filter(unit => unit.size_bytes === null || unit.approximate).length
       }
       grouped.set(key, check)
     }
@@ -337,7 +404,7 @@ async function collectDiskChecks(config: Config, newUnits: UnitDraft[]): Promise
   if (usenetUnits.length) {
     const categories = [...new Set(usenetUnits.map(unit => unit.category))]
     const required = usenetUnits.reduce((sum, unit) => sum + (unit.size_bytes || 0), 0)
-    const unknownUnits = usenetUnits.filter(unit => unit.size_bytes === null).length
+    const unknownUnits = usenetUnits.filter(unit => unit.size_bytes === null || unit.approximate).length
     const { apiUrl, endpointId } = sabEndpoint(config)
     let incomplete: number | null = null
     let complete: number | null = null
@@ -351,7 +418,6 @@ async function collectDiskChecks(config: Config, newUnits: UnitDraft[]): Promise
     } catch (error) { reason = `Could not read SABnzbd storage information: ${errorMessage(error).slice(0, 120)}` }
     const folders: [string, number | null][] = [['Incomplete folder', incomplete], ['Completed folder', complete]]
     for (const [label, free] of folders) {
-      if (free === null && !reason) continue
       checks.push({
         client: 'sabnzbd', path: null, label: `${label} on ${endpointId || 'SABnzbd'}`, categories,
         required_bytes: required, unknown_units: unknownUnits, free_bytes: free,

@@ -7,6 +7,7 @@ import { log } from './logging.js'
 import { api } from './http.js'
 import { DEFAULT_DATETIME_FORMAT, isValidDateTimeFormat } from '../shared/datetime-format.js'
 import type { Config, JsonObject, PublicConfig } from './types.js'
+import type { DownloadProtocol } from '../shared/download-contracts.js'
 
 export const DEFAULT_CONFIG: Config = {
   sonarr_url: '',
@@ -231,8 +232,10 @@ export function migrateConfig(): void {
   }
 }
 
-export function downloadCategory(config: Config, source: string): string {
-  return (source === 'Sonarr' ? config.sonarr_category : source === 'Radarr' ? config.radarr_category : '').trim()
+export function downloadCategory(config: Config, source: string, protocol: DownloadProtocol): string {
+  if (source === 'Sonarr') return (protocol === 'usenet' ? config.sabnzbd_sonarr_category : config.sonarr_category).trim()
+  if (source === 'Radarr') return (protocol === 'usenet' ? config.sabnzbd_radarr_category : config.radarr_category).trim()
+  return ''
 }
 
 /** The same explicit patch rules serve both saving and connection previews. */
