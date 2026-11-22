@@ -150,6 +150,10 @@ Temporary SeaDex connection problems are retried automatically. If a scan still 
 
 **Scan history** lists your scans under Today, Yesterday, and earlier dates. Only the latest scan with changes starts open; each scan shows its trigger, duration, and any failed, partial, or cancelled outcome, with the actionable changes summarized first. Long runs of titles that were only added or removed fold into one group. Filter by library app, by scans with changes or failed scans, or search a title, release group, or season such as **S02**. Older scans and long change lists load in steps.
 
+## Server log
+
+**Server log** shows the latest 500 backend lines and refreshes every 3 seconds. Filter by severity, with counts for what the latest lines hold, or search any part of a line, including stack traces. New output stays in view while you are at the bottom; scrolling up pauses following and shows how many entries arrived since, and **Follow latest** resumes. **Copy** and **Download** hand the visible entries to a bug report; the download keeps each line exactly as the server wrote it.
+
 ## Reviewing release changes
 
 The library's **Unseen changes** filter shows anime with release changes you have not reviewed, including new best releases, alternatives, updated torrents or metadata, and removals. Its count covers matching titles across all pages, with the latest changes first. Cards label the affected seasons; open **Details → What changed** for the before/after summary and detection time. Use **Mark reviewed** for one anime, or **Mark all reviewed** for all titles matching the current library filters. Opening the app or completing another unchanged scan does not clear these changes.
