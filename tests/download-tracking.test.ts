@@ -369,9 +369,13 @@ test('failed, incomplete, unbound, and unknown-acceptance reads never permit led
     setDownloadPhase(torrent.id, 'missing')
     const unavailable = await collectDownloadProgress(config)
     assert.equal(unavailable.downloads[torrent.id].phase, 'missing', 'A last-known phase is not fresh evidence of absence')
-    for (const record of [torrent, usenet, unknownTorrent, unknownUsenet, unbound]) {
+    for (const record of [torrent, usenet, unbound]) {
       assert.equal(unavailable.downloads[record.id].capabilities.remove, false)
       await assert.rejects(controlRecord(config, record.id, 'remove', true))
+    }
+    for (const record of [unknownTorrent, unknownUsenet]) {
+      assert.deepEqual(unavailable.downloads[record.id].capabilities, { pause: false, resume: false, remove: true, remove_files: false }, 'An unconfirmed send can only be untracked')
+      await assert.rejects(controlRecord(config, record.id, 'pause', false))
     }
     state.qbReadError = false
     state.sabHistoryError = false
@@ -389,15 +393,19 @@ test('failed, incomplete, unbound, and unknown-acceptance reads never permit led
     const complete = await collectDownloadProgress(config)
     assert.equal(complete.downloads[unknownTorrent.id].phase, 'acceptance_unknown')
     assert.equal(complete.downloads[unknownUsenet.id].phase, 'acceptance_unknown')
-    assert.equal(complete.downloads[unknownTorrent.id].capabilities.remove, false)
-    assert.equal(complete.downloads[unknownUsenet.id].capabilities.remove, false)
+    assert.equal(complete.downloads[unknownTorrent.id].capabilities.remove_files, false)
+    assert.equal(complete.downloads[unknownUsenet.id].capabilities.remove_files, false)
     const cancelled = await cancelRecords(config, [unknownTorrent.id, unknownUsenet.id, unbound.id], true)
-    assert.equal(cancelled.removed.length, 0)
+    assert.equal(cancelled.removed.length, 0, 'Bulk cancellation never silently untracks unconfirmed sends')
     assert.equal(cancelled.failures.length, 3)
     assert.deepEqual(state.controls, [])
     assert.equal(findAcquisitionRecord(h3)?.state, 'acceptance_unknown')
     assert.equal(findAcquisitionRecord(h4)?.state, 'acceptance_unknown')
     assert.equal(downloadRecords().length, 5)
+    await controlRecord(config, unknownUsenet.id, 'remove', true)
+    assert.deepEqual(state.controls, [], 'Untracking an unconfirmed send never touches the client, even when file deletion was requested')
+    assert.equal(downloadRecords().length, 4)
+    assert.equal(downloadRecords().some(record => record.id === unknownUsenet.id), false)
   } finally { restore() }
 })
 

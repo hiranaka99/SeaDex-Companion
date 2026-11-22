@@ -8,6 +8,8 @@ import {
   sabDeleteHistoryJob,
   sabDeleteQueueJob,
   sabEndpointId,
+  sabMissingCategories,
+  sabSubmissionName,
   sabHistoryJobs,
   sabPauseJob,
   sabQueueJobs,
@@ -466,4 +468,17 @@ describe('sabEndpointId', () => {
       }, `input ${JSON.stringify(bad)}`)
     }
   })
+})
+
+test('job names are sent without a .nzb suffix and fall back to the source hash', () => {
+  assert.equal(sabSubmissionName('Show S01 [Group].nzb', 'f'.repeat(40)), 'Show S01 [Group]')
+  assert.equal(sabSubmissionName('Show S01.mkv', 'f'.repeat(40)), 'Show S01.mkv')
+  assert.equal(sabSubmissionName(undefined, 'abcdef0123456789'.repeat(3)), 'abcdef012345')
+})
+
+test('category checks report only configured categories SABnzbd lacks and never guess when the list is unreadable', async () => {
+  const cats = (async () => Response.json({ categories: ['*', 'TV', 'sonarr-anime'] })) as unknown as typeof fetch
+  assert.deepEqual(await sabMissingCategories(settings, ['sonarr-anime', 'tv', 'radarr-anime', ''], cats), ['radarr-anime'])
+  const broken = (async () => Response.json({ error: 'API Key Incorrect' })) as unknown as typeof fetch
+  assert.equal(await sabMissingCategories(settings, ['sonarr-anime'], broken), null)
 })

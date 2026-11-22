@@ -6,7 +6,7 @@ import { buildDownloadPlan, type SubmissionUnit } from './download-preflight.js'
 import { downloadJobs, jobResult } from './download-jobs.js'
 import { addDownloadRecord, markDownloadRemoved, setDownloadNative } from './download-store.js'
 import { qbAddTorrent, QbittorrentAmbiguousError } from './qbittorrent.js'
-import { sabAddNzb, SabnzbdAmbiguousError } from './sabnzbd.js'
+import { sabAddNzb, SabnzbdAmbiguousError, sabSubmissionName } from './sabnzbd.js'
 import { qbEndpointId, sabEndpoint } from './client-identity.js'
 import { fetchUsenetNzb } from './usenet.js'
 import { errorMessage, log } from './logging.js'
@@ -52,6 +52,8 @@ export async function acceptDownloadPlan(
   if (plan.config_generation !== currentGeneration()) {
     throw new PlanRejected(409, 'Settings changed after this review. Re-run the review before submitting.')
   }
+  // Plans pin only the selections the review could resolve; a fully blocked review has nothing to send.
+  if (!plan.selections.length) throw new PlanRejected(409, 'Nothing in this review can be sent. Re-run the review after resolving the blocked releases.')
 
   const built = await buildDownloadPlan(config, plan.selections, { results })
   if ('error' in built) throw new PlanRejected(built.error[0], built.error[1])
@@ -160,7 +162,7 @@ async function submitUnit(config: Config, jobId: string, unit: SubmissionUnit, r
     if (!apiUrl || !config.sabnzbd_key) throw new Error('SABnzbd is no longer configured.')
     if (!unit.provider || !unit.entryId) throw new Error('The Usenet source reference is no longer available. Re-run the review.')
     const nzb = await fetchUsenetNzb(config, unit.provider, unit.entryId, unit.source_hash)
-    const nzoIds = await sabAddNzb({ apiUrl, apiKey: config.sabnzbd_key }, nzb, unit.nzb_name || `${unit.source_hash.slice(0, 12)}.nzb`, unit.category, globalThis.fetch)
+    const nzoIds = await sabAddNzb({ apiUrl, apiKey: config.sabnzbd_key }, nzb, sabSubmissionName(unit.nzb_name, unit.source_hash), unit.category, globalThis.fetch)
     accepted = true
     setDownloadNative(record.id, nzoIds)
     downloadJobs.added(jobId, unit.unit_id, { record_id: record.id, native_id: nzoIds[0] })

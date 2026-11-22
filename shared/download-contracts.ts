@@ -69,7 +69,7 @@ export interface PreflightBlocked {
   key: string
   release: number
   code: 'protocol_required' | 'mode_conflict' | 'no_torrent' | 'no_match' | 'processing' | 'incomplete'
-    | 'lookup_failed' | 'usenet_unconfigured' | 'not_upgradable' | 'owned' | 'excluded' | 'invalid' | 'conflict' | 'acceptance_unknown'
+    | 'lookup_failed' | 'usenet_unconfigured' | 'not_upgradable' | 'owned' | 'excluded' | 'invalid' | 'conflict' | 'acceptance_unknown' | 'client_unreachable' | 'category_missing'
   reason: string
 }
 

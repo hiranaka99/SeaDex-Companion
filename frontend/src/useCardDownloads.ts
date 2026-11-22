@@ -7,7 +7,7 @@ import type { GroupedCard } from './types'
 import type { DownloadEntry } from './components/DownloadsPanel'
 import { toDownloadEntry, clientName } from './components/DownloadsPanel'
 import { seasonLabel } from './utils'
-import type { DownloadPreflight, DownloadProtocol, UsenetAvailabilityResult } from './api'
+import type { DownloadProtocol, UsenetAvailabilityResult } from './api'
 import { availabilityKey, observeUsenetAvailability, type AvailabilitySnapshot } from './usenet-observation'
 
 export interface DetailsDownloadState { transfers: DownloadEntry[] }
@@ -15,36 +15,17 @@ export const IDLE_DOWNLOAD: DetailsDownloadState = { transfers: [] }
 
 type Notify = (message: string, tone: 'success' | 'error' | 'info') => void
 
-interface ActivePlan { preflight: DownloadPreflight | null; selection: api.SelectionInput; label: string; error: string | null }
-
-/** Record controls and a one-shot review for one canonical release intent. */
+/** Record controls and one-click sending for a canonical release intent. */
 export function useCardDownloads(group: GroupedCard, notify: Notify) {
   const snapshot = useSyncExternalStore(subscribeDownloads, getDownloadSnapshot)
   const [busyDownload, setBusyDownload] = useState<string | null>(null)
   const controlling = useRef(false)
-  const [plan, setPlan] = useState<ActivePlan | null>(null)
-  const [planBusy, setPlanBusy] = useState(false)
-  const preparing = useRef<AbortController | null>(null)
-  const submitting = useRef(false)
-  const currentGroup = useRef(group)
-  currentGroup.current = group
-  const groupSignature = JSON.stringify(group.seasons.map(season => [season.key, season.releases.map(releaseIdentity)]))
+  const sending = useRef(false)
+  /** The release whose one-click send is running, so its button can show progress and others stay locked. */
+  const [sendingRelease, setSendingRelease] = useState<{ key: string; release: number } | null>(null)
+  const aborter = useRef<AbortController | null>(null)
 
-  useEffect(() => () => { preparing.current?.abort() }, [])
-  useEffect(() => {
-    if (!plan || plan.selection.identity === releaseIdentity(group.seasons.find(season => season.key === plan.selection.key)?.releases[plan.selection.release] || {})) return
-    preparing.current?.abort()
-    if (!submitting.current) { setPlanBusy(false); setPlan(null) }
-  }, [groupSignature])
-
-  useEffect(() => {
-    if (!plan?.preflight) return
-    const id = plan.preflight.plan_id
-    const timer = window.setTimeout(() => {
-      if (!submitting.current) setPlan(current => current?.preflight?.plan_id === id ? { ...current, preflight: null, error: 'This review has expired. Refresh the review before sending.' } : current)
-    }, plan.preflight.expires_in * 1000)
-    return () => window.clearTimeout(timer)
-  }, [plan?.preflight])
+  useEffect(() => () => { aborter.current?.abort() }, [])
 
   const dlBySeason: Record<string, Record<number, DetailsDownloadState>> = {}
   const activeDownloads: DownloadEntry[] = []
@@ -59,74 +40,41 @@ export function useCardDownloads(group: GroupedCard, notify: Notify) {
     if (progress.phase !== 'complete' || !associations.length) activeDownloads.push(entry)
   }
 
-  const preparePlan = async (intent: ActivePlan) => {
-    preparing.current?.abort()
-    const controller = new AbortController()
-    preparing.current = controller
-    setPlan({ ...intent, preflight: null, error: null })
-    setPlanBusy(true)
-    try {
-      const preflight = await api.preflightDownload([intent.selection], true, controller.signal)
-      if (controller.signal.aborted) return
-      const release = currentGroup.current.seasons.find(season => season.key === intent.selection.key)?.releases[intent.selection.release]
-      if (!release || releaseIdentity(release) !== intent.selection.identity) return
-      const blocked = preflight.blocked.find(row => row.key === intent.selection.key && row.release === intent.selection.release)
-      if (blocked) throw new Error(blocked.reason)
-      if (!preflight.units.length) throw new Error('This release is already queued in the download client')
-      setPlan({ ...intent, preflight, error: null })
-    } catch (error) {
-      if (!controller.signal.aborted) setPlan({ ...intent, preflight: null, error: error instanceof Error ? error.message : String(error) })
-    } finally {
-      if (preparing.current === controller) { preparing.current = null; setPlanBusy(false) }
-    }
-  }
-
   const handleDownload = async (key: string, index: number, protocol: DownloadProtocol) => {
-    if (planBusy) return
+    if (sending.current) return
     const season = group.seasons.find(item => item.key === key)
     const release: Release | undefined = season?.releases[index]
     if (!season || !release) return
-    await preparePlan({ selection: { key, release: index, identity: releaseIdentity(release), protocol }, preflight: null, error: null, label: `${seasonLabel(season)} · ${release.releaseGroup || season.title}` })
-  }
-
-  const confirmPlan = async (acknowledge: { whole_source?: boolean; disk_space?: boolean }) => {
-    if (!plan?.preflight || planBusy || submitting.current) return
-    const intent = plan
-    const planId = plan.preflight.plan_id
-    submitting.current = true
-    setPlanBusy(true)
-    setPlan({ ...intent, preflight: null, error: null })
+    const identity = releaseIdentity(release)
+    const label = `${seasonLabel(season)} · ${release.releaseGroup || season.title}`
+    const controller = new AbortController()
+    aborter.current = controller
+    sending.current = true
+    setSendingRelease({ key, release: index })
     try {
-      const receipt = await api.submitDownload(planId, acknowledge)
+      const preflight = await api.preflightDownload([{ key, release: index, identity, protocol }], true, controller.signal)
+      if (controller.signal.aborted) return
+      const blocked = preflight.blocked.find(row => row.key === key && row.release === index)
+      if (blocked) throw new Error(blocked.reason)
+      if (!preflight.units.length) throw new Error('This release is already queued in the download client')
+      const receipt = await api.submitDownload(preflight.plan_id, { whole_source: true, disk_space: true })
       const where = clientName(receipt.client)
       if (receipt.acceptance_unknown || receipt.failures?.some(failure => failure.code === 'acceptance_unknown')) {
         notify(`${where} was asked to start this download but did not confirm it. Check ${where} before retrying.`, 'error')
       } else if (!receipt.ok) throw new Error(receipt.error || 'The download client rejected the submission')
-      else notify(`Sent ${intent.label} to ${where}`, 'success')
-      setPlan(null)
+      else notify(`Sent ${label} to ${where}`, 'success')
     } catch (error) {
+      if (controller.signal.aborted) return
       if (error instanceof api.SubmissionError && (error.detail?.acceptance_unknown || Array.isArray(error.detail?.failures) && error.detail.failures.some(failure => failure?.code === 'acceptance_unknown'))) {
-        const where = clientName(error.detail?.client === 'sabnzbd' || error.detail?.client === 'qbittorrent' ? error.detail.client : intent.selection.protocol === 'usenet' ? 'sabnzbd' : 'qbittorrent')
+        const where = clientName(error.detail?.client === 'sabnzbd' || error.detail?.client === 'qbittorrent' ? error.detail.client : protocol === 'usenet' ? 'sabnzbd' : 'qbittorrent')
         notify(`${error.message} Check ${where} before retrying.`, 'error')
-        setPlan(null)
-      } else {
-        setPlan({ ...intent, preflight: null, error: `${error instanceof Error ? error.message : String(error)} Refresh the review before sending again.` })
-      }
+      } else notify(`Could not send ${label}: ${error instanceof Error ? error.message : String(error)}`, 'error')
     } finally {
-      submitting.current = false
-      setPlanBusy(false)
+      sending.current = false
+      setSendingRelease(null)
       await reloadDownloads()
     }
   }
-
-  const closePlan = () => {
-    if (submitting.current) return
-    preparing.current?.abort()
-    preparing.current = null
-    setPlanBusy(false)
-    setPlan(null)
-  }
-  const refreshPlan = async () => { if (plan && !planBusy) await preparePlan(plan) }
 
   const handleDownloadAction = async (entry: DownloadEntry, action: api.DownloadAction, deleteFiles = false): Promise<boolean> => {
     if (controlling.current) return false
@@ -142,8 +90,7 @@ export function useCardDownloads(group: GroupedCard, notify: Notify) {
     finally { controlling.current = false; setBusyDownload(null) }
   }
 
-  const singleFlow = { plan, busy: planBusy, submitting: submitting.current, confirm: confirmPlan, refresh: refreshPlan, close: closePlan }
-  return { dlBySeason, activeDownloads, busyDownload, handleDownload, handleDownloadAction, singleFlow }
+  return { dlBySeason, activeDownloads, busyDownload, sendingRelease, handleDownload, handleDownloadAction }
 }
 
 /** Last-known availability stays visible while an open season observes refresh work. */

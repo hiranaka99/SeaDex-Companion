@@ -100,7 +100,7 @@ export function DownloadActions({ entry, busy, onPause, onResume, onRemove }: Do
   return <>
     {entry.capabilities.pause && <button type="button" className={ACTION_BUTTON} title={`Pause in ${clientName(entry.client)}`} aria-label={`Pause download · ${label}`} disabled={busyRow} onClick={onPause}><Icon name="pause" size={14}/></button>}
     {entry.capabilities.resume && <button type="button" className={ACTION_BUTTON} title={`Resume in ${clientName(entry.client)}`} aria-label={`Resume download · ${label}`} disabled={busyRow} onClick={onResume}><Icon name="play" size={14}/></button>}
-    {entry.capabilities.remove && <button type="button" className={REMOVE_BUTTON} title={`Remove from ${clientName(entry.client)}`} aria-label={`Remove download · ${label}`} disabled={busyRow} onClick={onRemove}><Icon name="trash" size={14}/></button>}
+    {entry.capabilities.remove && <button type="button" className={REMOVE_BUTTON} title={entry.phase === 'acceptance_unknown' ? 'Stop tracking this unconfirmed download' : `Remove from ${clientName(entry.client)}`} aria-label={`${entry.phase === 'acceptance_unknown' ? 'Stop tracking' : 'Remove download'} · ${label}`} disabled={busyRow} onClick={onRemove}><Icon name="trash" size={14}/></button>}
   </>
 }
 
@@ -109,7 +109,7 @@ function EntryRow({ entry, busy, onPause, onResume, onRemove }: { entry: Downloa
   const remaining = Math.max(0, entry.total_size - entry.downloaded)
   const eta = entry.phase === 'downloading' ? formatEta(remaining, entry.speed) : ''
   const speed = entry.phase === 'downloading' && entry.speed > 0 ? formatBytes(entry.speed) + '/s' : ''
-  const hint = entry.phase === 'acceptance_unknown' ? `${clientName(entry.client)} was asked to start this download but did not confirm it. Check ${clientName(entry.client)} before retrying.` : entry.error || (entry.unbound ? 'This download belongs to a different client URL. Reconfigure that client or remove the entry.' : PHASE_HINT[entry.phase])
+  const hint = entry.phase === 'acceptance_unknown' ? `${clientName(entry.client)} was asked to start this download but did not confirm it. It is picked up automatically if it appears in ${clientName(entry.client)}. If it is not there, stop tracking it to send it again.` : entry.error || (entry.unbound ? 'This download belongs to a different client URL. Reconfigure that client or remove the entry.' : PHASE_HINT[entry.phase])
   const statusText = `${clientName(entry.client)} · ${phaseLabel(entry.phase)}${showsProgress(entry.phase) ? ` · ${pct.toFixed(1)}%` : ''}`
   return (
     <li className="flex shrink-0 flex-col gap-2">

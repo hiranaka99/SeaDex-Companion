@@ -9,7 +9,7 @@ import Modal from './Modal'
 import { bulkDialog } from './bulk-dialog-styles'
 import { releaseIdentity } from '../../../shared/releases'
 import { jobResult, type SubmissionRow, type DownloadJobStatus, type DownloadMode, type DownloadProtocol, type DownloadPreflight } from '../api'
-import { DiskLine } from './PlanReview'
+import { DiskLine, spaceAckDetail } from './PlanReview'
 import { availabilityKey, observeUsenetAvailability, type AvailabilitySnapshot } from '../usenet-observation'
 import { displayDateTime } from '../datetime'
 
@@ -403,9 +403,9 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
               {checkError && <p className="m-0 text-warn">Check unavailable: {checkError}. Run the review again before starting the batch.</p>}
               {currentPreflight?.disk_space.length ? <ul className="m-0 list-none divide-y divide-line">{currentPreflight.disk_space.map((check, index) => <DiskLine key={`${check.client}-${index}`} check={check}/>)}</ul> : <p className="m-0 text-muted">No disk-space data available from the configured clients.</p>}
               {currentPreflight && !newUnits && <p className="m-0 text-muted">Nothing new to send. Existing acquisitions are kept unchanged.</p>}
-              {currentPreflight?.approximate_bytes && <p className="m-0 text-muted">Usenet source sizes are provider estimates.</p>}
+              {currentPreflight?.approximate_bytes && <p className="m-0 text-muted">Usenet sizes are provider estimates; repair and unpacking need extra room.</p>}
               {needsWhole && <label className="flex min-h-11 cursor-pointer items-start gap-2 rounded-lg border border-warn/40 bg-warn/8 p-3 text-warn"><input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-warn" checked={wholeSource} onChange={event => setWholeSource(event.target.checked)}/><span className="min-w-0"><span className="block font-bold">Download whole Usenet sources</span><span className="mt-0.5 block text-[0.6875rem] text-muted">Usenet sources cannot be split per episode. Files beyond the selected episodes will also be downloaded.</span></span></label>}
-              {needsSpace && <label className="flex min-h-11 cursor-pointer items-start gap-2 rounded-lg border border-warn/40 bg-warn/8 p-3 text-warn"><input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-warn" checked={diskSpace} onChange={event => setDiskSpace(event.target.checked)}/><span className="min-w-0"><span className="block font-bold">Continue without confirmed free space</span><span className="mt-0.5 block text-[0.6875rem] text-muted">The client could not confirm enough space. Some downloads may fail until space is available.</span></span></label>}
+              {needsSpace && <label className="flex min-h-11 cursor-pointer items-start gap-2 rounded-lg border border-warn/40 bg-warn/8 p-3 text-warn"><input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-warn" checked={diskSpace} onChange={event => setDiskSpace(event.target.checked)}/><span className="min-w-0"><span className="block font-bold">Continue without confirmed free space</span><span className="mt-0.5 block text-[0.6875rem] text-muted">{spaceAckDetail(currentPreflight)}</span></span></label>}
             </section>}
           </>}
           {view === 'unavailable' && (

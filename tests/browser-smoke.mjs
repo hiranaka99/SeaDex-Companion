@@ -719,16 +719,12 @@ try {
   await evaluate(`document.querySelector('button[aria-label^="Re-check Usenet sources"]').click()`)
   await wait(`!document.querySelector('.release-download-button').disabled && document.querySelector('.release-download-button').textContent.includes('Download on Usenet')`)
   assert.ok(await evaluate(`(() => { const row = document.querySelectorAll('.release-row')[0]; return row.textContent.includes('Whole Usenet source') && row.textContent.includes('Usenet sources cannot be split') && row.textContent.includes('category: sonarr-anime') && !row.querySelector('details > summary') })()`), 'Usenet warns that the whole unsplittable source lands in the configured category and drops file scoping')
+  const sendsBefore = singleRequests.length
   await evaluate(`document.querySelectorAll('.release-row')[0].querySelector('.release-download-button').click()`)
-  await wait(`document.querySelector('#single-plan-title') && [...document.querySelectorAll('dialog[open]')].at(-1)?.textContent.includes('To send')`)
-  assert.ok(await evaluate(`(() => { const dialog = [...document.querySelectorAll('dialog[open]')].find(row => row.textContent.includes('Send to download client')); return dialog.textContent.includes('Whole Usenet source') && dialog.textContent.includes('includes 4 extra files') && dialog.textContent.includes('SABnzbd · sonarr-anime') })()`), 'The single review names the whole Usenet source, its extra files, and the target category')
-  assert.ok(await evaluate(`Boolean([...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Send now')?.disabled)`), 'A whole Usenet source cannot be sent before acknowledgement')
-  await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Download whole Usenet sources')).querySelector('input').click()`)
-  assert.ok(await evaluate(`Boolean([...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Send now')?.disabled)`), 'Approximate Usenet space still needs acknowledgement after accepting the whole source')
-  await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Continue without confirmed free space')).querySelector('input').click()`)
-  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Send now')?.disabled`), 'Both acknowledgements unlock the Usenet send')
-  await evaluate(`(() => { const dialog = [...document.querySelectorAll('dialog[open]')].find(row => row.textContent.includes('Send to download client')); [...dialog.querySelectorAll('button')].find(button => button.textContent.trim() === 'Cancel').click(); return true })()`)
-  await wait(`!document.body.textContent.includes('Send to download client')`)
+  await wait(`document.body.textContent.includes('Sent S01 · Example to SABnzbd')`)
+  assert.equal(singleRequests.length, sendsBefore + 1, 'A Usenet release is sent with one click')
+  assert.deepEqual(singleRequests.at(-1).acknowledge, { whole_source: true, disk_space: true }, 'A one-click send carries the acknowledgements the dialog used to collect')
+  assert.equal(await evaluate(`document.querySelector('dialog[open] #single-plan-title')`), null, 'No send review is shown')
   await capture('usenet-release-choice')
   await key('Escape')
   await wait(`!document.querySelector('.anime-details-panel')`)
@@ -1134,60 +1130,42 @@ try {
   ;({ fixtureResults, progressMode } = beforeSharedProgress)
   await evaluate(`location.reload()`)
   await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
-  // Single release: review first, then send. Failures keep the review usable.
+  // Single release: one click sends it. Failures are reported as notifications and can be retried.
   const sendFirstRelease = () => evaluate(`(() => { const button = document.querySelector('dialog[open] button[title^="Send this release"]'); button.focus(); button.click(); return true })()`)
-  const reviewOpen = () => evaluate(`[...document.querySelectorAll('dialog[open]')].some(dialog => dialog.textContent.includes('Send to download client'))`)
-  const sendNowDisabled = () => evaluate(`(() => { const button = [...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Send now'); return !button || button.disabled })()`)
   const dismissToasts = () => evaluate(`document.querySelectorAll('[aria-label="Dismiss notification"]').forEach(button => button.click())`)
   singleSendMode = 'ok'
+  preflightMode = 'enough'
   await evaluate(`document.querySelector('button[aria-label="Details for Example anime"]').click()`)
   await wait(`(() => { const details = document.querySelector('dialog[open] .details-season-disclosure'); if (details && !details.open) details.querySelector('summary').click(); return Boolean(details?.open && details.querySelectorAll('button[title^="Send this release"]').length === 2) })()`)
-  await sendFirstRelease()
-  await wait(`document.querySelector('#single-plan-title') && [...document.querySelectorAll('dialog[open]')].at(-1)?.textContent.includes('To send')`)
-  assert.ok(await evaluate(`(() => { const dialog = [...document.querySelectorAll('dialog[open]')].at(-1); return dialog.textContent.includes('S01 · Example') && dialog.textContent.includes('To send') && dialog.textContent.includes('qBittorrent · sonarr-anime') })()`), 'The review names the release, the unit, its client, and its category')
-  assert.equal(await sendNowDisabled(), false, 'A reviewed release can be sent immediately')
   singleSendMode = 'expired'
-  await click('Send now')
+  await sendFirstRelease()
   await wait(`document.body.textContent.includes('This review has expired or was already used. Re-run the review before submitting.')`)
-  assert.ok(await reviewOpen(), 'An expired review stays open for another attempt')
-  assert.equal(await sendNowDisabled(), true, 'A consumed plan no longer offers Send now')
-  const expiredId = singleRequests.at(-1).plan_id
-  assert.equal(preflightPlans.has(expiredId), false, 'The fixture consumes each plan exactly once')
   const afterExpiredSend = singleRequests.length
   await pause(300)
   assert.equal(singleRequests.length, afterExpiredSend, 'A failed send is never replayed automatically')
+  await dismissToasts()
   singleSendMode = 'transient'
   preflightMode = 'low'
-  await click('Refresh review')
-  await wait(`[...document.querySelectorAll('dialog[open] label')].some(label => label.textContent.includes('Continue without confirmed free space'))`)
-  assert.notEqual([...preflightPlans.keys()].at(-1), expiredId, 'Recovery obtains a fresh preflight plan')
-  assert.equal(await sendNowDisabled(), true)
-  await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Continue without confirmed free space')).querySelector('input').click()`)
-  await click('Send now')
+  await sendFirstRelease()
   await wait(`document.body.textContent.includes('Fixture client temporarily unavailable')`)
-  assert.equal(await sendNowDisabled(), true, 'An ordinary failure also consumes its review')
-  await click('Refresh review')
-  await wait(`[...document.querySelectorAll('dialog[open] label')].some(label => label.textContent.includes('Continue without confirmed free space'))`)
-  assert.ok(await evaluate(`![...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Continue without confirmed free space')).querySelector('input').checked`), 'Fresh preflight resets the prior acknowledgement')
-  await evaluate(`[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Continue without confirmed free space')).querySelector('input').click()`)
+  assert.deepEqual(singleRequests.at(-1).acknowledge, { whole_source: true, disk_space: true }, 'Low space no longer blocks a single send')
+  await dismissToasts()
   singleSendMode = 'unknown'
-  await click('Send now')
+  await sendFirstRelease()
   await wait(`document.body.textContent.includes('Check qBittorrent before retrying')`)
   assert.ok(await evaluate(`document.body.textContent.includes('qBittorrent was asked to start this download but did not confirm it. Check qBittorrent before retrying.')`), 'Structured uncertainty names the actual client')
+  const afterUnknown = singleRequests.length
   await pause(300)
-  assert.equal(await reviewOpen(), false, 'An ambiguous send is not repeated while its state is unknown')
+  assert.equal(singleRequests.length, afterUnknown, 'An ambiguous send is not repeated while its state is unknown')
   await dismissToasts()
   singleSendMode = 'ok'
   preflightMode = 'enough'
   await sendFirstRelease()
-  await wait(`document.querySelector('#single-plan-title') && [...document.querySelectorAll('dialog[open]')].at(-1)?.textContent.includes('To send')`)
-  await click('Send now')
   await wait(`document.body.textContent.includes('Sent S01 · Example to qBittorrent')`)
-  assert.equal(await reviewOpen(), false, 'A confirmed send closes the review')
   await dismissToasts()
   await key('Escape')
   await wait(`document.querySelectorAll('dialog[open]').length === 0`)
-  console.log('PASS single-release review, expired and transient plan recovery, client-specific acceptance uncertainty, and confirmed send')
+  console.log('PASS one-click single-release send, failure and uncertainty reporting')
 
   logFailure = true
   await click('Server log')

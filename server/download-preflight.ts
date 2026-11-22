@@ -11,7 +11,7 @@ import { putPlan, type StoredPlan } from './download-plans.js'
 import { downloadRecords, type OwnedDownloadRecord } from './download-store.js'
 import { resolveUsenetRelease, sabnzbdConfigured, usenetConfigured } from './usenet.js'
 import { qbGetDownloadStorage, qbGetTorrents } from './qbittorrent.js'
-import { sabDiskSpace, sabHistoryJobs, sabQueueJobs } from './sabnzbd.js'
+import { sabDiskSpace, sabHistoryJobs, sabMissingCategories, sabQueueJobs } from './sabnzbd.js'
 import { qbEndpointId, sabEndpoint } from './client-identity.js'
 import { errorMessage, log } from './logging.js'
 import type { UsenetHashAvailability } from '../shared/usenet-contracts.js'
@@ -22,6 +22,22 @@ export interface SubmissionUnit extends UnitDraft { entryId?: string }
 export type PreflightOutcome = { review: DownloadPreflight; plan: StoredPlan; units: SubmissionUnit[] } | { error: [number, string] }
 
 const EXTRA_FILE_LIMIT = 10
+/**
+ * Estimated sizes (Usenet provider totals, torrent estimates) cannot be confirmed exactly.
+ * They count as fitting when free space covers twice the estimate plus a fixed margin,
+ * which absorbs PAR2 repair data and unpacking archives next to their parts.
+ */
+const ESTIMATE_HEADROOM_FACTOR = 2
+const ESTIMATE_HEADROOM_BYTES = 5 * 1024 ** 3
+
+/** Whether `free` bytes fit `required`, given how many units are sized only approximately or not at all. */
+export function spaceVerdict(free: number | null, required: number, approximateUnits: number, unsizedUnits: number): boolean | null {
+  if (free === null) return null
+  if (required > free) return false
+  if (unsizedUnits) return null
+  if (approximateUnits) return free >= required * ESTIMATE_HEADROOM_FACTOR + ESTIMATE_HEADROOM_BYTES ? true : null
+  return true
+}
 
 const rowId = (key: string, release: number) => `${key}\u0000${release}`
 
@@ -71,7 +87,9 @@ const BLOCK_COPY: Record<string, string> = {
   incomplete: 'Usenet is unavailable: some source torrents have no matching NZB.',
   lookup_failed: 'Could not check Usenet availability for this release.',
   conflict: 'The same source was requested through both protocols; choose one acquisition.',
-  acceptance_unknown: 'Submission status could not be confirmed. Check the original download client before retrying.',
+  acceptance_unknown: 'An earlier send of this release was never confirmed by the download client. Check the client; if the download is not there, stop tracking that entry to send it again.',
+  client_unreachable: 'Could not reach the download client to check what was already sent. Try again once it is reachable.',
+  category_missing: 'SABnzbd has no category with this name, so the download would never be imported. Create the category in SABnzbd or change it under Configuration → Downloads.',
 }
 
 interface UnitDraft extends PlannedUnit {
@@ -192,20 +210,30 @@ export async function buildDownloadPlan(
     ? await Promise.all([sabQueueJobs(sabSettings, sabIds, globalThis.fetch), sabHistoryJobs(sabSettings, sabIds, globalThis.fetch)])
     : [{ jobs: [], read_complete: true }, { jobs: [], read_complete: true }]
   const sabExisting = new Set([...sabQueue.jobs, ...sabHistory.jobs].map(job => job.nzo_id))
-  const ownership = (hash: string): { record?: OwnedDownloadRecord; unresolved?: boolean } => {
+  const ownership = (hash: string): { record?: OwnedDownloadRecord; unresolved?: boolean; unreachable?: boolean } => {
     const owned = records.filter(record => record.source_hash === hash)
     if (owned.some(record => record.state === 'acceptance_unknown' || !record.native_id)) return { unresolved: true }
     const unbound = owned.find(record => !record.endpoint || record.endpoint !== (record.protocol === 'torrent' ? qbEndpointId(config) : endpointId))
     if (unbound) return { record: unbound }
     for (const record of owned) {
       const complete = record.protocol === 'torrent' ? qbReadComplete : sabQueue.read_complete && sabHistory.read_complete
-      if (!complete) return { unresolved: true }
+      if (!complete) return { unresolved: true, unreachable: true }
     }
     return { record: owned.find(record => record.protocol === 'torrent' ? qbExisting.has(record.native_id) : sabExisting.has(record.native_id)) }
   }
-  const blockUnknown = (row: ResolvedRow) => {
+  const blockUnknown = (row: ResolvedRow, unreachable = false) => {
     if (!blocked.some(entry => entry.key === row.key && entry.release === row.releaseIndex)) {
-      blocked.push({ key: row.key, release: row.releaseIndex, code: 'acceptance_unknown', reason: BLOCK_COPY.acceptance_unknown })
+      const code = unreachable ? 'client_unreachable' : 'acceptance_unknown'
+      blocked.push({ key: row.key, release: row.releaseIndex, code, reason: BLOCK_COPY[code] })
+    }
+  }
+  // SABnzbd files an NZB with an unknown category under its default one, where Sonarr/Radarr never import it.
+  const usenetRows = rows.filter(row => row.protocol === 'usenet' && !unknownRows.has(rowId(row.key, row.releaseIndex)))
+  if (usenetRows.length && apiUrl && config.sabnzbd_key) {
+    const missing = await sabMissingCategories(sabSettings, usenetRows.map(row => row.category), globalThis.fetch)
+    if (missing?.length) for (const row of usenetRows) if (missing.includes(row.category.trim())) {
+      unknownRows.add(rowId(row.key, row.releaseIndex))
+      blocked.push({ key: row.key, release: row.releaseIndex, code: 'category_missing', reason: `${BLOCK_COPY.category_missing} (category: ${row.category})` })
     }
   }
   // Usenet lookups run concurrently per row; provider-level concurrency and caching live in the resolver.
@@ -217,9 +245,10 @@ export async function buildDownloadPlan(
       usenetPlans.set(rowId(row.key, row.releaseIndex), Promise.resolve({ aggregate: 'no_match', available: [], reason: { code: 'no_match' } }))
       continue
     }
-    if (requiredHashes.some(hash => ownership(hash).unresolved)) {
+    const unresolved = requiredHashes.map(hash => ownership(hash)).filter(owner => owner.unresolved)
+    if (unresolved.length) {
       unknownRows.add(rowId(row.key, row.releaseIndex))
-      blockUnknown(row)
+      blockUnknown(row, unresolved.every(owner => owner.unreachable))
       continue
     }
     const missingHashes = requiredHashes.filter(hash => !ownership(hash).record)
@@ -250,8 +279,8 @@ export async function buildDownloadPlan(
     const rowPlan = plannedByRow.get(id) || []
     if (!rowPlan.length) { blocked.push({ key: row.key, release: row.releaseIndex, code: 'no_torrent', reason: BLOCK_COPY.no_torrent }); continue }
     for (const entry of rowPlan) {
-      const { record: owned, unresolved } = ownership(entry.hash)
-      if (unresolved) { blockUnknown(row); continue }
+      const { record: owned, unresolved, unreachable } = ownership(entry.hash)
+      if (unresolved) { blockUnknown(row, unreachable); continue }
       const clientHas = qbExisting.has(entry.hash)
       const estimateEntry = bytesByHash.get(entry.hash)
       const unit: UnitDraft = {
@@ -297,8 +326,8 @@ export async function buildDownloadPlan(
       const extraFiles = filesKnown ? manifestNames.filter(name => !requested.includes(normalizeTorrentPath(name))) : []
       const scopeExpanded = requested.length > 0 && (filesKnown ? extraFiles.length > 0 : true)
       const scopeUnknown = requested.length > 0 && !filesKnown
-      const { record: existing, unresolved } = ownership(hash)
-      if (unresolved) { blockUnknown(row); continue }
+      const { record: existing, unresolved, unreachable } = ownership(hash)
+      if (unresolved) { blockUnknown(row, unreachable); continue }
       const unit: UnitDraft = {
         unit_id: `usenet:${hash}:${row.category}`, protocol: 'usenet', client: 'sabnzbd',
         source_hash: hash, category: row.category,
@@ -384,6 +413,7 @@ async function collectDiskChecks(config: Config, newUnits: UnitDraft[]): Promise
     const categories = [...new Set(torrentUnits.map(unit => unit.category))]
     const locations = await qbGetDownloadStorage(config, categories)
     const grouped = new Map<string, DiskSpaceCheck>()
+    const unsizedByCheck = new Map<DiskSpaceCheck, number>()
     for (const location of locations) {
       const key = location.path || `unknown:${location.category}`
       const check = grouped.get(key) || { client: 'qbittorrent' as const, path: location.path, categories: [], required_bytes: 0, unknown_units: 0, free_bytes: location.free_bytes, sufficient: null as boolean | null, ...(location.reason ? { reason: location.reason } : {}) }
@@ -392,11 +422,13 @@ async function collectDiskChecks(config: Config, newUnits: UnitDraft[]): Promise
         const scoped = torrentUnits.filter(unit => unit.category === location.category)
         check.required_bytes += scoped.reduce((sum, unit) => sum + (unit.size_bytes || 0), 0)
         check.unknown_units += scoped.filter(unit => unit.size_bytes === null || unit.approximate).length
+        unsizedByCheck.set(check, (unsizedByCheck.get(check) || 0) + scoped.filter(unit => unit.size_bytes === null).length)
       }
       grouped.set(key, check)
     }
     for (const check of grouped.values()) {
-      check.sufficient = check.free_bytes === null ? null : check.required_bytes > check.free_bytes ? false : check.unknown_units ? null : true
+      const unsized = unsizedByCheck.get(check) || 0
+      check.sufficient = spaceVerdict(check.free_bytes, check.required_bytes, check.unknown_units - unsized, unsized)
       checks.push(check)
     }
   }
@@ -405,7 +437,8 @@ async function collectDiskChecks(config: Config, newUnits: UnitDraft[]): Promise
     const categories = [...new Set(usenetUnits.map(unit => unit.category))]
     const required = usenetUnits.reduce((sum, unit) => sum + (unit.size_bytes || 0), 0)
     const unknownUnits = usenetUnits.filter(unit => unit.size_bytes === null || unit.approximate).length
-    const { apiUrl, endpointId } = sabEndpoint(config)
+    const unsizedUnits = usenetUnits.filter(unit => unit.size_bytes === null).length
+    const { apiUrl } = sabEndpoint(config)
     let incomplete: number | null = null
     let complete: number | null = null
     let reason: string | undefined
@@ -416,13 +449,13 @@ async function collectDiskChecks(config: Config, newUnits: UnitDraft[]): Promise
       complete = disk.complete_free_bytes
       if (incomplete === null && complete === null) reason = 'SABnzbd did not report free space for its folders.'
     } catch (error) { reason = `Could not read SABnzbd storage information: ${errorMessage(error).slice(0, 120)}` }
-    const folders: [string, number | null][] = [['Incomplete folder', incomplete], ['Completed folder', complete]]
+    const folders: [string, number | null][] = [['SABnzbd incomplete folder', incomplete], ['SABnzbd completed folder', complete]]
     for (const [label, free] of folders) {
       checks.push({
-        client: 'sabnzbd', path: null, label: `${label} on ${endpointId || 'SABnzbd'}`, categories,
+        client: 'sabnzbd', path: null, label, categories,
         required_bytes: required, unknown_units: unknownUnits, free_bytes: free,
-        sufficient: free === null ? null : required > free ? false : unknownUnits ? null : true,
-        reason: reason || 'PAR2, archives and unpacking require more space than the payload bytes; category folders are not exposed by the API.',
+        sufficient: spaceVerdict(free, required, unknownUnits - unsizedUnits, unsizedUnits),
+        reason: reason || 'Category folders on other disks are not checked.',
       })
     }
   }

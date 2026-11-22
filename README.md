@@ -100,11 +100,11 @@ Season corrections affect only that season. Choose **Use automatic match** to re
 
 ### Download and monitor upgrades
 
-Download an individual release from **Details**, or open bulk review to select several upgrades. Bulk review includes titles matching your current filters across all pages. Choose **Entire library** to include titles outside those filters; hidden titles start unchecked.
+Download an individual release from **Details**, or open bulk review to select several upgrades. **Download** in release details sends that one release straight to its client without a review step: it skips releases already queued, but it does not ask about disk space or about extra files in whole Usenet sources. A notification confirms the send or explains why it failed. Bulk review includes titles matching your current filters across all pages. Choose **Entire library** to include titles outside those filters; hidden titles start unchecked.
 
-Review the release groups, selected episodes, download sizes, and available disk space before submitting. Downloads already present in qBittorrent or SABnzbd are skipped. When filenames identify the required episodes, SeaDex Companion can download only the selected files; otherwise, review the whole-torrent scope before proceeding.
+In bulk review, check the release groups, selected episodes, download sizes, and available disk space before submitting. Downloads already present in qBittorrent or SABnzbd are skipped. When filenames identify the required episodes, SeaDex Companion can download only the selected files; otherwise, review the whole-torrent scope before proceeding.
 
-Disk-space checks may be unavailable for some download paths or older client versions. Size estimates do not reserve space or include torrent overhead and library-import copies. Run a new scan if older results are missing file-size information.
+Disk-space checks may be unavailable for some download paths or older client versions. Size estimates do not reserve space or include torrent overhead and library-import copies. An estimated size counts as fitting when free space is at least twice the estimate plus 5 GB; otherwise the review asks you to confirm. Run a new scan if older results are missing file-size information.
 
 Choose **Continue in background** to keep using the app while a batch runs. Closing the page does not cancel downloads. **Review batch** reopens your latest submitted review in the same session, and download progress is recovered after a reload. After a SeaDex Companion restart, check the download client before retrying downloads reported as interrupted.
 
@@ -116,12 +116,14 @@ Set the download method under **Configuration → Downloads**: **Torrents only**
 
 To download over Usenet:
 
-- Connect SABnzbd with its server URL and API key, set the Sonarr and Radarr categories, and confirm **Test connection**.
+- Connect SABnzbd with its server URL and full API key, enter the SABnzbd categories Sonarr and Radarr use, and run **Test connection**. The test fails if SABnzbd has no category with one of those names, because SABnzbd would otherwise file the download under its default category, where Sonarr and Radarr never import it.
 - AnimeTosho is enabled by default and needs no account. Optionally enable AmeNZB and add the API key from your amenzb.moe profile.
 - Release details report the last-known Usenet source, its size, and when the provider checked it. Cached results survive restarts and remain visible while older or missing information is checked in the background. If a provider rate-limits requests, background checks pause and resume on their own; the sidebar shows when they continue. In **Let me choose per release** mode, pick **Torrent** or **Usenet** per release; releases without a public magnet can become Usenet-only, and releases no source carries stay torrent-only.
 - Use **Re-check** in release details or **Refresh review** in bulk downloads to force a new check. A failed refresh keeps the previous result with a warning rather than clearing it. Downloads still require a valid review and a validated NZB before anything is sent to SABnzbd.
 
-Usenet sources cannot be split per episode: the whole upload is downloaded, including files beyond the selected episodes. The review lists the known extra files and requires your acknowledgement before sending. If the connection to SABnzbd drops before it confirms a download, SeaDex Companion never re-submits it automatically; the entry remains listed with **Awaiting confirmation**, so check SABnzbd before retrying.
+Usenet sources cannot be split per episode: the whole upload is downloaded, including files beyond the selected episodes. Bulk review lists the known extra files and requires your acknowledgement before sending; **Download** in release details sends the whole source without asking.
+
+If the connection to SABnzbd or qBittorrent drops before it confirms a download, SeaDex Companion never re-submits it automatically. The entry is listed as **Awaiting confirmation** and is picked up automatically once the download appears in the client. If it never appears, use **Stop tracking** on the entry: SeaDex Companion forgets it without changing anything in the client, and you can send the release again.
 
 ## Automatic scans and notifications
 

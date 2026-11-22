@@ -363,6 +363,65 @@ export async function sabHistoryJobs(
   return { jobs, read_complete: readComplete }
 }
 
+/** The job name sent with an NZB: the release name without a `.nzb` suffix, which would otherwise end up in the job folder. */
+export function sabSubmissionName(nzbName: string | undefined, sourceHash: string): string {
+  return (nzbName || '').trim().replace(/\.nzb$/i, '').trim() || sourceHash.slice(0, 12)
+}
+
+/** Job names compare without the `.nzb` suffix and case, which SABnzbd may normalize. */
+export function sabJobName(name: string): string {
+  return name.trim().replace(/\.nzb$/i, '').trim().toLowerCase()
+}
+
+/**
+ * Queue and history jobs whose name exactly matches `name` (after normalization).
+ * Used only to adopt a submission whose acceptance was never confirmed; a failed
+ * read throws so the caller never mistakes it for absence.
+ */
+export async function sabFindJobsByName(
+  settings: SabnzbdSettings,
+  name: string,
+  fetchImpl: typeof fetch,
+): Promise<{ nzo_id: string; category: string }[]> {
+  const wanted = sabJobName(name)
+  if (!wanted) return []
+  const found = new Map<string, { nzo_id: string; category: string }>()
+  const reads: [Record<string, string>, 'queue' | 'history'][] = [
+    [{ mode: 'queue', search: wanted, limit: '50' }, 'queue'],
+    [{ mode: 'history', search: wanted, limit: '50' }, 'history'],
+  ]
+  for (const [params, section] of reads) {
+    const body = readSection(await requestJson(settings, buildApiUrl(settings, { ...keyParams(settings), ...params }), { method: 'GET' }, READ_TIMEOUT_MS, fetchImpl), section, settings.apiKey)
+    if (!Array.isArray(body.slots)) throw new SabnzbdError(`SABnzbd did not return ${section} slots`)
+    for (const slot of body.slots) {
+      const job = section === 'queue' ? parseQueueSlot(slot, body) : parseHistorySlot(slot)
+      if (job && sabJobName(job.name) === wanted && !found.has(job.nzo_id)) found.set(job.nzo_id, { nzo_id: job.nzo_id, category: job.category })
+    }
+  }
+  return [...found.values()]
+}
+
+/** Category names configured in SABnzbd, or null when the list could not be read. */
+export async function sabCategories(settings: SabnzbdSettings, fetchImpl: typeof fetch): Promise<string[] | null> {
+  try {
+    const result = await requestJson(settings, buildApiUrl(settings, { ...keyParams(settings), mode: 'get_cats' }), { method: 'GET' }, READ_TIMEOUT_MS, fetchImpl)
+    if (!result.ok || providerErrorText(result.payload, settings.apiKey) || !isRecord(result.payload) || !Array.isArray(result.payload.categories)) return null
+    return result.payload.categories.filter((category): category is string => typeof category === 'string')
+  } catch {
+    return null
+  }
+}
+
+/** Configured categories SABnzbd does not know; SABnzbd silently files those NZBs under its default category. */
+export async function sabMissingCategories(settings: SabnzbdSettings, wanted: string[], fetchImpl: typeof fetch): Promise<string[] | null> {
+  const names = [...new Set(wanted.map(category => category.trim()).filter(Boolean))]
+  if (!names.length) return []
+  const known = await sabCategories(settings, fetchImpl)
+  if (!known) return null
+  const lower = new Set(known.map(category => category.toLowerCase()))
+  return names.filter(category => !lower.has(category.toLowerCase()))
+}
+
 /** Queue-payload disk read without targeting any job; used by preflight reviews. */
 export async function sabDiskSpace(
   settings: SabnzbdSettings,
