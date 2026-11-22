@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { DEFAULT_CONFIG, downloadCategory } from '../server/config.js'
 import { bumpGeneration, currentGeneration } from '../server/config-generation.js'
-import { buildDownloadPlan } from '../server/download-preflight.js'
+import { buildDownloadPlan, spaceVerdict } from '../server/download-preflight.js'
 import { consumePlan, putPlan } from '../server/download-plans.js'
 import { acceptDownloadPlan, PlanRejected, receiptFromJob } from '../server/download-submit.js'
 import { downloadJobs } from '../server/download-jobs.js'
@@ -62,6 +62,7 @@ interface RouterState {
   qbDeleteStatus?: number
   qbFreeBytes?: string
   sabDisk?: { diskspace1?: string; diskspace2?: string }
+  sabCategories?: string[]
 }
 
 function installRouter(state: RouterState): () => void {
@@ -112,6 +113,7 @@ function installRouter(state: RouterState): () => void {
       const mode = query.get('mode')
       const name = query.get('name')
       if (init?.method === 'POST') return (state.sabAddResult ?? (() => Response.json({ status: true, nzo_ids: ['nzo1'] })))()
+      if (mode === 'get_cats') return Response.json({ categories: state.sabCategories ?? ['*', 'sonarr-anime', 'radarr-anime'] })
       if (mode === 'queue') {
         if (name === 'pause' || name === 'resume' || name === 'delete') return Response.json({ status: true })
         const ids = (new URL(url).searchParams.get('nzo_ids') || '').split(',').filter(Boolean)
@@ -236,7 +238,7 @@ test('usenet whole-source scope is surfaced with known extra files and forces th
     assert.deepEqual(unit.known_extra_files, ['Show - 02.nfo'])
     assert.equal(built.review.requires_whole_ack, true)
     assert.equal(built.review.new_nzbs, 1)
-    assert.ok(built.review.disk_space.every(check => check.client === 'sabnzbd' && check.sufficient === null && check.unknown_units === 1))
+    assert.ok(built.review.disk_space.every(check => check.client === 'sabnzbd' && check.unknown_units === 1))
   } finally { cleanup() }
 })
 
@@ -479,7 +481,7 @@ test('an intent write failure finalizes every pending unit without submitting to
 })
 
 test('torrent and Usenet categories are separated for Sonarr and Radarr', async () => {
-  const cleanup = installRouter({ calls: [], animetosho: animetoshoMatch })
+  const cleanup = installRouter({ calls: [], animetosho: animetoshoMatch, sabCategories: ['*', 'nzb-tv', 'nzb-movies'] })
   try {
     const config = baseConfig({ sonarr_category: 'torrent-tv', radarr_category: 'torrent-movies', sabnzbd_sonarr_category: 'nzb-tv', sabnzbd_radarr_category: 'nzb-movies' })
     assert.equal(downloadCategory(config, 'Sonarr', 'torrent'), 'torrent-tv')
@@ -604,7 +606,7 @@ test('fresh client presence distinguishes accepted, missing, unknown, and unboun
   }
 })
 
-test('approximate payloads cannot prove disk sufficiency and each SABnzbd folder retains its unknown report', async () => {
+test('approximate payloads fit only with headroom and each SABnzbd folder retains its unknown report', async () => {
   const state: RouterState = { calls: [], animetosho: animetoshoMatch, sabDisk: { diskspace1: '931.5' } }
   const cleanup = installRouter(state)
   try {
@@ -612,17 +614,31 @@ test('approximate payloads cannot prove disk sufficiency and each SABnzbd folder
     const sab = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'usenet' }], { results })
     assert.ok('review' in sab)
     assert.equal(sab.review.disk_space.length, 2)
-    assert.deepEqual(sab.review.disk_space.map(check => check.sufficient), [null, null])
+    assert.deepEqual(sab.review.disk_space.map(check => check.sufficient), [true, null], 'Ample space confirms an estimate; an unreported folder stays unknown')
     assert.deepEqual(sab.review.disk_space.map(check => check.free_bytes), [931_500_000_000, null])
     const approximateResults = [resultFixture([releaseFixture({ torrent_files: [] })])] as unknown as ResultItem[]
     const qb = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'torrent' }], { results: approximateResults })
     assert.ok('review' in qb)
-    assert.ok(qb.review.disk_space.every(check => check.unknown_units === 1 && check.sufficient === null))
+    assert.ok(qb.review.disk_space.every(check => check.unknown_units === 1 && check.sufficient === true), 'Ample space confirms an approximate torrent')
+    state.qbFreeBytes = String(qb.review.disk_space[0].required_bytes + 1)
+    const tight = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'torrent' }], { results: approximateResults })
+    assert.ok('review' in tight)
+    assert.ok(tight.review.disk_space.every(check => check.sufficient === null), 'An estimate that barely fits stays unconfirmed')
     state.qbFreeBytes = '0'
     const insufficient = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'torrent' }], { results: approximateResults })
     assert.ok('review' in insufficient)
     assert.ok(insufficient.review.disk_space.every(check => check.sufficient === false))
   } finally { cleanup() }
+})
+
+test('estimated sizes count as fitting only with twice the estimate plus a fixed margin', () => {
+  const GiB = 1024 ** 3
+  assert.equal(spaceVerdict(null, GiB, 0, 0), null)
+  assert.equal(spaceVerdict(GiB - 1, GiB, 1, 0), false)
+  assert.equal(spaceVerdict(GiB, GiB, 0, 0), true, 'Exact sizes need no margin')
+  assert.equal(spaceVerdict(2 * GiB + 5 * GiB - 1, GiB, 1, 0), null)
+  assert.equal(spaceVerdict(2 * GiB + 5 * GiB, GiB, 1, 0), true)
+  assert.equal(spaceVerdict(1000 * GiB, GiB, 0, 1), null, 'A unit without any size can never be confirmed')
 })
 
 test('a whole-library review keeps more than 200 selections in one deduplicated authoritative plan', async () => {
@@ -775,7 +791,7 @@ test('an incomplete presence read blocks an accepted source instead of proving i
     const results = [resultFixture([releaseFixture()])] as unknown as ResultItem[]
     const built = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'usenet' }], { results })
     assert.ok('review' in built)
-    assert.deepEqual(built.review.blocked.map(row => row.code), ['acceptance_unknown'])
+    assert.deepEqual(built.review.blocked.map(row => row.code), ['client_unreachable'], 'An unreadable client is reported as unreachable, not as an unconfirmed send')
     assert.deepEqual(built.review.units, [])
     assert.equal(downloadRecords().length, 1)
   } finally { globalThis.fetch = router; cleanup() }
@@ -804,4 +820,61 @@ test('invalid provider NZB bytes never reach SABnzbd even after a matched review
     assert.equal(state.calls.some(call => /POST .*sab\.test/.test(call)), false)
     assert.equal(downloadRecords().some(record => record.state === 'accepted'), false)
   } finally { globalThis.fetch = router; cleanup() }
+})
+
+test('a Usenet category SABnzbd does not have blocks the review instead of filing the NZB under the default category', async () => {
+  const cleanup = installRouter({ calls: [], animetosho: animetoshoMatch, sabCategories: ['*', 'tv'] })
+  try {
+    const results = [resultFixture([releaseFixture()])] as unknown as ResultItem[]
+    const built = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'usenet' }], { results })
+    assert.ok('review' in built)
+    assert.deepEqual(built.review.blocked.map(row => row.code), ['category_missing'])
+    assert.match(built.review.blocked[0].reason, /sonarr-anime/)
+    assert.deepEqual(built.review.units, [])
+  } finally { cleanup() }
+})
+
+test('an unconfirmed SABnzbd send is adopted only when exactly one job carries its name and category', async () => {
+  const state: RouterState = { calls: [], sabQueue: [
+    { nzo_id: 'nzo-match', filename: 'Show S01 [Group]', cat: 'sonarr-anime', status: 'Downloading', mb: '100', mbleft: '50' },
+    { nzo_id: 'nzo-other-cat', filename: 'Show S01 [Group]', cat: 'tv', status: 'Downloading', mb: '100', mbleft: '50' },
+  ] }
+  const cleanup = installRouter(state)
+  try {
+    const record = addDownloadRecord({ protocol: 'usenet', client: 'sabnzbd', endpoint: SAB, native_id: '', state: 'acceptance_unknown', source_hash: HASH, category: 'sonarr-anime', nzb_name: 'Show S01 [Group].nzb' })
+    const progress = await collectDownloadProgress(baseConfig())
+    const adopted = findDownloadRecord(record.id)
+    assert.equal(adopted?.state, 'accepted')
+    assert.equal(adopted?.native_id, 'nzo-match')
+    assert.equal(progress.downloads[record.id].phase, 'downloading')
+
+    const ambiguous = addDownloadRecord({ protocol: 'usenet', client: 'sabnzbd', endpoint: SAB, native_id: '', state: 'acceptance_unknown', source_hash: 'c'.repeat(40), category: 'tv', nzb_name: 'Twin.nzb' })
+    state.sabQueue = [
+      { nzo_id: 'twin-1', filename: 'Twin', cat: 'tv', status: 'Queued', mb: '1', mbleft: '1' },
+      { nzo_id: 'twin-2', filename: 'Twin', cat: 'tv', status: 'Queued', mb: '1', mbleft: '1' },
+    ]
+    await collectDownloadProgress(baseConfig())
+    assert.equal(findDownloadRecord(ambiguous.id)?.state, 'acceptance_unknown', 'Two candidate jobs are never guessed between')
+  } finally { cleanup() }
+})
+
+test('an unconfirmed torrent is adopted once qBittorrent holds its hash', async () => {
+  const state: RouterState = { calls: [], qbTorrents: [{ hash: HASH, state: 'downloading', progress: 0.5, size: 1000 }] }
+  const cleanup = installRouter(state)
+  try {
+    const record = addDownloadRecord({ protocol: 'torrent', client: 'qbittorrent', endpoint: QB, native_id: HASH, state: 'acceptance_unknown', source_hash: HASH, category: 'sonarr-anime' })
+    const progress = await collectDownloadProgress(baseConfig())
+    assert.equal(findDownloadRecord(record.id)?.state, 'accepted')
+    assert.equal(progress.downloads[record.id].phase, 'downloading')
+  } finally { cleanup() }
+})
+
+test('a review whose every selection was blocked is refused at acceptance instead of failing as an empty request', async () => {
+  const cleanup = installRouter({ calls: [] })
+  try {
+    const built = await buildDownloadPlan(baseConfig(), [{ key: 'missing', release: 0, protocol: 'torrent' }], { results: [] })
+    assert.ok('review' in built)
+    assert.deepEqual(built.review.blocked.map(row => row.code), ['invalid'])
+    await assert.rejects(acceptDownloadPlan(baseConfig(), consumePlan(built.review.plan_id)!, undefined, []), (error: PlanRejected) => error.status === 409 && /Nothing in this review/.test(error.message))
+  } finally { cleanup() }
 })

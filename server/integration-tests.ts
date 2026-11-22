@@ -4,7 +4,7 @@ import { api, fetchWithTimeout } from './http.js'
 import { qbTestConnection } from './qbittorrent.js'
 import { testAnimeTosho } from './animetosho.js'
 import { testAmeNZB } from './amenzb.js'
-import { sabTestConnection } from './sabnzbd.js'
+import { sabMissingCategories, sabTestConnection } from './sabnzbd.js'
 
 /** Connection previews for configured integrations. Every check is read-only or a declared single test message; nothing is ever enqueued. */
 export async function testIntegration(config: Config, service: string): Promise<string> {
@@ -26,7 +26,12 @@ export async function testIntegration(config: Config, service: string): Promise<
   if (service === 'sabnzbd') {
     const apiUrl = sabnzbdApiUrl(config)
     if (!apiUrl || !config.sabnzbd_key) throw new Error('SABnzbd URL and full API key are required')
-    const { version } = await sabTestConnection({ apiUrl, apiKey: config.sabnzbd_key }, globalThis.fetch)
+    const settings = { apiUrl, apiKey: config.sabnzbd_key }
+    const { version } = await sabTestConnection(settings, globalThis.fetch)
+    // SABnzbd silently files NZBs with an unknown category under its default one, where Sonarr/Radarr never import them.
+    const missing = await sabMissingCategories(settings, [config.sabnzbd_sonarr_category, config.sabnzbd_radarr_category], globalThis.fetch)
+    if (missing === null) throw new Error(`Connected to SABnzbd ${version}, but its category list could not be read to check the configured categories`)
+    if (missing.length) throw new Error(`Connected to SABnzbd ${version}, but it has no ${missing.length === 1 ? 'category' : 'categories'} named ${missing.map(name => `"${name}"`).join(' and ')}. Create ${missing.length === 1 ? 'it' : 'them'} in SABnzbd under Config → Categories, or enter the categories Sonarr and Radarr use.`)
     return `Connected to SABnzbd ${version}`
   }
   if (service === 'animetosho') {

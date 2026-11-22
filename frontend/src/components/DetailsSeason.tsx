@@ -31,6 +31,8 @@ interface Props {
   config: Config | null
   dl: Record<number, DetailsDownloadState>
   busyDownload: string | null
+  /** Index of the release being sent in this season, -1 when another season is sending, null when idle. */
+  sendingIndex: number | null
   usenetEnabled: boolean
   availability: SeasonAvailability | undefined
   protocolFor: (index: number) => DownloadProtocol
@@ -46,7 +48,7 @@ interface Props {
   onCorrectMatch: () => void
 }
 
-export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, usenetEnabled, availability, protocolFor, onProtocol, onRefreshAvailability, onOpened, onDownload, onPause, onResume, onRemove, ruleBusy, onToggleExclusion, onCorrectMatch }: Props) {
+export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, sendingIndex, usenetEnabled, availability, protocolFor, onProtocol, onRefreshAvailability, onOpened, onDownload, onPause, onResume, onRemove, ruleBusy, onToggleExclusion, onCorrectMatch }: Props) {
   const root = useRef<HTMLElement>(null)
   const groups = releaseCours(r)
   const split = groups.some(group => group.part)
@@ -79,7 +81,7 @@ export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, 
   }
 
   const renderReleases = (items: typeof groups[number]['items']) => <div className="flex min-w-0 flex-col gap-3">{items.map(({ rel, index }) => <div key={releaseIdentity(rel)} data-release-index={index}>
-    <ReleaseDetails result={r} release={rel} config={config} state={dl[index] || IDLE_DOWNLOAD} busy={busyDownload !== null}
+    <ReleaseDetails result={r} release={rel} config={config} state={dl[index] || IDLE_DOWNLOAD} busy={busyDownload !== null} sending={sendingIndex === index} sendLocked={sendingIndex !== null}
       protocol={protocolFor(index)} availability={availability?.byRelease[index]?.identity === releaseIdentity(rel) ? availability.byRelease[index] : undefined} availabilityLoading={Boolean(availability?.loading)} sabnzbdConfigured={Boolean(availability?.sabnzbdConfigured)}
       onProtocol={protocol => onProtocol(index, protocol)} onRefreshAvailability={onRefreshAvailability}
       onDownload={() => onDownload(index)} onPause={onPause} onResume={onResume} onRemove={onRemove}/>

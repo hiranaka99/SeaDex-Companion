@@ -1,7 +1,7 @@
 import type { Config, JsonObject, ResultItem } from './types.js'
 import type { AllDownloadProgress, CancelableDownload, CancelableDownloads, DownloadCapabilities, DownloadCancelResult, DownloadPhase, DownloadProgress } from '../shared/download-contracts.js'
-import { downloadRecords, downloadRows, findDownloadRecord, markDownloadRemoved, setDownloadPhase, type OwnedDownloadRecord } from './download-store.js'
-import { sabDeleteHistoryJob, sabDeleteQueueJob, sabHistoryJobs, sabPauseJob, sabQueueJobs, sabResumeJob, type SabHistoryJob, type SabQueueJob } from './sabnzbd.js'
+import { downloadRecords, downloadRows, findDownloadRecord, markDownloadRemoved, setDownloadNative, setDownloadPhase, type OwnedDownloadRecord } from './download-store.js'
+import { sabDeleteHistoryJob, sabDeleteQueueJob, sabFindJobsByName, sabHistoryJobs, sabPauseJob, sabQueueJobs, sabResumeJob, sabSubmissionName, type SabHistoryJob, type SabQueueJob } from './sabnzbd.js'
 import { qbControlTorrents, qbGetTorrents } from './qbittorrent.js'
 import { qbEndpointId, sabEndpoint } from './client-identity.js'
 import { resultsForRequest } from './downloads.js'
@@ -94,7 +94,45 @@ export async function collectDownloadProgress(config: Config): Promise<AllDownlo
   return (await readDownloadProgress(config, downloadRecords())).progress
 }
 
+/** Unconfirmed submissions can only be removed from tracking; the client itself is never touched. */
+const UNCONFIRMED_CAPABILITIES: DownloadCapabilities = { pause: false, resume: false, remove: true, remove_files: false }
+const UNCONFIRMED_RETRY_MS = 60_000
+const unconfirmedAttempts = new Map<string, number>()
+
+/**
+ * Adopts unconfirmed Usenet submissions that SABnzbd did accept: exactly one queue or
+ * history job with the submitted name and category, not already owned by another record.
+ * Anything less certain stays unconfirmed for the user to resolve.
+ */
+async function adoptUnconfirmedUsenet(config: Config, records: OwnedDownloadRecord[]): Promise<boolean> {
+  const { apiUrl, endpointId } = sabEndpoint(config)
+  if (!apiUrl || !config.sabnzbd_key) return false
+  const now = Date.now()
+  const pending = records.filter(record => record.protocol === 'usenet' && record.state === 'acceptance_unknown' && !record.native_id
+    && record.endpoint === endpointId && now - (unconfirmedAttempts.get(record.id) || 0) >= UNCONFIRMED_RETRY_MS)
+  if (!pending.length) return false
+  const owned = new Set(downloadRecords().filter(record => record.protocol === 'usenet' && record.native_id).map(record => record.native_id))
+  let adopted = false
+  for (const record of pending) {
+    unconfirmedAttempts.set(record.id, now)
+    try {
+      const jobs = (await sabFindJobsByName({ apiUrl, apiKey: config.sabnzbd_key }, sabSubmissionName(record.nzb_name, record.source_hash), globalThis.fetch))
+        .filter(job => !owned.has(job.nzo_id) && job.category.trim().toLowerCase() === record.category.trim().toLowerCase())
+      if (jobs.length !== 1) continue
+      setDownloadNative(record.id, [jobs[0].nzo_id])
+      owned.add(jobs[0].nzo_id)
+      unconfirmedAttempts.delete(record.id)
+      adopted = true
+      log('INFO', `Confirmed earlier SABnzbd submission ${jobs[0].nzo_id} for ${record.source_hash.slice(0, 12)}`)
+    } catch (error) {
+      log('WARNING', `Could not look up an unconfirmed SABnzbd submission: ${errorMessage(error)}`)
+    }
+  }
+  return adopted
+}
+
 async function readDownloadProgress(config: Config, records: OwnedDownloadRecord[]): Promise<{ progress: AllDownloadProgress; sabQueueIds: Set<string> }> {
+  if (await adoptUnconfirmedUsenet(config, records)) records = records.map(record => findDownloadRecord(record.id) || record)
   const downloads: Record<string, DownloadProgress> = {}
   const unavailable_clients: AllDownloadProgress['unavailable_clients'] = []
   const currentQb = qbEndpointId(config)
@@ -107,7 +145,7 @@ async function readDownloadProgress(config: Config, records: OwnedDownloadRecord
   let qbReadComplete = true
   if (qbBound.length) {
     try {
-      const torrents = await qbGetTorrents(config, qbBound.map(record => record.native_id), true)
+      const torrents = await qbGetTorrents(config, qbBound.map(record => record.native_id || record.source_hash), true)
       for (const torrent of torrents) torrentsByHash.set(String(torrent.hash || '').toLowerCase(), torrent)
     } catch (error) {
       qbReadComplete = false
@@ -122,11 +160,14 @@ async function readDownloadProgress(config: Config, records: OwnedDownloadRecord
     view.error = 'Saved from a different qBittorrent URL; controls are disabled until it is restored.'
     downloads[record.id] = view
   }
-  for (const record of qbBound) {
+  for (let record of qbBound) {
+    // A torrent's identity is its hash, so an unconfirmed submission that qBittorrent holds is confirmed.
+    if (record.state === 'acceptance_unknown' && torrentsByHash.has(record.source_hash)) record = setDownloadNative(record.id, [record.source_hash]) || record
     const view = baseProgress(record)
     if (record.state === 'acceptance_unknown') {
       view.phase = 'acceptance_unknown'
       view.error = 'Submission status unknown. Check qBittorrent before retrying.'
+      view.capabilities = { ...UNCONFIRMED_CAPABILITIES }
       downloads[record.id] = view
       continue
     }
@@ -185,6 +226,7 @@ async function readDownloadProgress(config: Config, records: OwnedDownloadRecord
     if (record.state === 'acceptance_unknown' && !record.native_id) {
       view.phase = 'acceptance_unknown'
       view.error = 'Submission status unknown. Check SABnzbd before retrying.'
+      view.capabilities = { ...UNCONFIRMED_CAPABILITIES }
     } else {
       view.phase = 'unavailable'
       view.state = 'unbound'
@@ -197,6 +239,7 @@ async function readDownloadProgress(config: Config, records: OwnedDownloadRecord
     if (record.state === 'acceptance_unknown') {
       view.phase = 'acceptance_unknown'
       view.error = 'Submission status unknown. Check SABnzbd before retrying.'
+      view.capabilities = { ...UNCONFIRMED_CAPABILITIES }
       downloads[record.id] = view
       continue
     }
@@ -239,7 +282,7 @@ async function readDownloadProgress(config: Config, records: OwnedDownloadRecord
 
 const CANCELABLE_PHASES: Partial<Record<DownloadPhase, true>> = {
   queued: true, downloading: true, paused: true, verifying: true, repairing: true,
-  unpacking: true, post_processing: true, error: true, acceptance_unknown: true, missing: true,
+  unpacking: true, post_processing: true, error: true, missing: true,
 }
 
 export async function listCancelable(config: Config): Promise<CancelableDownloads> {
@@ -312,6 +355,13 @@ export async function controlRecord(config: Config, recordId: string, action: st
   const record = findDownloadRecord(recordId)
   if (!record || record.removed_at) throw new OwnershipError('Download record not found.')
   if (action !== 'pause' && action !== 'resume' && action !== 'remove') throw new OwnershipError('Unknown download action')
+  // An unconfirmed submission is only forgotten; the client is never touched, so nothing it holds is lost.
+  if (record.state === 'acceptance_unknown' && action === 'remove') {
+    markDownloadRemoved(record.id)
+    unconfirmedAttempts.delete(record.id)
+    log('INFO', `Stopped tracking unconfirmed ${record.client} submission for ${record.source_hash.slice(0, 12)}; the client was not changed`)
+    return { ok: true }
+  }
   const endpoint = record.protocol === 'torrent' ? qbEndpointId(config) : sabEndpoint(config).endpointId
   if (!record.endpoint || record.endpoint !== endpoint) throw new OwnershipError('This download was added through a different client URL; controls are disabled.')
   if (record.state === 'acceptance_unknown') throw new OwnershipError('Submission status is unknown; check the download client before controlling this record.')

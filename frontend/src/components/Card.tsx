@@ -9,7 +9,6 @@ import Icon, { IconName } from './Icons'
 import BrandLogo from './BrandLogo'
 import { useToast } from './Toast'
 import DownloadsPanel, { clientName, DownloadEntry } from './DownloadsPanel'
-import SinglePlanDialog from './SinglePlanDialog'
 import type { DownloadProtocol } from '../api'
 import ConfirmDialog from './ConfirmDialog'
 import Modal from './Modal'
@@ -110,7 +109,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
     if (!active) { setDetailsOpen(false); setMappingOpen(false); setRemoveTarget(null) }
     else if (openRequested) { handleOpenDetails(); onOpened?.() }
   }, [active, openRequested])
-  const { dlBySeason, activeDownloads, busyDownload, handleDownload, handleDownloadAction, singleFlow } = useCardDownloads(group, toast.show)
+  const { dlBySeason, activeDownloads, busyDownload, sendingRelease, handleDownload, handleDownloadAction } = useCardDownloads(group, toast.show)
   const usenetEnabled = Boolean(config) && config?.download_mode !== 'torrent_only'
   const configScope = JSON.stringify([config?.download_mode, config?.animetosho_enabled, config?.animetosho_url, config?.amenzb_enabled, config?.amenzb_url, config?.amenzb_key_configured, config?.sabnzbd_url, config?.sabnzbd_key_configured])
   const { availability, load: loadAvailability, revision: availabilityRevision } = useSeasonAvailability(usenetEnabled, group.seasons, detailsOpen && !closing.current, configScope)
@@ -316,6 +315,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
                   config={config}
                   dl={dlBySeason[season.key] || {}}
                   busyDownload={busyDownload}
+                  sendingIndex={sendingRelease === null ? null : sendingRelease.key === season.key ? sendingRelease.release : -1}
                   usenetEnabled={usenetEnabled}
                   availability={availability[season.key]}
                   protocolFor={index => protocolFor(season, index)}
@@ -337,12 +337,13 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
         </div>
       </Modal>
     )}
-    <SinglePlanDialog flow={singleFlow}/>
     <ConfirmDialog
       open={removeTarget !== null}
-      title={removeTarget ? `Remove download from ${clientName(removeTarget.client)}?` : 'Remove download?'}
-      description={removeTarget ? `The download will be removed from ${clientName(removeTarget.client)}. Its downloaded files are kept unless you choose to delete them below.` : ''}
-      confirmLabel={removeTarget ? `Remove from ${clientName(removeTarget.client)}` : 'Remove'}
+      title={!removeTarget ? 'Remove download?' : removeTarget.phase === 'acceptance_unknown' ? 'Stop tracking this download?' : `Remove download from ${clientName(removeTarget.client)}?`}
+      description={!removeTarget ? '' : removeTarget.phase === 'acceptance_unknown'
+        ? `${clientName(removeTarget.client)} never confirmed this download. SeaDex Companion forgets it without changing anything in ${clientName(removeTarget.client)}. Check ${clientName(removeTarget.client)} first: if the download is there, it keeps running and this release should not be sent again.`
+        : `The download will be removed from ${clientName(removeTarget.client)}. Its downloaded files are kept unless you choose to delete them below.`}
+      confirmLabel={!removeTarget ? 'Remove' : removeTarget.phase === 'acceptance_unknown' ? 'Stop tracking' : `Remove from ${clientName(removeTarget.client)}`}
       dangerous
       onConfirm={async () => { if (removeTarget && !await handleDownloadAction(removeTarget, 'remove', deleteFiles)) throw new Error(`Could not remove this download. Please retry or open ${clientName(removeTarget.client)} to manage it.`) }}
       onClose={() => { setRemoveTarget(null); setDeleteFiles(false) }}

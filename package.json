@@ -21,13 +21,13 @@
     "node": ">=24"
   },
   "devDependencies": {
-    "@types/node": "24.13.3",
-    "concurrently": "^10.0.6",
-    "tsx": "^4.19.2",
+    "@types/node": "24.19.2",
+    "concurrently": "^10.0.7",
+    "tsx": "^4.23.15",
     "typescript": "7.0.2"
   },
   "dependencies": {
-    "@node-rs/argon2": "^2.2.1",
+    "@node-rs/argon2": "^2.2.2",
     "fast-xml-parser": "^5.12.1"
   }
 }

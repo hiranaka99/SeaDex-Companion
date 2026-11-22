@@ -40,16 +40,18 @@ try {
   assert.equal((await saved.json()).sonarr_key_configured, true)
   const verifyStorage = `const fs = require('node:fs'); const data = fs.readFileSync('/app/data/config.json', 'utf8'); if (data.includes('temporary-container-fixture-secret') || !JSON.parse(data)._secrets) process.exit(1); if ((fs.statSync('/app/data/.seadex-key').mode & 0o777) !== 0o600) process.exit(2);`
   docker('exec', name, 'node', '-e', verifyStorage)
-  const accepted = await request('/api/download-jobs', { selections: [] })
-  assert.equal(accepted.status, 202)
-  const job = await accepted.json()
-  assert.equal(typeof job.id, 'string')
-  for (let attempt = 0; attempt < 50; attempt++) {
-    const status = await (await request(`/api/download-jobs/${job.id}`)).json()
-    if (status.finished) break
-    await pause(100)
-  }
-  assert.equal((await (await request(`/api/download-jobs/${job.id}`)).json()).finished, true)
+  // Jobs accept only a server-side review plan. A selection that matches no scan result is
+  // reviewed as blocked; submitting that plan is refused without contacting any download client,
+  // and the plan stays single-use.
+  const review = await request('/api/download_bulk/preflight', { selections: [{ key: 'container-smoke-missing', release: 0 }] })
+  assert.equal(review.status, 200)
+  const plan = await review.json()
+  assert.equal(typeof plan.plan_id, 'string')
+  assert.deepEqual(plan.blocked.map(row => row.code), ['invalid'])
+  const refused = await request('/api/download-jobs', { plan_id: plan.plan_id })
+  assert.equal(refused.status, 409, await refused.clone().text())
+  assert.equal((await request('/api/download-jobs', { plan_id: plan.plan_id })).status, 410, 'A review plan can be used once')
+  assert.equal((await request('/api/download-jobs', {})).status, 400, 'Jobs require a review plan')
   // Restart uses the same private container filesystem; no host data is mounted.
   docker('restart', '--time', '15', name)
   base = address()
@@ -60,7 +62,6 @@ try {
   assert.equal(config.sonarr_key, '')
   assert.equal(config.sonarr_key_configured, true)
   assert.equal(config.scan_schedule.enabled, false)
-  assert.equal((await (await request(`/api/download-jobs/${job.id}`)).json()).id, job.id)
   for (let attempt = 0; attempt < 50; attempt++) {
     if (JSON.parse(docker('inspect', name))[0].State.Health.Status === 'healthy') break
     await pause(100)
@@ -68,7 +69,7 @@ try {
   assert.equal(JSON.parse(docker('inspect', name))[0].State.Health.Status, 'healthy')
   docker('stop', '--time', '15', name)
   assert.equal(JSON.parse(docker('inspect', name))[0].State.ExitCode, 0)
-  console.log('PASS Docker: non-root startup, health check, static assets, Argon2 authentication, encrypted settings, job acceptance, restart persistence, and graceful shutdown')
+  console.log('PASS Docker: non-root startup, health check, static assets, Argon2 authentication, encrypted settings, review-plan enforcement, restart persistence, and graceful shutdown')
 } catch (error) {
   if (created) process.stderr.write(docker('logs', name) + '\n')
   throw error

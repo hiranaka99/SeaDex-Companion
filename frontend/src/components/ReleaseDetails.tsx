@@ -18,6 +18,10 @@ interface Props {
   config: Config | null
   state: DetailsDownloadState
   busy: boolean
+  /** This release is being sent right now. */
+  sending: boolean
+  /** Some release on this card is being sent, so no other send may start. */
+  sendLocked: boolean
   /** Effective protocol for this release (resolved against the download mode). */
   protocol: DownloadProtocol
   availability?: UsenetAvailabilityResult
@@ -62,7 +66,7 @@ function describeUsenet(row: UsenetAvailabilityResult | undefined, sabnzbdConfig
   return { usable: false, label: 'Usenet not set up', detail: 'Enable an Usenet source (AnimeTosho or AmeNZB) in Settings.' }
 }
 
-export default function ReleaseDetails({ result: r, release: rel, config, state, busy, protocol, availability, availabilityLoading, sabnzbdConfigured, onProtocol, onRefreshAvailability, onDownload, onPause, onResume, onRemove }: Props) {
+export default function ReleaseDetails({ result: r, release: rel, config, state, busy, sending, sendLocked, protocol, availability, availabilityLoading, sabnzbdConfigured, onProtocol, onRefreshAvailability, onDownload, onPause, onResume, onRemove }: Props) {
   const isBest = rel.kind === 'best'
   const localSize = rel.part ? r.local_size_by_part?.[rel.part] || 0 : r.local_size
   const delta = sizeDelta(rel.size, localSize)
@@ -164,9 +168,9 @@ export default function ReleaseDetails({ result: r, release: rel, config, state,
           {chosen === 'torrent' && !rel.torrent_available && <p className="mt-1 mb-0 text-xs text-muted">A public magnet is not available for this release.</p>}
           {chosen === 'torrent' && !inClient && !complete && rel.torrent_available && !fileScope.exact && <p className="mt-1 mb-0 text-xs text-muted">{fileScope.selected ? 'Selected-file size is unavailable. Release size is shown above.' : fileScope.approximateBytes !== null ? 'Approximate release estimate; file metadata is unavailable.' : 'Download size is unavailable.'}</p>}
         </div>
-        {!inClient && <button type="button" className={cx(buttonBase, 'release-download-button min-h-11 min-w-0 max-w-full justify-center px-3 text-xs max-[600px]:w-full', complete ? 'border-good/40 bg-good/12 text-good' : disabled ? 'border-line bg-panel-raised text-muted' : chosen === 'usenet' ? 'border-sky/40 bg-sky/12 text-sky enabled:hover:bg-sky/20' : 'border-good/40 bg-good/12 text-good enabled:hover:bg-good/20')} disabled={disabled} title={buttonTitle} aria-label={`${buttonTitle} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`} onClick={onDownload}>
-          {complete ? <Icon name="check" size={17}/> : <Icon name="download" size={17}/>}{/* preflight happens before send, so no spinner belongs on this button */}
-          <span className="min-w-0 wrap-anywhere">{buttonLabel}</span>
+        {!inClient && <button type="button" className={cx(buttonBase, 'release-download-button min-h-11 min-w-0 max-w-full justify-center px-3 text-xs max-[600px]:w-full', complete ? 'border-good/40 bg-good/12 text-good' : disabled ? 'border-line bg-panel-raised text-muted' : chosen === 'usenet' ? 'border-sky/40 bg-sky/12 text-sky enabled:hover:bg-sky/20' : 'border-good/40 bg-good/12 text-good enabled:hover:bg-good/20')} disabled={disabled || sendLocked} aria-busy={sending} title={buttonTitle} aria-label={`${buttonTitle} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`} onClick={onDownload}>
+          {sending ? <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-current/30 border-t-current" aria-hidden="true"/> : complete ? <Icon name="check" size={17}/> : <Icon name="download" size={17}/>}
+          <span className="min-w-0 wrap-anywhere">{sending ? `Sending to ${chosen === 'usenet' ? 'SABnzbd' : 'qBittorrent'}…` : buttonLabel}</span>
         </button>}
       </div>
       {fileScope.files.length > 0 && !inClient && !complete && chosen !== 'usenet' && <details className="mt-3 min-w-0">
@@ -184,7 +188,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, state,
           </div>
           {showsBar && <div role="progressbar" aria-label={`Download progress · ${seasonLabel(r)} · ${rel.releaseGroup}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={transfer.phase === 'acceptance_unknown' ? undefined : percent} aria-valuetext={`${phaseLabel(transfer.phase)} · ${percent.toFixed(1)}%`} className="h-1.5 overflow-hidden rounded-full bg-panel-raised"><div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${Math.max(percent, transfer.phase === 'queued' || transfer.phase === 'acceptance_unknown' ? 2 : 0)}%` }}/></div>}
           {transfer.phase === 'error' && <div className="mt-3 rounded-lg bg-bad/5 p-3"><p className="m-0 text-sm font-semibold text-bad">{client} reported a download error</p><p className="mt-1 mb-2 text-xs text-ink wrap-anywhere">{transfer.error || `Open this download in ${client}, resolve the issue, then retry.`}</p></div>}
-          {transfer.phase === 'acceptance_unknown' && <p className="mt-2 mb-0 text-xs text-warn">{client} was asked to start this download but did not confirm it. Check {client} before retrying.</p>}
+          {transfer.phase === 'acceptance_unknown' && <p className="mt-2 mb-0 text-xs text-warn">{client} was asked to start this download but did not confirm it. It is picked up automatically if it appears in {client}. If it is not there, stop tracking it to send it again.</p>}
           {transfer.phase === 'missing' && <p className="mt-2 mb-0 text-xs text-bad">This download is no longer in {client}. Remove the entry and send it again if you still want it.</p>}
           {transfer.unbound && <p className="mt-2 mb-0 text-xs text-warn">This download belongs to a different client URL and cannot be controlled from here.</p>}
           <div className="mt-2 flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-muted wrap-anywhere">{transfer.phase === 'downloading' ? [transfer.speed > 0 && transfer.client === 'qbittorrent' ? `${formatBytes(transfer.speed)}/s` : '', transfer.client === 'qbittorrent' ? formatEta(Math.max(0, transfer.total_size - transfer.downloaded), transfer.speed) : ''].filter(Boolean).join(' · ') : transfer.phase === 'post_processing' || transfer.phase === 'unpacking' ? `${client} is preparing the files…` : ''}</span><span className="ml-auto inline-flex gap-2"><DownloadActions entry={transfer} busy={busy} onPause={() => onPause(transfer)} onResume={() => onResume(transfer)} onRemove={() => onRemove(transfer)}/></span></div>
