@@ -11,6 +11,20 @@ import {
 import type { ProviderLookup, ProviderSettings, UsenetMatch, UsenetSourceFile } from './usenet-provider-types.js'
 
 const PROVIDER: UsenetProvider = 'animetosho'
+/** How long an entry without an NZB is still expected to gain one. */
+export const ANIMETOSHO_PROCESSING_WINDOW_MS = 48 * 60 * 60_000
+
+/**
+ * An entry without an NZB is pending only while AnimeTosho says so or while it
+ * is recent. An entry without a usable timestamp keeps the conservative
+ * "processing" reading.
+ */
+function isStillProcessing(entry: Record<string, unknown>): boolean {
+  if (entry.status === 'processing') return true
+  const seconds = typeof entry.timestamp === 'number' ? entry.timestamp : Number.NaN
+  if (!Number.isFinite(seconds) || seconds <= 0) return true
+  return Date.now() - seconds * 1000 < ANIMETOSHO_PROCESSING_WINDOW_MS
+}
 
 function entryId(entry: Record<string, unknown>): string {
   return entry.id === undefined || entry.id === null ? '' : String(entry.id)
@@ -43,7 +57,7 @@ export async function lookupAnimeTosho(settings: ProviderSettings, hash: string,
 
   if (response.status === 404) return { kind: 'no_match' }
   const status = httpStatusFailure(response, 'AnimeTosho')
-  if (status) return failedLookup(status.code, status.message)
+  if (status) return failedLookup(status.code, status.message, status.retryAfterMs)
 
   let bytes: Uint8Array
   try { bytes = await readResponseCapped(response, LOOKUP_MAX_BYTES) }
@@ -68,8 +82,14 @@ export async function lookupAnimeTosho(settings: ProviderSettings, hash: string,
 
   const id = entryId(entry)
   const title = text(entry.title)
-  // NZBs appear later than the entry itself, so an entry without one is still processing.
-  if (!entry.nzb_url) return { kind: 'processing', provider: PROVIDER, entry_id: id, source_hash: requested, title }
+  // NZBs appear some hours after the entry itself, so a recent entry without one
+  // is still processing. An older one was never mirrored (AnimeTosho reports
+  // status "unknown" for those) and is absent rather than pending.
+  if (!entry.nzb_url) {
+    return isStillProcessing(entry)
+      ? { kind: 'processing', provider: PROVIDER, entry_id: id, source_hash: requested, title }
+      : { kind: 'no_match' }
+  }
   if (!ANIMETOSHO_ENTRY_PATTERN.test(id)) return failedLookup('invalid_response', 'AnimeTosho entry id was not usable')
 
   const files = Array.isArray(entry.files) ? entry.files.map(sourceFile) : undefined

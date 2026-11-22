@@ -172,5 +172,11 @@ export interface Status {
   next_check: number | null
   webhook_scan: { queued: boolean; due_at: number | null; sources: Array<'sonarr' | 'radarr'> }
   /** Background Usenet availability sweep; absent or not running when idle. */
-  usenet_prefetch?: { running: boolean; checked: number; total: number }
+  usenet_prefetch?: {
+    running: boolean
+    checked: number
+    total: number
+    /** Providers the sweep is waiting on after rate limiting or repeated failures. */
+    paused?: { provider: 'animetosho' | 'amenzb'; resume_in_seconds: number; rate_limited: boolean }[]
+  }
 }

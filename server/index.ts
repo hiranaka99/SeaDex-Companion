@@ -39,6 +39,10 @@ import type { Config, JsonObject } from './types.js'
 function clientAddress(request: IncomingMessage): string { return request.socket.remoteAddress || 'unknown' }
 
 const authArtwork = createAuthArtworkCache(resolve(DATA_DIR, 'auth-artwork.json'))
+/** Settings that change which provider answers lookups (and so invalidate in-flight work). */
+const USENET_PROVIDER_KEYS = ['animetosho_enabled', 'animetosho_url', 'amenzb_enabled', 'amenzb_url', 'amenzb_key'] as const
+/** Settings that only decide whether the background sweep runs. */
+const USENET_ELIGIBILITY_KEYS = ['download_mode', 'sabnzbd_url', 'sabnzbd_key'] as const
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -221,15 +225,18 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
   if (method === 'POST' && path === '/api/config') {
     const data = await readJson(request)
     let config: Config
-    try { config = applyConfigUpdate(loadConfig(), data) }
+    const previous = loadConfig()
+    try { config = applyConfigUpdate(previous, data) }
     catch (error) { return sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }) }
     const clearedSecrets = new Set<string>(Array.isArray(data.clear_secrets) ? data.clear_secrets.filter((key: unknown): key is string => typeof key === 'string' && SECRET_CONFIG_KEYS.some(secret => secret === key)) : [])
     saveConfig(config)
     invalidateQbSnapshots()
     bumpGeneration()
-    invalidateUsenetLookups(config)
+    // Unrelated settings must not cancel in-flight provider lookups or restart the sweep.
+    const providersChanged = USENET_PROVIDER_KEYS.some(key => previous[key] !== config[key])
+    if (providersChanged) invalidateUsenetLookups(config)
     invalidatePlans()
-    prefetchSavedResults(config)
+    if (providersChanged || USENET_ELIGIBILITY_KEYS.some(key => previous[key] !== config[key])) prefetchSavedResults(config)
     refreshAutocheckSchedule(config)
     const updatedSecrets = SECRET_CONFIG_KEYS.filter((key) => key in data && Boolean(String(data[key] || '').trim()))
     const integrationState = [

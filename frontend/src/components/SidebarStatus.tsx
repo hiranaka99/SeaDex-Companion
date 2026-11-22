@@ -1,6 +1,7 @@
 import { Status } from '../types'
 import { buttonBase, cx } from '../styles'
 import { displayDateTime } from '../datetime'
+import { usenetPauseText } from '../utils'
 import Icon from './Icons'
 
 interface Props {
@@ -75,7 +76,7 @@ export default function SidebarStatus({ status, scanCompleted, scanCancelledDism
             <span className="shrink-0 text-[0.6875rem] font-bold tabular-nums text-muted-dim">{usenet!.checked}/{usenet!.total}</span>
           </div>
           <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-panel-raised"><div className="h-full rounded-full bg-sky transition-[width] duration-500" style={{ width: `${Math.max(usenetProgress, 2)}%` }}/></div>
-          <div className="mt-1 text-[0.6875rem] text-muted-dim">Checking {usenet!.total} releases against the Usenet indexers.</div>
+          <div className="mt-1 text-[0.6875rem] text-muted-dim">{usenetPauseText(usenet!.paused) ?? `Checking ${usenet!.total} releases against the Usenet indexers.`}</div>
         </div>
       )}
     </div>

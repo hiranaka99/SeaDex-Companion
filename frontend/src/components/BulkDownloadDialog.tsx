@@ -68,7 +68,6 @@ function ReleaseSummary({ release }: { release: Release }) {
   const tags = [...new Set(release.tags || [])].filter(tag => tag && tag !== release.quality && (!release.dual_audio || tag !== 'Dual Audio'))
   return <span className="flex min-w-0 flex-wrap items-baseline gap-x-5 gap-y-1.5 text-xs wrap-anywhere">
     <span className="inline-flex items-baseline gap-1.5"><span className="text-muted">Group</span><strong className="font-semibold text-ink">{release.releaseGroup}</strong></span>
-    <span className="inline-flex items-baseline gap-1.5"><span className="text-muted">Tracker</span><span className="text-ink/85">{release.tracker}</span></span>
     {release.quality && <span className="inline-flex items-baseline gap-1.5"><span className="text-muted">Quality</span><span className="text-ink/85">{release.quality}</span></span>}
     {release.dual_audio && <span className="inline-flex items-baseline gap-1.5"><span className="text-muted">Audio</span><span className="text-ink/85">Dual Audio</span></span>}
     {tags.length > 0 && <span className="inline-flex min-w-0 items-baseline gap-1.5"><span className="shrink-0 text-muted">Tags</span><span className="text-ink/85">{tags.join(', ')}</span></span>}

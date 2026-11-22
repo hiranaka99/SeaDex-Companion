@@ -1,23 +1,42 @@
 import type { Config, ResultItem } from './types.js'
 import { sabnzbdApiUrl } from './config.js'
-import { currentGeneration } from './config-generation.js'
 import { log } from './logging.js'
 import { torrentHashes } from '../shared/download-plan.js'
 import { releaseIdentity } from '../shared/releases.js'
 import type { EstimatableRelease } from '../shared/download-estimate.js'
-import type { UsenetAvailabilityResult, UsenetHashAvailability, UsenetProvider, UsenetUnitState } from '../shared/usenet-contracts.js'
+import type { UsenetAvailabilityResult, UsenetFailureCode, UsenetHashAvailability, UsenetProvider, UsenetUnitState } from '../shared/usenet-contracts.js'
 import { lookupAnimeTosho, fetchAnimeToshoNzb } from './animetosho.js'
 import { lookupAmeNZB, fetchAmeNZBNzb } from './amenzb.js'
 import { HASH_PATTERN, LOOKUP_TIMEOUT_MS, type ProviderLookup, type ProviderSettings } from './usenet-provider-types.js'
 import { PersistentUsenetCache, providerFingerprint, usenetCacheKey } from './usenet-cache.js'
 
-const POSITIVE_TTL_MS = 24 * 60 * 60_000
-const NEGATIVE_TTL_MS = 60 * 60_000
-const PROCESSING_TTL_MS = 2 * 60_000
-const FAILURE_TTL_MS = 60_000
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+/** A usable source rarely disappears, and submission fetches and validates the real NZB anyway. */
+const POSITIVE_TTL_MS = 7 * DAY
+/** Consecutive absences back off: a source missing for weeks is unlikely to appear within the hour. */
+const NEGATIVE_TTL_STEPS_MS = [HOUR, 6 * HOUR, DAY, 7 * DAY]
+/** Recent AnimeTosho entries gain their NZB within hours; older ones are classified as absent. */
+const PROCESSING_TTL_MS = 10 * MINUTE
+const FAILURE_TTL_MS = MINUTE
 const LOOKUP_CONCURRENCY = 4
+/** Background work never holds the last slot, so an interactive lookup cannot queue behind slow sweeps. */
+const FOREGROUND_RESERVED_SLOTS = 1
 const LOOKUP_GUARD_MS = LOOKUP_TIMEOUT_MS + 5_000
 const FILE_NAME_LIMIT = 200
+/** Provider-wide pause after rate limiting or repeated transient failures. */
+let PAUSE_BASE_MS = 30_000
+const PAUSE_MAX_MS = 10 * MINUTE
+
+/** Test seam: the provider pause schedules real timers. */
+export function setUsenetPauseBaseMs(ms: number): void {
+  PAUSE_BASE_MS = ms
+}
+const TRANSIENT_FAILURES_BEFORE_PAUSE = 3
+/** Background lookups wait out a pause and retry instead of recording a failure. */
+const BACKGROUND_ATTEMPTS = 3
+const PROVIDER_LABEL: Record<UsenetProvider, string> = { animetosho: 'AnimeTosho', amenzb: 'AmeNZB' }
 
 /**
  * Minimum spacing between provider requests. Background sweeps run at these
@@ -51,6 +70,80 @@ interface LookupWaiter {
   job: LookupJob
   run: () => void
   cancel: () => void
+  /** Rejects a foreground waiter whose provider is paused, so interactive work fails fast. */
+  paused: (until: number) => void
+}
+
+interface ProviderHealth {
+  /** No request to this provider starts before this time. */
+  pausedUntil: number
+  /** Failure kind that caused the current pause. */
+  reason?: UsenetFailureCode
+  /** Consecutive transient failures since the last provider answer. */
+  failures: number
+  /** Consecutive pauses since the last provider answer; drives exponential backoff. */
+  pauses: number
+}
+const providerHealth: Record<UsenetProvider, ProviderHealth> = {
+  animetosho: { pausedUntil: 0, failures: 0, pauses: 0 },
+  amenzb: { pausedUntil: 0, failures: 0, pauses: 0 },
+}
+
+class ProviderPausedError extends Error {
+  constructor(readonly provider: UsenetProvider, readonly until: number) { super(`${PROVIDER_LABEL[provider]} is paused`) }
+}
+
+function isPaused(provider: UsenetProvider, now = Date.now()): boolean {
+  return now < providerHealth[provider].pausedUntil
+}
+
+function describeWait(ms: number): string {
+  const seconds = Math.max(1, Math.ceil(ms / 1000))
+  if (seconds < 90) return `${seconds} seconds`
+  return `${Math.ceil(seconds / 60)} minutes`
+}
+
+function pausedFailure(provider: UsenetProvider, until: number): Extract<ProviderLookup, { kind: 'failed' }> {
+  const health = providerHealth[provider]
+  const remaining = Math.max(0, until - Date.now())
+  const cause = health.reason === 'rate_limited' ? 'is rate limiting lookups' : 'lookups are failing'
+  return { kind: 'failed', code: health.reason || 'network', message: `${PROVIDER_LABEL[provider]} ${cause}; retrying in about ${describeWait(remaining)}`, retry_after_ms: remaining }
+}
+
+const TRANSIENT_CODES = new Set<UsenetFailureCode>(['network', 'timeout', 'server', 'rate_limited'])
+
+/** Track provider health from real provider answers and pause the provider when it pushes back. */
+function recordProviderOutcome(provider: UsenetProvider, lookup: ProviderLookup): void {
+  const health = providerHealth[provider]
+  if (lookup.kind !== 'failed') {
+    health.failures = 0
+    health.pauses = 0
+    return
+  }
+  if (!TRANSIENT_CODES.has(lookup.code)) return
+  health.failures++
+  if (lookup.code !== 'rate_limited' && health.failures < TRANSIENT_FAILURES_BEFORE_PAUSE) return
+  const now = Date.now()
+  const requested = lookup.retry_after_ms || 0
+  // Concurrent requests that fail together escalate the pause only once.
+  if (isPaused(provider, now)) {
+    health.pausedUntil = Math.max(health.pausedUntil, now + requested)
+    return
+  }
+  const delay = Math.max(requested, Math.min(PAUSE_BASE_MS * 2 ** health.pauses, PAUSE_MAX_MS))
+  health.pausedUntil = now + delay
+  health.reason = lookup.code
+  health.pauses++
+  health.failures = 0
+  log('WARNING', `${PROVIDER_LABEL[provider]} ${lookup.code === 'rate_limited' ? 'rate limited' : 'failed'} Usenet lookups; pausing that provider for ${describeWait(delay)}`)
+}
+
+/** Active provider pauses, for status reporting. */
+export function usenetProviderPauses(): { provider: UsenetProvider; until: number; reason: UsenetFailureCode }[] {
+  const now = Date.now()
+  return (['animetosho', 'amenzb'] as UsenetProvider[])
+    .filter(provider => isPaused(provider, now))
+    .map(provider => ({ provider, until: providerHealth[provider].pausedUntil, reason: providerHealth[provider].reason || 'network' }))
 }
 
 /** Assign global capacity only when a provider request can actually start. */
@@ -59,11 +152,21 @@ function pumpLookups(): void {
     clearTimeout(pacer.timer)
     pacer.timer = undefined
   }
+  const startedAt = Date.now()
+  for (const entry of [...waitingForSlot]) {
+    if (entry.job.background || !isPaused(entry.job.provider, startedAt)) continue
+    waitingForSlot.splice(waitingForSlot.indexOf(entry), 1)
+    entry.job.controller.signal.removeEventListener('abort', entry.cancel)
+    entry.paused(providerHealth[entry.job.provider].pausedUntil)
+  }
   while (activeLookups < LOOKUP_CONCURRENCY && waitingForSlot.length) {
     const now = Date.now()
-    const ready = (entry: LookupWaiter) => now >= providerPacers[entry.job.provider].lastStartedAt + PROVIDER_MIN_INTERVAL_MS[entry.job.provider]
+    const ready = (entry: LookupWaiter) => {
+      const provider = entry.job.provider
+      return now >= providerPacers[provider].lastStartedAt + PROVIDER_MIN_INTERVAL_MS[provider] && !isPaused(provider, now)
+    }
     let index = waitingForSlot.findIndex(entry => !entry.job.background && ready(entry))
-    if (index === -1) index = waitingForSlot.findIndex(ready)
+    if (index === -1 && activeLookups < LOOKUP_CONCURRENCY - FOREGROUND_RESERVED_SLOTS) index = waitingForSlot.findIndex(ready)
     if (index === -1) break
     const entry = waitingForSlot.splice(index, 1)[0]
     entry.job.controller.signal.removeEventListener('abort', entry.cancel)
@@ -72,10 +175,13 @@ function pumpLookups(): void {
     entry.run()
   }
   if (activeLookups >= LOOKUP_CONCURRENCY) return
+  // Background waiters held back by the reserved slot need no timer: an active
+  // lookup exists and its releaseSlot pumps again. A timer for them would only spin.
+  const backgroundBlocked = activeLookups >= LOOKUP_CONCURRENCY - FOREGROUND_RESERVED_SLOTS
   for (const provider of ['animetosho', 'amenzb'] as UsenetProvider[]) {
-    if (!waitingForSlot.some(entry => entry.job.provider === provider)) continue
+    if (!waitingForSlot.some(entry => entry.job.provider === provider && (!entry.job.background || !backgroundBlocked))) continue
     const pacer = providerPacers[provider]
-    const wait = Math.max(0, pacer.lastStartedAt + PROVIDER_MIN_INTERVAL_MS[provider] - Date.now())
+    const wait = Math.max(0, pacer.lastStartedAt + PROVIDER_MIN_INTERVAL_MS[provider] - Date.now(), providerHealth[provider].pausedUntil - Date.now())
     pacer.timer = setTimeout(() => { pacer.timer = undefined; pumpLookups() }, wait)
   }
 }
@@ -156,10 +262,14 @@ export function resetUsenetLookups(restoreFromDisk = false): void {
   cancelUsenetWork()
   cache.reset(restoreFromDisk)
   for (const pacer of Object.values(providerPacers)) pacer.lastStartedAt = 0
+  for (const health of Object.values(providerHealth)) Object.assign(health, { pausedUntil: 0, failures: 0, pauses: 0, reason: undefined })
   lastFailureLogged.clear()
 }
 
 export function flushUsenetCache(): boolean { return cache.flush() }
+
+/** Forget observations for source hashes that no current result references. */
+export function retainUsenetHashes(hashes: ReadonlySet<string>): number { return cache.retainHashes(hashes) }
 
 function acquireSlot(job: LookupJob): Promise<void> {
   const { promise, resolve, reject } = Promise.withResolvers<void>()
@@ -173,6 +283,7 @@ function acquireSlot(job: LookupJob): Promise<void> {
       reject(job.controller.signal.reason)
       pumpLookups()
     },
+    paused: until => reject(new ProviderPausedError(job.provider, until)),
   }
   job.controller.signal.addEventListener('abort', entry.cancel, { once: true })
   waitingForSlot.push(entry)
@@ -194,11 +305,27 @@ async function cancelableLookup<T>(work: Promise<T>, signal: AbortSignal): Promi
   finally { signal.removeEventListener('abort', cancel) }
 }
 
-function ttlFor(lookup: ProviderLookup): number {
+const isAbsence = (lookup: ProviderLookup | undefined) => lookup?.kind === 'no_match' || lookup?.kind === 'deleted'
+
+function ttlFor(lookup: ProviderLookup, negativeStreak = 1): number {
   if (lookup.kind === 'match') return POSITIVE_TTL_MS
   if (lookup.kind === 'processing') return PROCESSING_TTL_MS
-  if (lookup.kind === 'no_match' || lookup.kind === 'deleted') return NEGATIVE_TTL_MS
+  if (isAbsence(lookup)) return NEGATIVE_TTL_STEPS_MS[Math.min(Math.max(negativeStreak, 1), NEGATIVE_TTL_STEPS_MS.length) - 1]
   return FAILURE_TTL_MS
+}
+
+/** Run one provider request, turning unexpected errors into a typed failure. Cancellation propagates. */
+async function requestLookup(provider: UsenetProvider, settings: ProviderSettings, hash: string, signal: AbortSignal): Promise<ProviderLookup> {
+  try {
+    return await raceWithWallClockGuard(
+      cancelableLookup(provider === 'animetosho' ? lookupAnimeTosho(settings, hash, globalThis.fetch) : lookupAmeNZB(settings, hash, globalThis.fetch), signal),
+      LOOKUP_GUARD_MS,
+    )
+  } catch (error) {
+    if (signal.aborted) throw error
+    logProviderFailure(provider, error instanceof Error ? error.message.slice(0, 160) : 'unknown error')
+    return { kind: 'failed', code: 'network', message: 'Provider lookup failed' }
+  }
 }
 
 async function providerLookup(config: Config, provider: UsenetProvider, hash: string, refresh: boolean, background: boolean): Promise<LookupResult> {
@@ -214,49 +341,54 @@ async function providerLookup(config: Config, provider: UsenetProvider, hash: st
     }
     const hit = cache.get(key)
     if (hit?.failure && Date.now() < hit.retryAt) return { lookup: hit.failure, checkedAt: 0 }
-    if (hit?.lookup && !hit.failure && Date.now() - hit.checkedAt < ttlFor(hit.lookup)) return { lookup: hit.lookup, checkedAt: hit.checkedAt }
+    if (hit?.lookup && !hit.failure && Date.now() - hit.checkedAt < ttlFor(hit.lookup, hit.negativeStreak)) return { lookup: hit.lookup, checkedAt: hit.checkedAt }
   }
   if (refresh) inFlight.get(key)?.job.controller.abort()
   const job: LookupJob = { provider, background, controller: new AbortController() }
   settings.signal = job.controller.signal
-  const generation = currentGeneration()
   const epoch = lookupEpoch
   const work = (async (): Promise<ProviderLookup | { kind: 'cancelled' }> => {
-    let acquired = false
     try {
-      await acquireSlot(job)
-      acquired = true
-      job.controller.signal.throwIfAborted()
-      return await raceWithWallClockGuard(
-        cancelableLookup(
-          provider === 'animetosho'
-            ? lookupAnimeTosho(settings, hash, globalThis.fetch)
-            : lookupAmeNZB(settings, hash, globalThis.fetch),
-          job.controller.signal,
-        ),
-        LOOKUP_GUARD_MS,
-      )
+      for (let attempt = 1; ; attempt++) {
+        await acquireSlot(job)
+        let lookup: ProviderLookup
+        try {
+          job.controller.signal.throwIfAborted()
+          lookup = await requestLookup(provider, settings, hash, job.controller.signal)
+        } finally {
+          releaseSlot()
+        }
+        recordProviderOutcome(provider, lookup)
+        // Background work waits out a provider pause rather than recording a transient failure.
+        if (lookup.kind === 'failed' && job.background && attempt < BACKGROUND_ATTEMPTS && TRANSIENT_CODES.has(lookup.code) && isPaused(provider)) continue
+        return lookup
+      }
     } catch (error) {
+      if (error instanceof ProviderPausedError) return pausedFailure(provider, error.until)
       if (job.controller.signal.aborted) return { kind: 'cancelled' }
       logProviderFailure(provider, error instanceof Error ? error.message.slice(0, 160) : 'unknown error')
       return { kind: 'failed', code: 'network', message: 'Provider lookup failed' }
-    } finally {
-      if (acquired) releaseSlot()
     }
   })()
   const flight: { promise: Promise<LookupResult>; job: LookupJob } = {
     job,
     promise: work.then((lookup): LookupResult => {
-      if (lookup.kind === 'cancelled' || inFlight.get(key) !== flight || currentGeneration() !== generation || lookupEpoch !== epoch || job.controller.signal.aborted) return { kind: 'cancelled' }
+      if (lookup.kind === 'cancelled' || inFlight.get(key) !== flight || lookupEpoch !== epoch || job.controller.signal.aborted) return { kind: 'cancelled' }
       const at = Date.now()
       const previous = cache.get(key)
       if (lookup.kind === 'failed') {
         logProviderFailure(provider, lookup.message)
-        cache.set({ provider, fingerprint, hash, checkedAt: previous?.checkedAt || 0, lastAttemptAt: at, retryAt: at + FAILURE_TTL_MS, ...(previous?.lookup ? { lookup: previous.lookup } : {}), failure: lookup }, settings)
+        const retryAt = at + Math.max(FAILURE_TTL_MS, lookup.retry_after_ms || 0, providerHealth[provider].pausedUntil - at)
+        cache.set({
+          provider, fingerprint, hash, checkedAt: previous?.checkedAt || 0, lastAttemptAt: at, retryAt,
+          ...(previous?.lookup ? { lookup: previous.lookup } : {}), failure: lookup,
+          ...(previous?.negativeStreak ? { negativeStreak: previous.negativeStreak } : {}),
+        }, settings)
         job.controller.abort()
         return { lookup, checkedAt: 0 }
       }
-      cache.set({ provider, fingerprint, hash, checkedAt: at, lastAttemptAt: at, retryAt: 0, lookup }, settings)
+      const negativeStreak = isAbsence(lookup) ? (isAbsence(previous?.lookup) ? previous?.negativeStreak || 1 : 0) + 1 : 0
+      cache.set({ provider, fingerprint, hash, checkedAt: at, lastAttemptAt: at, retryAt: 0, lookup, ...(negativeStreak ? { negativeStreak } : {}) }, settings)
       return { lookup, checkedAt: at }
     }).finally(() => {
       if (inFlight.get(key) === flight) inFlight.delete(key)
@@ -298,7 +430,6 @@ function availabilityMetadata(states: UsenetHashAvailability[]): Pick<UsenetAvai
 async function resolveHash(config: Config, hash: string, refresh: boolean, background: boolean, ownsWork = () => true): Promise<UsenetHashAvailability> {
   if (!HASH_PATTERN.test(hash)) return { hash, state: 'unsupported_hash' }
   const epoch = lookupEpoch
-  const generation = currentGeneration()
   const enabled = usenetProvidersEnabled(config)
   const queried: UsenetHashAvailability[] = []
   const providersFailed: UsenetProvider[] = []
@@ -306,7 +437,7 @@ async function resolveHash(config: Config, hash: string, refresh: boolean, backg
     if (!enabled[provider]) continue
     if (!ownsWork()) return { hash, state: 'lookup_failed', error_code: 'network', error: 'lookup cancelled' }
     const result = await providerLookup(config, provider, hash, refresh, background)
-    if ('kind' in result || epoch !== lookupEpoch || generation !== currentGeneration() || !ownsWork()) {
+    if ('kind' in result || epoch !== lookupEpoch || !ownsWork()) {
       return { hash, state: 'lookup_failed', error_code: 'network', error: 'lookup cancelled' }
     }
     const state = { ...hashState(provider, result.lookup), hash, checked_at: result.checkedAt ? new Date(result.checkedAt).toISOString() : '', stale: false, refreshing: false }
@@ -374,7 +505,7 @@ function hashSnapshot(config: Config, hash: string): { result: UsenetHashAvailab
   const now = Date.now()
   for (const { provider, key } of keys) {
     const record = cache.get(key)
-    const stale = Boolean(record?.lookup && (record.failure || now - record.checkedAt >= ttlFor(record.lookup)))
+    const stale = Boolean(record?.lookup && (record.failure || now - record.checkedAt >= ttlFor(record.lookup, record.negativeStreak)))
     const running = inFlight.has(key)
     if (!record || ((stale || !record.lookup) && now >= record.retryAt)) needsRefresh = true
     if (!record?.lookup && !record?.failure) unknown = true
@@ -450,6 +581,7 @@ export async function usenetAvailability(config: Config, selections: { key: stri
 /** Server-side NZB retrieval for an accepted submission. Never trusts browser-supplied URLs. */
 export async function fetchUsenetNzb(config: Config, provider: UsenetProvider, entryId: string, sourceHash: string): Promise<Uint8Array> {
   const result = await providerLookup(config, provider, sourceHash, false, false)
+  if (!('kind' in result) && result.lookup.kind === 'failed' && result.lookup.code === 'rate_limited') throw new Error(result.lookup.message)
   if ('kind' in result || result.lookup.kind !== 'match' || result.lookup.match.entry_id !== entryId) throw new Error('The provider mirror for this download is no longer available. Re-run the review before submitting.')
   const lookup = result.lookup
   const settings = providerSettings(config, provider)

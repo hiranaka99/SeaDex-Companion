@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { bumpGeneration } from '../server/config-generation.js'
-import { PersistentUsenetCache, USENET_CACHE_FILE, providerFingerprint, usenetCacheKey, type UsenetCacheRecord } from '../server/usenet-cache.js'
+import { PersistentUsenetCache, USENET_CACHE_FILE, USENET_CACHE_LIMIT, providerFingerprint, usenetCacheJournalFile, usenetCacheKey, type UsenetCacheRecord } from '../server/usenet-cache.js'
 import { fetchUsenetNzb, flushUsenetCache, invalidateUsenetLookups, resetUsenetLookups, resolveUsenetHash, resolveUsenetRelease, setUsenetProviderMinIntervalMs, usenetAvailability } from '../server/usenet.js'
 import type { Config, Release, ResultItem } from '../server/types.js'
 import type { UsenetAvailabilityResult } from '../shared/usenet-contracts.js'
@@ -20,6 +20,8 @@ const HASH = 'c'.repeat(40)
 const OTHER = 'd'.repeat(40)
 const THIRD = 'e'.repeat(40)
 const HOUR = 60 * 60_000
+const DAY = 24 * HOUR
+const JOURNAL = usenetCacheJournalFile(USENET_CACHE_FILE)
 const settings = { baseUrl: 'https://cache-provider.test', apiKey: 'private-key' }
 const fingerprint = providerFingerprint('animetosho', settings)
 
@@ -43,6 +45,8 @@ async function fixture(t: TestContext, run: (state: {
 }) => Promise<void>): Promise<void> {
   const originalFetch = globalThis.fetch
   const stored = fs.existsSync(USENET_CACHE_FILE) ? fs.readFileSync(USENET_CACHE_FILE) : undefined
+  const storedJournal = fs.existsSync(JOURNAL) ? fs.readFileSync(JOURNAL) : undefined
+  fs.rmSync(JOURNAL, { force: true })
   let now = 1_800_000_000_000
   t.mock.method(Date, 'now', () => now)
   const calls: URL[] = []
@@ -70,6 +74,8 @@ async function fixture(t: TestContext, run: (state: {
     globalThis.fetch = originalFetch
     if (stored) fs.writeFileSync(USENET_CACHE_FILE, stored)
     else fs.rmSync(USENET_CACHE_FILE, { force: true })
+    if (storedJournal) fs.writeFileSync(JOURNAL, storedJournal)
+    else fs.rmSync(JOURNAL, { force: true })
     fs.rmSync(`${USENET_CACHE_FILE}.tmp`, { force: true })
   }
 }
@@ -148,7 +154,7 @@ test('a provider observation visible before abrupt process exit restores without
 test('stale and mixed snapshots return last-known rows before delayed, deduplicated refreshes finish', async t => {
   await fixture(t, async state => {
     const checked = await resolveUsenetHash(config(), HASH)
-    state.advance(25 * HOUR)
+    state.advance(8 * DAY)
     const pending = new Map<string, { promise: Promise<Response>; resolve(response: Response): void }>()
     state.respond(url => {
       const hash = url.searchParams.get('hash')!
@@ -181,7 +187,7 @@ test('stale and mixed snapshots return last-known rows before delayed, deduplica
 test('failed refreshes retain stable observations and stop polling work until backoff or an explicit retry', async t => {
   await fixture(t, async state => {
     const checked = await resolveUsenetHash(config(), HASH)
-    state.advance(25 * HOUR)
+    state.advance(8 * DAY)
     state.respond(() => new Response('unavailable', { status: 503 }))
     assert.equal((await state.snapshot()).aggregate, 'available')
     await nextTurn()
@@ -227,7 +233,7 @@ test('processing, absence, failures, and new hashes use distinct retry intervals
     await nextTurn()
     assert.equal(state.calls.filter(url => url.searchParams.get('hash') === THIRD).length, 2)
     processing = false
-    state.advance(60_000)
+    state.advance(10 * 60_000)
     const stale = await state.snapshot([HASH, OTHER])
     assert.deepEqual(stale.hashes.map(hash => hash.state), ['processing', 'no_match'])
     await nextTurn()
@@ -298,7 +304,7 @@ test('provider URL and key changes remove only incompatible records while unrela
 test('authoritative stale checks wait for refreshed facts rather than accepting retained matches', async t => {
   await fixture(t, async state => {
     await resolveUsenetHash(config(), HASH)
-    state.advance(25 * HOUR)
+    state.advance(8 * DAY)
     const pending = Promise.withResolvers<Response>()
     state.respond(() => pending.promise)
     let finished = false
@@ -315,7 +321,7 @@ test('authoritative stale checks wait for refreshed facts rather than accepting 
 test('an explicit retry cancels an old background refresh without letting its late absence overwrite the new match', async t => {
   await fixture(t, async state => {
     await resolveUsenetHash(config(), HASH)
-    state.advance(25 * HOUR)
+    state.advance(8 * DAY)
     const old = Promise.withResolvers<Response>()
     state.respond(() => old.promise)
     await state.snapshot()
@@ -352,17 +358,25 @@ test('observations checkpoint before exposure, failure metadata batches, and per
     provider: 'animetosho', fingerprint, hash: HASH, checkedAt: 100, lastAttemptAt: 100, retryAt: 0,
     lookup: { kind: 'match', match: { provider: 'animetosho', entry_id: '123', source_hash: HASH, title: 'Title private-key https://host.test/path?apikey=private-key', files_complete: true, file_count: 205, files: Array.from({ length: 205 }, (_, index) => ({ name: `Show ${index}.mkv`, size: 100 })) } },
   }
+  const journal = usenetCacheJournalFile(file)
   try {
     cache.set(record, settings)
-    assert.equal(fs.existsSync(file), true)
+    assert.equal(fs.existsSync(file), false, 'an observation does not rewrite the snapshot')
+    const journaled = fs.readFileSync(journal, 'utf8')
+    assert.equal(journaled.split('\n').filter(Boolean).length, 1, 'the observation is journaled before exposure')
+    assert.equal(journaled.includes('private-key'), false)
+    assert.equal(journaled.includes('https://'), false)
+    const key = usenetCacheKey('animetosho', fingerprint, HASH)
+    cache.reset(true)
+    assert.equal(cache.get(key)?.lookup?.kind, 'match', 'a journaled observation restores without a snapshot')
     assert.equal(cache.flush(), true)
+    assert.equal(fs.existsSync(journal), false, 'compaction truncates the journal')
     const saved = fs.readFileSync(file, 'utf8')
     assert.equal(saved.includes('private-key'), false)
     assert.equal(saved.includes('https://'), false)
     assert.equal(saved.includes('nzb_url'), false)
     assert.equal(saved.includes('segments'), false)
     cache.reset(true)
-    const key = usenetCacheKey('animetosho', fingerprint, HASH)
     const restored = cache.get(key)!
     assert.equal(restored.lookup?.kind, 'match')
     if (restored.lookup?.kind === 'match') assert.equal(restored.lookup.match.files?.length, 205)
@@ -371,6 +385,7 @@ test('observations checkpoint before exposure, failure metadata batches, and per
     assert.equal(fs.statSync(file).mtimeMs, beforeRead)
     cache.set({ ...record, lastAttemptAt: 150, retryAt: 250, failure: { kind: 'failed', code: 'server', message: 'private-key' } }, settings)
     assert.equal(fs.readFileSync(file, 'utf8'), saved)
+    assert.equal(fs.existsSync(journal), false, 'failure metadata is batched rather than journaled')
     fs.writeFileSync = ((path: fs.PathOrFileDescriptor, ...args: unknown[]) => {
       if (String(path) === `${file}.tmp`) throw new Error('cache write refused')
       return Reflect.apply(write, fs, [path, ...args])
@@ -392,20 +407,82 @@ test('observations checkpoint before exposure, failure metadata batches, and per
   }
 })
 
-test('capacity remains bounded at 4000 records without age eviction', () => {
+test('capacity remains a bounded safety limit without age eviction', () => {
   const directory = fs.mkdtempSync(join(tmpdir(), 'usenet-cache-bound-'))
   const file = join(directory, 'cache.json')
   const cache = new PersistentUsenetCache(file)
   try {
-    const records = Array.from({ length: 4001 }, (_, index) => ({ provider: 'animetosho', fingerprint, hash: index.toString(16).padStart(40, '0'), checkedAt: index + 1, lastAttemptAt: index + 1, retryAt: 0, lookup: { kind: 'no_match' } }))
+    const records = Array.from({ length: USENET_CACHE_LIMIT + 1 }, (_, index) => ({ provider: 'animetosho', fingerprint, hash: index.toString(16).padStart(40, '0'), checkedAt: index + 1, lastAttemptAt: index + 1, retryAt: 0, lookup: { kind: 'no_match' } }))
     fs.writeFileSync(file, JSON.stringify({ version: 1, records }))
     assert.equal(cache.get(usenetCacheKey('animetosho', fingerprint, '0'.repeat(40))), undefined)
     assert.equal(cache.get(usenetCacheKey('animetosho', fingerprint, '1'.padStart(40, '0')))?.lookup?.kind, 'no_match')
-    cache.set({ provider: 'animetosho', fingerprint, hash: HASH, checkedAt: 5000, lastAttemptAt: 5000, retryAt: 0, lookup: { kind: 'no_match' } }, settings)
-    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).records.length, 4000)
+    cache.set({ provider: 'animetosho', fingerprint, hash: HASH, checkedAt: 50_000, lastAttemptAt: 50_000, retryAt: 0, lookup: { kind: 'no_match' } }, settings)
+    assert.equal(cache.flush(), true)
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).records.length, USENET_CACHE_LIMIT)
     cache.reset(true)
     assert.equal(cache.get(usenetCacheKey('animetosho', fingerprint, HASH))?.lookup?.kind, 'no_match')
   } finally { cache.reset(); fs.rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('pruning by referenced hashes and a torn journal tail keep only valid, current observations', () => {
+  const directory = fs.mkdtempSync(join(tmpdir(), 'usenet-cache-prune-'))
+  const file = join(directory, 'cache.json')
+  const cache = new PersistentUsenetCache(file)
+  const record = (hash: string, at: number): UsenetCacheRecord => ({ provider: 'animetosho', fingerprint, hash, checkedAt: at, lastAttemptAt: at, retryAt: 0, lookup: { kind: 'no_match' }, negativeStreak: 2 })
+  try {
+    cache.set(record(HASH, 100), settings)
+    cache.set(record(OTHER, 100), settings)
+    fs.appendFileSync(usenetCacheJournalFile(file), '{"provider":"animetosho","finger')
+    cache.reset(true)
+    assert.equal(cache.size, 2, 'a torn final journal line is skipped')
+    assert.equal(cache.get(usenetCacheKey('animetosho', fingerprint, HASH))?.negativeStreak, 2)
+    assert.equal(cache.retainHashes(new Set([HASH])), 1)
+    assert.equal(cache.flush(), true)
+    cache.reset(true)
+    assert.equal(cache.get(usenetCacheKey('animetosho', fingerprint, OTHER)), undefined)
+    assert.equal(cache.get(usenetCacheKey('animetosho', fingerprint, HASH))?.lookup?.kind, 'no_match')
+  } finally { cache.reset(); fs.rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('repeated absences lengthen the refresh interval and a match resets it', async t => {
+  await fixture(t, async state => {
+    state.respond(() => new Response('gone', { status: 404 }))
+    const lookupsAfter = async (ms: number) => {
+      state.advance(ms)
+      await state.snapshot()
+      await nextTurn()
+      return state.calls.length
+    }
+    await resolveUsenetHash(config(), HASH)
+    assert.equal(await lookupsAfter(HOUR + 1), 2, 'the first absence is rechecked after an hour')
+    assert.equal(await lookupsAfter(HOUR + 1), 2, 'the second absence waits longer than an hour')
+    assert.equal(await lookupsAfter(5 * HOUR), 3, 'the second absence is rechecked after six hours')
+    assert.equal(await lookupsAfter(6 * HOUR + 1), 3, 'the third absence waits a day')
+    assert.equal(await lookupsAfter(18 * HOUR), 4)
+    assert.equal(await lookupsAfter(DAY + 1), 4, 'the fourth absence waits a week')
+    state.respond(() => match())
+    assert.equal(await lookupsAfter(6 * DAY), 5)
+    assert.equal((await state.snapshot()).aggregate, 'available')
+    state.respond(() => new Response('gone', { status: 404 }))
+    assert.equal(await lookupsAfter(7 * DAY + 1), 6)
+    assert.equal(await lookupsAfter(HOUR + 1), 7, 'a match resets the absence back-off')
+  })
+})
+
+test('AnimeTosho entries without an NZB are processing only while recent', async t => {
+  await fixture(t, async () => {
+    const now = Date.now()
+    const entry = (extra: Record<string, unknown>) => Response.json({ id: 123, info_hash: HASH, nzb_url: null, ...extra })
+    const lookup = async (response: Response) => {
+      resetUsenetLookups()
+      globalThis.fetch = (async () => response) as typeof fetch
+      return (await resolveUsenetHash(config(), HASH)).state
+    }
+    assert.equal(await lookup(entry({ status: 'unknown', timestamp: Math.floor(now / 1000) - 400 * 24 * 3600 })), 'no_match', 'an old unmirrored entry is absent')
+    assert.equal(await lookup(entry({ status: 'unknown', timestamp: Math.floor(now / 1000) - 3600 })), 'processing', 'a recent entry is still processing')
+    assert.equal(await lookup(entry({ status: 'processing', timestamp: Math.floor(now / 1000) - 400 * 24 * 3600 })), 'processing', 'an explicit processing status wins')
+    assert.equal(await lookup(entry({})), 'processing', 'an entry without a timestamp stays conservative')
+  })
 })
 
 test('multi-hash snapshots report the oldest observation instead of the snapshot-read time', async t => {

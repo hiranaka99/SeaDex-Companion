@@ -1,6 +1,18 @@
 import { isSeasonUpgradable } from '../../shared/download-plan.js'
 import type { CardStatus, GroupedCard, ResultItem } from './types.js'
 
+const USENET_PROVIDER_NAMES = { animetosho: 'AnimeTosho', amenzb: 'AmeNZB' } as const
+
+/** Short explanation for a background Usenet sweep that is waiting on a paused provider. */
+export function usenetPauseText(paused: { provider: keyof typeof USENET_PROVIDER_NAMES; resume_in_seconds: number; rate_limited: boolean }[] | undefined): string | null {
+  if (!paused?.length) return null
+  const longest = Math.max(...paused.map(pause => pause.resume_in_seconds))
+  const wait = longest < 90 ? `${longest}s` : `${Math.ceil(longest / 60)} min`
+  const names = paused.map(pause => USENET_PROVIDER_NAMES[pause.provider]).join(' and ')
+  const cause = paused.every(pause => pause.rate_limited) ? 'rate limiting' : 'not responding'
+  return `${names} ${paused.length > 1 ? 'are' : 'is'} ${cause}. Resuming in about ${wait}.`
+}
+
 /** Badge text shown on each card banner. */
 export const STATUS_LABEL: Record<CardStatus, string> = {
   upgrade: 'Upgradable',
