@@ -12,9 +12,12 @@ const AMENZB: ProviderSettings = { baseUrl: 'https://amenzb.example', apiKey: AP
 const ANIMETOSHO_MATCH: UsenetMatch = { provider: 'animetosho', entry_id: '42', source_hash: HASH, files_complete: false }
 const AMENZB_MATCH: UsenetMatch = { provider: 'amenzb', entry_id: 'abc123def', source_hash: HASH, files_complete: false }
 
-const NZB_XML = '<?xml version="1.0" encoding="UTF-8"?>\n<nzb creationDate="2026-01-01T00:00:00Z">\n'
-  + '  <file subject="Show S01E01 [1080p]" group="alt.binaries" poster="a@example.com" bytes="1000" segments="2">\n'
-  + '    <segment bytes="500" n="1">aaa111</segment>\n    <segment bytes="500" n="2">bbb222</segment>\n'
+const NZB_DOCTYPE = '<!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd">'
+const NZB_XML = '<?xml version="1.0" encoding="UTF-8"?>\n' + NZB_DOCTYPE + '\n<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">\n'
+  + '  <file subject="Show S01E01 [1080p]" poster="a@example.com" date="1767225600">\n'
+  + '    <groups><group>alt.binaries</group></groups>\n'
+  + '    <segments><segment bytes="500" number="1">aaa111@example.com</segment>\n'
+  + '      <segment bytes="500" number="2">bbb222@example.com</segment></segments>\n'
   + '  </file>\n</nzb>\n'
 const NZB_BYTES = new TextEncoder().encode(NZB_XML)
 
@@ -106,6 +109,7 @@ test('AnimeTosho matches a hash with case-insensitive agreement and a full file 
     title: 'Show S01E01',
     nzb_name: 'Show [S01] 01 [1080p]',
     total_bytes: 123456789,
+    file_count: 2,
     files: [{ name: 'Show 01.mkv', size: 100 }, { name: 'Show 01.nfo', size: 20 }],
     files_complete: true,
   })
@@ -165,6 +169,27 @@ test('An AnimeTosho NZB is usable before unrelated processing completes', async 
   assert.equal(lookup.match.total_bytes, 5000)
   assert.equal(lookup.match.files_complete, false)
   assert.equal(lookup.match.files, undefined, 'an incomplete manifest is never reported as complete')
+})
+
+test('AnimeTosho never labels a filtered or truncated file manifest complete', async () => {
+  const valid = { name: 'Show 01.mkv', size: 100 }
+  const malformed = [null, {}, { name: ' ', size: 1 }, { name: 'bad.mkv', size: -1 }, { name: 'bad.mkv', size: null }, { name: 'bad.mkv', size: 1.5 }]
+  for (const invalid of malformed) {
+    const lookup = await lookupAnimeTosho(ANIMETOSHO, HASH, recorder(() => Response.json({
+      id: 9, info_hash: HASH, nzb_url: '/nzb/9', num_files: 2, files: [valid, invalid],
+    })).fetchImpl)
+    assert.ok(lookup.kind === 'match')
+    assert.equal(lookup.match.files_complete, false)
+    assert.equal(lookup.match.files, undefined)
+    assert.equal(lookup.match.file_count, 2)
+  }
+  const truncated = await lookupAnimeTosho(ANIMETOSHO, HASH, recorder(() => Response.json({
+    id: 9, info_hash: HASH, nzb_url: '/nzb/9', num_files: 3, files: [valid],
+  })).fetchImpl)
+  assert.ok(truncated.kind === 'match')
+  assert.equal(truncated.match.files_complete, false)
+  assert.equal(truncated.match.files, undefined)
+  assert.equal(truncated.match.file_count, 3)
 })
 
 test('AnimeTosho deleted and skipped entries are not downloadable', async () => {
@@ -229,11 +254,11 @@ test('AnimeTosho NZB retrieval rejects HTML and non-NZB XML before submission', 
     /wrong root element/,
   )
   await assert.rejects(
-    fetchAnimeToshoNzb(ANIMETOSHO, ANIMETOSHO_MATCH, recorder(() => new Response(NZB_XML.replace(/<segment[\s\S]*?<\/segment>/g, ''))).fetchImpl),
+    fetchAnimeToshoNzb(ANIMETOSHO, ANIMETOSHO_MATCH, recorder(() => new Response(NZB_XML.replace(/<segment[\s>][\s\S]*?<\/segment>/g, ''))).fetchImpl),
     /no segments/,
   )
   await assert.rejects(
-    fetchAmeNZBNzb(AMENZB, AMENZB_MATCH, recorder(() => new Response('<nzb><file><segment bytes="1" n="1">abc')).fetchImpl),
+    fetchAmeNZBNzb(AMENZB, AMENZB_MATCH, recorder(() => new Response('<nzb><file><segments><segment bytes="1" number="1">abc')).fetchImpl),
     /not valid XML/,
   )
   await assert.rejects(
@@ -454,12 +479,38 @@ test('A declared length over the cap is rejected before the body is read', async
   assert.equal(calls.length, 1)
 })
 
-test('validateNzbBytes accepts a real NZB and rejects markup and empty manifests', () => {
+test('validateNzbBytes accepts nested standard NZBs and a public DTD without fetching it', () => {
+  const encode = (xml: string) => new TextEncoder().encode(xml)
   assert.doesNotThrow(() => validateNzbBytes(NZB_BYTES))
-  assert.throws(() => validateNzbBytes(new TextEncoder().encode('<!DOCTYPE nzb [<!ENTITY x "y">]><nzb><file><segment bytes="1" n="1">a</segment></file></nzb>')), /DTD or entity/)
-  assert.throws(() => validateNzbBytes(new TextEncoder().encode('<html><body>nzb</body></html>')), /wrong root element/)
-  assert.throws(() => validateNzbBytes(new TextEncoder().encode('<nzb><file></nzb>')), /not valid XML/)
-  assert.throws(() => validateNzbBytes(new TextEncoder().encode('<nzb><file><segment bytes="1" n="1">a')), /not valid XML/)
+  assert.doesNotThrow(() => validateNzbBytes(encode(NZB_XML.replace(NZB_DOCTYPE, ''))))
+  assert.doesNotThrow(() => validateNzbBytes(encode(NZB_XML.replace(NZB_DOCTYPE, NZB_DOCTYPE.replaceAll('"', "'")))))
+})
+
+test('validateNzbBytes rejects entities, internal subsets and nonstandard DTDs', () => {
+  for (const declaration of [
+    '<!DOCTYPE nzb [<!ENTITY x "y">]>',
+    NZB_DOCTYPE.replace('>', ' [<!ENTITY x SYSTEM "file:///secret">]>'),
+    NZB_DOCTYPE.replace('>', ' []>'),
+    '<!DOCTYPE nzb SYSTEM "https://attacker.example/nzb.dtd">',
+    '<!ENTITY x SYSTEM "https://attacker.example/entity">',
+    NZB_DOCTYPE + NZB_DOCTYPE,
+  ]) {
+    assert.throws(() => validateNzbBytes(new TextEncoder().encode(NZB_XML.replace(NZB_DOCTYPE, declaration))), /DTD or entity/)
+  }
+})
+
+test('validateNzbBytes rejects wrong roots, malformed XML and empty or flat manifests', () => {
+  const encode = (xml: string) => new TextEncoder().encode(xml)
+  assert.throws(() => validateNzbBytes(encode('<html><body>nzb</body></html>')), /wrong root element/)
+  assert.throws(() => validateNzbBytes(encode('<nzb/><html/>')), /wrong root element|not valid XML/)
+  assert.throws(() => validateNzbBytes(encode('<nzb><file></nzb>')), /not valid XML/)
+  assert.throws(() => validateNzbBytes(encode('<nzb><file><segments><segment bytes="1" number="1">a')), /not valid XML/)
+  assert.throws(() => validateNzbBytes(encode('<nzb><file><segment bytes="1" number="1">a</segment></file></nzb>')), /no segments/)
+  assert.throws(() => validateNzbBytes(encode('<nzb><file><segments/></file></nzb>')), /no segments/)
+  assert.throws(() => validateNzbBytes(encode(NZB_XML.replaceAll(/<segment[\s>][\s\S]*?<\/segment>/g, ''))), /no segments/)
+  assert.throws(() => validateNzbBytes(encode(NZB_XML.replace('aaa111@example.com', ''))), /invalid segment/)
+  assert.throws(() => validateNzbBytes(encode(NZB_XML.replace('number="1"', 'number="0"'))), /invalid segment/)
+  assert.throws(() => validateNzbBytes(encode(NZB_XML.replace(NZB_DOCTYPE, '').replace('<groups>', NZB_DOCTYPE + '<groups>'))), /not valid XML/)
   assert.throws(() => validateNzbBytes(new Uint8Array(0)), /empty/)
-  assert.throws(() => validateNzbBytes(new TextEncoder().encode('PK\u0003\u0004binary')), /not valid XML/)
+  assert.throws(() => validateNzbBytes(encode('PK\u0003\u0004binary')), /not valid XML/)
 })

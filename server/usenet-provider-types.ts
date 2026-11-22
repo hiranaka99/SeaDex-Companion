@@ -18,6 +18,8 @@ export interface UsenetMatch {
   nzb_name?: string
   /** provider-reported whole-source payload bytes */
   total_bytes?: number
+  /** Provider-reported total source file count, including undisclosed files. */
+  file_count?: number
   /** present only when files_complete */
   files?: UsenetSourceFile[]
   /** provider supplied the full source manifest */
@@ -52,8 +54,9 @@ export const ANIMETOSHO_ENTRY_PATTERN = /^[0-9]+$/
 export const AMENZB_ENTRY_PATTERN = /^[0-9A-Za-z_-]+$/
 
 const SAFE_MESSAGE_LIMIT = 200
-/** DTD and entity declarations are rejected outright (plan section 11). */
+/** Provider XML rejects declarations; NZBs allow only the public standard DTD. */
 const DECLARATION_PATTERN = /<!DOCTYPE|<!ENTITY/i
+const STANDARD_NZB_DOCTYPE = /<!DOCTYPE\s+nzb\s+PUBLIC\s+(["'])-\/\/newzBin\/\/DTD NZB 1\.1\/\/EN\1\s+(["'])https?:\/\/www\.newzbin\.com\/DTD\/nzb\/nzb-1\.1\.dtd\2\s*>/
 /** Newznab XML is only ever inspected through the parser, never with regexes. */
 const XML_PARSER_OPTIONS = { ignoreAttributes: false, attributeNamePrefix: '@_', parseTagValue: false }
 const xmlParser = new XMLParser(XML_PARSER_OPTIONS)
@@ -303,18 +306,34 @@ export function classifyNewznabError(code: number): ProviderFailure {
   }
 }
 
-/** Reject HTML, DTD/entity declarations, malformed XML, a wrong root and empty NZBs. */
+/** Accept the standard public DTD without passing it to the XML parser. */
 export function validateNzbBytes(bytes: Uint8Array): void {
-  const text = decodeText(bytes)
-  if (!text.trim()) throw new Error('NZB response was empty')
-  if (DECLARATION_PATTERN.test(text)) throw new Error('NZB response declared a DTD or entity')
-  assertWellFormedXml(text)
+  const value = decodeText(bytes)
+  if (!value.trim()) throw new Error('NZB response was empty')
+  const declaration = value.match(STANDARD_NZB_DOCTYPE)
+  if (declaration && !/^(?:\s|<\?xml\s[^?]*\?>|<!--[\s\S]*?-->)*$/.test(value.slice(0, declaration.index))) {
+    throw new Error('NZB response was not valid XML')
+  }
+  const xml = value.replace(STANDARD_NZB_DOCTYPE, '')
+  if (DECLARATION_PATTERN.test(xml)) throw new Error('NZB response declared an unsupported DTD or entity')
+  assertWellFormedXml(xml)
   let document: unknown
-  try { document = xmlParser.parse(text) }
+  try { document = xmlParser.parse(xml) }
   catch { throw new Error('NZB response was not valid XML') }
+  const roots = isRecord(document) ? Object.keys(document).filter(key => !key.startsWith('?')) : []
   const nzb = isRecord(document) ? document.nzb : undefined
-  if (!isRecord(nzb)) throw new Error('NZB response had the wrong root element')
-  let segments = 0
-  for (const file of listOf(nzb.file)) segments += listOf(isRecord(file) ? file.segment : undefined).length
-  if (segments === 0) throw new Error('NZB response contained no segments')
+  if (roots.length !== 1 || roots[0] !== 'nzb' || !isRecord(nzb)) throw new Error('NZB response had the wrong root element')
+  const files = listOf(nzb.file)
+  if (!files.length) throw new Error('NZB response contained no segments')
+  for (const file of files) {
+    const container = isRecord(file) && isRecord(file.segments) ? file.segments : undefined
+    const segments = listOf(container?.segment)
+    if (!segments.length) throw new Error('NZB response contained no segments')
+    for (const segment of segments) {
+      if (!isRecord(segment) || !text(segment['#text']) || safeByteSize(segment['@_bytes']) === undefined
+        || !Number.isSafeInteger(Number(segment['@_number'])) || Number(segment['@_number']) <= 0) {
+        throw new Error('NZB response contained an invalid segment')
+      }
+    }
+  }
 }

@@ -19,8 +19,8 @@ function entryId(entry: Record<string, unknown>): string {
 function sourceFile(value: unknown): UsenetSourceFile {
   const file = isRecord(value) ? value : {}
   const name = text(file.name) ?? text(file.filename) ?? ''
-  const size = Number(file.size)
-  return { name, size: Number.isFinite(size) ? size : Number.NaN }
+  const size = safeByteSize(file.size)
+  return { name, size: size ?? Number.NaN }
 }
 
 function usableFile(file: UsenetSourceFile): boolean {
@@ -72,8 +72,9 @@ export async function lookupAnimeTosho(settings: ProviderSettings, hash: string,
   if (!entry.nzb_url) return { kind: 'processing', provider: PROVIDER, entry_id: id, source_hash: requested, title }
   if (!ANIMETOSHO_ENTRY_PATTERN.test(id)) return failedLookup('invalid_response', 'AnimeTosho entry id was not usable')
 
-  const files = Array.isArray(entry.files) ? entry.files : undefined
-  const filesComplete = files !== undefined && entry.num_files === files.length && files.length > 0
+  const files = Array.isArray(entry.files) ? entry.files.map(sourceFile) : undefined
+  const fileCount = safeByteSize(entry.num_files)
+  const filesComplete = files !== undefined && fileCount === files.length && files.length > 0 && files.every(usableFile)
   // A usable NZB reference is what makes an entry downloadable; unrelated DDL
   // processing (`status`) is not required to be complete.
   const match: UsenetMatch = {
@@ -83,7 +84,8 @@ export async function lookupAnimeTosho(settings: ProviderSettings, hash: string,
     title,
     nzb_name: text(entry.torrent_name) ?? title,
     total_bytes: safeByteSize(entry.total_size),
-    files: filesComplete ? files.map(sourceFile).filter(usableFile) : undefined,
+    ...(fileCount !== undefined ? { file_count: fileCount } : {}),
+    files: filesComplete ? files : undefined,
     files_complete: filesComplete,
   }
   return { kind: 'match', match }

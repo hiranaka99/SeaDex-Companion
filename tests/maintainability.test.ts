@@ -58,8 +58,8 @@ test('job identity, restart recovery, and failed persistence preserve authoritat
   let saved: unknown = [], failWrite = false
   const storage = { read: () => saved, write: (jobs: unknown) => { if (failWrite) throw new Error('disk full'); saved = structuredClone(jobs) } }
   const store = createDownloadJobStore(storage)
-  const unitA = { unit_id: `torrent:${a}`, protocol: 'torrent' as const, source_hash: a, label: 'First' }
-  const unitB = { unit_id: `torrent:${b}`, protocol: 'torrent' as const, source_hash: b, label: 'Second' }
+  const unitA = { unit_id: `torrent:${a}`, protocol: 'torrent' as const, source_hash: a, label: 'First', selections: [{ key: 'old-result', release: 0 }] }
+  const unitB = { unit_id: `torrent:${b}`, protocol: 'torrent' as const, source_hash: b, label: 'Second', selections: [{ key: 'old-result', release: 0 }] }
   const targets = [{ key: 'old-result', release: 0 }]
   failWrite = true
   assert.throws(() => store.begin(targets, [unitA]), /disk full/)
@@ -95,6 +95,21 @@ test('job identity, restart recovery, and failed persistence preserve authoritat
   const snapshot = restarted.get(first.id)!
   snapshot.added.length = 0
   assert.deepEqual(restarted.get(first.id)?.added.map(unit => unit.unit_id), [unitA.unit_id])
+})
+
+test('job outcomes retain only each source unit selections and the chosen protocols', () => {
+  const store = createDownloadJobStore({ read: () => [], write: () => undefined })
+  const targets = [{ key: 'torrent-row', release: 0, protocol: 'torrent' as const }, { key: 'usenet-row', release: 1, protocol: 'usenet' as const }]
+  const torrent = { unit_id: `torrent:${a}`, protocol: 'torrent' as const, source_hash: a, label: 'Torrent', selections: [{ key: 'torrent-row', release: 0 }] }
+  const usenet = { unit_id: `usenet:${b}`, protocol: 'usenet' as const, source_hash: b, label: 'NZB', selections: [{ key: 'usenet-row', release: 1 }] }
+  const job = store.begin(targets, [torrent, usenet])
+  assert.deepEqual(job.pending.map(unit => unit.selections), [torrent.selections, usenet.selections])
+  store.added(job.id, torrent.unit_id)
+  store.failure(job.id, { ...usenet, code: 'client', error: 'rejected' })
+  const finished = store.finish(job.id)
+  assert.deepEqual(finished.added[0].selections, torrent.selections)
+  assert.deepEqual(finished.failures[0].selections, usenet.selections)
+  assert.deepEqual(finished.targets, targets)
 })
 
 test('metadata loading does not block status reads or controls for another torrent', async () => {

@@ -5,7 +5,6 @@ import type { DownloadCapabilities, DownloadPhase, DownloadProtocol, DownloadPro
 
 /** One owned acquisition as reported by its download client. */
 export interface DownloadEntry {
-  id: string
   record_id: string
   protocol: DownloadProtocol
   client: DownloadProgress['client']
@@ -21,8 +20,6 @@ export interface DownloadEntry {
   category: string
   size: number
   error?: string
-  key?: string
-  release?: number
   /** The client at a different URL no longer serves this record. */
   unbound?: boolean
 }
@@ -30,7 +27,6 @@ export interface DownloadEntry {
 export function toDownloadEntry(p: DownloadProgress): DownloadEntry {
   const season = p.season === null ? (p.part || 'Release') : (p.part ? `S${p.season} · ${p.part}` : `S${p.season}`)
   return {
-    id: p.record_id,
     record_id: p.record_id,
     protocol: p.protocol,
     client: p.client,
@@ -46,8 +42,6 @@ export function toDownloadEntry(p: DownloadProgress): DownloadEntry {
     category: p.category,
     size: p.size,
     error: p.error,
-    key: p.key,
-    release: p.release,
     unbound: p.state === 'unbound',
   }
 }
@@ -72,7 +66,6 @@ const PHASE_LABEL: Record<DownloadPhase, string> = {
 const PHASE_HINT: Partial<Record<DownloadPhase, string>> = {
   missing: 'This download is no longer in the client. Remove the entry and send it again if you still want it.',
   unavailable: 'The download client is currently unreachable. Progress resumes when it answers.',
-  acceptance_unknown: 'SABnzbd was asked to start this download but did not confirm it. Check SABnzbd before retrying.',
   error: 'The client reported an error. Open the client for details, then remove and retry.',
 }
 
@@ -116,7 +109,7 @@ function EntryRow({ entry, busy, onPause, onResume, onRemove }: { entry: Downloa
   const remaining = Math.max(0, entry.total_size - entry.downloaded)
   const eta = entry.phase === 'downloading' ? formatEta(remaining, entry.speed) : ''
   const speed = entry.phase === 'downloading' && entry.speed > 0 ? formatBytes(entry.speed) + '/s' : ''
-  const hint = entry.error || (entry.unbound ? 'This download belongs to a different client URL. Reconfigure that client or remove the entry.' : PHASE_HINT[entry.phase])
+  const hint = entry.phase === 'acceptance_unknown' ? `${clientName(entry.client)} was asked to start this download but did not confirm it. Check ${clientName(entry.client)} before retrying.` : entry.error || (entry.unbound ? 'This download belongs to a different client URL. Reconfigure that client or remove the entry.' : PHASE_HINT[entry.phase])
   const statusText = `${clientName(entry.client)} · ${phaseLabel(entry.phase)}${showsProgress(entry.phase) ? ` · ${pct.toFixed(1)}%` : ''}`
   return (
     <li className="flex shrink-0 flex-col gap-2">
@@ -145,7 +138,7 @@ export default function DownloadsPanel({ downloads, busyId, onPause, onResume, o
   return (
     <div className="rounded-lg border border-accent/25 bg-accent/6 px-2.5 py-2">
       <ul className="download-scrollbar m-0 flex max-h-56 list-none flex-col gap-3 overflow-y-auto p-0" aria-label="Active downloads">
-        {downloads.map((entry) => <EntryRow key={entry.id} entry={entry} busy={busyId !== null} onPause={() => onPause(entry)} onResume={() => onResume(entry)} onRemove={() => onRemove(entry)} />)}
+        {downloads.map((entry) => <EntryRow key={entry.record_id} entry={entry} busy={busyId !== null} onPause={() => onPause(entry)} onResume={() => onResume(entry)} onRemove={() => onRemove(entry)} />)}
       </ul>
     </div>
   )

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { setImmediate as nextTurn } from 'node:timers/promises'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { bumpGeneration } from '../server/config-generation.js'
-import { aggregateHashStates, invalidateUsenetLookups, raceWithWallClockGuard, resolveUsenetHash, resolveUsenetRelease, setUsenetProviderMinIntervalMs, usenetAvailability } from '../server/usenet.js'
+import { aggregateHashStates, invalidateUsenetLookups, raceWithWallClockGuard, resolveUsenetHash, resolveUsenetRelease, setUsenetProviderMinIntervalMs, UsenetSelectionError, usenetAvailability } from '../server/usenet.js'
+import { releaseIdentity } from '../shared/releases.js'
 import type { Release, ResultItem } from '../server/types.js'
 
 const HASH = 'a'.repeat(40)
@@ -170,7 +172,79 @@ test('availability resolves the release identity and reports the checked hash se
     assert.equal(availability[0].aggregate, 'available')
     assert.equal(availability[0].hashes.length, 1)
     assert.equal(availability[0].hashes[0].hash, HASH)
+    assert.equal(availability[0].identity, releaseIdentity(results[0].releases[0]))
     assert.ok(availability[0].checked_at)
+  } finally { restore(original) }
+})
+
+test('availability rejects replacement identities before any selected release is queried', async () => {
+  const { original } = isolation()
+  const routed = router({ animetosho: animetoshoMatch })
+  try {
+    const previous = release()
+    const replacement = release({ info_hashes: [OTHER] })
+    const results = [{ key: 'show-1', releases: [previous, replacement] }] as unknown as ResultItem[]
+    await assert.rejects(usenetAvailability(config(), [
+      { key: 'show-1', release: 0, identity: releaseIdentity(previous) },
+      { key: 'show-1', release: 1, identity: releaseIdentity(previous) },
+    ], false, results), (error: unknown) => error instanceof UsenetSelectionError && error.status === 409)
+    assert.equal(routed.calls.length, 0)
+    const scoped = release({ selected_files: ['Show - 01.mkv'] })
+    await assert.rejects(usenetAvailability(config(), [{ key: 'show-1', release: 0, identity: releaseIdentity(scoped) }], false, results), /selected release changed/)
+    assert.equal(routed.calls.length, 0)
+  } finally { restore(original) }
+})
+
+test('availability rejects missing and invalid release selections without provider work', async () => {
+  const { original } = isolation()
+  const routed = router({ animetosho: animetoshoMatch })
+  try {
+    const results = [{ key: 'show-1', releases: [release()] }] as unknown as ResultItem[]
+    for (const selection of [
+      { key: 'missing', release: 0 }, { key: 'show-1', release: -1 },
+      { key: 'show-1', release: 1 }, { key: 'show-1', release: 0.5 },
+    ]) {
+      await assert.rejects(usenetAvailability(config(), [selection], false, results),
+        (error: unknown) => error instanceof UsenetSelectionError && error.status === 400)
+    }
+    assert.equal(routed.calls.length, 0)
+  } finally { restore(original) }
+})
+
+test('server resolvers retain complete manifests while public availability bounds display names', async () => {
+  const { original } = isolation()
+  const files = Array.from({ length: 205 }, (_, index) => ({ name: `Show - ${index + 1}.mkv`, size: 100 }))
+  const routed = router({ animetosho: () => Response.json({ id: 1234, info_hash: HASH, nzb_url: '/nzb/1234', num_files: files.length, files }) })
+  try {
+    const internal = await resolveUsenetHash(config(), HASH)
+    assert.equal(internal.files_known, true)
+    assert.equal(internal.file_count, files.length)
+    assert.deepEqual(internal.file_names, files.map(file => file.name))
+    const selected = release({ selected_files: [files[204].name] })
+    const resolved = await resolveUsenetRelease(config(), selected)
+    assert.deepEqual(resolved.hashes[0].file_names, files.map(file => file.name))
+    const results = [{ key: 'show-1', releases: [selected] }] as unknown as ResultItem[]
+    const [publicResult] = await usenetAvailability(config(), [{ key: 'show-1', release: 0, identity: releaseIdentity(selected) }], false, results)
+    assert.equal(publicResult.identity, releaseIdentity(selected))
+    assert.equal(publicResult.hashes[0].file_count, files.length)
+    assert.equal(publicResult.hashes[0].file_names?.length, 200)
+    assert.equal(publicResult.hashes[0].files_known, false)
+    const afterPublicProjection = await resolveUsenetHash(config(), HASH)
+    assert.equal(afterPublicProjection.files_known, true)
+    assert.deepEqual(afterPublicProjection.file_names, files.map(file => file.name))
+    assert.equal(routed.calls.length, 1)
+  } finally { restore(original) }
+})
+
+test('discovery preserves reported file counts without trusting malformed manifests', async () => {
+  const { original } = isolation()
+  router({ animetosho: () => Response.json({ id: 1234, info_hash: HASH, nzb_url: '/nzb/1234', num_files: 2, files: [{ name: 'Show.mkv', size: 100 }, { name: '', size: 10 }] }) })
+  try {
+    const state = await resolveUsenetHash(config(), HASH)
+    assert.equal(state.state, 'available')
+    assert.equal(state.file_count, 2)
+    assert.equal(state.files_known, false)
+    assert.equal(state.file_names, undefined)
   } finally { restore(original) }
 })
 
@@ -187,14 +261,24 @@ test('unsupported releases report unsupported_hash without provider traffic', as
 test('a refresh bypasses a wedged in-flight lookup instead of inheriting its hang', async () => {
   const { original } = isolation()
   let hang = true
-  router({ animetosho: () => hang ? new Promise<Response>(() => {}) : animetoshoMatch() })
+  const started = Promise.withResolvers<void>()
+  const stalled = Promise.withResolvers<Response>()
+  router({ animetosho: () => {
+    if (!hang) return animetoshoMatch()
+    started.resolve()
+    return stalled.promise
+  } })
   try {
-    const wedged = resolveUsenetHash(config(), HASH)
+    const wedged = resolveUsenetHash({ ...config(), amenzb_enabled: false }, HASH)
+    await started.promise
     hang = false
-    const state = await resolveUsenetHash(config(), HASH, true)
+    const state = await resolveUsenetHash({ ...config(), amenzb_enabled: false }, HASH, true)
     assert.equal(state.state, 'available')
     assert.equal(state.provider, 'animetosho')
-    void wedged
+    assert.equal((await wedged).state, 'lookup_failed')
+    stalled.resolve(new Response('nope', { status: 404 }))
+    await nextTurn()
+    assert.equal((await resolveUsenetHash({ ...config(), amenzb_enabled: false }, HASH)).state, 'available')
   } finally { restore(original) }
 })
 
@@ -202,4 +286,31 @@ test('the wall-clock guard rejects a provider call that never settles', async ()
   const started = Date.now()
   await assert.rejects(raceWithWallClockGuard(new Promise<never>(() => {}), 20), /wall-clock guard/)
   assert.ok(Date.now() - started < 5_000, 'the guard must not keep the process waiting')
+})
+
+test('invalidation cancels active and queued work without leaking global permits or overwriting a fresh cache', async () => {
+  const { original } = isolation()
+  const settings = { ...config(), amenzb_enabled: false }
+  const stalled = Promise.withResolvers<Response>()
+  let requests = 0
+  router({ animetosho: () => { requests++; return stalled.promise } })
+  const pending = Array.from({ length: 8 }, (_, index) => resolveUsenetHash(settings, index === 0 ? HASH : index.toString(16).padStart(40, '0'), false, true))
+  try {
+    await nextTurn()
+    assert.equal(requests, 4)
+    invalidateUsenetLookups()
+    const cancelled = await Promise.all(pending)
+    assert.ok(cancelled.every(state => state.state === 'lookup_failed'))
+    assert.equal(requests, 4, 'queued cancelled lookups must not issue provider requests')
+    router({ animetosho: animetoshoMatch })
+    assert.equal((await resolveUsenetHash(settings, HASH)).state, 'available')
+    stalled.resolve(new Response('nope', { status: 404 }))
+    await nextTurn()
+    assert.equal((await resolveUsenetHash(settings, HASH)).state, 'available')
+    await Promise.all(Array.from({ length: 8 }, (_, index) => resolveUsenetHash(settings, (index + 20).toString(16).padStart(40, '0'))))
+  } finally {
+    invalidateUsenetLookups()
+    await Promise.all(pending)
+    restore(original)
+  }
 })

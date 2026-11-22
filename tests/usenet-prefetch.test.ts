@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { setImmediate as nextTurn } from 'node:timers/promises'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { bumpGeneration } from '../server/config-generation.js'
-import { enableUsenetPrefetch, prefetchUsenetAvailability, stopUsenetPrefetch } from '../server/usenet-prefetch.js'
+import { enableUsenetPrefetch, prefetchUsenetAvailability, stopUsenetPrefetch, usenetPrefetchProgress } from '../server/usenet-prefetch.js'
 import { invalidateUsenetLookups, resolveUsenetHash, setUsenetProviderMinIntervalMs } from '../server/usenet.js'
 import type { Release, ResultItem } from '../server/types.js'
 
@@ -45,6 +46,36 @@ function isolation(intervalMs: number): () => void {
   setUsenetProviderMinIntervalMs('animetosho', intervalMs)
   bumpGeneration()
   return () => invalidateUsenetLookups()
+}
+
+function controlledFetch() {
+  const original = globalThis.fetch
+  const probe = {
+    starts: [] as string[],
+    pending: new Map<string, (response: Response) => void>(),
+    active: 0,
+    maximum: 0,
+  }
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const url = String(input)
+    assert.ok(url.startsWith('https://feed.animetosho.net/json'), `unexpected provider request: ${url}`)
+    const hash = new URL(url).searchParams.get('hash')!
+    const { promise, resolve } = Promise.withResolvers<Response>()
+    probe.starts.push(hash)
+    probe.pending.set(hash, resolve)
+    probe.active++
+    probe.maximum = Math.max(probe.maximum, probe.active)
+    return promise.finally(() => { probe.pending.delete(hash); probe.active-- })
+  }) as typeof fetch
+  return {
+    probe,
+    complete(hash: string) {
+      const resolve = probe.pending.get(hash)
+      assert.ok(resolve, `request ${hash} has not started`)
+      resolve(new Response('nope', { status: 404 }))
+    },
+    restore() { globalThis.fetch = original },
+  }
 }
 
 async function until(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
@@ -100,6 +131,66 @@ test('interactive lookups overtake queued background lookups', async () => {
   } finally { restore() }
 })
 
+test('foreground work takes the next saturated global slot ahead of queued background work', async () => {
+  isolation(0)
+  const { probe, complete, restore } = controlledFetch()
+  const active = Array.from({ length: 4 }, (_, index) => resolveUsenetHash(config(), hexHash(index + 1), false, true))
+  const work = [...active]
+  try {
+    await nextTurn()
+    assert.deepEqual(probe.starts, [1, 2, 3, 4].map(hexHash))
+    work.push(resolveUsenetHash(config(), hexHash(5), false, true))
+    work.push(resolveUsenetHash(config(), hexHash(6), false, true))
+    work.push(resolveUsenetHash(config(), hexHash(7)))
+    await nextTurn()
+    assert.equal(probe.starts.length, 4)
+    complete(hexHash(1))
+    await nextTurn()
+    assert.equal(probe.starts[4], hexHash(7))
+    assert.equal(probe.active, 4)
+    complete(hexHash(7))
+    await nextTurn()
+    assert.equal(probe.starts[5], hexHash(5))
+    for (const hash of [...probe.pending.keys()]) complete(hash)
+    await nextTurn()
+    for (const hash of [...probe.pending.keys()]) complete(hash)
+    await Promise.all(work)
+    assert.equal(probe.maximum, 4)
+    assert.equal(probe.active, 0)
+  } finally {
+    for (const hash of [...probe.pending.keys()]) complete(hash)
+    invalidateUsenetLookups()
+    await Promise.all(work)
+    restore()
+  }
+})
+
+test('foreground callers promote a shared queued background lookup before global admission', async () => {
+  isolation(0)
+  const { probe, complete, restore } = controlledFetch()
+  const work = Array.from({ length: 4 }, (_, index) => resolveUsenetHash(config(), hexHash(index + 1), false, true))
+  try {
+    await nextTurn()
+    work.push(resolveUsenetHash(config(), hexHash(5), false, true))
+    work.push(resolveUsenetHash(config(), hexHash(6), false, true))
+    work.push(resolveUsenetHash(config(), hexHash(6)))
+    complete(hexHash(1))
+    await nextTurn()
+    assert.equal(probe.starts[4], hexHash(6))
+    for (const hash of [...probe.pending.keys()]) complete(hash)
+    await nextTurn()
+    for (const hash of [...probe.pending.keys()]) complete(hash)
+    await Promise.all(work)
+    assert.equal(probe.starts.filter(hash => hash === hexHash(6)).length, 1)
+    assert.equal(probe.maximum, 4)
+  } finally {
+    for (const hash of [...probe.pending.keys()]) complete(hash)
+    invalidateUsenetLookups()
+    await Promise.all(work)
+    restore()
+  }
+})
+
 test('many concurrent lookups never wedge the shared slot limiter', async () => {
   // Regression: handing a released slot to a waiter used to also increment the
   // active count, so a batch larger than the cap leaked slots permanently and
@@ -139,4 +230,110 @@ test('stopUsenetPrefetch cancels a running sweep mid-flight', async () => {
     // In-flight completion of the current release is tolerated; the sweep must not continue.
     await assert.rejects(until(() => probe.fetches > observed + 1, 300), /timed out/)
   } finally { restore() }
+})
+
+test('an older sweep completion cannot finish or overwrite a newer sweep', async () => {
+  isolation(0)
+  enableUsenetPrefetch()
+  const { probe, complete, restore } = controlledFetch()
+  const oldResults = [result('old-first', 1), result('old-later', 1)]
+  const newerResults = [result('new-first', 1), result('new-later', 2)]
+  const oldHash = oldResults[0].releases[0].info_hashes[0]
+  const newHash = newerResults[0].releases[0].info_hashes[0]
+  try {
+    prefetchUsenetAvailability(config(), oldResults, 'old')
+    await nextTurn()
+    assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 0, total: 2 })
+    prefetchUsenetAvailability(config(), newerResults, 'new')
+    await nextTurn()
+    assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 0, total: 3 })
+    complete(oldHash)
+    await nextTurn()
+    assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 0, total: 3 })
+    assert.equal(probe.starts.includes(oldResults[1].releases[0].info_hashes[0]), false)
+    complete(newHash)
+    await nextTurn()
+    assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 1, total: 3 })
+    for (const hash of [...probe.pending.keys()]) complete(hash)
+    await nextTurn()
+    assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
+  } finally {
+    stopUsenetPrefetch()
+    for (const hash of [...probe.pending.keys()]) complete(hash)
+    invalidateUsenetLookups()
+    await nextTurn()
+    restore()
+  }
+})
+
+test('stop clears current progress immediately and stale work cannot resurrect it', async () => {
+  isolation(0)
+  enableUsenetPrefetch()
+  const { probe, complete, restore } = controlledFetch()
+  const results = [result('first', 1), result('later', 1)]
+  try {
+    prefetchUsenetAvailability(config(), results, 'test')
+    await nextTurn()
+    assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 0, total: 2 })
+    stopUsenetPrefetch()
+    assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
+    complete(results[0].releases[0].info_hashes[0])
+    await nextTurn()
+    assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
+    assert.equal(probe.starts.length, 1)
+  } finally {
+    stopUsenetPrefetch()
+    for (const hash of [...probe.pending.keys()]) complete(hash)
+    invalidateUsenetLookups()
+    await nextTurn()
+    restore()
+  }
+})
+
+test('empty and ineligible sweeps supersede old work without retaining progress', async () => {
+  isolation(0)
+  enableUsenetPrefetch()
+  const { probe, complete, restore } = controlledFetch()
+  try {
+    for (const ineligible of [false, true]) {
+      const results = [result(`first-${ineligible}`, 1), result(`later-${ineligible}`, 1)]
+      prefetchUsenetAvailability(config(), results, 'active')
+      await nextTurn()
+      prefetchUsenetAvailability(ineligible ? { ...config(), download_mode: 'torrent_only' } : config(), [], 'replacement')
+      assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
+      complete(results[0].releases[0].info_hashes[0])
+      await nextTurn()
+      assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
+      assert.equal(probe.starts.includes(results[1].releases[0].info_hashes[0]), false)
+    }
+  } finally {
+    stopUsenetPrefetch()
+    for (const hash of [...probe.pending.keys()]) complete(hash)
+    invalidateUsenetLookups()
+    await nextTurn()
+    restore()
+  }
+})
+
+test('a generation change hides stale sweep progress and completion cannot update it', async () => {
+  isolation(0)
+  enableUsenetPrefetch()
+  const { probe, complete, restore } = controlledFetch()
+  const results = [result('first', 1), result('later', 1)]
+  try {
+    prefetchUsenetAvailability(config(), results, 'test')
+    await nextTurn()
+    bumpGeneration()
+    assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
+    complete(results[0].releases[0].info_hashes[0])
+    await nextTurn()
+    assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
+    assert.equal(probe.starts.length, 1)
+  } finally {
+    stopUsenetPrefetch()
+    for (const hash of [...probe.pending.keys()]) complete(hash)
+    invalidateUsenetLookups()
+    await nextTurn()
+    restore()
+  }
 })

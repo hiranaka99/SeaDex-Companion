@@ -6,11 +6,20 @@ The scan service resolves its dependencies once. Its coordinator owns admission,
 
 `shared/download-plan.ts` owns upgrade eligibility, torrent hash normalization, and per-hash file selection. Review, estimation, and execution consume those rules. Whole-torrent requests override scoped requests; file scopes are united across selections. Incomplete metadata stays uncertain and never becomes permission to download unrelated files.
 
-Recommendations are identified by result/release identity. Running downloads are identified by torrent hash, with separate library/season associations. Changing a recommendation cannot change the torrent selected for cancellation.
+Recommendations are identified by result/release identity. Acquisitions are identified by app-owned record ID and bound client endpoint, with source hashes, effective file scope, and every library/release association retained separately. Frontend projection validates the current hashes and scope before attaching a record to a recommendation. A replacement recommendation cannot change the acquisition selected for control or cancellation.
 
-Download jobs capture the selected plan before external work. `POST /api/download-jobs` returns an accepted job ID; `GET /api/download-jobs/:id` and `/latest` expose persisted state. Unfinished jobs become interrupted on restart rather than automatically repeating side effects. The previous synchronous bulk endpoint remains available for existing callers. One frontend observer handles submission and reload recovery, and the retained download store survives card pagination and unmounts.
+Download jobs capture each unit's actual selection associations before external work. `POST /api/download-jobs` returns an accepted job ID; `GET /api/download-jobs/:id` and `/latest` expose persisted state. Unfinished jobs become interrupted on restart rather than repeating side effects. Every admitted job reaches a terminal outcome when its state can be persisted, including ownership-intent failures. Single-release receipts aggregate every required source, and row outcomes stay pending until all sources settle. One frontend observer handles submission and reload recovery, and the retained download store survives card pagination and unmounts.
 
 qBittorrent sessions and caches belong to each connection. Mutation locks belong to torrent hashes; sorted acquisition prevents multi-hash deadlocks. Metadata loading therefore does not block independent status reads or controls.
+
+## Provider discovery and reviewed plans
+
+One priority-aware scheduler assigns lookup capacity only when provider pacing permits a request to start. Foreground requests precede queued background work, and configuration invalidation cancels stale work without retaining its results. Each prefetch sweep owns an epoch; superseded work cannot overwrite current progress.
+
+Availability requests validate canonical release identities before querying providers. Internal resolvers retain complete validated manifests for scope decisions. The public availability projection bounds filename lists and clears their completeness flag when names are omitted. NZB validation reads the standard nested segment structure and accepts the standard public declaration without resolving external entities.
+
+Bulk review retains its selected result snapshot. Acceptance checks current identities, client presence, and acknowledgements again before writing intents. Provider-backed reviews are cancellable and rely on bounded provider requests rather than a fixed aggregate frontend deadline. Expired or consumed single plans require an explicit fresh review with acknowledgements reset.
+
 
 # Persistence and compatibility
 
@@ -20,9 +29,9 @@ Raw metadata and derived season/chain caches expire after 24 hours. Derived cach
 
 Configuration settings and their AES-GCM encrypted credentials share one atomic `config.json` commit. Ordinary reads do not write. Startup migration reads the former separate secrets file without replacing the existing key. Back up the complete data directory before upgrading; restore that backup for older versions that expect separate credential storage.
 
-`owned_torrents.json` now contains `{ version: 1, torrents: { [hash]: metadataOrNull } }`. Legacy ownership arrays and separate `download_records.json` details are read together and migrated on the next ownership commit. Unattributed legacy hashes remain cancellable in the all-downloads scope. Ownership and associated metadata are committed before in-memory state changes.
+`owned_downloads.json` contains the versioned protocol-neutral record ledger and its release associations. Legacy ownership arrays, versioned torrent dictionaries, and separate `download_records.json` details are read together during migration. Ownership, scope, native-ID bindings, and associations are committed before publishing in-memory state. Failed writes leave the prior ledger intact.
 
-Job updates also write before publishing in-memory state. Readers receive copies. No credential data is stored with jobs.
+Job updates also write before publishing in-memory state. Readers receive copies, and no credentials are stored with jobs. Unknown acceptance retains duplicate protection. A fresh complete client read can establish presence or absence; malformed, failed, or endpoint-mismatched reads cannot. Removal of a confirmed missing acquisition changes only tracking and preserves files.
 
 # Verification
 

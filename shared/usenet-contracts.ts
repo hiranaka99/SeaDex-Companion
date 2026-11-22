@@ -32,10 +32,10 @@ export interface UsenetHashAvailability {
   title?: string
   /** Provider-reported whole-source payload bytes when known. */
   total_bytes?: number
-  /** True when the provider supplied the complete source file manifest. */
+  /** True when file_names is a complete validated source manifest; bounded public projections clear it when names are omitted. */
   files_known?: boolean
   file_count?: number
-  /** Bounded manifest names (when complete) so review can list known extras. */
+  /** Complete names for internal planning; the public availability endpoint limits this list and preserves the total file_count. */
   file_names?: string[]
   error_code?: UsenetFailureCode
   /** Bounded safe text for failed lookups; never provider markup. */
@@ -47,7 +47,7 @@ export interface UsenetHashAvailability {
 export interface UsenetAvailabilityResult {
   key: string
   release: number
-  identity?: string
+  identity: string
   /** One entry per normalized source hash required by the release. */
   hashes: UsenetHashAvailability[]
   /** 'available' only when every required source hash matched a usable NZB. */

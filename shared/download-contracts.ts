@@ -69,7 +69,7 @@ export interface PreflightBlocked {
   key: string
   release: number
   code: 'protocol_required' | 'mode_conflict' | 'no_torrent' | 'no_match' | 'processing' | 'incomplete'
-    | 'lookup_failed' | 'usenet_unconfigured' | 'not_upgradable' | 'owned' | 'excluded' | 'invalid' | 'conflict'
+    | 'lookup_failed' | 'usenet_unconfigured' | 'not_upgradable' | 'owned' | 'excluded' | 'invalid' | 'conflict' | 'acceptance_unknown'
   reason: string
 }
 
@@ -124,6 +124,7 @@ export interface DownloadReceipt {
   /** True when SABnzbd accepted but its response was ambiguous; check the client before retrying. */
   acceptance_unknown?: boolean
   error?: string
+  failures?: DownloadUnitFailure[]
 }
 
 export interface DownloadUnitEntry {
@@ -171,34 +172,42 @@ export interface BulkSubmissionResult {
 }
 
 export function jobResult(job: Omit<DownloadJob, 'id'>): BulkSubmissionResult {
-  const rows = new Map<string, SubmissionRow>()
-  const rowFor = (selection: DownloadSelectionRef) => {
-    const id = `${selection.key}\u0000${selection.release}`
-    let row = rows.get(id)
-    if (!row) { row = { key: selection.key, release: selection.release, status: 'pending', protocols: [] }; rows.set(id, row) }
-    return row
+  interface Outcome extends DownloadSelectionRef {
+    protocols: DownloadProtocol[]
+    pending: boolean
+    added: boolean
+    existing: boolean
+    failed: boolean
   }
-  const protocolOf = (entry: DownloadUnitEntry | DownloadUnitFailure): DownloadProtocol => entry.protocol || 'torrent'
-  const merge = (entry: { selections: DownloadSelectionRef[] }, status: SubmissionRow['status'], protocol: DownloadProtocol) => {
-    const affected = entry.selections.length ? entry.selections : job.targets.filter(target => target.protocol === protocol)
-    for (const selection of affected) {
-      const row = rowFor(selection)
-      if (!row.protocols.includes(protocol)) row.protocols.push(protocol)
-      if (row.status === 'pending') row.status = status
-      else if (row.status !== status) row.status = row.status === 'added' || status === 'added' ? 'partial' : row.status === 'failed' || status === 'failed' ? 'partial' : status
+  const outcomes = new Map<string, Outcome>()
+  const merge = (entry: DownloadUnitEntry | DownloadUnitFailure, status: 'pending' | 'added' | 'existing' | 'failed') => {
+    for (const selection of entry.selections) {
+      const id = `${selection.key}\u0000${selection.release}`
+      let outcome = outcomes.get(id)
+      if (!outcome) {
+        outcome = { key: selection.key, release: selection.release, protocols: [], pending: false, added: false, existing: false, failed: false }
+        outcomes.set(id, outcome)
+      }
+      if (!outcome.protocols.includes(entry.protocol)) outcome.protocols.push(entry.protocol)
+      outcome[status] = true
     }
   }
-  for (const unit of job.pending) merge(unit, 'pending', protocolOf(unit))
-  for (const unit of job.existing) merge(unit, 'existing', protocolOf(unit))
-  for (const unit of job.added) merge(unit, 'added', protocolOf(unit))
-  for (const failure of job.failures) merge(failure, 'failed', protocolOf(failure))
-  const list = [...rows.values()]
-  return {
-    ok: list.some(row => row.status === 'added' || row.status === 'existing'),
-    count: list.filter(row => row.status === 'added' || row.status === 'existing').length,
-    rows: list,
-    failures: job.failures,
+  for (const unit of job.pending) merge(unit, 'pending')
+  for (const unit of job.existing) merge(unit, 'existing')
+  for (const unit of job.added) merge(unit, 'added')
+  for (const failure of job.failures) merge(failure, 'failed')
+  const rows: SubmissionRow[] = []
+  let count = 0
+  for (const outcome of outcomes.values()) {
+    let status: SubmissionRow['status']
+    if (outcome.pending) status = 'pending'
+    else if (outcome.failed) status = outcome.added || outcome.existing ? 'partial' : 'failed'
+    else if (outcome.added) status = 'added'
+    else status = 'existing'
+    if (status === 'added' || status === 'existing') count++
+    rows.push({ key: outcome.key, release: outcome.release, protocols: outcome.protocols, status })
   }
+  return { ok: count > 0, count, rows, failures: job.failures }
 }
 
 /** Live per-unit state of the in-flight bulk download batch. */
@@ -224,9 +233,10 @@ export interface DownloadProgress {
   release_group: string
   tracker: string
   size: number
-  /** Current catalog association when resolvable; controls never resolve through it. */
-  key?: string
-  release?: number
+  /** All saved release associations; consumers validate source hashes and scope before attaching to current recommendations. */
+  associations: DownloadSelectionRef[]
+  /** Effective torrent file scope. Undefined means the whole source. */
+  scope?: string[]
   progress: number
   downloaded: number
   total_size: number

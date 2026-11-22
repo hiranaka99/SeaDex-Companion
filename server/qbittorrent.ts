@@ -83,7 +83,7 @@ function isTimeoutLikeError(error: unknown): boolean {
   return /abort|timed out|timeout/i.test(error.message)
 }
 
-async function qbRequest(config: Config, path: string, init: RequestInit = {}, retry = true, timeout = 30_000): Promise<Response> {
+async function qbRequest(config: Config, path: string, init: RequestInit = {}, retry = true, timeout = 30_000, onDispatch?: () => void): Promise<Response> {
   const base = String(config.qbittorrent_url || '').replace(/\/+$/, '')
   if (!base) throw new Error('qBittorrent is not configured (Config tab)')
   const connection = connectionFor(config)
@@ -99,6 +99,7 @@ async function qbRequest(config: Config, path: string, init: RequestInit = {}, r
   const session = await sessionPromise
   let cookie = session.cookie
   const headers = new Headers(init.headers); if (cookie) headers.set('Cookie', cookie)
+  onDispatch?.()
   const response = await fetchWithTimeout(`${base}${path}`, { ...init, headers }, timeout)
   // Authentication bypass can replace an expired session on a successful response.
   // A delayed response must not overwrite cookies adopted by a newer request.
@@ -108,7 +109,7 @@ async function qbRequest(config: Config, path: string, init: RequestInit = {}, r
   if (response.status === 403 && retry) {
     await response.body?.cancel()
     if (connection.session === sessionPromise && session.cookie === cookie) connection.session = login()
-    return qbRequest(config, path, init, false, timeout)
+    return qbRequest(config, path, init, false, timeout, onDispatch)
   }
   return response
 }
@@ -180,18 +181,7 @@ async function qbSelectTorrentFiles(config: Config, hash: string, selectedFiles:
     try { await qbPostWithFallback(config, ['/api/v2/torrents/stop', '/api/v2/torrents/pause'], stateBody) } catch { /* preserve the metadata error */ }
     throw error
   }
-  if (!files) {
-    // The metadata never arrived within the budget. Remove the torrent from
-    // qBittorrent (preserving files, though normally none exist yet) and
-    // report that metadata fetching failed.
-    try {
-      await qbPostWithFallback(config, ['/api/v2/torrents/delete'], new URLSearchParams({ hashes: hash, deleteFiles: 'false' }))
-    } catch (removeError) {
-      log('WARNING', `Could not remove torrent ${hash} from qBittorrent after the metadata timeout: ${errorMessage(removeError)}`)
-    }
-    invalidateQbCache(config)
-    throw new Error(`Metadata fetching failed: qBittorrent did not load the torrent metadata within ${Math.ceil(timeoutMs / 1000)} seconds`)
-  }
+  if (!files) throw new Error(`Metadata fetching failed: qBittorrent did not load the torrent metadata within ${Math.ceil(timeoutMs / 1000)} seconds`)
   await qbPostWithFallback(config, ['/api/v2/torrents/stop', '/api/v2/torrents/pause'], stateBody)
 
   const wanted = new Set(selectedFiles.map(normalizedTorrentPath).filter(Boolean))
@@ -217,6 +207,8 @@ export interface QbOwnershipHooks {
   forget: (hash: string) => void
 }
 
+export class QbittorrentAmbiguousError extends Error {}
+
 export async function qbAddTorrent(config: Config, magnet: string, category?: string, selectedFiles: string[] = [], timeoutMs = QB_METADATA_TIMEOUT_MS, ownership?: QbOwnershipHooks): Promise<void> {
   return withTorrentLocks(config, [magnetInfoHash(magnet) || magnet], async () => {
     const hash = magnetInfoHash(magnet)
@@ -224,13 +216,31 @@ export async function qbAddTorrent(config: Config, magnet: string, category?: st
     if (hash && await qbTorrentExists(config, hash)) throw new Error('Torrent already exists in qBittorrent and was not marked as app-owned')
     const body = new URLSearchParams({ urls: magnet }); if (category) body.set('category', category)
     if (selectedFiles.length) { body.set('paused', 'true'); body.set('stopped', 'true') }
-    const response = await qbRequest(config, '/api/v2/torrents/add', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body })
-    const text = await response.text()
+    let dispatched = false
+    let response: Response
+    try {
+      response = await qbRequest(config, '/api/v2/torrents/add', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body }, true, 30_000, () => { dispatched = true })
+    } catch (error) {
+      if (dispatched) throw new QbittorrentAmbiguousError(`qBittorrent submission status is unknown: ${errorMessage(error)}`)
+      throw error
+    }
+    let text: string
+    try { text = await response.text() }
+    catch (error) {
+      if (response.status === 200) throw new QbittorrentAmbiguousError(`qBittorrent submission response could not be read: ${errorMessage(error)}`)
+      throw new Error(`qBittorrent rejected the torrent (HTTP ${response.status}: ${errorMessage(error)})`)
+    }
     if (response.status === 200) {
-      let accepted = text.includes('Ok')
-      if (!accepted) {
-        try { const data = JSON.parse(text); accepted = data.success_count > 0 || Boolean(data.added_torrent_ids?.length) } catch { /* handled below */ }
+      let accepted = text.trim() === 'Ok.'
+      let rejected = text.trim() === 'Fails.'
+      if (!accepted && !rejected) {
+        try {
+          const data = JSON.parse(text)
+          accepted = Number(data?.success_count) > 0 || (Array.isArray(data?.added_torrent_ids) && data.added_torrent_ids.length > 0)
+          rejected = data?.success_count === 0 || (Array.isArray(data?.added_torrent_ids) && data.added_torrent_ids.length === 0)
+        } catch { /* Unknown responses retain duplicate protection below. */ }
       }
+      if (!accepted && !rejected) throw new QbittorrentAmbiguousError('qBittorrent did not confirm whether it accepted the torrent')
       if (accepted) {
         try {
           if (hash) ownership?.record(hash)
@@ -239,9 +249,10 @@ export async function qbAddTorrent(config: Config, magnet: string, category?: st
           if (!hash) throw error
           try {
             await qbPostWithFallback(config, ['/api/v2/torrents/delete'], new URLSearchParams({ hashes: hash, deleteFiles: 'false' }))
+            if ((await qbGetTorrents(config, [hash], true)).length) throw new Error('qBittorrent did not confirm removal; the torrent is still present')
             ownership?.forget(hash)
           } catch (cleanupError) {
-            throw new Error(`${errorMessage(error)}; cleanup failed and the torrent may remain in qBittorrent: ${errorMessage(cleanupError)}`)
+            throw new QbittorrentAmbiguousError(`${errorMessage(error)}; cleanup failed and the torrent may remain in qBittorrent: ${errorMessage(cleanupError)}`)
           } finally {
             invalidateQbCache(config)
           }
@@ -324,7 +335,7 @@ export async function qbGetTorrents(config: Config, hashes?: string[], fresh = f
         const text = await response.text()
         if (response.status !== 200) throw new Error(`qBittorrent error (HTTP ${response.status}: ${text.slice(0, 120)})`)
         const parsed: unknown = JSON.parse(text)
-        if (!Array.isArray(parsed) || parsed.some(torrent => !torrent || typeof torrent !== 'object' || typeof torrent.hash !== 'string')) throw new Error('qBittorrent returned an invalid torrent list')
+        if (!Array.isArray(parsed) || parsed.some(torrent => !torrent || typeof torrent !== 'object' || typeof torrent.hash !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(torrent.hash))) throw new Error('qBittorrent returned an invalid torrent list')
         if (revision === connection.revision) connection.cache = { data: parsed, timestamp: Date.now() }
         return parsed as JsonObject[]
       })().finally(() => { if (connection.pending === pending) connection.pending = null })

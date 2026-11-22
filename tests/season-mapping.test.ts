@@ -7,6 +7,7 @@ import { beforeEach, describe, test } from 'node:test'
 import { anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, cancelScan, checkForUpdates, clearScannedData, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, effectiveSeasonParts, DATA_DIR, encryptSecretValues, getState, loadStringSet, localItems, localPartOwnership, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest, resetRuntimeForTests, resetUpdateCheck, runScan, scannedDataInfo, sendToDiscord, setState } from '../server/app.js'
 import { nextScheduledTime, processAutocheck, processWebhookScans, queueWebhookScan, refreshAutocheckSchedule, resetWebhookScanState, webhookScanState } from '../server/index.js'
 import { qbPhase } from '../server/download-progress.js'
+import { QbittorrentAmbiguousError } from '../server/qbittorrent.js'
 import { testIntegration } from '../server/integration-tests.js'
 import { upgradeParts, type RecommendationSeason } from '../shared/download-plan.js'
 import type { JsonObject, ReleaseCandidate, ScanTrigger } from '../server/types.js'
@@ -518,6 +519,9 @@ describe('qBittorrent torrent controls', () => {
     assert.equal(qbPhase('uploading', 1), 'seeding')
     assert.equal(qbPhase('checkingDL', 0.5), 'verifying')
     assert.equal(qbPhase('missingFiles', 0.5), 'error')
+    assert.equal(qbPhase('forcedDL', 0.5), 'downloading')
+    assert.equal(qbPhase('queuedDL', 0.5), 'queued')
+    assert.equal(qbPhase('metaDL', 0.5), 'queued')
   })
 
   test('pauses torrents and removes them with the selected file behavior', async () => {
@@ -535,6 +539,7 @@ describe('qBittorrent torrent controls', () => {
     try {
       await qbControlTorrents(config, ['a'.repeat(40)], 'pause')
       await qbControlTorrents(config, ['a'.repeat(40)], 'remove', true)
+      await qbControlTorrents(config, ['a'.repeat(40)], 'remove', false)
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -543,6 +548,7 @@ describe('qBittorrent torrent controls', () => {
     assert.equal(new URLSearchParams(requests[1].body).get('hashes'), 'a'.repeat(40))
     assert.equal(requests[2].url, 'http://qb.example/api/v2/torrents/delete')
     assert.equal(new URLSearchParams(requests[2].body).get('deleteFiles'), 'true')
+    assert.equal(new URLSearchParams(requests[3].body).get('deleteFiles'), 'false')
   })
 
   test('falls back to the legacy pause endpoint', async () => {
@@ -577,7 +583,7 @@ describe('qBittorrent torrent controls', () => {
         return new Response('Ok.', { status: 200, headers: { 'Set-Cookie': 'SID=test; Path=/' } })
       }
       if (url.endsWith('/api/v2/torrents/add')) return new Response('Ok.', { status: 200 })
-      if (url.includes('/api/v2/torrents/info?')) return new Response('[]', { status: 200 })
+      if (url.includes('/api/v2/torrents/info')) return new Response('[]', { status: 200 })
       if (url.includes('/api/v2/torrents/files?')) return new Response(JSON.stringify([
         { index: 4, name: 'Root/Show.S01E01.mkv' },
         { index: 9, name: 'Root/Show.S01E02.mkv' },
@@ -620,7 +626,7 @@ describe('qBittorrent torrent controls', () => {
         return new Response('Ok.', { status: 200, headers: { 'Set-Cookie': 'SID=test; Path=/' } })
       }
       if (url.endsWith('/api/v2/torrents/add')) return new Response('Ok.', { status: 200 })
-      if (url.includes('/api/v2/torrents/info?')) return new Response('[]', { status: 200 })
+      if (url.includes('/api/v2/torrents/info')) return new Response('[]', { status: 200 })
       if (url.includes('/api/v2/torrents/files?')) return new Response('[]', { status: 200 })
       return new Response('', { status: 200 })
     }) as typeof fetch
@@ -649,7 +655,7 @@ describe('qBittorrent torrent controls', () => {
         return new Response('Ok.', { status: 200, headers: { 'Set-Cookie': 'SID=test; Path=/' } })
       }
       if (url.endsWith('/api/v2/torrents/add')) return new Response('Ok.', { status: 200 })
-      if (url.includes('/api/v2/torrents/info?')) return new Response('[]', { status: 200 })
+      if (url.includes('/api/v2/torrents/info')) return new Response('[]', { status: 200 })
       if (url.includes('/api/v2/torrents/files?')) {
         const hash = new URL(url).searchParams.get('hash')
         // The first torrent never exchanges magnet metadata; the second one does.
@@ -718,7 +724,7 @@ describe('qBittorrent torrent controls', () => {
     globalThis.fetch = (async (input: string | URL | Request) => {
       const url = String(input); requests.push(url)
       if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.', { status: 200 })
-      if (url.includes('/api/v2/torrents/info?')) return new Response('[]', { status: 200 })
+      if (url.includes('/api/v2/torrents/info')) return new Response('[]', { status: 200 })
       return new Response('Ok.', { status: 200 })
     }) as typeof fetch
     try {
@@ -731,6 +737,93 @@ describe('qBittorrent torrent controls', () => {
       globalThis.fetch = originalFetch
     }
     assert.ok(requests.some((url) => url.endsWith('/api/v2/torrents/delete')))
+  })
+
+  test('forgets accepted torrent ownership only after fresh confirmed cleanup absence', async () => {
+    const originalFetch = globalThis.fetch
+    const config = { ...DEFAULT_CONFIG, qbittorrent_url: 'http://cleanup.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' }
+    const hash = 'f'.repeat(40)
+    try {
+      for (const read of ['absent', 'present', 'offline', 'malformed'] as const) {
+        let owned = false
+        let forgotten = 0
+        const deletions: URLSearchParams[] = []
+        globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+          const url = String(input)
+          if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.')
+          if (url.includes('/api/v2/torrents/info?')) return Response.json([])
+          if (url.endsWith('/api/v2/torrents/info')) {
+            if (read === 'offline') throw new TypeError('cleanup read offline')
+            if (read === 'malformed') return Response.json({ invalid: true })
+            return Response.json(read === 'present' ? [{ hash }] : [])
+          }
+          if (url.endsWith('/api/v2/torrents/delete')) deletions.push(new URLSearchParams(String(init?.body || '')))
+          return new Response('Ok.')
+        }) as typeof fetch
+        await assert.rejects(() => qbAddTorrent(config, `magnet:?xt=urn:btih:${hash}`, '', ['01.mkv'], 0, {
+          record: () => { owned = true },
+          forget: () => { owned = false; forgotten += 1 },
+        }), read === 'present' ? /torrent is still present/ : read === 'offline' ? /cleanup read offline/ : read === 'malformed' ? /invalid torrent list/ : /metadata fetching failed/i)
+        assert.equal(forgotten, read === 'absent' ? 1 : 0)
+        assert.equal(owned, read !== 'absent', 'Unproven cleanup must retain accepted ownership')
+        assert.equal(deletions.length, 1, 'One caller owns cleanup after metadata failure')
+        assert.equal(deletions[0].get('deleteFiles'), 'false')
+      }
+    } finally { globalThis.fetch = originalFetch }
+  })
+
+  test('retains accepted ownership when confirmed cleanup cannot persist its removal', async () => {
+    const originalFetch = globalThis.fetch
+    let owned = false
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.includes('/api/v2/torrents/info')) return Response.json([])
+      return new Response('Ok.')
+    }) as typeof fetch
+    try {
+      await assert.rejects(() => qbAddTorrent(
+        { ...DEFAULT_CONFIG, qbittorrent_url: 'http://persist-cleanup.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' },
+        `magnet:?xt=urn:btih:${'c'.repeat(40)}`, '', ['01.mkv'], 0,
+        { record: () => { owned = true }, forget: () => { throw new Error('ledger write failed') } },
+      ), /ledger write failed/)
+      assert.equal(owned, true)
+    } finally { globalThis.fetch = originalFetch }
+  })
+
+  test('classifies ambiguous qBittorrent dispatch and body failures without claiming acceptance', async () => {
+    const originalFetch = globalThis.fetch
+    const hash = 'b'.repeat(40)
+    try {
+      for (const failure of ['dispatch', 'body', 'unknown-response', 'rejected', 'pre-add'] as const) {
+        let addCalled = false
+        let recorded = false
+        globalThis.fetch = (async (input: string | URL | Request) => {
+          const url = String(input)
+          if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.')
+          if (url.includes('/api/v2/torrents/info')) {
+            if (failure === 'pre-add') throw new TypeError('existing read offline')
+            return Response.json([])
+          }
+          if (url.endsWith('/api/v2/torrents/add')) {
+            addCalled = true
+            if (failure === 'dispatch') throw new TypeError('submission connection lost')
+            if (failure === 'body') return new Response(new ReadableStream({ start(controller) { controller.error(new Error('submission body lost')) } }))
+            return new Response(failure === 'rejected' ? 'Fails.' : 'Not Ok')
+          }
+          throw new Error(`Unexpected request: ${url}`)
+        }) as typeof fetch
+        await assert.rejects(() => qbAddTorrent(
+          { ...DEFAULT_CONFIG, qbittorrent_url: `http://${failure}.qb.example`, qbittorrent_user: 'admin', qbittorrent_pass: 'secret' },
+          `magnet:?xt=urn:btih:${hash}`, '', [], undefined,
+          { record: () => { recorded = true }, forget: () => undefined },
+        ), (error: unknown) => {
+          assert.equal(error instanceof QbittorrentAmbiguousError, failure !== 'rejected' && failure !== 'pre-add')
+          return true
+        })
+        assert.equal(addCalled, failure !== 'pre-add')
+        assert.equal(recorded, false, 'Unknown dispatch outcomes must not claim confirmed acceptance')
+      }
+    } finally { globalThis.fetch = originalFetch }
   })
 
   test('rejects misleading qBittorrent login responses', async () => {

@@ -80,18 +80,17 @@ function OutcomeLabel({ status, protocols }: { status: 'success' | 'failure' | '
 }
 
 export default function BulkDownloadDialog({ open, results, scopeControl, hiddenKeys, busy, job, downloadMode, sabEnabled, onConfirm, onClose }: Props) {
-  // Review a fixed snapshot until the dialog closes. The server checks release
-  // identities again when the plan is accepted.
+  // The review keeps its selected snapshot; the server validates identities against current results.
   const usenetEnabled = downloadMode !== 'torrent_only' && sabEnabled
   const reviewCandidates = useMemo(() => buildReview(results, (_result, { release }) => usenetEnabled && (release.info_hashes?.length || 0) > 0), [results, usenetEnabled])
-  const usenetSelections = useMemo(() => usenetEnabled ? reviewCandidates.ready.flatMap(group => group.options
+  const usenetSelections = useMemo(() => usenetEnabled ? [...new Map(reviewCandidates.ready.flatMap(group => group.options
     .filter(({ release }) => (release.info_hashes?.length || 0) > 0)
-    .map(option => ({ key: group.result.key, release: option.index, identity: releaseIdentity(option.release) }))) : [], [reviewCandidates, usenetEnabled])
+    .map(option => ({ key: group.result.key, release: option.index, identity: releaseIdentity(option.release) }))).map(selection => [`${selection.key}\u0000${selection.release}`, selection])).values()] : [], [reviewCandidates, usenetEnabled])
   const usenetSignature = JSON.stringify(usenetSelections)
   const [usenetAvailability, setUsenetAvailability] = useState<{ signature: string; available: Set<string>; error: string | null } | null>(null)
   const currentAvailability = usenetAvailability?.signature === usenetSignature ? usenetAvailability : null
   const usenetChecking = usenetEnabled && usenetSelections.length > 0 && !currentAvailability
-  const usenetEligible = useMemo(() => (result: ResultItem, option: IndexedRelease) => usenetEnabled && currentAvailability?.available.has(`${result.key}\u0000${option.index}`) === true, [usenetEnabled, currentAvailability])
+  const usenetEligible = useMemo(() => (result: ResultItem, option: IndexedRelease) => usenetEnabled && currentAvailability?.available.has(`${result.key}\u0000${option.index}\u0000${releaseIdentity(option.release)}`) === true, [usenetEnabled, currentAvailability])
   const review = useMemo(() => buildReview(results, usenetEligible), [results, usenetEligible])
   const [selected, setSelected] = useState<Record<string, number>>({})
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})
@@ -124,24 +123,27 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
 
   useEffect(() => {
     if (!open || !usenetEnabled || !usenetSelections.length) return
-    let cancelled = false
+    const controller = new AbortController()
     setUsenetAvailability(null)
     void (async () => {
       const available = new Set<string>()
-      // The availability endpoint accepts at most 200 selections per request.
+      const errors = new Set<string>()
       for (let offset = 0; offset < usenetSelections.length; offset += 200) {
-        const response = await api.usenetAvailability(usenetSelections.slice(offset, offset + 200), refresh)
-        if (cancelled) return
+        const selections = usenetSelections.slice(offset, offset + 200)
+        const response = await api.usenetAvailability(selections, refresh, controller.signal)
+        if (controller.signal.aborted) return
         if (!response.ok) throw new Error(response.error || 'Could not check Usenet sources')
-        if (response.sabnzbd_configured) for (const row of response.results) {
-          if (row.aggregate === 'available') available.add(`${row.key}\u0000${row.release}`)
+        for (const row of response.results) {
+          if (!selections.some(selection => selection.key === row.key && selection.release === row.release && selection.identity === row.identity)) continue
+          if (response.sabnzbd_configured && row.aggregate === 'available') available.add(`${row.key}\u0000${row.release}\u0000${row.identity}`)
+          for (const hash of row.hashes) if (hash.state === 'lookup_failed') errors.add(hash.error || 'A provider lookup failed')
         }
       }
-      setUsenetAvailability({ signature: usenetSignature, available, error: null })
+      setUsenetAvailability({ signature: usenetSignature, available, error: errors.size ? [...errors].join('; ') : null })
     })().catch(error => {
-      if (!cancelled) setUsenetAvailability({ signature: usenetSignature, available: new Set(), error: error instanceof Error ? error.message : 'Could not check Usenet sources' })
+      if (!controller.signal.aborted) setUsenetAvailability({ signature: usenetSignature, available: new Set(), error: error instanceof Error ? error.message : 'Could not check Usenet sources' })
     })
-    return () => { cancelled = true }
+    return () => controller.abort()
   }, [open, usenetSignature, usenetEnabled, retry])
 
   useEffect(() => {
@@ -247,6 +249,7 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
           </div>
           {usenetChecking && <p className="m-0 text-xs text-muted" role="status">Checking Usenet availability…</p>}
           {currentAvailability?.error && <p className="m-0 text-xs text-warn" role="status">Usenet check unavailable: {currentAvailability.error}. Refresh the review to try again.</p>}
+          {!finished && <button type="button" className="touch-target self-start cursor-pointer rounded-lg px-2 py-1 text-xs font-bold text-accent-bright hover:bg-accent/10 disabled:opacity-50" disabled={usenetChecking || busy} onClick={() => { setWholeSource(false); setDiskSpace(false); setPreflight(null); setPreflightError(null); setUsenetAvailability(null); setRefresh(true); setRetry(current => current + 1) }}>Refresh review</button>}
 
           {view === 'ready' && (
             <section>
@@ -372,7 +375,6 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
               {currentPreflight?.disk_space.length ? <ul className="m-0 list-none divide-y divide-line">{currentPreflight.disk_space.map((check, index) => <DiskLine key={`${check.client}-${index}`} check={check}/>)}</ul> : <p className="m-0 text-muted">No disk-space data available from the configured clients.</p>}
               {currentPreflight && !newUnits && <p className="m-0 text-muted">Nothing new to send. Existing acquisitions are kept unchanged.</p>}
               {currentPreflight?.approximate_bytes && <p className="m-0 text-muted">Usenet source sizes are provider estimates.</p>}
-              <button type="button" className="touch-target cursor-pointer rounded-lg px-2 py-1 font-bold text-accent-bright hover:bg-accent/10 disabled:opacity-50" disabled={checking || busy} onClick={() => { setRefresh(true); setRetry(current => current + 1) }}>Refresh review</button>
               {needsWhole && <label className="flex min-h-11 cursor-pointer items-start gap-2 rounded-lg border border-warn/40 bg-warn/8 p-3 text-warn"><input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-warn" checked={wholeSource} onChange={event => setWholeSource(event.target.checked)}/><span className="min-w-0"><span className="block font-bold">Download whole Usenet sources</span><span className="mt-0.5 block text-[0.6875rem] text-muted">Usenet sources cannot be split per episode. Files beyond the selected episodes will also be downloaded.</span></span></label>}
               {needsSpace && <label className="flex min-h-11 cursor-pointer items-start gap-2 rounded-lg border border-warn/40 bg-warn/8 p-3 text-warn"><input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-warn" checked={diskSpace} onChange={event => setDiskSpace(event.target.checked)}/><span className="min-w-0"><span className="block font-bold">Continue without confirmed free space</span><span className="mt-0.5 block text-[0.6875rem] text-muted">The client could not confirm enough space. Some downloads may fail until space is available.</span></span></label>}
             </section>}

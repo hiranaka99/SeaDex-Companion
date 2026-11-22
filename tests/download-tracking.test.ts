@@ -5,16 +5,20 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import type { NewDownloadRecord } from '../server/download-store.js'
 
-// Static import cannot work here: the ledger freezes DATA_DIR-derived file paths at module load,
-// so the temp directory must be set on the environment before this module is evaluated.
+// These imports exercise the DATA_DIR module-loading boundary. Static imports would freeze
+// the store and progress dependencies' file paths before this test sets its temp directory.
 const dataDir = process.env.DATA_DIR || mkdtempSync(join(tmpdir(), 'seadex-ledger-'))
 process.env.DATA_DIR = dataDir
 mkdirSync(dataDir, { recursive: true })
 const {
-  addDownloadRecord, allDownloadRecords, downloadRecords, downloadRows, findAcquisitionRecord,
+  addDownloadRecord, allDownloadRecords, downloadRecords, downloadRows, findAcquisitionRecord, findDownloadRecord,
   findSabnzbdRecord, findTorrentRecord, markDownloadRemoved, migrateOwnedDownloads,
   resetOwnedRuntime, setDownloadNative, setDownloadPhase, setDownloadRows,
 } = await import('../server/download-store.js')
+const { DEFAULT_CONFIG } = await import('../server/config.js')
+const { cancelRecords, collectDownloadProgress, controlRecord, listCancelable } = await import('../server/download-progress.js')
+const { qbEndpointId, sabEndpoint } = await import('../server/client-identity.js')
+const { resetQbRuntime } = await import('../server/qbittorrent.js')
 
 const ownedFile = join(dataDir, 'owned_torrents.json')
 const detailsFile = join(dataDir, 'download_records.json')
@@ -24,7 +28,7 @@ const h1 = 'a'.repeat(40), h2 = 'b'.repeat(40), h3 = 'c'.repeat(40), h4 = 'd'.re
 
 // Each section starts from a pristine ledger so ordering within the shared process never matters.
 const cleanLedger = () => {
-  for (const file of [ownedFile, detailsFile, ledgerFile]) rmSync(file, { force: true })
+  for (const file of [ownedFile, detailsFile, ledgerFile, `${ledgerFile}.tmp`]) rmSync(file, { recursive: true, force: true })
   resetOwnedRuntime()
 }
 after(cleanLedger)
@@ -140,7 +144,8 @@ test('acquisition lookups are protocol-filtered and skip removed records', () =>
 
 test('setDownloadNative confirms acceptance and clones one record per extra native job', () => {
   cleanLedger()
-  const pending = addDownloadRecord({ protocol: 'usenet', client: 'sabnzbd', endpoint, native_id: '', state: 'acceptance_unknown', source_hash: h5, category: 'anime', provider: 'amenzb', labels: ['retry'] })
+  const rows = [{ key: 'season-one', release: 0 }, { key: 'season-two', release: 2 }]
+  const pending = addDownloadRecord({ protocol: 'usenet', client: 'sabnzbd', endpoint, native_id: '', state: 'acceptance_unknown', source_hash: h5, category: 'anime', provider: 'amenzb', labels: ['retry'], rows })
   assert.equal(pending.state, 'acceptance_unknown')
   assert.equal(pending.native_id, '')
   assert.equal(findSabnzbdRecord('nzo-missing'), null)
@@ -154,6 +159,8 @@ test('setDownloadNative confirms acceptance and clones one record per extra nati
   assert.equal(clone.state, 'accepted')
   assert.equal(clone.category, 'anime')
   assert.deepEqual(clone.labels, ['retry'])
+  assert.deepEqual(downloadRows(pending.id), rows)
+  assert.deepEqual(downloadRows(clone.id), rows, 'Every native job retains the submission associations')
   assert.match(clone.id, new RegExp(`^u:${h5.slice(0, 12)}:`))
   setDownloadNative(pending.id, ['nzo-a', 'nzo-b'])
   assert.equal(downloadRecords().filter(record => record.source_hash === h5).length, 2, 'Already-recorded native ids never duplicate')
@@ -181,4 +188,256 @@ test('removal keeps an audit record outside the active ledger and row projection
   const kept = allDownloadRecords().find(candidate => candidate.id === record.id)
   assert.ok(kept?.removed_at, 'Removed acquisitions remain in the audit ledger')
   assert.equal(kept!.card, undefined)
+})
+
+test('failed ledger writes leave records, associations, and native bindings unchanged until retry', () => {
+  cleanLedger()
+  const rows = [{ key: 'original-row', release: 1 }]
+  const record = addDownloadRecord({ protocol: 'usenet', client: 'sabnzbd', endpoint, state: 'acceptance_unknown', source_hash: h1, category: 'anime', rows })
+  const torrentInput: NewDownloadRecord = { protocol: 'torrent', client: 'qbittorrent', endpoint, state: 'accepted', source_hash: h2, category: 'anime', rows }
+  const accepted = addDownloadRecord(torrentInput)
+  const beforeRecords = allDownloadRecords()
+  const beforeFile = readFileSync(ledgerFile, 'utf8')
+  mkdirSync(`${ledgerFile}.tmp`)
+  try {
+    assert.throws(() => addDownloadRecord({ ...torrentInput, source_hash: h3 }))
+    assert.throws(() => addDownloadRecord({ ...torrentInput, category: 'changed', rows: [{ key: 'changed-row', release: 0 }] }))
+    assert.throws(() => setDownloadRows(record.id, [{ key: 'changed-row', release: 0 }]))
+    assert.throws(() => setDownloadPhase(record.id, 'downloading'))
+    assert.throws(() => markDownloadRemoved(accepted.id))
+    assert.throws(() => setDownloadNative(record.id, ['nzo-a', 'nzo-b']))
+    assert.deepEqual(allDownloadRecords(), beforeRecords)
+    assert.deepEqual(downloadRows(record.id), rows)
+    assert.deepEqual(downloadRows(accepted.id), rows)
+    assert.equal(findAcquisitionRecord(h1)?.state, 'acceptance_unknown')
+    assert.equal(findAcquisitionRecord(h2)?.state, 'accepted')
+    assert.equal(findAcquisitionRecord(h3), null)
+    assert.equal(findSabnzbdRecord('nzo-a'), null)
+    assert.equal(findSabnzbdRecord('nzo-b'), null)
+    assert.equal(readFileSync(ledgerFile, 'utf8'), beforeFile)
+  } finally { rmSync(`${ledgerFile}.tmp`, { recursive: true, force: true }) }
+  setDownloadNative(record.id, ['nzo-a', 'nzo-b'])
+  assert.equal(downloadRecords().filter(candidate => candidate.source_hash === h1).length, 2)
+  resetOwnedRuntime()
+  assert.equal(findSabnzbdRecord('nzo-a')?.state, 'accepted')
+  assert.equal(findSabnzbdRecord('nzo-b')?.state, 'accepted')
+  assert.deepEqual(downloadRows(findSabnzbdRecord('nzo-b')!.id), rows)
+  setDownloadPhase(record.id, 'downloading')
+  setDownloadRows(record.id, [{ key: 'changed-row', release: 0 }])
+  markDownloadRemoved(accepted.id)
+  addDownloadRecord({ ...torrentInput, source_hash: h3 })
+  assert.equal(findDownloadRecord(record.id)?.last_phase, 'downloading')
+  assert.equal(findAcquisitionRecord(h2), null)
+  assert.equal(findAcquisitionRecord(h3)?.state, 'accepted')
+})
+
+test('migration retries after a failed durable write without half-applied ownership', () => {
+  cleanLedger()
+  writeFileSync(ownedFile, JSON.stringify([h1]), 'utf8')
+  mkdirSync(`${ledgerFile}.tmp`)
+  try {
+    assert.throws(() => migrateOwnedDownloads(endpoint))
+  } finally { rmSync(`${ledgerFile}.tmp`, { recursive: true, force: true }) }
+  migrateOwnedDownloads(endpoint)
+  assert.equal(findTorrentRecord(h1)?.endpoint, endpoint)
+  assert.equal(JSON.parse(readFileSync(ledgerFile, 'utf8')).records.length, 1)
+})
+
+const progressConfig = () => ({ ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb-ledger.test', qbittorrent_user: 'user', qbittorrent_pass: 'password', sabnzbd_url: 'http://sab-ledger.test', sabnzbd_key: 'sab-key' })
+
+interface ProgressRouter {
+  torrents?: Record<string, unknown>[]
+  queue?: Record<string, unknown>[]
+  history?: Record<string, unknown>[]
+  qbReadError?: boolean
+  malformedTorrents?: boolean
+  sabQueueError?: boolean
+  sabHistoryError?: boolean
+  malformedQueue?: boolean
+  malformedHistory?: boolean
+  controls: { url: string; body: string }[]
+}
+
+function installProgressRouter(state: ProgressRouter): () => void {
+  const original = globalThis.fetch
+  resetQbRuntime()
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input))
+    if (url.hostname === 'qb-ledger.test') {
+      if (url.pathname === '/api/v2/auth/login') return new Response('Ok.')
+      if (url.pathname === '/api/v2/torrents/info') {
+        if (state.qbReadError) throw new TypeError('qBittorrent offline')
+        if (state.malformedTorrents) return Response.json([{ hash: 'invalid-native-id' }])
+        return Response.json(state.torrents || [])
+      }
+      state.controls.push({ url: url.href, body: String(init?.body || '') })
+      return new Response('Ok.')
+    }
+    if (url.hostname === 'sab-ledger.test') {
+      const mode = url.searchParams.get('mode')
+      if (url.searchParams.get('name')) {
+        state.controls.push({ url: url.href, body: String(init?.body || '') })
+        return Response.json({ status: true })
+      }
+      if (mode === 'queue') {
+        if (state.sabQueueError) throw new TypeError('SABnzbd queue offline')
+        return Response.json({ queue: state.malformedQueue ? {} : { slots: state.queue || [] } })
+      }
+      if (mode === 'history') {
+        if (state.sabHistoryError) throw new TypeError('SABnzbd history offline')
+        return Response.json({ history: state.malformedHistory ? {} : { slots: state.history || [] } })
+      }
+    }
+    throw new Error(`Unexpected test request: ${url.href}`)
+  }) as typeof fetch
+  return () => { globalThis.fetch = original; resetQbRuntime(); cleanLedger() }
+}
+
+test('progress publishes every saved association and scope for an acquisition after recommendation changes', async () => {
+  cleanLedger()
+  const config = progressConfig()
+  const state: ProgressRouter = { torrents: [{ hash: h1, state: 'downloading', progress: 0.5, size: 1000 }], controls: [] }
+  const restore = installProgressRouter(state)
+  try {
+    const rows = Array.from({ length: 70 }, (_, release) => ({ key: `saved-row-${release}`, release }))
+    const scope = ['Cour 1/01.mkv', 'Cour 1/02.mkv']
+    const original = addDownloadRecord({ protocol: 'torrent', client: 'qbittorrent', endpoint: qbEndpointId(config), state: 'accepted', source_hash: h1, category: 'anime', rows, scope, card: { title: 'Original acquisition', season: 1, part: 'Cour 1', release_group: 'Original group', tracker: 'Nyaa', size: 1000 } })
+    scope.push('not-owned.mkv')
+    rows[0].key = 'mutated-caller-row'
+    const replacement = addDownloadRecord({ protocol: 'torrent', client: 'qbittorrent', endpoint: qbEndpointId(config), state: 'accepted', source_hash: h2, category: 'anime', rows: [{ key: 'saved-row-0', release: 0 }], scope: ['Cour 2/01.mkv'] })
+    resetOwnedRuntime()
+    const progress = await collectDownloadProgress(config)
+    const view = progress.downloads[original.id]
+    assert.equal(view.record_id, original.id)
+    assert.equal(view.source_hash, h1)
+    assert.equal(view.native_id, h1)
+    assert.equal(view.title, 'Original acquisition')
+    assert.equal(view.associations.length, 70, 'Internal associations are not a bounded display list')
+    assert.deepEqual(view.associations[0], { key: 'saved-row-0', release: 0 })
+    assert.deepEqual(view.scope, ['Cour 1/01.mkv', 'Cour 1/02.mkv'])
+    assert.equal('key' in view, false)
+    assert.equal('release' in view, false)
+    assert.equal(progress.downloads[replacement.id].source_hash, h2)
+    await controlRecord(config, original.id, 'pause', false)
+    assert.equal(new URLSearchParams(state.controls.at(-1)!.body).get('hashes'), h1, 'Controls stay bound to the original acquisition')
+  } finally { restore() }
+})
+
+test('fresh confirmed absence exposes ledger-only single and bulk removal without deleting files', async () => {
+  cleanLedger()
+  const config = progressConfig()
+  const state: ProgressRouter = { torrents: [{ hash: h1, state: 'downloading', progress: 0.5, size: 1000 }], controls: [] }
+  const restore = installProgressRouter(state)
+  const preservedFile = join(dataDir, 'preserved-download.mkv')
+  writeFileSync(preservedFile, 'keep me', 'utf8')
+  try {
+    const torrent = addDownloadRecord({ protocol: 'torrent', client: 'qbittorrent', endpoint: qbEndpointId(config), state: 'accepted', source_hash: h1, category: 'anime' })
+    const usenet = addDownloadRecord({ protocol: 'usenet', client: 'sabnzbd', endpoint: sabEndpoint(config).endpointId, native_id: 'missing-nzo', state: 'accepted', source_hash: h2, category: 'anime' })
+    assert.equal((await collectDownloadProgress(config)).downloads[torrent.id].phase, 'downloading')
+    state.torrents = []
+    const missing = await collectDownloadProgress(config)
+    for (const id of [torrent.id, usenet.id]) {
+      assert.equal(missing.downloads[id].phase, 'missing')
+      assert.deepEqual(missing.downloads[id].capabilities, { pause: false, resume: false, remove: true, remove_files: false })
+    }
+    assert.deepEqual((await listCancelable(config)).items.map(item => item.record_id).sort(), [torrent.id, usenet.id].sort())
+    await controlRecord(config, torrent.id, 'remove', true)
+    const result = await cancelRecords(config, [usenet.id], true)
+    assert.deepEqual(result.removed, [{ record_id: usenet.id, client: 'sabnzbd' }])
+    assert.deepEqual(state.controls, [], 'Confirmed absence never sends a client deletion request')
+    assert.equal(readFileSync(preservedFile, 'utf8'), 'keep me')
+    assert.equal(findAcquisitionRecord(h1), null)
+    assert.equal(findAcquisitionRecord(h2), null)
+    assert.ok(findDownloadRecord(torrent.id)?.removed_at)
+    const reacquired = addDownloadRecord({ protocol: 'torrent', client: 'qbittorrent', endpoint: qbEndpointId(config), state: 'accepted', source_hash: h1, category: 'anime' })
+    assert.equal(reacquired.removed_at, undefined)
+    assert.equal(findAcquisitionRecord(h1)?.id, reacquired.id)
+  } finally { rmSync(preservedFile, { force: true }); restore() }
+})
+
+test('failed, incomplete, unbound, and unknown-acceptance reads never permit ledger cleanup', async () => {
+  cleanLedger()
+  const config = progressConfig()
+  const state: ProgressRouter = { qbReadError: true, sabHistoryError: true, controls: [] }
+  const restore = installProgressRouter(state)
+  try {
+    const torrent = addDownloadRecord({ protocol: 'torrent', client: 'qbittorrent', endpoint: qbEndpointId(config), state: 'accepted', source_hash: h1, category: 'anime' })
+    const usenet = addDownloadRecord({ protocol: 'usenet', client: 'sabnzbd', endpoint: sabEndpoint(config).endpointId, native_id: 'maybe-nzo', state: 'accepted', source_hash: h2, category: 'anime' })
+    const unknownTorrent = addDownloadRecord({ protocol: 'torrent', client: 'qbittorrent', endpoint: qbEndpointId(config), state: 'acceptance_unknown', source_hash: h3, category: 'anime' })
+    const unknownUsenet = addDownloadRecord({ protocol: 'usenet', client: 'sabnzbd', endpoint: sabEndpoint(config).endpointId, native_id: 'unconfirmed-nzo', state: 'acceptance_unknown', source_hash: h4, category: 'anime' })
+    const unbound = addDownloadRecord({ protocol: 'torrent', client: 'qbittorrent', endpoint: '', state: 'accepted', source_hash: h5, category: 'anime' })
+    setDownloadPhase(torrent.id, 'missing')
+    const unavailable = await collectDownloadProgress(config)
+    assert.equal(unavailable.downloads[torrent.id].phase, 'missing', 'A last-known phase is not fresh evidence of absence')
+    for (const record of [torrent, usenet, unknownTorrent, unknownUsenet, unbound]) {
+      assert.equal(unavailable.downloads[record.id].capabilities.remove, false)
+      await assert.rejects(controlRecord(config, record.id, 'remove', true))
+    }
+    state.qbReadError = false
+    state.sabHistoryError = false
+    state.malformedTorrents = true
+    assert.equal((await collectDownloadProgress(config)).downloads[torrent.id].capabilities.remove, false)
+    await assert.rejects(controlRecord(config, torrent.id, 'remove', false))
+    state.malformedTorrents = false
+    for (const section of ['malformedQueue', 'malformedHistory'] as const) {
+      state[section] = true
+      const malformed = await collectDownloadProgress(config)
+      assert.equal(malformed.downloads[usenet.id].capabilities.remove, false)
+      await assert.rejects(controlRecord(config, usenet.id, 'remove', false))
+      state[section] = false
+    }
+    const complete = await collectDownloadProgress(config)
+    assert.equal(complete.downloads[unknownTorrent.id].phase, 'acceptance_unknown')
+    assert.equal(complete.downloads[unknownUsenet.id].phase, 'acceptance_unknown')
+    assert.equal(complete.downloads[unknownTorrent.id].capabilities.remove, false)
+    assert.equal(complete.downloads[unknownUsenet.id].capabilities.remove, false)
+    const cancelled = await cancelRecords(config, [unknownTorrent.id, unknownUsenet.id, unbound.id], true)
+    assert.equal(cancelled.removed.length, 0)
+    assert.equal(cancelled.failures.length, 3)
+    assert.deepEqual(state.controls, [])
+    assert.equal(findAcquisitionRecord(h3)?.state, 'acceptance_unknown')
+    assert.equal(findAcquisitionRecord(h4)?.state, 'acceptance_unknown')
+    assert.equal(downloadRecords().length, 5)
+  } finally { restore() }
+})
+
+test('SABnzbd unknown-size percentages and mixed-case statuses match their capabilities', async () => {
+  cleanLedger()
+  const config = progressConfig()
+  const state: ProgressRouter = { queue: [{ nzo_id: 'half-nzo', status: 'pAuSeD', percentage: '50' }], history: [{ nzo_id: 'failed-nzo', status: 'fAiLeD', fail_message: 'Repair failed', loaded: false }], controls: [] }
+  const restore = installProgressRouter(state)
+  try {
+    const queued = addDownloadRecord({ protocol: 'usenet', client: 'sabnzbd', endpoint: sabEndpoint(config).endpointId, native_id: 'half-nzo', state: 'accepted', source_hash: h1, category: 'anime' })
+    const failed = addDownloadRecord({ protocol: 'usenet', client: 'sabnzbd', endpoint: sabEndpoint(config).endpointId, native_id: 'failed-nzo', state: 'accepted', source_hash: h2, category: 'anime' })
+    const progress = await collectDownloadProgress(config)
+    assert.equal(progress.downloads[queued.id].total_size, 0)
+    assert.equal(progress.downloads[queued.id].progress, 0.5)
+    assert.equal(progress.downloads[queued.id].phase, 'paused')
+    assert.deepEqual(progress.downloads[queued.id].capabilities, { pause: false, resume: true, remove: true, remove_files: true })
+    assert.equal(progress.downloads[failed.id].phase, 'error')
+    assert.equal(progress.downloads[failed.id].error, 'Repair failed')
+    assert.equal(progress.downloads[failed.id].capabilities.remove_files, true)
+    state.queue![0].status = 'dOwNlOaDiNg'
+    const downloading = await collectDownloadProgress(config)
+    assert.equal(downloading.downloads[queued.id].capabilities.pause, true)
+    assert.equal(downloading.downloads[queued.id].capabilities.resume, false)
+  } finally { restore() }
+})
+
+test('unfinished forced, queued, and metadata torrent states expose pause', async () => {
+  cleanLedger()
+  const config = progressConfig()
+  const state: ProgressRouter = { controls: [] }
+  const restore = installProgressRouter(state)
+  try {
+    const record = addDownloadRecord({ protocol: 'torrent', client: 'qbittorrent', endpoint: qbEndpointId(config), state: 'accepted', source_hash: h1, category: 'anime' })
+    for (const [nativeState, phase] of [['forcedDL', 'downloading'], ['queuedDL', 'queued'], ['metaDL', 'queued']] as const) {
+      state.torrents = [{ hash: h1, state: nativeState, progress: 0.2 }]
+      const view = (await collectDownloadProgress(config)).downloads[record.id]
+      assert.equal(view.phase, phase)
+      assert.deepEqual(view.capabilities, { pause: true, resume: false, remove: true, remove_files: true })
+    }
+    state.torrents = [{ hash: h1, state: 'forcedDL', progress: 1 }]
+    assert.equal((await collectDownloadProgress(config)).downloads[record.id].capabilities.pause, false)
+  } finally { restore() }
 })

@@ -115,10 +115,18 @@ describe('sabAddNzb', () => {
     assert.ok(init.signal instanceof AbortSignal)
   })
 
-  test('status true with missing or empty nzo_ids is never success', async () => {
-    for (const body of [{ status: true }, { status: true, nzo_ids: [] }, { status: true, nzo_ids: [''] }, { status: true, nzo_ids: 'oops' }]) {
-      const { fetchImpl } = recordingFetch(() => Response.json(body))
-      await assert.rejects(sabAddNzb(settings, nzbBytes, 'name', 'cat', fetchImpl), isPlainSabError, `body ${JSON.stringify(body)}`)
+  test('accepted submissions without usable native IDs remain ambiguous', async () => {
+    for (const body of [{ status: true }, { status: true, nzo_ids: [] }, { status: true, nzo_ids: [''] }, { status: true, nzo_ids: ['   '] }, { status: true, nzo_ids: 'oops' }, { status: true, nzo_ids: [nzoId, null] }]) {
+      const { fetchImpl, calls } = recordingFetch(() => Response.json(body))
+      await assert.rejects(sabAddNzb(settings, nzbBytes, 'name', 'cat', fetchImpl), (error: unknown) => error instanceof SabnzbdAmbiguousError, `body ${JSON.stringify(body)}`)
+      assert.equal(calls.length, 1)
+    }
+  })
+
+  test('an acceptance response with an HTTP failure or error cannot prove rejection', async () => {
+    for (const response of [Response.json({ status: true }, { status: 500 }), Response.json({ status: true, nzo_ids: [nzoId], error: 'conflicting response' })]) {
+      const { fetchImpl } = recordingFetch(() => response)
+      await assert.rejects(sabAddNzb(settings, nzbBytes, 'name', 'cat', fetchImpl), (error: unknown) => error instanceof SabnzbdAmbiguousError)
     }
   })
 
@@ -241,6 +249,14 @@ describe('sabQueueJobs', () => {
     assert.equal(read.read_complete, false)
     assert.deepEqual(read.jobs.map((job) => job.nzo_id), ['q1'])
   })
+
+  test('missing, malformed, or unparseable queue slots cannot prove absence', async () => {
+    for (const queue of [{}, { slots: null }, { slots: {} }, { slots: [null] }, { slots: [{}] }]) {
+      const { fetchImpl } = recordingFetch(() => Response.json({ queue }))
+      const read = await sabQueueJobs(settings, ['missing'], fetchImpl)
+      assert.equal(read.read_complete, false, JSON.stringify(queue))
+    }
+  })
 })
 
 describe('sabHistoryJobs', () => {
@@ -271,6 +287,14 @@ describe('sabHistoryJobs', () => {
     const read = await sabHistoryJobs(settings, ['h1'], fetchImpl)
     assert.equal(read.read_complete, false)
     assert.deepEqual(read.jobs, [])
+  })
+
+  test('missing, malformed, or unparseable history slots cannot prove absence', async () => {
+    for (const history of [{}, { slots: null }, { slots: {} }, { slots: [null] }, { slots: [{}] }]) {
+      const { fetchImpl } = recordingFetch(() => Response.json({ history }))
+      const read = await sabHistoryJobs(settings, ['missing'], fetchImpl)
+      assert.equal(read.read_complete, false, JSON.stringify(history))
+    }
   })
 })
 

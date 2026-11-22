@@ -7,7 +7,7 @@ import { consumePlan, type StoredPlan } from './download-plans.js'
 import { acceptDownloadPlan, PlanRejected, receiptFromJob } from './download-submit.js'
 import { downloadJobs, DownloadJobConflict } from './download-jobs.js'
 import { cancelRecords, collectDownloadProgress, controlRecord, listCancelable, OwnershipError } from './download-progress.js'
-import { usenetAvailability, sabnzbdConfigured } from './usenet.js'
+import { usenetAvailability, sabnzbdConfigured, UsenetSelectionError } from './usenet.js'
 import { applyUserRulesToResults } from './user-rules.js'
 import { currentGeneration } from './config-generation.js'
 import { log } from './logging.js'
@@ -54,14 +54,19 @@ export async function handleDownloadRequest(request: IncomingMessage, response: 
     if (parsed.error) return sendJson(response, parsed.error[0], { error: parsed.error[1] })
     const config = loadConfig()
     const results = currentResults()
-    const availability = await usenetAvailability(config, parsed.selections, body.refresh === true, results)
-    return sendJson(response, 200, {
-      ok: true,
-      config_generation: currentGeneration(),
-      providers_enabled: { animetosho: config.animetosho_enabled, amenzb: config.amenzb_enabled },
-      sabnzbd_configured: sabnzbdConfigured(config),
-      results: availability,
-    }, { 'Cache-Control': 'no-store' })
+    try {
+      const availability = await usenetAvailability(config, parsed.selections, body.refresh === true, results)
+      return sendJson(response, 200, {
+        ok: true,
+        config_generation: currentGeneration(),
+        providers_enabled: { animetosho: config.animetosho_enabled, amenzb: config.amenzb_enabled },
+        sabnzbd_configured: sabnzbdConfigured(config),
+        results: availability,
+      }, { 'Cache-Control': 'no-store' })
+    } catch (error) {
+      if (error instanceof UsenetSelectionError) return sendJson(response, error.status, { ok: false, error: error.message })
+      throw error
+    }
   }
 
   if (method === 'POST' && path === '/api/download') {
@@ -94,8 +99,10 @@ export async function handleDownloadRequest(request: IncomingMessage, response: 
     const planRead = readPlan(body)
     if ('error' in planRead) return sendJson(response, planRead.error[0], { ok: false, error: planRead.error[1] })
     bulkOperationActive = true
+    let completionOwnsOperation = false
     try {
       const { job, completion } = await acceptDownloadPlan(loadConfig(), planRead.plan, acknowledgeFlags(body), currentResults())
+      completionOwnsOperation = true
       completion.then(
         (result: BulkSubmissionResult) => log('INFO', `Bulk download job ${job.id} settled: ${result.count}/${result.rows.length} release(s) ready, ${result.failures.length} failure(s)`),
         (error: unknown) => log('ERROR', `Bulk download job ${job.id} crashed: ${error instanceof Error ? error.message : String(error)}`),
@@ -104,8 +111,9 @@ export async function handleDownloadRequest(request: IncomingMessage, response: 
     } catch (error) {
       if (error instanceof PlanRejected) return sendJson(response, error.status, { ok: false, error: error.message })
       if (error instanceof DownloadJobConflict) return sendJson(response, 409, { ok: false, error: error.message })
-      bulkOperationActive = false
       throw error
+    } finally {
+      if (!completionOwnsOperation) bulkOperationActive = false
     }
   }
 

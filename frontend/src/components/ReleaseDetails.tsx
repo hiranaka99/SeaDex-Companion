@@ -8,6 +8,7 @@ import { DownloadActions, clientName, phaseLabel, type DownloadEntry } from './D
 import { estimateDownloads } from '../../../shared/download-estimate'
 import type { DownloadProtocol, UsenetAvailabilityResult } from '../api'
 import type { DetailsDownloadState } from '../useCardDownloads'
+import { releaseIdentity } from '../../../shared/releases'
 
 interface Props {
   result: ResultItem
@@ -70,7 +71,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, state,
   const category = (r.arr === 'Sonarr' ? config?.sonarr_category : config?.radarr_category)?.trim() || r.arr
   const usenetEnabled = mode !== 'torrent_only'
   const sabReady = sabnzbdConfigured || Boolean(config?.sabnzbd_url && config?.sabnzbd_key_configured)
-  const usenet = usenetEnabled ? describeUsenet(availability, sabReady) : null
+  const usenet = usenetEnabled ? describeUsenet(availability?.identity === releaseIdentity(rel) ? availability : undefined, sabReady) : null
   const chosen: DownloadProtocol = mode === 'torrent_only' ? 'torrent' : mode === 'usenet_only' ? 'usenet' : protocol
   const torrentUsable = rel.torrent_available
   const usenetUsable = usenet?.usable === true
@@ -174,7 +175,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, state,
           </div>
           {showsBar && <div role="progressbar" aria-label={`Download progress · ${seasonLabel(r)} · ${rel.releaseGroup}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={transfer.phase === 'acceptance_unknown' ? undefined : percent} aria-valuetext={`${phaseLabel(transfer.phase)} · ${percent.toFixed(1)}%`} className="h-1.5 overflow-hidden rounded-full bg-panel-raised"><div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${Math.max(percent, transfer.phase === 'queued' || transfer.phase === 'acceptance_unknown' ? 2 : 0)}%` }}/></div>}
           {transfer.phase === 'error' && <div className="mt-3 rounded-lg bg-bad/5 p-3"><p className="m-0 text-sm font-semibold text-bad">{client} reported a download error</p><p className="mt-1 mb-2 text-xs text-ink wrap-anywhere">{transfer.error || `Open this download in ${client}, resolve the issue, then retry.`}</p></div>}
-          {transfer.phase === 'acceptance_unknown' && <p className="mt-2 mb-0 text-xs text-warn">SABnzbd was asked to start this download but did not confirm it. Check SABnzbd before retrying.</p>}
+          {transfer.phase === 'acceptance_unknown' && <p className="mt-2 mb-0 text-xs text-warn">{client} was asked to start this download but did not confirm it. Check {client} before retrying.</p>}
           {transfer.phase === 'missing' && <p className="mt-2 mb-0 text-xs text-bad">This download is no longer in {client}. Remove the entry and send it again if you still want it.</p>}
           {transfer.unbound && <p className="mt-2 mb-0 text-xs text-warn">This download belongs to a different client URL and cannot be controlled from here.</p>}
           <div className="mt-2 flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-muted wrap-anywhere">{transfer.phase === 'downloading' ? [transfer.speed > 0 && transfer.client === 'qbittorrent' ? `${formatBytes(transfer.speed)}/s` : '', transfer.client === 'qbittorrent' ? formatEta(Math.max(0, transfer.total_size - transfer.downloaded), transfer.speed) : ''].filter(Boolean).join(' · ') : transfer.phase === 'post_processing' || transfer.phase === 'unpacking' ? `${client} is preparing the files…` : ''}</span><span className="ml-auto inline-flex gap-2"><DownloadActions entry={transfer} busy={busy} onPause={() => onPause(transfer)} onResume={() => onResume(transfer)} onRemove={() => onRemove(transfer)}/></span></div>
