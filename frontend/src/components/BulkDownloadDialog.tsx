@@ -65,8 +65,14 @@ function hiddenKey(result: ResultItem): string {
 }
 
 function ReleaseSummary({ release }: { release: Release }) {
-  const tags = [...new Set([release.quality, ...(release.dual_audio ? ['Dual Audio'] : []), ...(release.tags || [])].filter(Boolean))]
-  return <span className="block min-w-0 text-xs text-ink/75 wrap-anywhere"><strong className="font-semibold text-ink">{release.releaseGroup}</strong> · {release.tracker}{tags.length > 0 && ` · ${tags.join(' · ')}`}</span>
+  const tags = [...new Set(release.tags || [])].filter(tag => tag && tag !== release.quality && (!release.dual_audio || tag !== 'Dual Audio'))
+  return <span className="flex min-w-0 flex-wrap items-baseline gap-x-5 gap-y-1.5 text-xs wrap-anywhere">
+    <span className="inline-flex items-baseline gap-1.5"><span className="text-muted">Group</span><strong className="font-semibold text-ink">{release.releaseGroup}</strong></span>
+    <span className="inline-flex items-baseline gap-1.5"><span className="text-muted">Tracker</span><span className="text-ink/85">{release.tracker}</span></span>
+    {release.quality && <span className="inline-flex items-baseline gap-1.5"><span className="text-muted">Quality</span><span className="text-ink/85">{release.quality}</span></span>}
+    {release.dual_audio && <span className="inline-flex items-baseline gap-1.5"><span className="text-muted">Audio</span><span className="text-ink/85">Dual Audio</span></span>}
+    {tags.length > 0 && <span className="inline-flex min-w-0 items-baseline gap-1.5"><span className="shrink-0 text-muted">Tags</span><span className="text-ink/85">{tags.join(', ')}</span></span>}
+  </span>
 }
 
 function OutcomeLabel({ status, protocols }: { status: 'success' | 'failure' | 'pending' | 'existing' | 'partial' | null; protocols: DownloadProtocol[] }) {
@@ -84,9 +90,17 @@ function OutcomeLabel({ status, protocols }: { status: 'success' | 'failure' | '
 function UsenetStatus({ row, loading }: { row: api.UsenetAvailabilityResult | undefined; loading: boolean }) {
   if (!row) return <span className="basis-full text-xs text-muted">{loading ? 'Checking Usenet sources…' : 'Usenet: not checked'}</span>
   const labels = { available: 'Usenet source found', no_match: 'No Usenet match', processing: 'Usenet source processing', incomplete: 'Usenet source uncertain', unsupported_hash: 'Usenet unavailable', not_configured: 'Usenet not set up', lookup_failed: 'Usenet lookup failed', not_checked: row.refreshing ? 'Checking Usenet sources…' : 'Usenet: not checked' }
-  return <span className="basis-full text-xs text-muted wrap-anywhere">
-    {labels[row.aggregate]}{row.checked_at && <> · {row.stale ? 'Last-known cached result' : 'Cached result'} · Last checked <time dateTime={row.checked_at}>{displayDateTime(row.checked_at)}</time></>}{row.aggregate !== 'not_checked' && (row.refreshing || loading) ? ' · Refreshing…' : ''}
-    {row.refresh_error && <span className="text-warn"> · Refresh failed: {row.refresh_error}</span>}
+  const tone = row.aggregate === 'available' ? 'text-good' : row.aggregate === 'lookup_failed' ? 'text-warn' : 'text-ink/85'
+  return <span className="basis-full block min-w-0 border-t border-line/70 pt-2.5 text-xs wrap-anywhere">
+    <span className="flex flex-wrap items-start gap-x-6 gap-y-2">
+      <span className="flex min-w-0 flex-col gap-0.5"><span className="text-muted">Availability</span><span className={cx('font-semibold', tone)}>{labels[row.aggregate]}</span></span>
+      {row.checked_at && <>
+        <span className="flex min-w-0 flex-col gap-0.5"><span className="text-muted">Cache</span><span className="text-ink/85">{row.stale ? 'Last-known cached result' : 'Cached result'}</span></span>
+        <span className="flex min-w-0 flex-col gap-0.5"><span className="text-muted">Last checked</span><time className="tabular-nums text-ink/85" dateTime={row.checked_at}>{displayDateTime(row.checked_at)}</time></span>
+      </>}
+      {row.aggregate !== 'not_checked' && (row.refreshing || loading) && <span className="inline-flex items-center gap-1.5 self-end text-muted"><Icon name="refresh" size={12}/>Refreshing…</span>}
+    </span>
+    {row.refresh_error && <span className="mt-2.5 flex items-start gap-2 text-warn"><span className="mt-0.5 shrink-0"><Icon name="alert" size={14}/></span><span className="min-w-0"><strong className="block font-semibold">Refresh failed</strong><span className="mt-0.5 block max-w-prose leading-relaxed">{row.refresh_error}</span></span></span>}
   </span>
 }
 
@@ -288,7 +302,7 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                           <input type="checkbox" disabled={locked} className="size-3.5 shrink-0 accent-good" checked={enabled[group.id] !== false} onChange={(event) => setEnabled((current) => ({ ...current, [group.id]: event.target.checked }))} />
                           {statusIcon}
                           <span className={cx('font-semibold', statusText)}>{group.result.title}</span>
-                          <span className={bulkDialog.seasonBadge}>{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
+                          <span className={bulkDialog.seasonBadge}>{seasonLabel(group.result)}{group.part && <> <span className="ml-1.5 border-l border-line-strong pl-1.5">{group.part}</span></>}</span>
                           {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                           <span className="ml-auto flex items-center gap-1.5 tabular-nums" title={`${release.releaseGroup} · ${release.tracker}`}>
                             <span className="text-ink/70" title="Current local size">{formatBytes(localSize) || '—'}</span>
@@ -319,7 +333,7 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                           <button type="button" className="flex min-h-11 min-w-0 flex-1 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 text-left text-xs" onClick={() => setExpanded((current) => ({ ...current, [group.id]: !isExpanded }))} aria-expanded={isExpanded}>
                             {statusIcon}
                             <span className={cx('font-semibold', statusText)}>{group.result.title}</span>
-                            <span className={bulkDialog.seasonBadge}>{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
+                            <span className={bulkDialog.seasonBadge}>{seasonLabel(group.result)}{group.part && <> <span className="ml-1.5 border-l border-line-strong pl-1.5">{group.part}</span></>}</span>
                             {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                             {chosen ? (
                               <span className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-xs font-extrabold text-accent-bright"><Icon name="check" size={12}/>Selected</span>
@@ -405,7 +419,7 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
                     <div key={group.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warn/25 bg-warn/6 px-3 py-2 text-xs">
                       {protocols[group.id] === 'usenet' && selected[group.id] !== undefined && <label className="touch-target inline-flex cursor-pointer items-center gap-2"><input type="checkbox" disabled={locked} className="size-4 accent-good" checked={enabled[group.id] !== false} onChange={event => setEnabled(current => ({ ...current, [group.id]: event.target.checked }))} aria-label={`Include unavailable Usenet choice · ${group.result.title}`}/><span>{enabled[group.id] === false ? 'Excluded from batch' : 'Selected Usenet source unavailable. Uncheck to exclude.'}</span></label>}
                       <span className="font-semibold text-ink">{group.result.title}</span>
-                      <span className="rounded border border-warn/25 px-1.5 py-0.5 text-xs font-extrabold text-warn">{seasonLabel(group.result)}{group.part ? ` · ${group.part}` : ''}</span>
+                      <span className="rounded border border-warn/25 px-1.5 py-0.5 text-xs font-extrabold text-warn">{seasonLabel(group.result)}{group.part && <> <span className="ml-1.5 border-l border-line-strong pl-1.5">{group.part}</span></>}</span>
                       {isHidden && <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn"><Icon name="eye-off" size={12}/>Hidden</span>}
                       <span className="ml-auto min-w-0 truncate text-muted" title={group.options.map(({ release }) => release.releaseGroup).join(' · ')}>{group.options.length ? `Private: ${group.options.map(({ release }) => release.releaseGroup).join(' · ')}` : 'No public magnet available'}</span>
                       {usenetEnabled && group.options.map(option => <UsenetStatus key={option.index} row={currentAvailability?.rows[availabilityKey({ key: group.result.key, release: option.index, identity: releaseIdentity(option.release) })]} loading={Boolean(currentAvailability?.loading)}/>)}
