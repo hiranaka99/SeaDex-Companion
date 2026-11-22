@@ -355,6 +355,29 @@ test('fresh confirmed absence exposes ledger-only single and bulk removal withou
   } finally { rmSync(preservedFile, { force: true }); restore() }
 })
 
+test('a torrent no read ever confirmed is dropped from tracking after a grace period, not shown as missing', async () => {
+  cleanLedger()
+  const config = progressConfig()
+  const state: ProgressRouter = { torrents: [{ hash: h1, state: 'downloading', progress: 0.5, size: 1000 }], controls: [] }
+  const restore = installProgressRouter(state)
+  const realNow = Date.now
+  try {
+    const seen = addDownloadRecord({ protocol: 'torrent', client: 'qbittorrent', endpoint: qbEndpointId(config), state: 'accepted', source_hash: h1, category: 'anime' })
+    const legacy = addDownloadRecord({ protocol: 'torrent', client: 'qbittorrent', endpoint: qbEndpointId(config), state: 'accepted', source_hash: h2, category: 'anime' })
+    const fresh = await collectDownloadProgress(config)
+    assert.equal(fresh.downloads[legacy.id].phase, 'missing', 'A just-accepted torrent gets time to appear in the client')
+    Date.now = () => realNow() + 11 * 60_000
+    state.torrents = [{ hash: h1, state: 'downloading', progress: 0.6, size: 1000 }]
+    const later = await collectDownloadProgress(config)
+    assert.equal(later.downloads[legacy.id], undefined, 'A never-seen torrent past the grace period is not reported')
+    assert.ok(findDownloadRecord(legacy.id)?.removed_at, 'Only the tracking entry is retired')
+    assert.equal(later.downloads[seen.id].phase, 'downloading')
+    state.torrents = []
+    assert.equal((await collectDownloadProgress(config)).downloads[seen.id].phase, 'missing', 'A torrent that was seen and then removed still warns')
+    assert.deepEqual(state.controls, [], 'The client is never touched')
+  } finally { Date.now = realNow; restore() }
+})
+
 test('failed, incomplete, unbound, and unknown-acceptance reads never permit ledger cleanup', async () => {
   cleanLedger()
   const config = progressConfig()
