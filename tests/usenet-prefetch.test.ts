@@ -4,7 +4,7 @@ import { setImmediate as nextTurn } from 'node:timers/promises'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { bumpGeneration } from '../server/config-generation.js'
 import { enableUsenetPrefetch, prefetchUsenetAvailability, stopUsenetPrefetch, usenetPrefetchProgress } from '../server/usenet-prefetch.js'
-import { invalidateUsenetLookups, resolveUsenetHash, setUsenetProviderMinIntervalMs } from '../server/usenet.js'
+import { resetUsenetLookups, resolveUsenetHash, setUsenetProviderMinIntervalMs, usenetAvailability } from '../server/usenet.js'
 import type { Release, ResultItem } from '../server/types.js'
 
 const hexHash = (index: number) => index.toString(16).padStart(40, '0')
@@ -42,10 +42,10 @@ function stubFetch(probe: Probe) {
 }
 
 function isolation(intervalMs: number): () => void {
-  invalidateUsenetLookups()
+  resetUsenetLookups()
   setUsenetProviderMinIntervalMs('animetosho', intervalMs)
   bumpGeneration()
-  return () => invalidateUsenetLookups()
+  return () => resetUsenetLookups()
 }
 
 function controlledFetch() {
@@ -159,7 +159,7 @@ test('foreground work takes the next saturated global slot ahead of queued backg
     assert.equal(probe.active, 0)
   } finally {
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    invalidateUsenetLookups()
+    resetUsenetLookups()
     await Promise.all(work)
     restore()
   }
@@ -185,7 +185,7 @@ test('foreground callers promote a shared queued background lookup before global
     assert.equal(probe.maximum, 4)
   } finally {
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    invalidateUsenetLookups()
+    resetUsenetLookups()
     await Promise.all(work)
     restore()
   }
@@ -260,7 +260,7 @@ test('an older sweep completion cannot finish or overwrite a newer sweep', async
   } finally {
     stopUsenetPrefetch()
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    invalidateUsenetLookups()
+    resetUsenetLookups()
     await nextTurn()
     restore()
   }
@@ -284,7 +284,7 @@ test('stop clears current progress immediately and stale work cannot resurrect i
   } finally {
     stopUsenetPrefetch()
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    invalidateUsenetLookups()
+    resetUsenetLookups()
     await nextTurn()
     restore()
   }
@@ -309,7 +309,7 @@ test('empty and ineligible sweeps supersede old work without retaining progress'
   } finally {
     stopUsenetPrefetch()
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    invalidateUsenetLookups()
+    resetUsenetLookups()
     await nextTurn()
     restore()
   }
@@ -332,7 +332,33 @@ test('a generation change hides stale sweep progress and completion cannot updat
   } finally {
     stopUsenetPrefetch()
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    invalidateUsenetLookups()
+    resetUsenetLookups()
+    await nextTurn()
+    restore()
+  }
+})
+
+test('public snapshots cannot count scheduled prefetch work as completed or duplicate its provider requests', async () => {
+  isolation(0)
+  enableUsenetPrefetch()
+  const { probe, complete, restore } = controlledFetch()
+  const results = [result('snapshot-prefetch', 2)]
+  try {
+    prefetchUsenetAvailability(config(), results, 'snapshot test')
+    await nextTurn()
+    assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 0, total: 2 })
+    const rows = await usenetAvailability(config(), [{ key: results[0].key, release: 0 }, { key: results[0].key, release: 1 }], false, results)
+    assert.ok(rows.every(row => row.aggregate === 'not_checked' && row.refreshing))
+    await nextTurn()
+    assert.equal(probe.starts.length, 2)
+    assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 0, total: 2 })
+    for (const hash of [...probe.pending.keys()]) complete(hash)
+    await nextTurn()
+    assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
+  } finally {
+    stopUsenetPrefetch()
+    for (const hash of [...probe.pending.keys()]) complete(hash)
+    resetUsenetLookups()
     await nextTurn()
     restore()
   }

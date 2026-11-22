@@ -8,6 +8,7 @@ import type { DownloadEntry } from './components/DownloadsPanel'
 import { toDownloadEntry, clientName } from './components/DownloadsPanel'
 import { seasonLabel } from './utils'
 import type { DownloadPreflight, DownloadProtocol, UsenetAvailabilityResult } from './api'
+import { availabilityKey, observeUsenetAvailability, type AvailabilitySnapshot } from './usenet-observation'
 
 export interface DetailsDownloadState { transfers: DownloadEntry[] }
 export const IDLE_DOWNLOAD: DetailsDownloadState = { transfers: [] }
@@ -145,53 +146,74 @@ export function useCardDownloads(group: GroupedCard, notify: Notify) {
   return { dlBySeason, activeDownloads, busyDownload, handleDownload, handleDownloadAction, singleFlow }
 }
 
-/** Usenet availability per release for one season, fetched when details open. */
+/** Last-known availability stays visible while an open season observes refresh work. */
 export interface SeasonAvailability {
   signature: string
   loading: boolean
   error: string | null
   byRelease: Record<number, UsenetAvailabilityResult>
   sabnzbdConfigured: boolean
+  configGeneration: number | null
 }
 
-export function useSeasonAvailability(enabled: boolean, seasons: ResultItem[], open: boolean) {
+export function useSeasonAvailability(enabled: boolean, seasons: ResultItem[], open: boolean, configScope: string) {
+  const revision = useSyncExternalStore(api.subscribeUsenetAvailability, api.getUsenetAvailabilityRevision)
   const [saved, setAvailability] = useState<Record<string, SeasonAvailability>>({})
+  const savedRef = useRef(saved)
+  savedRef.current = saved
   const requests = useRef(new Map<string, { controller: AbortController; signature: string }>())
-  const signatures = Object.fromEntries(seasons.map(season => [season.key, JSON.stringify(season.releases.map(releaseIdentity))]))
+  const requested = useRef(new Map<string, string>())
+  const signatures = Object.fromEntries(seasons.map(season => [season.key, JSON.stringify([revision, configScope, season.releases.map(releaseIdentity)])]))
   const currentSignatures = useRef(signatures)
   currentSignatures.current = signatures
   const signature = JSON.stringify(signatures)
+
+  const load = async (season: ResultItem, refresh = false) => {
+    if (!enabled || !open) return
+    const key = season.key
+    const signature = signatures[key]
+    if (!refresh && requested.current.get(key) === signature) return
+    requested.current.set(key, signature)
+    requests.current.get(key)?.controller.abort()
+    const controller = new AbortController()
+    requests.current.set(key, { controller, signature })
+    const previous = savedRef.current[key]?.signature === signature ? savedRef.current[key] : undefined
+    const selections: api.SelectionInput[] = season.releases.map((release, index) => ({ key, release: index, identity: releaseIdentity(release) }))
+    const initial: AvailabilitySnapshot | undefined = previous && {
+      rows: Object.fromEntries(Object.values(previous.byRelease).map(row => [availabilityKey(row), row])),
+      configGeneration: previous.configGeneration,
+      sabnzbdConfigured: previous.sabnzbdConfigured,
+      loading: previous.loading,
+      error: previous.error,
+    }
+    try {
+      await observeUsenetAvailability(selections, { refresh, signal: controller.signal, initial, onSnapshot: snapshot => {
+        if (controller.signal.aborted || currentSignatures.current[key] !== signature) return
+        const value: SeasonAvailability = {
+          signature, loading: snapshot.loading, error: snapshot.error,
+          byRelease: Object.fromEntries(Object.values(snapshot.rows).map(row => [row.release, row])),
+          sabnzbdConfigured: snapshot.sabnzbdConfigured, configGeneration: snapshot.configGeneration,
+        }
+        savedRef.current = { ...savedRef.current, [key]: value }
+        setAvailability(savedRef.current)
+      } })
+    } finally { if (requests.current.get(key)?.controller === controller) requests.current.delete(key) }
+  }
 
   useEffect(() => {
     for (const [key, request] of requests.current) if (!enabled || !open || request.signature !== currentSignatures.current[key]) {
       request.controller.abort()
       requests.current.delete(key)
     }
+    if (!enabled || !open) { requested.current.clear(); return }
+    for (const [key, previous] of requested.current) if (previous !== currentSignatures.current[key]) {
+      requested.current.delete(key)
+      const season = seasons.find(season => season.key === key)
+      if (season) void load(season)
+    }
   }, [signature, enabled, open])
   useEffect(() => () => { for (const request of requests.current.values()) request.controller.abort() }, [])
 
-  const load = async (season: ResultItem, refresh = false) => {
-    if (!enabled || !open) return
-    const key = season.key
-    const signature = JSON.stringify(season.releases.map(releaseIdentity))
-    requests.current.get(key)?.controller.abort()
-    const controller = new AbortController()
-    requests.current.set(key, { controller, signature })
-    setAvailability(current => ({ ...current, [key]: { signature, loading: true, error: null, byRelease: {}, sabnzbdConfigured: false } }))
-    try {
-      const selections: api.SelectionInput[] = season.releases.map((release, index) => ({ key, release: index, identity: releaseIdentity(release) }))
-      const response = await api.usenetAvailability(selections, refresh, controller.signal)
-      if (controller.signal.aborted || currentSignatures.current[key] !== signature) return
-      if (!response.ok) throw new Error(response.error || 'Could not check Usenet sources')
-      const byRelease: Record<number, UsenetAvailabilityResult> = {}
-      for (const row of response.results) if (row.key === key && row.identity === selections[row.release]?.identity) byRelease[row.release] = row
-      setAvailability(current => ({ ...current, [key]: { signature, loading: false, error: null, byRelease, sabnzbdConfigured: response.sabnzbd_configured } }))
-    } catch (error) {
-      if (controller.signal.aborted || currentSignatures.current[key] !== signature) return
-      setAvailability(current => ({ ...current, [key]: { signature, loading: false, error: error instanceof Error ? error.message : 'Could not check Usenet sources', byRelease: {}, sabnzbdConfigured: false } }))
-    } finally { if (requests.current.get(key)?.controller === controller) requests.current.delete(key) }
-  }
-
   const availability = Object.fromEntries(Object.entries(saved).filter(([key, value]) => value.signature === signatures[key]))
-  return { availability, load }
+  return { availability, load, revision }
 }

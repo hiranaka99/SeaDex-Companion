@@ -85,6 +85,11 @@ let preflightMode = 'low'
 let singleSendMode = 'ok'
 let availabilityMode = 'available'
 let availabilityDelay = 0
+let availabilityGeneration = 1
+let availabilityRefreshing = false
+let availabilityStale = false
+let availabilityCheckedAt = '2026-11-20T10:00:00.000Z'
+let availabilityRefreshError = null
 const availabilityRequests = []
 const singleRequests = []
 const cancelRequests = []
@@ -204,18 +209,20 @@ const server = createServer(async (req, res) => {
       const stale = body.selections.some(selection => !itemFor(selection)?.releases?.[selection.release] || selection.identity !== canonicalIdentity(itemFor(selection).releases[selection.release]))
       if (stale) { res.statusCode = 409; response = { ok: false, error: 'A selected release changed. Re-open the review.' } }
       else response = {
-        ok: true, config_generation: 1,
+        ok: true, config_generation: availabilityGeneration,
         providers_enabled: { animetosho: config.animetosho_enabled, amenzb: config.amenzb_enabled },
         sabnzbd_configured: Boolean(config.sabnzbd_url && config.sabnzbd_key_configured),
         results: body.selections.map((selection, index) => {
           const item = itemFor(selection)
           const release = item.releases[selection.release]
           const hash = release.info_hashes[0]
-          const state = availabilityMode === 'mixed' ? release.usenet_state || 'no_match' : availabilityMode
+          const state = availabilityMode === 'cached_missing' ? (selection.release === 0 ? 'available' : 'not_checked') : availabilityMode === 'mixed' ? release.usenet_state || 'no_match' : availabilityMode
           const match = state === 'available'
             ? { state: 'available', provider: 'animetosho', entry_id: String(100 + index), title: `${item.title} complete season`, total_bytes: 1_400_000_000, files_known: true, file_count: 12, file_names: Array.from({ length: 12 }, (_, index) => `${String(index + 1).padStart(2, '0')}.mkv`) }
             : state === 'lookup_failed' ? { state, error_code: 'timeout', error: 'Fixture provider timed out', providers_failed: ['animetosho'] } : { state }
-          return { key: selection.key, release: selection.release, identity: canonicalIdentity(release), hashes: [{ hash, ...match }], aggregate: match.state, checked_at: '2026-11-20T10:00:00.000Z' }
+          const checkedAt = state === 'not_checked' ? '' : availabilityCheckedAt
+          const metadata = { checked_at: checkedAt, stale: checkedAt ? availabilityStale : false, refreshing: availabilityRefreshing, ...(availabilityRefreshError ? { refresh_error: availabilityRefreshError } : {}) }
+          return { key: selection.key, release: selection.release, identity: canonicalIdentity(release), hashes: [{ hash, ...match, checked_at: checkedAt, stale: metadata.stale, refreshing: metadata.refreshing }], aggregate: match.state, ...metadata }
         }),
       }
       if (holdNextAvailability) {
@@ -678,6 +685,39 @@ try {
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('[role="radiogroup"][aria-label^="Download method ·"]')[0].querySelectorAll('[role="radio"]')].map(radio => [radio.textContent.trim(), radio.getAttribute('aria-checked')])`), [['Torrent', 'true'], ['Usenet', 'false']], 'Releases default to the torrent path')
   await evaluate(`document.querySelectorAll('[role="radiogroup"][aria-label^="Download method ·"]')[0].querySelectorAll('[role="radio"]')[1].click()`)
   await wait(`document.querySelector('.release-download-button')?.textContent.includes('Download on Usenet')`)
+  availabilityRefreshing = true
+  availabilityStale = true
+  await evaluate(`document.querySelector('button[aria-label^="Re-check Usenet sources"]').click()`)
+  await wait(`document.querySelector('.release-row')?.textContent.includes('Last-known cached result') && document.querySelector('.release-row')?.textContent.includes('Refreshing…')`)
+  holdNextAvailability = true
+  for (let attempt = 0; attempt < 100 && !releaseAvailability; attempt++) await pause(20)
+  assert.ok(releaseAvailability, 'The cached snapshot appears before the background observation finishes')
+  assert.equal(availabilityRequests.at(-1).refresh, undefined, 'Polling never forces another provider refresh')
+  assert.ok(await evaluate(`!document.querySelector('.release-download-button').disabled && document.querySelector('.release-download-button').textContent.includes('Download on Usenet') && !document.querySelector('button[aria-label^="Re-check Usenet sources"]').disabled`), 'A cached source and the manual retry remain usable during refresh')
+  assert.equal(await evaluate(`document.querySelector('.release-row time').dateTime`), '2026-11-20T10:00:00.000Z', 'A cache read retains the actual last provider check')
+  availabilityRefreshing = false
+  availabilityRefreshError = 'Fixture refresh failed'
+  await evaluate(`document.querySelector('button[aria-label^="Re-check Usenet sources"]').click()`)
+  await wait(`document.querySelector('.release-row')?.textContent.includes('Fixture refresh failed')`)
+  releaseAvailability()
+  releaseAvailability = null
+  await pause(1200)
+  assert.ok(await evaluate(`document.querySelector('.release-download-button').textContent.includes('Download on Usenet') && !document.querySelector('.release-download-button').disabled && !document.querySelector('.release-row').textContent.includes('Refreshing…')`), 'A failed refresh retains the chosen cached source and stops observation')
+  await capture('usenet-cached-refresh-failed-desktop')
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+  assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth && document.querySelector('dialog[open]').scrollWidth <= document.querySelector('dialog[open]').clientWidth`), 'Cached status, time, and failure copy fit the mobile release review')
+  await capture('usenet-cached-refresh-failed-mobile')
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  availabilityRefreshError = null
+  availabilityStale = false
+  availabilityMode = 'no_match'
+  availabilityCheckedAt = '2026-11-22T10:00:00.000Z'
+  await evaluate(`document.querySelector('button[aria-label^="Re-check Usenet sources"]').click()`)
+  await wait(`document.querySelector('.release-row')?.textContent.includes('Not found on Usenet indexers') && document.querySelector('.release-download-button').disabled`)
+  assert.equal(await evaluate(`document.querySelector('.release-row time').dateTime`), availabilityCheckedAt, 'A successful refresh records its provider observation time')
+  availabilityMode = 'available'
+  await evaluate(`document.querySelector('button[aria-label^="Re-check Usenet sources"]').click()`)
+  await wait(`!document.querySelector('.release-download-button').disabled && document.querySelector('.release-download-button').textContent.includes('Download on Usenet')`)
   assert.ok(await evaluate(`(() => { const row = document.querySelectorAll('.release-row')[0]; return row.textContent.includes('Whole Usenet source') && row.textContent.includes('Usenet sources cannot be split') && row.textContent.includes('category: sonarr-anime') && !row.querySelector('details > summary') })()`), 'Usenet warns that the whole unsplittable source lands in the configured category and drops file scoping')
   await evaluate(`document.querySelectorAll('.release-row')[0].querySelector('.release-download-button').click()`)
   await wait(`document.querySelector('#single-plan-title') && [...document.querySelectorAll('dialog[open]')].at(-1)?.textContent.includes('To send')`)
@@ -691,7 +731,31 @@ try {
   await wait(`!document.body.textContent.includes('Send to download client')`)
   await capture('usenet-release-choice')
   await key('Escape')
+  await wait(`!document.querySelector('.anime-details-panel')`)
+  availabilityMode = 'cached_missing'
+  availabilityRefreshing = true
+  availabilityStale = true
+  fixtureResults = [{ ...example, releases: [example.releases[0], release('Unchecked alternative', 'f')] }]
+  await evaluate(`location.reload()`)
+  await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
+  await evaluate(`document.querySelector('button[aria-label="Details for Example anime"]').click()`)
+  await wait(`document.querySelector('.details-season-disclosure > summary')`)
+  await evaluate(`document.querySelector('.details-season-disclosure > summary').click()`)
+  await wait(`document.querySelectorAll('.release-row')[0]?.textContent.includes('Usenet source found') && document.querySelectorAll('.release-row')[1]?.textContent.includes('Checking Usenet sources')`)
+  assert.ok(await evaluate(`!document.querySelectorAll('.release-row')[0].querySelector('[role=radio]:last-child').disabled && document.querySelectorAll('.release-row')[1].querySelector('[role=radio]:last-child').disabled && !document.querySelectorAll('.release-row')[1].textContent.includes('Not found on Usenet indexers') && !document.querySelectorAll('.release-row')[1].querySelector('time')`), 'Mixed cached and unknown sources show cached choices immediately without inventing a no-match or timestamp')
+  holdNextAvailability = true
+  for (let attempt = 0; attempt < 100 && !releaseAvailability; attempt++) await pause(20)
+  assert.ok(releaseAvailability, 'The cheap observation is held before closing details')
+  await key('Escape')
   await wait(`!document.querySelector('dialog[open]')`)
+  const closedAvailabilityRequests = availabilityRequests.length
+  releaseAvailability()
+  releaseAvailability = null
+  await pause(1200)
+  assert.equal(availabilityRequests.length, closedAvailabilityRequests, 'Closing the review cancels further observation')
+  availabilityMode = 'available'
+  availabilityRefreshing = false
+  availabilityStale = false
   fixtureResults = [{ ...example, releases: [{ ...release('Original release', 'a'), torrent_available: false }] }]
   holdNextAvailability = true
   await evaluate(`location.reload()`)
@@ -742,12 +806,12 @@ try {
   await evaluate(`location.reload()`)
   await wait(`document.querySelector('h1')?.textContent === 'Anime library' && document.body.textContent.includes('Available anime')`)
   await click('Bulk download')
-  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Checking Usenet availability')`)
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Refreshing Usenet availability')`)
   assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'All Usenet where available').disabled`), 'The preset waits for confirmed availability')
   await evaluate(`document.querySelector('dialog[open] button[aria-expanded]').click()`)
   await wait(`document.querySelectorAll('dialog[open] input[type=radio]').length === 2`)
   await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].click()`)
-  await wait(`!document.querySelector('dialog[open]')?.textContent.includes('Checking Usenet availability')`)
+  await wait(`!document.querySelector('dialog[open]')?.textContent.includes('Refreshing Usenet availability')`)
   assert.ok(await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].checked`), 'Availability results preserve a release selected while the lookup was pending')
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('dialog[open] [role=radiogroup]')].filter(group => [...group.querySelectorAll('[role=radio]')].some(button => button.textContent.trim() === 'Usenet')).map(group => group.getAttribute('aria-label')).sort()`),
     ['Download method for Available anime', 'Download method for Private available anime'], 'Only confirmed Usenet releases expose the Usenet method')
@@ -769,11 +833,58 @@ try {
   await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].click()`)
   await wait(`[...document.querySelectorAll('dialog[open] dt')].find(label => label.textContent === 'New NZBs')?.nextElementSibling?.textContent === '2'`)
   assert.ok(await evaluate(`!document.querySelector('[role=radiogroup][aria-label="Download method for Choice anime"]')?.textContent.includes('Usenet')`), 'Changing to an unavailable alternative removes Usenet and restores the torrent method')
-  availabilityMode = 'no_match'
-  availabilityDelay = 0
+  availabilityRefreshing = true
+  availabilityStale = true
   await click('Refresh review')
-  await wait(`!document.querySelector('dialog[open]')?.textContent.includes('Checking Usenet availability') && ![...document.querySelectorAll('dialog[open] [role=radio]')].some(button => button.textContent.trim() === 'Usenet')`)
-  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'All Usenet where available').disabled`), 'No matches disable the preset and remove every Usenet method')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Refreshing Usenet availability') && document.querySelector('dialog[open]')?.textContent.includes('Last-known cached result')`)
+  assert.ok(await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].checked && ![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'All Usenet where available').disabled && ![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Refresh review').disabled`), 'Manual bulk refresh keeps choices and cached Usenet presets available')
+  holdNextAvailability = true
+  for (let attempt = 0; attempt < 100 && !releaseAvailability; attempt++) await pause(20)
+  assert.ok(releaseAvailability, 'The bulk cached snapshot does not wait for background provider work')
+  assert.equal(availabilityRequests.at(-1).refresh, undefined, 'Bulk observations do not force another refresh')
+  availabilityRefreshing = false
+  availabilityRefreshError = 'Fixture bulk refresh failed'
+  await click('Refresh review')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Fixture bulk refresh failed')`)
+  releaseAvailability()
+  releaseAvailability = null
+  const failedBulkAvailabilityRequests = availabilityRequests.length
+  await pause(1200)
+  assert.equal(availabilityRequests.length, failedBulkAvailabilityRequests, 'A failed bulk refresh stops observation')
+  assert.ok(await evaluate(`document.querySelectorAll('dialog[open] input[type=radio]')[1].checked && ![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'All Usenet where available').disabled`), 'A failed bulk refresh preserves cached availability and the selected alternative')
+  await capture('bulk-usenet-cached-failure-desktop')
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+  assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth && document.querySelector('dialog[open]').scrollWidth <= document.querySelector('dialog[open]').clientWidth`), 'Cached bulk rows and refresh warnings fit mobile')
+  await capture('bulk-usenet-cached-failure-mobile')
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  availabilityRefreshError = null
+  availabilityStale = false
+  availabilityDelay = 0
+  availabilityRefreshing = true
+  await click('Refresh review')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Refreshing Usenet availability') && !document.querySelector('dialog[open]')?.textContent.includes('Fixture bulk refresh failed')`)
+  availabilityMode = 'no_match'
+  availabilityRefreshing = false
+  await wait(`!document.querySelector('dialog[open]')?.textContent.includes('Refreshing Usenet availability') && document.querySelector('dialog[open]')?.textContent.includes('Resolve 2 unavailable Usenet choices')`)
+  assert.equal(availabilityRequests.at(-1).refresh, undefined, 'A background snapshot delivers the changed availability without another forced refresh')
+  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'All Usenet where available').disabled`), 'No matches disable the preset')
+  assert.ok(await evaluate(`(() => { const methods = document.querySelector('[role=radiogroup][aria-label="Download method for Available anime"]'); return methods.querySelector('[role=radio]:last-child').disabled && methods.querySelector('[role=radio]:last-child').getAttribute('aria-checked') === 'true' && methods.querySelector('[role=radio]:first-child').getAttribute('aria-checked') === 'false' })()`), 'A selected Usenet source stays selected and unavailable instead of silently switching to Torrent')
+  assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim().startsWith('Start ')).disabled`), 'An unavailable Usenet choice blocks submission until the user resolves it')
+  await evaluate(`document.querySelector('[role=radiogroup][aria-label="Download method for Available anime"] [role=radio]:first-child').click()`)
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Resolve 1 unavailable Usenet choice')`)
+  assert.ok(await evaluate(`document.querySelector('[role=radiogroup][aria-label="Download method for Available anime"] [role=radio]:first-child').getAttribute('aria-checked') === 'true'`), 'The user can explicitly select Torrent for the same release')
+  await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim().endsWith('unavailable')).click()`)
+  await wait(`document.querySelector('input[aria-label="Include unavailable Usenet choice · Private available anime"]')`)
+  await evaluate(`document.querySelector('input[aria-label="Include unavailable Usenet choice · Private available anime"]').click()`)
+  await wait(`!document.querySelector('dialog[open]')?.textContent.includes('Resolve 1 unavailable Usenet choice')`)
+  assert.ok(await evaluate(`document.querySelector('input[aria-label="Include unavailable Usenet choice · Private available anime"]').checked === false`), 'An unavailable private choice can be explicitly excluded without changing the other choices')
+  await key('Escape')
+  const reopenedAvailabilityRequests = availabilityRequests.length
+  await click('Bulk download')
+  await wait(`document.querySelector('dialog[open]')`)
+  for (let attempt = 0; attempt < 100 && availabilityRequests.length === reopenedAvailabilityRequests; attempt++) await pause(20)
+  assert.ok(availabilityRequests.length > reopenedAvailabilityRequests, 'Reopening resumes snapshot observation')
+  assert.equal(availabilityRequests.at(-1).refresh, undefined, 'A manual refresh is consumed and does not force normal reopens')
   await key('Escape')
   fixtureResults = [bulkAnime('Private retry anime', '8', 'lookup_failed', false)]
   availabilityMode = 'mixed'
@@ -784,7 +895,7 @@ try {
   assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].some(button => button.textContent.trim() === 'Refresh review' && !button.disabled)`), 'A private-only provider failure has a retry outside the eligible section')
   fixtureResults[0].releases[0].usenet_state = 'no_match'
   await click('Refresh review')
-  await wait(`!document.querySelector('dialog[open]')?.textContent.includes('Checking Usenet availability') && !document.querySelector('dialog[open]')?.textContent.includes('Fixture provider timed out')`)
+  await wait(`!document.querySelector('dialog[open]')?.textContent.includes('Refreshing Usenet availability') && !document.querySelector('dialog[open]')?.textContent.includes('Fixture provider timed out')`)
   assert.ok(await evaluate(`[...document.querySelectorAll('dialog[open] button')].some(button => button.textContent.trim() === 'Refresh review' && !button.disabled)`), 'A private-only no-match review still has a retry')
   fixtureResults[0].releases[0].usenet_state = 'available'
   await click('Refresh review')
@@ -792,12 +903,34 @@ try {
   await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === '1 eligible').click()`)
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('New NZBs')`)
   assert.ok(await evaluate(`document.querySelector('dialog[open] input[type=checkbox]')?.checked`), 'Private-only retries preserve the selected intent')
+  availabilityGeneration += 1
+  availabilityRefreshing = true
+  fixtureResults[0].releases[0].usenet_state = 'not_checked'
+  await click('Refresh review')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('0 eligible') && document.querySelector('dialog[open]')?.textContent.includes('Refreshing Usenet availability')`)
+  await evaluate(`[...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === '1 unavailable').click()`)
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('Checking Usenet sources')`)
+  assert.ok(await evaluate(`!document.querySelector('dialog[open] [role=radio]') && !document.querySelector('dialog[open] time') && ![...document.querySelectorAll('dialog[open] button')].find(button => button.textContent.trim() === 'Refresh review').disabled`), 'A new provider generation cannot inherit old availability or its timestamp, and a private-only unknown source remains retryable')
+  holdNextAvailability = true
+  for (let attempt = 0; attempt < 100 && !releaseAvailability; attempt++) await pause(20)
+  assert.ok(releaseAvailability, 'The previous generation observation is held before rebinding the provider')
+  availabilityGeneration += 1
+  availabilityRefreshing = false
+  fixtureResults[0].releases[0].usenet_state = 'no_match'
+  await click('Refresh review')
+  await wait(`document.querySelector('dialog[open]')?.textContent.includes('0 eligible') && !document.querySelector('dialog[open]')?.textContent.includes('Refreshing Usenet availability')`)
+  releaseAvailability()
+  releaseAvailability = null
+  const reboundAvailabilityRequests = availabilityRequests.length
+  await pause(1200)
+  assert.equal(availabilityRequests.length, reboundAvailabilityRequests, 'A canceled response from the old generation does not resume polling')
+  assert.ok(await evaluate(`!document.querySelector('dialog[open] [role=radio]') && !document.querySelector('dialog[open]')?.textContent.includes('Usenet source found')`), 'The provider generation replacement discards the held prior response')
   await key('Escape')
   ;({ config, fixtureResults, progressMode, preflightMode } = beforeBulkUsenet)
   availabilityMode = 'available'
   await evaluate(`location.reload()`)
   await wait(`document.querySelector('button[aria-label="Details for Example anime"]')`)
-  console.log('PASS bulk Usenet mixed availability, pending choices, private sources, release changes, refresh, and mobile layout')
+  console.log('PASS bulk Usenet cached and missing snapshots, refresh retention, polling cancellation, private retry, and mobile layout')
   // End bulk Usenet availability.
 
   preflightMode = 'low'

@@ -25,7 +25,7 @@ import { DATA_DIR, STATIC_DIR } from './paths.js'
 import { testIntegration } from './integration-tests.js'
 import { qbEndpointId } from './client-identity.js'
 import { bumpGeneration } from './config-generation.js'
-import { invalidateUsenetLookups } from './usenet.js'
+import { flushUsenetCache, invalidateUsenetLookups } from './usenet.js'
 import { enableUsenetPrefetch, prefetchSavedResults, prefetchUsenetAvailability, stopUsenetPrefetch, usenetPrefetchProgress } from './usenet-prefetch.js'
 import { invalidatePlans } from './download-plans.js'
 import { clearScannedData, loadLastResults, scannedDataInfo } from './results.js'
@@ -227,7 +227,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
     saveConfig(config)
     invalidateQbSnapshots()
     bumpGeneration()
-    invalidateUsenetLookups()
+    invalidateUsenetLookups(config)
     invalidatePlans()
     prefetchSavedResults(config)
     refreshAutocheckSchedule(config)
@@ -343,6 +343,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
 
 export function makeServer() {
   migrateConfig()
+  invalidateUsenetLookups(loadConfig())
   try { migrateOwnedDownloads(qbEndpointId(loadConfig())) }
   catch (error) { log('ERROR', `Acquisition ledger migration deferred: ${error instanceof Error ? error.message : String(error)}`) }
   downloadJobs.restore()
@@ -376,6 +377,7 @@ if (isMain) {
     shuttingDown = true
     log('INFO', `${signal} received; shutting down`)
     clearInterval(scheduler)
+    stopUsenetPrefetch()
     const deadline = setTimeout(() => {
       log('ERROR', 'Graceful shutdown timed out')
       process.exit(1)
@@ -385,7 +387,8 @@ if (isMain) {
       clearTimeout(deadline)
       if (error) log('ERROR', `Shutdown failed: ${error.message}`)
       else log('INFO', 'Server stopped')
-      process.exit(error ? 1 : 0)
+      const cacheSaved = flushUsenetCache()
+      process.exit(error || !cacheSaved ? 1 : 0)
     })
   }
   process.once('SIGINT', () => shutdown('SIGINT'))

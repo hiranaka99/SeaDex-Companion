@@ -42,6 +42,14 @@ export interface UsenetHashAvailability {
   error?: string
   /** Enabled providers whose lookup could not be resolved. */
   providers_failed?: UsenetProvider[]
+  /** Time of the provider observation, not the time the cache was read. */
+  checked_at?: string
+  /** Cached information is older than its refresh interval but remains usable as last-known data. */
+  stale?: boolean
+  /** A missing or stale observation is being refreshed. */
+  refreshing?: boolean
+  /** A refresh failed; the previous observation was retained. */
+  refresh_error?: string
 }
 
 export interface UsenetAvailabilityResult {
@@ -52,7 +60,11 @@ export interface UsenetAvailabilityResult {
   hashes: UsenetHashAvailability[]
   /** 'available' only when every required source hash matched a usable NZB. */
   aggregate: UsenetUnitState
+  /** Oldest provider observation used by this result; empty when no provider has checked it. */
   checked_at: string
+  stale: boolean
+  refreshing: boolean
+  refresh_error?: string
 }
 
 export interface UsenetAvailabilityRequest {

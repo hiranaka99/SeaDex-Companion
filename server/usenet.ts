@@ -5,16 +5,16 @@ import { log } from './logging.js'
 import { torrentHashes } from '../shared/download-plan.js'
 import { releaseIdentity } from '../shared/releases.js'
 import type { EstimatableRelease } from '../shared/download-estimate.js'
-import type { UsenetAvailabilityResult, UsenetFailureCode, UsenetHashAvailability, UsenetProvider, UsenetUnitState } from '../shared/usenet-contracts.js'
+import type { UsenetAvailabilityResult, UsenetHashAvailability, UsenetProvider, UsenetUnitState } from '../shared/usenet-contracts.js'
 import { lookupAnimeTosho, fetchAnimeToshoNzb } from './animetosho.js'
 import { lookupAmeNZB, fetchAmeNZBNzb } from './amenzb.js'
 import { HASH_PATTERN, LOOKUP_TIMEOUT_MS, type ProviderLookup, type ProviderSettings } from './usenet-provider-types.js'
+import { PersistentUsenetCache, providerFingerprint, usenetCacheKey } from './usenet-cache.js'
 
-const POSITIVE_TTL_MS = 15 * 60_000
-const NEGATIVE_TTL_MS = 5 * 60_000
+const POSITIVE_TTL_MS = 24 * 60 * 60_000
+const NEGATIVE_TTL_MS = 60 * 60_000
 const PROCESSING_TTL_MS = 2 * 60_000
 const FAILURE_TTL_MS = 60_000
-const CACHE_LIMIT = 4000
 const LOOKUP_CONCURRENCY = 4
 const LOOKUP_GUARD_MS = LOOKUP_TIMEOUT_MS + 5_000
 const FILE_NAME_LIMIT = 200
@@ -45,7 +45,7 @@ interface LookupJob {
   background: boolean
   controller: AbortController
 }
-type LookupResult = ProviderLookup | { kind: 'cancelled' }
+type LookupResult = { lookup: ProviderLookup; checkedAt: number } | { kind: 'cancelled' }
 
 interface LookupWaiter {
   job: LookupJob
@@ -126,20 +126,40 @@ function providerSettings(config: Config, provider: UsenetProvider): ProviderSet
   return config.amenzb_enabled && config.amenzb_url && config.amenzb_key ? { baseUrl: config.amenzb_url, apiKey: config.amenzb_key } : null
 }
 
-let cache = new Map<string, { at: number; ttl: number; lookup: ProviderLookup }>()
+const cache = new PersistentUsenetCache()
 let inFlight = new Map<string, { promise: Promise<LookupResult>; job: LookupJob }>()
+interface RefreshChain { promise: Promise<UsenetHashAvailability>; cancelled: boolean }
+let refreshChains = new Map<string, RefreshChain>()
 let activeLookups = 0
 let lookupEpoch = 0
 const waitingForSlot: LookupWaiter[] = []
 
-export function invalidateUsenetLookups(): void {
+function cancelUsenetWork(): void {
   lookupEpoch++
-  cache = new Map()
   const cancelled = inFlight
   inFlight = new Map()
+  for (const chain of refreshChains.values()) chain.cancelled = true
+  refreshChains = new Map()
   for (const { job } of cancelled.values()) job.controller.abort()
   pumpLookups()
 }
+
+export function invalidateUsenetLookups(config: Config): void {
+  cancelUsenetWork()
+  cache.retainCompatible({
+    animetosho: providerFingerprint('animetosho', { baseUrl: config.animetosho_url }),
+    amenzb: providerFingerprint('amenzb', { baseUrl: config.amenzb_url, apiKey: config.amenzb_key }),
+  })
+}
+
+export function resetUsenetLookups(restoreFromDisk = false): void {
+  cancelUsenetWork()
+  cache.reset(restoreFromDisk)
+  for (const pacer of Object.values(providerPacers)) pacer.lastStartedAt = 0
+  lastFailureLogged.clear()
+}
+
+export function flushUsenetCache(): boolean { return cache.flush() }
 
 function acquireSlot(job: LookupJob): Promise<void> {
   const { promise, resolve, reject } = Promise.withResolvers<void>()
@@ -175,31 +195,33 @@ async function cancelableLookup<T>(work: Promise<T>, signal: AbortSignal): Promi
 }
 
 function ttlFor(lookup: ProviderLookup): number {
-  if (lookup.kind === 'match' || lookup.kind === 'deleted') return POSITIVE_TTL_MS
+  if (lookup.kind === 'match') return POSITIVE_TTL_MS
   if (lookup.kind === 'processing') return PROCESSING_TTL_MS
-  if (lookup.kind === 'no_match') return NEGATIVE_TTL_MS
+  if (lookup.kind === 'no_match' || lookup.kind === 'deleted') return NEGATIVE_TTL_MS
   return FAILURE_TTL_MS
 }
 
 async function providerLookup(config: Config, provider: UsenetProvider, hash: string, refresh: boolean, background: boolean): Promise<LookupResult> {
-  const key = `${currentGeneration()}:${provider}:${hash}`
+  const settings = providerSettings(config, provider)
+  if (!settings) return { lookup: { kind: 'failed', code: 'invalid_config', message: 'Provider is not enabled or not configured' }, checkedAt: 0 }
+  const fingerprint = providerFingerprint(provider, settings)
+  const key = usenetCacheKey(provider, fingerprint, hash)
   if (!refresh) {
-    const hit = cache.get(key)
-    if (hit && Date.now() - hit.at < hit.ttl) return hit.lookup
-    // A refresh must never join a running lookup: an explicit Re-check is the
-    // user's escape route when an earlier request wedged on a dead network path.
     const running = inFlight.get(key)
     if (running) {
       if (!background) { running.job.background = false; pumpLookups() }
       return running.promise
     }
+    const hit = cache.get(key)
+    if (hit?.failure && Date.now() < hit.retryAt) return { lookup: hit.failure, checkedAt: 0 }
+    if (hit?.lookup && !hit.failure && Date.now() - hit.checkedAt < ttlFor(hit.lookup)) return { lookup: hit.lookup, checkedAt: hit.checkedAt }
   }
-  const settings = providerSettings(config, provider)
-  if (!settings) return { kind: 'failed', code: 'invalid_config', message: 'Provider is not enabled or not configured' }
   if (refresh) inFlight.get(key)?.job.controller.abort()
   const job: LookupJob = { provider, background, controller: new AbortController() }
   settings.signal = job.controller.signal
-  const promise = (async () => {
+  const generation = currentGeneration()
+  const epoch = lookupEpoch
+  const work = (async (): Promise<ProviderLookup | { kind: 'cancelled' }> => {
     let acquired = false
     try {
       await acquireSlot(job)
@@ -215,30 +237,33 @@ async function providerLookup(config: Config, provider: UsenetProvider, hash: st
         LOOKUP_GUARD_MS,
       )
     } catch (error) {
-      if (job.controller.signal.aborted) return { kind: 'cancelled' as const }
-      job.controller.abort()
+      if (job.controller.signal.aborted) return { kind: 'cancelled' }
       logProviderFailure(provider, error instanceof Error ? error.message.slice(0, 160) : 'unknown error')
-      return { kind: 'failed' as const, code: 'network' as UsenetFailureCode, message: 'Provider lookup failed' }
+      return { kind: 'failed', code: 'network', message: 'Provider lookup failed' }
     } finally {
       if (acquired) releaseSlot()
     }
   })()
-  const flight = { promise, job }
-  const generation = currentGeneration()
-  inFlight.set(key, flight)
-  try {
-    const lookup = await promise
-    if (lookup.kind !== 'cancelled' && inFlight.get(key) === flight && currentGeneration() === generation && !job.controller.signal.aborted) {
-      cache.set(key, { at: Date.now(), ttl: ttlFor(lookup), lookup })
-      if (cache.size > CACHE_LIMIT) {
-        const oldest = [...cache.entries()].sort((left, right) => left[1].at - right[1].at).slice(0, cache.size - CACHE_LIMIT)
-        for (const [stale] of oldest) cache.delete(stale)
+  const flight: { promise: Promise<LookupResult>; job: LookupJob } = {
+    job,
+    promise: work.then((lookup): LookupResult => {
+      if (lookup.kind === 'cancelled' || inFlight.get(key) !== flight || currentGeneration() !== generation || lookupEpoch !== epoch || job.controller.signal.aborted) return { kind: 'cancelled' }
+      const at = Date.now()
+      const previous = cache.get(key)
+      if (lookup.kind === 'failed') {
+        logProviderFailure(provider, lookup.message)
+        cache.set({ provider, fingerprint, hash, checkedAt: previous?.checkedAt || 0, lastAttemptAt: at, retryAt: at + FAILURE_TTL_MS, ...(previous?.lookup ? { lookup: previous.lookup } : {}), failure: lookup }, settings)
+        job.controller.abort()
+        return { lookup, checkedAt: 0 }
       }
-    }
-    return lookup
-  } finally {
-    if (inFlight.get(key) === flight) inFlight.delete(key)
+      cache.set({ provider, fingerprint, hash, checkedAt: at, lastAttemptAt: at, retryAt: 0, lookup }, settings)
+      return { lookup, checkedAt: at }
+    }).finally(() => {
+      if (inFlight.get(key) === flight) inFlight.delete(key)
+    }),
   }
+  inFlight.set(key, flight)
+  return flight.promise
 }
 
 function hashState(provider: UsenetProvider, lookup: ProviderLookup): UsenetHashAvailability {
@@ -263,34 +288,110 @@ function hashState(provider: UsenetProvider, lookup: ProviderLookup): UsenetHash
   }
 }
 
-/** AnimeTosho first, then AmeNZB. A usable match from either is sufficient; failures never become no-match. */
-export async function resolveUsenetHash(config: Config, hash: string, refresh = false, background = false): Promise<UsenetHashAvailability> {
+function availabilityMetadata(states: UsenetHashAvailability[]): Pick<UsenetAvailabilityResult, 'checked_at' | 'stale' | 'refreshing' | 'refresh_error'> {
+  const times = states.map(state => state.checked_at).filter((time): time is string => Boolean(time)).sort()
+  const errors = [...new Set(states.map(state => state.refresh_error).filter((error): error is string => Boolean(error)))]
+  return { checked_at: times[0] || '', stale: states.some(state => state.stale === true), refreshing: states.some(state => state.refreshing === true), ...(errors.length ? { refresh_error: errors.join('; ').slice(0, 200) } : {}) }
+}
+
+/** Authoritative checks await fresh provider facts and never turn a failed refresh into stale success. */
+async function resolveHash(config: Config, hash: string, refresh: boolean, background: boolean, ownsWork = () => true): Promise<UsenetHashAvailability> {
   if (!HASH_PATTERN.test(hash)) return { hash, state: 'unsupported_hash' }
   const epoch = lookupEpoch
   const generation = currentGeneration()
   const enabled = usenetProvidersEnabled(config)
-  const queried: { provider: UsenetProvider; result: UsenetHashAvailability }[] = []
-  let failed: UsenetHashAvailability | null = null
+  const queried: UsenetHashAvailability[] = []
   const providersFailed: UsenetProvider[] = []
   for (const provider of ['animetosho', 'amenzb'] as UsenetProvider[]) {
     if (!enabled[provider]) continue
-    const lookup = await providerLookup(config, provider, hash, refresh, background)
-    if (lookup.kind === 'cancelled' || epoch !== lookupEpoch || generation !== currentGeneration()) {
+    if (!ownsWork()) return { hash, state: 'lookup_failed', error_code: 'network', error: 'lookup cancelled' }
+    const result = await providerLookup(config, provider, hash, refresh, background)
+    if ('kind' in result || epoch !== lookupEpoch || generation !== currentGeneration() || !ownsWork()) {
       return { hash, state: 'lookup_failed', error_code: 'network', error: 'lookup cancelled' }
     }
-    const result = hashState(provider, lookup)
-    if (result.state === 'available') return { ...result, hash }
-    if (result.state === 'lookup_failed') { failed ??= result; providersFailed.push(provider) }
-    else queried.push({ provider, result })
+    const state = { ...hashState(provider, result.lookup), hash, checked_at: result.checkedAt ? new Date(result.checkedAt).toISOString() : '', stale: false, refreshing: false }
+    queried.push(state)
+    if (state.state === 'available') return { ...state, ...availabilityMetadata(queried) }
+    if (state.state === 'lookup_failed') providersFailed.push(provider)
   }
-  if (failed) {
-    // An unresolved provider could still hold the match; absence is never definitive while one failed.
-    return { hash, state: 'lookup_failed', error_code: failed.error_code, error: failed.error, providers_failed: providersFailed }
+  const metadata = availabilityMetadata(queried)
+  const failed = queried.find(state => state.state === 'lookup_failed')
+  if (failed) return { hash, state: 'lookup_failed', error_code: failed.error_code, error: failed.error, providers_failed: providersFailed, ...metadata }
+  if (!queried.length) return { hash, state: 'not_configured', ...metadata }
+  const processing = queried.find(state => state.state === 'processing')
+  if (processing) return { ...processing, hash, ...metadata }
+  return { hash, state: 'no_match', ...metadata }
+}
+
+/** AnimeTosho first, then AmeNZB. A usable match from either is sufficient. */
+export async function resolveUsenetHash(config: Config, hash: string, refresh = false, background = false): Promise<UsenetHashAvailability> {
+  return resolveHash(config, hash, refresh, background)
+}
+
+function configuredProviderKeys(config: Config, hash: string) {
+  return (['animetosho', 'amenzb'] as UsenetProvider[]).flatMap(provider => {
+    const settings = providerSettings(config, provider)
+    return settings ? [{ provider, key: usenetCacheKey(provider, providerFingerprint(provider, settings), hash) }] : []
+  })
+}
+
+
+function scheduleHashRefresh(config: Config, hash: string, refresh: boolean, background: boolean): void {
+  const keys = configuredProviderKeys(config, hash)
+  if (!HASH_PATTERN.test(hash) || !keys.length) return
+  const key = keys.map(entry => entry.key).join('|')
+  const previous = refreshChains.get(key)
+  if (previous && !refresh) {
+    if (!background) {
+      for (const entry of keys) {
+        const running = inFlight.get(entry.key)
+        if (running) running.job.background = false
+      }
+      pumpLookups()
+    }
+    return
   }
-  if (!queried.length) return { hash, state: 'not_configured' }
-  const processing = queried.find(entry => entry.result.state === 'processing')
-  if (processing) return { ...processing.result, hash }
-  return { hash, state: 'no_match' }
+  if (refresh) {
+    if (previous) previous.cancelled = true
+    for (const entry of keys) inFlight.get(entry.key)?.job.controller.abort()
+  }
+  const chain: RefreshChain = {
+    cancelled: false,
+    promise: Promise.resolve().then(() => resolveHash(config, hash, refresh, background, () => !chain.cancelled)).finally(() => {
+      if (refreshChains.get(key) === chain) refreshChains.delete(key)
+    }),
+  }
+  refreshChains.set(key, chain)
+  void chain.promise.catch(error => log('WARNING', `Usenet availability refresh failed: ${error instanceof Error ? error.message : 'unknown error'}`))
+}
+
+function hashSnapshot(config: Config, hash: string): { result: UsenetHashAvailability; needsRefresh: boolean } {
+  if (!HASH_PATTERN.test(hash)) return { result: { hash, state: 'unsupported_hash', stale: false, refreshing: false }, needsRefresh: false }
+  const keys = configuredProviderKeys(config, hash)
+  const queried: UsenetHashAvailability[] = []
+  let needsRefresh = false
+  let unknown = false
+  const now = Date.now()
+  for (const { provider, key } of keys) {
+    const record = cache.get(key)
+    const stale = Boolean(record?.lookup && (record.failure || now - record.checkedAt >= ttlFor(record.lookup)))
+    const running = inFlight.has(key)
+    if (!record || ((stale || !record.lookup) && now >= record.retryAt)) needsRefresh = true
+    if (!record?.lookup && !record?.failure) unknown = true
+    const result = record?.lookup ? hashState(provider, record.lookup)
+      : record?.failure ? hashState(provider, record.failure) : { hash, state: 'not_checked' as const }
+    const state = { ...result, hash, checked_at: record?.checkedAt ? new Date(record.checkedAt).toISOString() : '', stale, refreshing: running, ...(record?.failure ? { refresh_error: record.failure.message.slice(0, 200) } : {}) }
+    queried.push(state)
+    if (state.state === 'available') return { result: { ...state, ...availabilityMetadata(queried) }, needsRefresh }
+  }
+  const metadata = availabilityMetadata(queried)
+  const failed = queried.find(state => state.state === 'lookup_failed')
+  const processing = queried.find(state => state.state === 'processing')
+  const result: UsenetHashAvailability = !keys.length ? { hash, state: 'not_configured', ...metadata }
+    : failed ? { ...failed, hash, providers_failed: queried.filter(state => state.state === 'lookup_failed').map(state => state.provider!), ...metadata }
+    : processing ? { ...processing, hash, ...metadata }
+    : { hash, state: unknown ? 'not_checked' : 'no_match', ...metadata }
+  return { result, needsRefresh }
 }
 
 /** A release is 'available' only when every required source hash matched. Mixed coverage is 'incomplete'. */
@@ -302,6 +403,7 @@ export function aggregateHashStates(states: UsenetUnitState[]): UsenetUnitState 
   if (states.includes('lookup_failed')) return 'lookup_failed'
   if (states.includes('available')) return 'incomplete'
   if (states.includes('processing')) return 'processing'
+  if (states.includes('not_checked')) return 'not_checked'
   return 'no_match'
 }
 
@@ -317,7 +419,6 @@ export class UsenetSelectionError extends Error {
 }
 
 export async function usenetAvailability(config: Config, selections: { key: string; release: number; identity?: string }[], refresh = false, results: ResultItem[], background = false): Promise<UsenetAvailabilityResult[]> {
-  const checkedAt = new Date().toISOString()
   const selected = selections.map(selection => {
     const result = results.find(candidate => candidate.key === selection.key)
     const release = Number.isSafeInteger(selection.release) && selection.release >= 0 ? result?.releases?.[selection.release] : undefined
@@ -328,19 +429,29 @@ export async function usenetAvailability(config: Config, selections: { key: stri
     }
     return { selection, release, identity }
   })
-  return Promise.all(selected.map(async ({ selection, release, identity }) => {
-    const { hashes, aggregate } = await resolveUsenetRelease(config, release, refresh, background)
+  const scheduled = new Set<string>()
+  return selected.map(({ selection, release, identity }) => {
+    const sourceHashes = torrentHashes(release)
+    const hashes: UsenetHashAvailability[] = sourceHashes.length ? sourceHashes.map(hash => {
+      const snapshot = hashSnapshot(config, hash)
+      if ((refresh || snapshot.needsRefresh) && !scheduled.has(hash)) {
+        scheduled.add(hash)
+        scheduleHashRefresh(config, hash, refresh, background)
+      }
+      return { ...snapshot.result, refreshing: snapshot.result.refreshing === true || refreshChains.has(configuredProviderKeys(config, hash).map(entry => entry.key).join('|')) }
+    }) : [{ hash: '', state: 'unsupported_hash', stale: false, refreshing: false }]
     const publicHashes = hashes.map(hash => hash.file_names && hash.file_names.length > FILE_NAME_LIMIT
       ? { ...hash, files_known: false, file_names: hash.file_names.slice(0, FILE_NAME_LIMIT) }
       : hash)
-    return { key: selection.key, release: selection.release, identity, hashes: publicHashes, aggregate, checked_at: checkedAt }
-  }))
+    return { key: selection.key, release: selection.release, identity, hashes: publicHashes, aggregate: aggregateHashStates(hashes.map(hash => hash.state)), ...availabilityMetadata(hashes) }
+  })
 }
 
 /** Server-side NZB retrieval for an accepted submission. Never trusts browser-supplied URLs. */
 export async function fetchUsenetNzb(config: Config, provider: UsenetProvider, entryId: string, sourceHash: string): Promise<Uint8Array> {
-  const lookup = await providerLookup(config, provider, sourceHash, false, false)
-  if (lookup.kind !== 'match' || lookup.match.entry_id !== entryId) throw new Error('The provider mirror for this download is no longer available. Re-run the review before submitting.')
+  const result = await providerLookup(config, provider, sourceHash, false, false)
+  if ('kind' in result || result.lookup.kind !== 'match' || result.lookup.match.entry_id !== entryId) throw new Error('The provider mirror for this download is no longer available. Re-run the review before submitting.')
+  const lookup = result.lookup
   const settings = providerSettings(config, provider)
   if (!settings) throw new Error('The Usenet provider used by this plan is no longer configured')
   return provider === 'animetosho'

@@ -9,6 +9,8 @@ import { estimateDownloads } from '../../../shared/download-estimate'
 import type { DownloadProtocol, UsenetAvailabilityResult } from '../api'
 import type { DetailsDownloadState } from '../useCardDownloads'
 import { releaseIdentity } from '../../../shared/releases'
+import { displayDateTime } from '../datetime'
+import { availabilityErrors } from '../usenet-observation'
 
 interface Props {
   result: ResultItem
@@ -56,6 +58,7 @@ function describeUsenet(row: UsenetAvailabilityResult | undefined, sabnzbdConfig
     return { usable: false, label: 'Usenet lookup failed', detail: `${providers.length ? `${providers.join(' and ')} ` : 'The Usenet source '}could not be reached. Retry in a moment.` }
   }
   if (row.aggregate === 'unsupported_hash') return { usable: false, label: 'Usenet unavailable', detail: 'This release has no hash the enabled Usenet sources can search.' }
+  if (row.aggregate === 'not_checked') return { usable: false, label: row.refreshing ? 'Checking Usenet sources…' : 'Usenet: not checked', detail: 'No provider result is available yet. Re-check the sources to try again.' }
   return { usable: false, label: 'Usenet not set up', detail: 'Enable an Usenet source (AnimeTosho or AmeNZB) in Settings.' }
 }
 
@@ -71,7 +74,10 @@ export default function ReleaseDetails({ result: r, release: rel, config, state,
   const category = (r.arr === 'Sonarr' ? config?.sonarr_category : config?.radarr_category)?.trim() || r.arr
   const usenetEnabled = mode !== 'torrent_only'
   const sabReady = sabnzbdConfigured || Boolean(config?.sabnzbd_url && config?.sabnzbd_key_configured)
-  const usenet = usenetEnabled ? describeUsenet(availability?.identity === releaseIdentity(rel) ? availability : undefined, sabReady) : null
+  const currentAvailability = availability?.identity === releaseIdentity(rel) ? availability : undefined
+  const usenet = usenetEnabled ? describeUsenet(currentAvailability, sabReady) : null
+  const availabilityRefreshing = availabilityLoading || currentAvailability?.refreshing === true
+  const refreshError = currentAvailability ? availabilityErrors([currentAvailability]) : null
   const chosen: DownloadProtocol = mode === 'torrent_only' ? 'torrent' : mode === 'usenet_only' ? 'usenet' : protocol
   const torrentUsable = rel.torrent_available
   const usenetUsable = usenet?.usable === true
@@ -140,9 +146,12 @@ export default function ReleaseDetails({ result: r, release: rel, config, state,
         {rel.size > 0 && localSize > 0 && <div><dt className="mb-1 text-muted">Release size change</dt><dd className="m-0 font-semibold tabular-nums text-ink">{delta || 'No change'}</dd></div>}
       </dl>
       {usenetEnabled && <div className="mb-3 flex flex-wrap items-center gap-2 border-t border-line pt-2.5 text-xs">
-        <span className={cx('font-semibold', usenet ? (usenet.usable ? 'text-good' : 'text-warn') : 'text-muted')}>{usenet ? usenet.label : availabilityLoading ? 'Checking Usenet sources…' : 'Usenet: not checked'}</span>
-        {usenet && !usenet.usable && <span className="min-w-0 basis-44 flex-1 text-muted-dim">{usenet.detail}</span>}
-        <button type="button" className="touch-target inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 font-semibold text-accent-bright hover:bg-accent/10 disabled:cursor-wait disabled:opacity-60" disabled={availabilityLoading} onClick={onRefreshAvailability} title="Re-check the Usenet sources for this season" aria-label={`Re-check Usenet sources · ${seasonLabel(r)}`}><Icon name="refresh" size={13}/>{availabilityLoading ? 'Checking…' : 'Re-check'}</button>
+        <span className={cx('font-semibold', usenet ? (usenet.usable ? 'text-good' : currentAvailability?.aggregate === 'not_checked' ? 'text-muted' : 'text-warn') : 'text-muted')}>{usenet ? usenet.label : availabilityLoading ? 'Checking Usenet sources…' : 'Usenet: not checked'}</span>
+        {usenet && !usenet.usable && currentAvailability?.aggregate !== 'not_checked' && <span className="min-w-0 basis-44 flex-1 text-muted">{usenet.detail}</span>}
+        <button type="button" className="touch-target inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 font-semibold text-accent-bright hover:bg-accent/10" onClick={onRefreshAvailability} title="Re-check the Usenet sources for this season" aria-label={`Re-check Usenet sources · ${seasonLabel(r)}`}><Icon name="refresh" size={13}/>Re-check</button>
+        {currentAvailability?.checked_at && <span className="basis-full text-muted">{currentAvailability.stale ? 'Last-known cached result' : 'Cached result'} · Last checked <time dateTime={currentAvailability.checked_at}>{displayDateTime(currentAvailability.checked_at)}</time>{availabilityRefreshing ? ' · Refreshing…' : ''}</span>}
+        {availabilityRefreshing && currentAvailability?.checked_at === '' && <span className="basis-full text-muted" role="status">Checking Usenet sources. No previous provider check.</span>}
+        {refreshError && <span className="basis-full text-warn wrap-anywhere" role="status">Refresh failed: {refreshError}. {usenetUsable ? 'Last-known availability is still shown. The download review revalidates the source.' : 'Re-check the sources to try again.'}</span>}
       </div>}
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
         <div className="min-w-0 flex-1 basis-44">

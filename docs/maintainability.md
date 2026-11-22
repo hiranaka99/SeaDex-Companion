@@ -18,6 +18,13 @@ One priority-aware scheduler assigns lookup capacity only when provider pacing p
 
 Availability requests validate canonical release identities before querying providers. Internal resolvers retain complete validated manifests for scope decisions. The public availability projection bounds filename lists and clears their completeness flag when names are omitted. NZB validation reads the standard nested segment structure and accepts the standard public declaration without resolving external entities.
 
+`server/usenet-cache.ts` owns `DATA_DIR/usenet_cache.json`, a versioned cache of provider observations. Records are scoped by provider, source hash, and a SHA-256 fingerprint of the provider URL and credentials. The file stores neither those credentials nor credential-bearing URLs or NZB payloads. Cache reads do not rewrite the file, and incompatible provider configuration removes only the affected records. The existing 4,000-record capacity bound remains; age alone does not delete an observation.
+
+Freshness intervals are 24 hours for a usable source, one hour for no match or deletion, two minutes for processing, and one minute for lookup failures. Public availability returns cached or unchecked snapshots immediately and coalesces missing or stale checks in the background. Failed refreshes retain prior observations with retry state and an error. Observation timestamps reflect provider work, not cache access. Open reviews observe only their refreshing rows and retain cached data and choices until updated results arrive.
+
+Successful provider observations checkpoint atomically before exposure, including on platforms that can terminate a process without shutdown hooks. Failure metadata and configuration pruning use batched writes, and graceful shutdown flushes pending changes. Authoritative resolver and preflight calls await fresh-on-stale data rather than treating retained stale observations as a new successful check. The actual provider NZB is fetched and validated before SABnzbd submission.
+
+
 Bulk review retains its selected result snapshot. Acceptance checks current identities, client presence, and acknowledgements again before writing intents. Provider-backed reviews are cancellable and rely on bounded provider requests rather than a fixed aggregate frontend deadline. Expired or consumed single plans require an explicit fresh review with acknowledgements reset.
 
 

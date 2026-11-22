@@ -52,6 +52,7 @@ owned_downloads.json.tmp
 # ---------------------------------------------------------------------------
 config.json
 anilist_cache.json
+usenet_cache.json
 auth-artwork.json
 last_results.json
 notified.json

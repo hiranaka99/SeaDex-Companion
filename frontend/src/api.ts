@@ -106,7 +106,7 @@ export const updateAccount = (username: string, currentPassword: string, newPass
     body: JSON.stringify({ username, current_password: currentPassword, new_password: newPassword }),
   })
 
-export const getConfig = () => api<Config>('/api/config')
+export const getConfig = () => api<Config>('/api/config').then(config => { rememberAvailabilityConfig(config); return config })
 
 export const clearScannedData = () =>
   api<{ ok: boolean; cleared: { cacheEntries: number; results: number } }>('/api/scanned-data', { method: 'DELETE' })
@@ -118,6 +118,10 @@ export const saveConfig = (cfg: ConfigUpdate) =>
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg),
+  }).then(config => {
+    const credentialsChanged = Boolean(cfg.amenzb_key?.trim() || cfg.sabnzbd_key?.trim() || cfg.clear_secrets?.some(key => key === 'amenzb_key' || key === 'sabnzbd_key'))
+    rememberAvailabilityConfig(config, credentialsChanged)
+    return config
   })
 
 export type IntegrationService = 'sonarr' | 'radarr' | 'qbittorrent' | 'discord' | 'sabnzbd' | 'animetosho' | 'amenzb'
@@ -238,6 +242,26 @@ export const usenetAvailability = (selections: SelectionInput[], refresh = false
   api<UsenetAvailabilityResponse>('/api/usenet/availability', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections, refresh: refresh || undefined }), signal,
   }, null)
+
+let usenetAvailabilityRevision = 0
+const usenetAvailabilitySubscribers = new Set<() => void>()
+export const getUsenetAvailabilityRevision = () => usenetAvailabilityRevision
+export const subscribeUsenetAvailability = (listener: () => void) => {
+  usenetAvailabilitySubscribers.add(listener)
+  return () => { usenetAvailabilitySubscribers.delete(listener) }
+}
+export const invalidateUsenetAvailability = () => {
+  usenetAvailabilityRevision += 1
+  for (const listener of usenetAvailabilitySubscribers) listener()
+}
+
+let usenetConfigScope: string | null = null
+function rememberAvailabilityConfig(config: Config, credentialsChanged = false) {
+  const scope = JSON.stringify([config.animetosho_enabled, config.animetosho_url, config.amenzb_enabled, config.amenzb_url, config.amenzb_key_configured, config.sabnzbd_url, config.sabnzbd_key_configured])
+  const changed = usenetConfigScope !== null && usenetConfigScope !== scope
+  usenetConfigScope = scope
+  if (changed || credentialsChanged) invalidateUsenetAvailability()
+}
 
 /** One-shot submission of a reviewed plan. Awaits the full client mutation. */
 export const submitDownload = (plan_id: string, acknowledge?: DownloadAcknowledge) =>
