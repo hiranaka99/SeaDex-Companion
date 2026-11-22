@@ -71,10 +71,6 @@ data/
 # Local Codex hooks
 /.codex/hooks.json
 
-# Local product and design guidance
-/PRODUCT.md
-/DESIGN.md
-
 # ---------------------------------------------------------------------------
 # Misc / server output
 # ---------------------------------------------------------------------------
