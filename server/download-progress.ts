@@ -146,6 +146,38 @@ function absentView(
   }
 }
 
+/**
+ * A finished download the client no longer holds. Sonarr and Radarr remove what they imported, and people
+ * clear torrents after a manual import, so this is the normal end of a download rather than a problem.
+ * Only the tracking entry can be cleared; whether the files reached the library is told by the import state.
+ */
+function handedOffView(record: OwnedDownloadRecord): DownloadProgress {
+  const view = baseProgress(record)
+  return {
+    ...view,
+    phase: 'complete',
+    state: 'removed',
+    progress: 1,
+    downloaded: view.size,
+    total_size: view.size,
+    capabilities: { ...view.capabilities, remove: true },
+  }
+}
+
+/** True once a client read saw the download finish, or its import follow-through started. */
+function hasFinished(record: OwnedDownloadRecord): boolean {
+  return (
+    record.last_phase === 'complete' ||
+    record.last_phase === 'seeding' ||
+    Boolean(record.import && record.import.state !== 'waiting')
+  )
+}
+
+/** A finished download that left the client needs no more tracking once its import is settled or never followed. */
+function nothingLeftToFollow(config: Config, record: OwnedDownloadRecord): boolean {
+  return !record.import || record.import.state === 'imported' || !importView(config, record)
+}
+
 function liveView(record: OwnedDownloadRecord, job: LiveJob): DownloadProgress {
   const view: DownloadProgress = {
     ...baseProgress(record),
@@ -181,6 +213,7 @@ interface ProgressRead {
 
 /** Reads one client once and projects each of its records onto the shared progress view. */
 async function readClient(
+  config: Config,
   client: DownloadClientAdapter,
   records: OwnedDownloadRecord[],
   downloads: Record<string, DownloadProgress>,
@@ -208,6 +241,7 @@ async function readClient(
           : unboundView(record, client)
   }
   let retired = 0
+  let handedOff = 0
   for (let record of bound) {
     const unconfirmed = record.state === 'acceptance_unknown'
     if (unconfirmed && client.nativeIdIsSourceHash && snapshot.jobs.has(record.source_hash))
@@ -221,6 +255,12 @@ async function readClient(
       downloads[record.id] = liveView(record, job)
       live.set(record.id, job)
       setDownloadPhase(record.id, job.phase)
+    } else if (snapshot.complete && hasFinished(record)) {
+      // Removed after finishing, usually by Sonarr or Radarr once imported. The client and the files are untouched.
+      if (nothingLeftToFollow(config, record)) {
+        markDownloadRemoved(record.id)
+        handedOff++
+      } else downloads[record.id] = handedOffView(record)
     } else if (snapshot.complete && client.nativeIdIsSourceHash && isStaleUnobserved(record)) {
       // Carried over from the pre-ledger torrent list, or sent long ago: the client never held it while we watched,
       // so there is nothing to warn about. Only our tracking entry is dropped; the client and its files are untouched.
@@ -228,6 +268,11 @@ async function readClient(
       retired++
     } else downloads[record.id] = absentView(record, client, snapshot.complete)
   }
+  if (handedOff)
+    log(
+      'INFO',
+      `Stopped tracking ${handedOff} finished ${client.jobNoun}(s) that left ${client.label}; the client was not changed`,
+    )
   if (retired)
     log(
       'INFO',
@@ -247,6 +292,7 @@ async function readDownloadProgress(config: Config, records: OwnedDownloadRecord
   const unavailable: DownloadClient[] = []
   for (const client of Object.values(downloadClients(config))) {
     const complete = await readClient(
+      config,
       client,
       records.filter(record => record.protocol === client.protocol),
       downloads,
@@ -326,8 +372,7 @@ async function removeRecord(
   if (!view.capabilities.remove)
     throw new OwnershipError(view.error || 'This download cannot be removed in its current state.')
   // A download the client no longer holds only leaves the ledger. Files stay untouched.
-  if (view.phase !== 'missing')
-    await client.remove(record.native_id, deleteFiles && view.capabilities.remove_files, job)
+  if (job) await client.remove(record.native_id, deleteFiles && view.capabilities.remove_files, job)
   markDownloadRemoved(record.id)
 }
 

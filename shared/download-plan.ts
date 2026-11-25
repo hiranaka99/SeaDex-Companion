@@ -20,6 +20,8 @@ export interface RecommendationRelease extends EstimatableRelease {
   target?: boolean
   /** Owning this release makes its part count as best; absent means the kind decides. */
   satisfies?: boolean
+  /** The library's files are this release's files, byte for byte. */
+  files_match?: boolean
   /** Set when the saved preferences never offer this release for download. */
   excluded_by?: string
 }
@@ -41,23 +43,39 @@ export interface RecommendationSeason<R extends RecommendationRelease = Recommen
 export const isSeasonUpgradable = (season: Pick<RecommendationSeason, 'status' | 'upgrade_available'>): boolean =>
   season.status === 'upgrade' || (season.status === 'partial' && season.upgrade_available === true)
 
+type OwnedRelease = Pick<RecommendationRelease, 'part' | 'releaseGroup' | 'files_match'>
 type OwnershipFacts = Pick<
   RecommendationSeason,
   'precise_part_ownership' | 'owned_by_part' | 'verified_by_part' | 'mismatched_by_part' | 'have'
->
+> & { releases?: OwnedRelease[] }
+
+const sameGroup = (left: OwnedRelease, right: OwnedRelease) =>
+  (left.part || '') === (right.part || '') &&
+  left.releaseGroup.trim().toLowerCase() === right.releaseGroup.trim().toLowerCase()
+
+/** The library's files are, byte for byte, another release the same group lists for this part. */
+const holdsSibling = (season: OwnershipFacts, release: OwnedRelease) =>
+  !release.files_match && Boolean(season.releases?.some(other => other.files_match && sameGroup(other, release)))
+
+/** Whether the library's files are exactly this release's files. Older results only know it per release group. */
+export function releaseFilesMatch(season: OwnershipFacts, release: OwnedRelease): boolean {
+  if (release.files_match) return true
+  if (holdsSibling(season, release)) return false
+  const wanted = release.releaseGroup.trim().toLowerCase()
+  return Boolean(season.verified_by_part?.[release.part || '']?.some(group => group.trim().toLowerCase() === wanted))
+}
 
 /**
  * Whether the library holds this release. A file-size match proves ownership whatever the
- * files are named; a size mismatch disproves it even when the release group name matches.
+ * files are named; a size mismatch disproves it even when the release group name matches,
+ * and so does a match with another release by the same group.
  */
-export function releaseOwned(
-  season: OwnershipFacts,
-  release: Pick<RecommendationRelease, 'part' | 'releaseGroup'>,
-): boolean {
+export function releaseOwned(season: OwnershipFacts, release: OwnedRelease): boolean {
   const part = release.part || ''
   const wanted = release.releaseGroup.trim().toLowerCase()
   const named = (groups: string[] | undefined) => Boolean(groups?.some(group => group.trim().toLowerCase() === wanted))
-  if (named(season.verified_by_part?.[part])) return true
+  if (releaseFilesMatch(season, release)) return true
+  if (holdsSibling(season, release)) return false
   if (named(season.mismatched_by_part?.[part])) return false
   return named(season.precise_part_ownership ? season.owned_by_part?.[part] : season.have)
 }
