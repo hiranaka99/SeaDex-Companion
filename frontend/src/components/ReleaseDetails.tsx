@@ -1,4 +1,4 @@
-import { normalizeTorrentPath as normalizeFile, releaseOwned } from '../../../shared/download-plan'
+import { normalizeTorrentPath as normalizeFile, releaseFilesMatch, releaseOwned } from '../../../shared/download-plan'
 import { useMemo } from 'react'
 import type { Config, Release, ResultItem } from '../types'
 import { formatBytes, formatEta, providerNames, seasonLabel, sizeDelta } from '../utils'
@@ -321,8 +321,14 @@ export default function ReleaseDetails({
     tag => !(isBest && tag.trim().toLowerCase() === 'best'),
   )
   const sameGroup = (group: string) => group.trim().toLowerCase() === rel.releaseGroup.trim().toLowerCase()
-  const verified = Boolean(r.verified_by_part?.[rel.part || '']?.some(sameGroup))
-  const mismatched = !verified && Boolean(r.mismatched_by_part?.[rel.part || '']?.some(sameGroup))
+  const verified = releaseFilesMatch(r, rel)
+  // The library holds another release this group lists for the same season or cour.
+  const sibling =
+    !verified &&
+    r.releases.some(
+      other => other.files_match && (other.part || '') === (rel.part || '') && sameGroup(other.releaseGroup),
+    )
+  const mismatched = !verified && !sibling && Boolean(r.mismatched_by_part?.[rel.part || '']?.some(sameGroup))
   // Naming the target only helps where several releases compete for the same season or cour.
   const competing = r.releases.filter(other => (other.part || '') === (rel.part || '')).length > 1
   const targeted = Boolean(rel.target) && competing && !verified && !complete && !inClient
@@ -386,6 +392,14 @@ export default function ReleaseDetails({
         <p className="m-0 mb-3 flex items-start gap-1.5 text-xs font-semibold text-good">
           <Icon name="check" size={14} className="mt-0.5 shrink-0" />
           <span>Your files match this release exactly.</span>
+        </p>
+      )}
+      {sibling && (
+        <p className="m-0 mb-3 flex items-start gap-1.5 text-xs text-muted" role="note">
+          <Icon name="info" size={14} className="mt-0.5 shrink-0" />
+          <span className="min-w-0">
+            Your {rel.releaseGroup} files are the group's other release listed here, not this one.
+          </span>
         </p>
       )}
       {mismatched && (
