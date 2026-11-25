@@ -33,25 +33,6 @@ const TARGETS: [ReleasePreferences['size'], string, string][] = [
   ['smallest', 'Smallest release', 'Usually the encode, when SeaDex lists it beside a remux.'],
 ]
 
-/** Short facts about the saved preferences for the collapsed section header. */
-export function summarizePreferences(
-  preferences: ReleasePreferences,
-  verify: boolean,
-  trackerMode: TrackerMode = 'public',
-): string[] {
-  const ignored = preferences.ignored_groups.length + preferences.ignored_trackers.length
-  return [
-    trackerMode === 'private' ? 'Private trackers included' : 'Public trackers only',
-    preferences.size === 'smallest' ? 'Smallest release' : 'Largest release',
-    preferences.dual_audio ? 'Dual audio preferred' : '',
-    preferences.max_episode_gb > 0 ? `Up to ${preferences.max_episode_gb} GB per episode` : '',
-    ignored ? `${ignored} ignored` : '',
-    preferences.accept_alternatives ? 'Alternatives accepted' : '',
-    preferences.strict ? 'Only the target counts' : '',
-    verify ? '' : 'File check off',
-  ].filter(Boolean)
-}
-
 /**
  * Chooses the download target among the releases SeaDex lists, and what counts as already
  * having the best release. Flat rows, in the order a person decides them: which trackers count,
