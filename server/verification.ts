@@ -14,9 +14,10 @@ const key = (group: string) => group.trim().toLowerCase()
 /** Exact sizes of the video files a release lists. Extras and subtitles never identify an episode. */
 function listedSizes(candidates: ReleaseCandidate[]): Set<number> {
   const sizes = new Set<number>()
-  for (const candidate of candidates) for (const file of candidate.source_files || []) {
-    if (VIDEO_FILE.test(file.name) && Number.isSafeInteger(file.length) && file.length > 0) sizes.add(file.length)
-  }
+  for (const candidate of candidates)
+    for (const file of candidate.source_files || []) {
+      if (VIDEO_FILE.test(file.name) && Number.isSafeInteger(file.length) && file.length > 0) sizes.add(file.length)
+    }
   return sizes
 }
 
@@ -43,7 +44,8 @@ export function verifyPart(
   const complete = expected ? [...expected].every(episode => covered.has(episode)) : true
 
   const byGroup = new Map<string, ReleaseCandidate[]>()
-  for (const candidate of candidates) byGroup.set(key(candidate.releaseGroup), [...(byGroup.get(key(candidate.releaseGroup)) || []), candidate])
+  for (const candidate of candidates)
+    byGroup.set(key(candidate.releaseGroup), [...(byGroup.get(key(candidate.releaseGroup)) || []), candidate])
   const owners = new Set(namedOwners.map(key))
   const verified: string[] = []
   const mismatched: string[] = []
@@ -53,7 +55,10 @@ export function verifyPart(
     const sizes = listedSizes(flagged.length ? flagged : releases)
     if (!sizes.size) continue
     const name = releases[0].releaseGroup
-    if (complete && partFiles.every(file => sizes.has(file.size))) { verified.push(name); continue }
+    if (complete && partFiles.every(file => sizes.has(file.size))) {
+      verified.push(name)
+      continue
+    }
     if (!owners.has(group)) continue
     const groupFiles = partFiles.filter(file => key(file.group) === group)
     if (groupFiles.length && !groupFiles.every(file => sizes.has(file.size))) mismatched.push(name)

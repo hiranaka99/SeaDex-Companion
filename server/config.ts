@@ -1,12 +1,29 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
-import { CONFIG_FILE, ENCRYPTED_SECRETS_FILE, SECRETS_KEY_FILE } from './paths.js'
+import { isRecord } from '../shared/guards.js'
+import { existsSync } from 'node:fs'
+import { arrBaseUrl } from './arr-urls.js'
+import { DEFAULT_SCAN_SCHEDULE, normalizeScanSchedule } from './config-schedule.js'
+import {
+  decryptSecretValues,
+  encryptSecretValues,
+  loadEncryptedSecrets,
+  loadSecretKey,
+  type EncryptedSecretsPayload,
+  type SecretValues,
+} from './config-secrets.js'
+import { CONFIG_FILE, ENCRYPTED_SECRETS_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
 import { log } from './logging.js'
-import { api } from './http.js'
 import { DEFAULT_DATETIME_FORMAT, isValidDateTimeFormat } from '../shared/datetime-format.js'
-import { ARR_TAG_KEYS, ARR_TAG_PATTERN, DEFAULT_ARR_TAGS, DEFAULT_RELEASE_PREFERENCES, EMPTY_LIBRARY_SCOPE, normalizeLibraryScope, normalizeReleasePreferences } from '../shared/settings.js'
+import { SECRET_CONFIG_KEYS, type SecretConfigKey } from '../shared/contracts.js'
+import {
+  ARR_TAG_KEYS,
+  ARR_TAG_PATTERN,
+  DEFAULT_ARR_TAGS,
+  DEFAULT_RELEASE_PREFERENCES,
+  EMPTY_LIBRARY_SCOPE,
+  normalizeLibraryScope,
+  normalizeReleasePreferences,
+} from '../shared/settings.js'
 import { configuredArrInstances, instanceOf, PRIMARY_INSTANCE_IDS } from './arr-instances.js'
 import type { ArrInstanceConfig, Config, JsonObject, PublicConfig } from './types.js'
 import type { DownloadProtocol } from '../shared/download-contracts.js'
@@ -43,22 +60,10 @@ export const DEFAULT_CONFIG: Config = {
   notify_import_problems: true,
   unhide_on_new_best: false,
   datetime_format: DEFAULT_DATETIME_FORMAT,
-  scan_schedule: {
-    enabled: true,
-    mode: 'interval',
-    interval_minutes: 1440,
-    times: ['03:00'],
-    weekdays: [0],
-    timezone: 'UTC',
-    missed_run: 'run_once',
-  },
+  scan_schedule: DEFAULT_SCAN_SCHEDULE,
   hidden: [],
 }
 
-export const SECRET_CONFIG_KEYS = ['sonarr_key', 'radarr_key', 'qbittorrent_pass', 'sabnzbd_key', 'amenzb_key', 'webhook'] as const
-export type SecretConfigKey = typeof SECRET_CONFIG_KEYS[number]
-/** Everything kept in the encrypted payload: the named credentials plus the API keys of additional instances. */
-export type SecretValues = Partial<Record<SecretConfigKey, string>> & { arr_instance_keys?: Record<string, string> }
 export const MAX_ARR_INSTANCES = 10
 const INSTANCE_ID_PATTERN = /^[a-z0-9]{4,20}$/
 
@@ -69,7 +74,11 @@ export function serviceBaseUrl(value: unknown, label: string): string {
   const raw = String(value ?? '').trim()
   if (!raw) return ''
   let parsed: URL
-  try { parsed = new URL(raw) } catch { throw new Error(`${label} must be a valid URL`) }
+  try {
+    parsed = new URL(raw)
+  } catch {
+    throw new Error(`${label} must be a valid URL`)
+  }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error(`${label} must use HTTP or HTTPS`)
   return raw.replace(/\/+$/, '')
 }
@@ -80,132 +89,20 @@ export function sabnzbdApiUrl(config: Config): string {
   return base ? `${base.replace(/\/api$/i, '')}/api` : ''
 }
 
-export function arrBaseUrl(value: unknown): string {
-  return String(value || '').trim().replace(/\/+$/, '').replace(/\/api\/v\d+$/i, '').replace(/\/+$/, '')
-}
-
-export function arrApiUrl(value: unknown): string {
-  const base = arrBaseUrl(value)
-  return base ? `${base}/api/v3` : ''
-}
-
-export async function sonarrApiUrl(value: unknown, key: string): Promise<string> {
-  const base = arrBaseUrl(value)
-  const info = await api(`${base}/api`, key, {}, true)
-  if (info.current !== 'v3' && info.current !== 'v5') throw new Error(`Unsupported Sonarr API version: ${String(info.current)}`)
-  return `${base}/api/${info.current}`
-}
-
-interface EncryptedSecretsPayload {
-  version: 1
-  algorithm: 'aes-256-gcm'
-  iv: string
-  tag: string
-  ciphertext: string
-}
-
-const SECRETS_AAD = Buffer.from('seadex-companion:secrets:v1', 'utf8')
-
-function loadSecretKey(createIfMissing = false): Buffer {
-  if (!existsSync(SECRETS_KEY_FILE)) {
-    if (!createIfMissing) {
-      throw new Error(`Encryption key file not found: ${SECRETS_KEY_FILE}. Restore the key used to encrypt the existing credentials.`)
-    }
-    mkdirSync(dirname(SECRETS_KEY_FILE), { recursive: true })
-    try {
-      writeFileSync(SECRETS_KEY_FILE, randomBytes(32), { flag: 'wx', mode: 0o600 })
-      log('INFO', `Generated credential encryption key: ${SECRETS_KEY_FILE}`)
-    } catch (error: unknown) {
-      if (!(error && typeof error === 'object' && 'code' in error) || error.code !== 'EEXIST') throw error
-    }
-  }
-  const raw = readFileSync(SECRETS_KEY_FILE)
-  const text = raw.toString('utf8').trim()
-  if (/^[0-9a-f]{64}$/i.test(text)) return Buffer.from(text, 'hex')
-  if (/^[A-Za-z0-9+/]+={0,2}$/.test(text)) {
-    const decoded = Buffer.from(text, 'base64')
-    if (decoded.length === 32) return decoded
-  }
-  if (raw.length === 32) return raw
-  throw new Error(`Invalid encryption key in ${SECRETS_KEY_FILE}: expected 32 raw bytes, 64 hex characters, or base64 for 32 bytes`)
-}
-
-export function encryptSecretValues(secrets: SecretValues, key: Buffer): EncryptedSecretsPayload {
-  if (key.length !== 32) throw new Error('AES-256-GCM requires a 32-byte encryption key')
-  const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', key, iv)
-  cipher.setAAD(SECRETS_AAD)
-  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(secrets), 'utf8'), cipher.final()])
-  return {
-    version: 1,
-    algorithm: 'aes-256-gcm',
-    iv: iv.toString('base64'),
-    tag: cipher.getAuthTag().toString('base64'),
-    ciphertext: ciphertext.toString('base64'),
-  }
-}
-
-export function decryptSecretValues(payload: EncryptedSecretsPayload, key: Buffer): SecretValues {
-  if (payload.version !== 1 || payload.algorithm !== 'aes-256-gcm') throw new Error('Unsupported encrypted secrets format')
-  if (key.length !== 32) throw new Error('AES-256-GCM requires a 32-byte encryption key')
-  try {
-    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(payload.iv, 'base64'))
-    decipher.setAAD(SECRETS_AAD)
-    decipher.setAuthTag(Buffer.from(payload.tag, 'base64'))
-    const plaintext = Buffer.concat([
-      decipher.update(Buffer.from(payload.ciphertext, 'base64')),
-      decipher.final(),
-    ]).toString('utf8')
-    const parsed = JSON.parse(plaintext) as JsonObject
-    const secrets: SecretValues = {}
-    for (const keyName of SECRET_CONFIG_KEYS) if (typeof parsed[keyName] === 'string') secrets[keyName] = parsed[keyName]
-    const instanceKeys = parsed.arr_instance_keys
-    if (instanceKeys && typeof instanceKeys === 'object' && !Array.isArray(instanceKeys)) {
-      const keys = Object.fromEntries(Object.entries(instanceKeys).filter((entry): entry is [string, string] => typeof entry[1] === 'string' && Boolean(entry[1])))
-      if (Object.keys(keys).length) secrets.arr_instance_keys = keys
-    }
-    return secrets
-  } catch {
-    throw new Error('Could not decrypt secrets: the key is incorrect or the encrypted file is damaged')
-  }
-}
-
-function loadEncryptedSecrets(): SecretValues {
-  if (!existsSync(ENCRYPTED_SECRETS_FILE)) return {}
-  const payload = readJson<EncryptedSecretsPayload | null>(ENCRYPTED_SECRETS_FILE, null)
-  if (!payload) throw new Error(`Could not read encrypted secrets file: ${ENCRYPTED_SECRETS_FILE}`)
-  return decryptSecretValues(payload, loadSecretKey())
-}
-
-export function normalizeScanSchedule(value: unknown, legacyMinutes?: number): Config['scan_schedule'] {
-  const source = value && typeof value === 'object' ? value as JsonObject : {}
-  const mode = source.mode === 'daily' || source.mode === 'weekly' ? source.mode : 'interval'
-  const requestedEnabled = source.enabled === undefined ? (legacyMinutes === undefined ? DEFAULT_CONFIG.scan_schedule.enabled : Number(legacyMinutes) > 0) : source.enabled === true
-  const rawInterval = Number(source.interval_minutes ?? legacyMinutes ?? 1440)
-  const intervalMinutes = !requestedEnabled && rawInterval === 0 ? DEFAULT_CONFIG.scan_schedule.interval_minutes : rawInterval
-  if (requestedEnabled && mode === 'interval' && (!Number.isInteger(intervalMinutes) || intervalMinutes < 5 || intervalMinutes > 525_600)) throw new Error('scan_schedule.interval_minutes must be between 5 and 525600')
-  const rawTimes = Array.isArray(source.times) ? source.times : ['03:00']
-  const times = rawTimes.filter((time): time is string => typeof time === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)).sort()
-  if (requestedEnabled && mode !== 'interval' && times.length !== rawTimes.length) throw new Error('scan_schedule.times must contain valid HH:MM times')
-  if (requestedEnabled && mode !== 'interval' && new Set(times).size !== times.length) throw new Error('scan_schedule.times must not contain duplicates')
-  const rawWeekdays = Array.isArray(source.weekdays) ? source.weekdays : [0]
-  const weekdays = rawWeekdays.map(Number).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6).sort()
-  if (requestedEnabled && mode === 'weekly' && (weekdays.length !== rawWeekdays.length || new Set(weekdays).size !== weekdays.length)) throw new Error('scan_schedule.weekdays must contain unique days from 0 to 6')
-  const timezone = typeof source.timezone === 'string' && source.timezone ? source.timezone : 'UTC'
-  try { new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format() } catch { if (requestedEnabled && mode !== 'interval') throw new Error('scan_schedule.timezone must be a valid IANA timezone') }
-  if (requestedEnabled && mode !== 'interval' && !times.length) throw new Error('scan_schedule.times must contain at least one HH:MM time')
-  if (requestedEnabled && mode === 'weekly' && !weekdays.length) throw new Error('scan_schedule.weekdays must contain at least one day')
-  return {
-    enabled: requestedEnabled,
-    mode, interval_minutes: intervalMinutes, times, weekdays, timezone,
-    missed_run: source.missed_run === 'skip' ? 'skip' : 'run_once',
-  }
-}
-
 export function loadConfig(): Config {
   const raw = readJson<unknown>(CONFIG_FILE, {}, 'Could not read config')
-  const stored: Partial<Config> & { autocheck_minutes?: number; scan_webhook_secret?: string; webhook_debounce_seconds?: number; _secrets?: EncryptedSecretsPayload | null } = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
-  const encryptedSecrets = '_secrets' in stored ? (stored._secrets ? decryptSecretValues(stored._secrets, loadSecretKey()) : {}) : loadEncryptedSecrets()
+  const stored: Partial<Config> & {
+    autocheck_minutes?: number
+    scan_webhook_secret?: string
+    webhook_debounce_seconds?: number
+    _secrets?: EncryptedSecretsPayload | null
+  } = isRecord(raw) ? raw : {}
+  const encryptedSecrets =
+    '_secrets' in stored
+      ? stored._secrets
+        ? decryptSecretValues(stored._secrets, loadSecretKey())
+        : {}
+      : loadEncryptedSecrets()
   const plaintextSecrets: Partial<Record<SecretConfigKey, string>> = {}
   for (const key of SECRET_CONFIG_KEYS) {
     if (typeof stored[key] === 'string' && stored[key]) plaintextSecrets[key] = stored[key]
@@ -213,21 +110,40 @@ export function loadConfig(): Config {
   const legacyMinutes = Number(stored.autocheck_minutes)
   const scanSchedule = normalizeScanSchedule(stored.scan_schedule, legacyMinutes)
   const { arr_instance_keys: instanceKeys = {}, ...namedSecrets } = encryptedSecrets
-  const config = { ...applyConfigUpdate({ ...DEFAULT_CONFIG, scan_schedule: scanSchedule }, stored), ...namedSecrets, ...plaintextSecrets }
-  config.arr_instances = config.arr_instances.map(instance => ({ ...instance, key: instanceKeys[instance.id] || instance.key || '' }))
+  const config = {
+    ...applyConfigUpdate({ ...DEFAULT_CONFIG, scan_schedule: scanSchedule }, stored),
+    ...namedSecrets,
+    ...plaintextSecrets,
+  }
+  config.arr_instances = config.arr_instances.map(instance => ({
+    ...instance,
+    key: instanceKeys[instance.id] || instance.key || '',
+  }))
   config.sonarr_url = arrBaseUrl(config.sonarr_url)
   config.radarr_url = arrBaseUrl(config.radarr_url)
-  config.hidden = Array.isArray(config.hidden) ? config.hidden.filter((key): key is string => typeof key === 'string' && Boolean(key)) : []
+  config.hidden = Array.isArray(config.hidden)
+    ? config.hidden.filter((key): key is string => typeof key === 'string' && Boolean(key))
+    : []
   return config
 }
 
 export function publicConfig(config: Config): PublicConfig {
-  return { ...config, sonarr_key: '', radarr_key: '', qbittorrent_pass: '', sabnzbd_key: '', amenzb_key: '', webhook: '',
-    arr_instances: config.arr_instances.map(instance => ({ ...instance, key: '', key_configured: Boolean(instance.key) })),
-    sonarr_key_configured: Boolean(config.sonarr_key), radarr_key_configured: Boolean(config.radarr_key),
-    qbittorrent_pass_configured: Boolean(config.qbittorrent_pass), sabnzbd_key_configured: Boolean(config.sabnzbd_key),
-    amenzb_key_configured: Boolean(config.amenzb_key), webhook_configured: Boolean(config.webhook),
-  }
+  const redacted = Object.fromEntries(
+    SECRET_CONFIG_KEYS.flatMap(key => [
+      [key, ''],
+      [`${key}_configured`, Boolean(config[key])],
+    ]),
+  )
+  // The mapped key names are not expressible through Object.fromEntries.
+  return {
+    ...config,
+    ...redacted,
+    arr_instances: config.arr_instances.map(instance => ({
+      ...instance,
+      key: '',
+      key_configured: Boolean(instance.key),
+    })),
+  } as PublicConfig
 }
 
 export function saveConfig(config: Config): void {
@@ -237,7 +153,9 @@ export function saveConfig(config: Config): void {
     if (config[key]) secrets[key] = config[key]
     delete stored[key]
   }
-  const instanceKeys = Object.fromEntries(config.arr_instances.filter(instance => instance.key).map(instance => [instance.id, instance.key]))
+  const instanceKeys = Object.fromEntries(
+    config.arr_instances.filter(instance => instance.key).map(instance => [instance.id, instance.key]),
+  )
   if (Object.keys(instanceKeys).length) secrets.arr_instance_keys = instanceKeys
   stored.arr_instances = config.arr_instances.map(({ key: _key, ...instance }) => instance)
   // Credentials and public settings share one atomic commit. Encryption is retained.
@@ -251,14 +169,18 @@ export function saveConfig(config: Config): void {
 export function migrateConfig(): void {
   if (!existsSync(CONFIG_FILE)) return
   const stored = readJson<JsonObject | null>(CONFIG_FILE, null)
-  if (stored && typeof stored === 'object' && !Array.isArray(stored) && !('_secrets' in stored)) {
+  if (isRecord(stored) && !('_secrets' in stored)) {
     saveConfig(loadConfig())
     log('INFO', 'Migrated configuration to an atomic encrypted snapshot')
   }
 }
 
 /** Download-client category of the instance a result belongs to, so the right Sonarr or Radarr imports it. */
-export function downloadCategory(config: Config, source: string | { arr: string; instance?: string }, protocol: DownloadProtocol): string {
+export function downloadCategory(
+  config: Config,
+  source: string | { arr: string; instance?: string },
+  protocol: DownloadProtocol,
+): string {
   const instance = instanceOf(config, typeof source === 'string' ? { arr: source } : source)
   if (!instance) return ''
   return (protocol === 'usenet' ? instance.sabnzbd_category : instance.category).trim()
@@ -267,7 +189,13 @@ export function downloadCategory(config: Config, source: string | { arr: string;
 /** SABnzbd categories every configured instance imports from. */
 export function sabnzbdCategories(config: Config): string[] {
   const configured = configuredArrInstances(config).map(instance => instance.sabnzbd_category)
-  return [...new Set([config.sabnzbd_sonarr_category, config.sabnzbd_radarr_category, ...configured].map(category => category.trim()).filter(Boolean))]
+  return [
+    ...new Set(
+      [config.sabnzbd_sonarr_category, config.sabnzbd_radarr_category, ...configured]
+        .map(category => category.trim())
+        .filter(Boolean),
+    ),
+  ]
 }
 
 function normalizeArrInstances(raw: unknown, previous: ArrInstanceConfig[]): ArrInstanceConfig[] {
@@ -275,23 +203,32 @@ function normalizeArrInstances(raw: unknown, previous: ArrInstanceConfig[]): Arr
   if (raw.length > MAX_ARR_INSTANCES) throw new Error(`At most ${MAX_ARR_INSTANCES} additional instances are supported`)
   const ids = new Set<string>()
   const names = new Set<string>(['sonarr', 'radarr'])
-  return raw.map((entry) => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('Each additional instance must be an object')
+  return raw.map(entry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+      throw new Error('Each additional instance must be an object')
     const source = entry as Record<string, unknown>
     const id = String(source.id ?? '').trim()
-    if (!INSTANCE_ID_PATTERN.test(id) || PRIMARY_INSTANCE_IDS.includes(id)) throw new Error('Each additional instance needs an identifier of 4 to 20 lowercase letters or digits')
+    if (!INSTANCE_ID_PATTERN.test(id) || PRIMARY_INSTANCE_IDS.includes(id))
+      throw new Error('Each additional instance needs an identifier of 4 to 20 lowercase letters or digits')
     if (ids.has(id)) throw new Error('Additional instance identifiers must be unique')
     ids.add(id)
-    if (source.kind !== 'sonarr' && source.kind !== 'radarr') throw new Error('An additional instance must be either Sonarr or Radarr')
+    if (source.kind !== 'sonarr' && source.kind !== 'radarr')
+      throw new Error('An additional instance must be either Sonarr or Radarr')
     const existing = previous.find(instance => instance.id === id)
-    if (existing && existing.kind !== source.kind) throw new Error('An additional instance cannot change between Sonarr and Radarr')
-    const name = String(source.name ?? '').trim().replace(/\s+/g, ' ')
+    if (existing && existing.kind !== source.kind)
+      throw new Error('An additional instance cannot change between Sonarr and Radarr')
+    const name = String(source.name ?? '')
+      .trim()
+      .replace(/\s+/g, ' ')
     if (!name || name.length > 40) throw new Error('Each additional instance needs a name of 1 to 40 characters')
     if (names.has(name.toLowerCase())) throw new Error(`Instance names must be unique: "${name}" is already used`)
     names.add(name.toLowerCase())
     const key = String(source.key ?? '').trim()
     return {
-      id, kind: source.kind, name, url: arrBaseUrl(source.url),
+      id,
+      kind: source.kind,
+      name,
+      url: arrBaseUrl(source.url),
       key: key || existing?.key || '',
       category: String(source.category ?? existing?.category ?? `${source.kind}-anime`).trim(),
       sabnzbd_category: String(source.sabnzbd_category ?? existing?.sabnzbd_category ?? `${source.kind}-anime`).trim(),
@@ -302,7 +239,7 @@ function normalizeArrInstances(raw: unknown, previous: ArrInstanceConfig[]): Arr
 
 /** The same explicit patch rules serve both saving and connection previews. */
 export function applyConfigUpdate(config: Config, input: unknown): Config {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Configuration must be an object')
+  if (!isRecord(input)) throw new Error('Configuration must be an object')
   const data = input as Record<string, unknown>
   const next = { ...config }
   const cleared = new Set(Array.isArray(data.clear_secrets) ? data.clear_secrets : [])
@@ -314,17 +251,39 @@ export function applyConfigUpdate(config: Config, input: unknown): Config {
       if (value) next[key] = value
     }
   }
-  for (const key of ['sonarr_url', 'radarr_url', 'sonarr_category', 'radarr_category', 'qbittorrent_url', 'qbittorrent_user', 'sabnzbd_sonarr_category', 'sabnzbd_radarr_category'] as const) {
-    if (key in data) next[key] = key === 'sonarr_url' || key === 'radarr_url' ? arrBaseUrl(data[key]) : String(data[key] ?? '').trim()
+  for (const key of [
+    'sonarr_url',
+    'radarr_url',
+    'sonarr_category',
+    'radarr_category',
+    'qbittorrent_url',
+    'qbittorrent_user',
+    'sabnzbd_sonarr_category',
+    'sabnzbd_radarr_category',
+  ] as const) {
+    if (key in data)
+      next[key] = key === 'sonarr_url' || key === 'radarr_url' ? arrBaseUrl(data[key]) : String(data[key] ?? '').trim()
   }
   if ('download_mode' in data) {
-    if (typeof data.download_mode !== 'string' || !DOWNLOAD_MODES.includes(data.download_mode as typeof DOWNLOAD_MODES[number])) throw new Error('download_mode must be torrent_only, usenet_only, or choose')
+    if (
+      typeof data.download_mode !== 'string' ||
+      !DOWNLOAD_MODES.includes(data.download_mode as (typeof DOWNLOAD_MODES)[number])
+    )
+      throw new Error('download_mode must be torrent_only, usenet_only, or choose')
     next.download_mode = data.download_mode as Config['download_mode']
   }
   if ('sabnzbd_url' in data) next.sabnzbd_url = serviceBaseUrl(data.sabnzbd_url, 'sabnzbd_url')
   if ('animetosho_url' in data) next.animetosho_url = serviceBaseUrl(data.animetosho_url, 'animetosho_url')
   if ('amenzb_url' in data) next.amenzb_url = serviceBaseUrl(data.amenzb_url, 'amenzb_url')
-  for (const key of ['notify_enabled', 'notify_import_problems', 'unhide_on_new_best', 'animetosho_enabled', 'amenzb_enabled', 'verify_release_files', 'arr_tags_enabled'] as const) {
+  for (const key of [
+    'notify_enabled',
+    'notify_import_problems',
+    'unhide_on_new_best',
+    'animetosho_enabled',
+    'amenzb_enabled',
+    'verify_release_files',
+    'arr_tags_enabled',
+  ] as const) {
     if (key in data) {
       if (typeof data[key] !== 'boolean') throw new Error(`${key} must be a boolean`)
       next[key] = data[key]
@@ -334,18 +293,28 @@ export function applyConfigUpdate(config: Config, input: unknown): Config {
     const raw = String(data.datetime_format ?? '').trim()
     if (!raw) next.datetime_format = DEFAULT_DATETIME_FORMAT
     else if (isValidDateTimeFormat(raw)) next.datetime_format = raw
-    else throw new Error('datetime_format must contain date/time tokens (YYYY MM DD HH mm ss) with only punctuation around them')
+    else
+      throw new Error(
+        'datetime_format must contain date/time tokens (YYYY MM DD HH mm ss) with only punctuation around them',
+      )
   }
-  if ('hidden' in data) next.hidden = Array.isArray(data.hidden) ? data.hidden.filter((key): key is string => typeof key === 'string' && Boolean(key)) : []
+  if ('hidden' in data)
+    next.hidden = Array.isArray(data.hidden)
+      ? data.hidden.filter((key): key is string => typeof key === 'string' && Boolean(key))
+      : []
   if ('scan_schedule' in data) next.scan_schedule = normalizeScanSchedule(data.scan_schedule)
   if ('sonarr_scope' in data) next.sonarr_scope = normalizeLibraryScope(data.sonarr_scope, 'sonarr_scope')
   if ('radarr_scope' in data) next.radarr_scope = normalizeLibraryScope(data.radarr_scope, 'radarr_scope')
-  if ('arr_instances' in data) next.arr_instances = normalizeArrInstances(data.arr_instances, config.arr_instances || [])
+  if ('arr_instances' in data)
+    next.arr_instances = normalizeArrInstances(data.arr_instances, config.arr_instances || [])
   if ('release_preferences' in data) next.release_preferences = normalizeReleasePreferences(data.release_preferences)
   for (const key of ARR_TAG_KEYS) {
     if (!(key in data)) continue
-    const label = String(data[key] ?? '').trim().toLowerCase()
-    if (label && !ARR_TAG_PATTERN.test(label)) throw new Error(`${key} may contain only lowercase letters, digits, and hyphens`)
+    const label = String(data[key] ?? '')
+      .trim()
+      .toLowerCase()
+    if (label && !ARR_TAG_PATTERN.test(label))
+      throw new Error(`${key} may contain only lowercase letters, digits, and hyphens`)
     next[key] = label
   }
   const labels = ARR_TAG_KEYS.map(key => next[key]).filter(Boolean)
@@ -356,19 +325,24 @@ export function applyConfigUpdate(config: Config, input: unknown): Config {
 
 export function integrationConfig(config: Config, service: string, input: unknown): Config {
   const fields: Record<string, readonly string[]> = {
-    sonarr: ['sonarr_url', 'sonarr_key', 'sonarr_scope'], radarr: ['radarr_url', 'radarr_key', 'radarr_scope'],
-    qbittorrent: ['qbittorrent_url', 'qbittorrent_user', 'qbittorrent_pass'], discord: ['webhook'],
+    sonarr: ['sonarr_url', 'sonarr_key', 'sonarr_scope'],
+    radarr: ['radarr_url', 'radarr_key', 'radarr_scope'],
+    qbittorrent: ['qbittorrent_url', 'qbittorrent_user', 'qbittorrent_pass'],
+    discord: ['webhook'],
     sabnzbd: ['sabnzbd_url', 'sabnzbd_key', 'sabnzbd_sonarr_category', 'sabnzbd_radarr_category'],
     animetosho: ['animetosho_enabled', 'animetosho_url'],
     amenzb: ['amenzb_enabled', 'amenzb_url', 'amenzb_key'],
   }
-  const data = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {}
+  const data = isRecord(input) ? (input as Record<string, unknown>) : {}
   // An additional instance is tested from the submitted draft list; nothing else in the draft applies.
-  if (service.startsWith('arr:')) return applyConfigUpdate(config, 'arr_instances' in data ? { arr_instances: data.arr_instances } : {})
+  if (service.startsWith('arr:'))
+    return applyConfigUpdate(config, 'arr_instances' in data ? { arr_instances: data.arr_instances } : {})
   const allowed = fields[service]
   if (!allowed) throw new Error('Unknown integration')
   return applyConfigUpdate(config, {
     ...Object.fromEntries(allowed.filter(key => key in data).map(key => [key, data[key]])),
-    clear_secrets: Array.isArray(data.clear_secrets) ? data.clear_secrets.filter(key => typeof key === 'string' && allowed.includes(key)) : [],
+    clear_secrets: Array.isArray(data.clear_secrets)
+      ? data.clear_secrets.filter(key => typeof key === 'string' && allowed.includes(key))
+      : [],
   })
 }

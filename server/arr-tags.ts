@@ -1,5 +1,6 @@
 import { api, fetchWithTimeout } from './http.js'
-import { errorMessage, log } from './logging.js'
+import { log } from './logging.js'
+import { errorMessage } from '../shared/errors.js'
 import { arrApiBase, type OutOfScopeItem } from './library.js'
 import { configuredArrInstances, instanceSourceKey, sourceKeyOf, type ArrInstance } from './arr-instances.js'
 import { libraryItemKey } from './user-rules.js'
@@ -9,7 +10,12 @@ import type { Config, JsonObject, LocalItem, ResultItem } from './types.js'
 
 /** The one SeaDex status a series or movie can carry as a tag. */
 export type TagState = 'best' | 'upgrade' | 'unlisted' | 'review'
-export const TAG_SETTINGS: Record<TagState, ArrTagKey> = { best: 'arr_tag_best', upgrade: 'arr_tag_upgrade', unlisted: 'arr_tag_unlisted', review: 'arr_tag_review' }
+export const TAG_SETTINGS: Record<TagState, ArrTagKey> = {
+  best: 'arr_tag_best',
+  upgrade: 'arr_tag_upgrade',
+  unlisted: 'arr_tag_unlisted',
+  review: 'arr_tag_review',
+}
 const EDIT_BATCH = 500
 
 /**
@@ -19,7 +25,10 @@ const EDIT_BATCH = 500
  */
 export function titleTagState(seasons: ResultItem[]): TagState | null {
   if (!seasons.length) return null
-  if (seasons.some(season => season.match_status === 'unmatched' || (!season.anilist_id && season.status === 'missing'))) return 'review'
+  if (
+    seasons.some(season => season.match_status === 'unmatched' || (!season.anilist_id && season.status === 'missing'))
+  )
+    return 'review'
   if (seasons.some(season => upgradeParts(season).length > 0)) return 'upgrade'
   const counted = seasons.filter(season => !season.excluded)
   if (counted.length && counted.every(season => season.status === 'best')) return 'best'
@@ -27,24 +36,54 @@ export function titleTagState(seasons: ResultItem[]): TagState | null {
   return null
 }
 
-async function arrWrite(instance: ArrInstance, url: string, method: 'POST' | 'PUT', body: unknown): Promise<JsonObject> {
-  const response = await fetchWithTimeout(url, { method, headers: { 'Content-Type': 'application/json', 'X-Api-Key': instance.key }, body: JSON.stringify(body) })
+async function arrWrite(
+  instance: ArrInstance,
+  url: string,
+  method: 'POST' | 'PUT',
+  body: unknown,
+): Promise<JsonObject> {
+  const response = await fetchWithTimeout(url, {
+    method,
+    headers: { 'Content-Type': 'application/json', 'X-Api-Key': instance.key },
+    body: JSON.stringify(body),
+  })
   if (!response.ok) {
     await response.body?.cancel()
     throw new Error(`${instance.name} rejected ${method} ${new URL(url).pathname} (HTTP ${response.status})`)
   }
-  try { return await response.json() as JsonObject } catch { return {} }
+  try {
+    return (await response.json()) as JsonObject
+  } catch {
+    return {}
+  }
 }
 
 async function loadTags(instance: ArrInstance, base: string): Promise<Map<string, number>> {
-  const tags = await api(`${base}/tag`, instance.key, {}, instance.kind === 'sonarr') as JsonObject[]
-  return new Map((Array.isArray(tags) ? tags : []).map(tag => [String(tag.label || '').trim().toLowerCase(), Number(tag.id)]))
+  const tags = (await api(`${base}/tag`, instance.key, {}, instance.kind === 'sonarr')) as JsonObject[]
+  return new Map(
+    (Array.isArray(tags) ? tags : []).map(tag => [
+      String(tag.label || '')
+        .trim()
+        .toLowerCase(),
+      Number(tag.id),
+    ]),
+  )
 }
 
-async function applyTag(instance: ArrInstance, base: string, tagId: number, ids: number[], applyTags: 'add' | 'remove'): Promise<void> {
+async function applyTag(
+  instance: ArrInstance,
+  base: string,
+  tagId: number,
+  ids: number[],
+  applyTags: 'add' | 'remove',
+): Promise<void> {
   const [path, field] = instance.kind === 'sonarr' ? ['series/editor', 'seriesIds'] : ['movie/editor', 'movieIds']
   for (let start = 0; start < ids.length; start += EDIT_BATCH) {
-    await arrWrite(instance, `${base}/${path}`, 'PUT', { [field]: ids.slice(start, start + EDIT_BATCH), tags: [tagId], applyTags })
+    await arrWrite(instance, `${base}/${path}`, 'PUT', {
+      [field]: ids.slice(start, start + EDIT_BATCH),
+      tags: [tagId],
+      applyTags,
+    })
   }
 }
 
@@ -79,25 +118,34 @@ export async function syncArrTags(config: Config, input: TagSyncInput): Promise<
     try {
       const base = await arrApiBase(instance)
       const tagIds = await loadTags(instance, base)
-      let added = 0, removed = 0
+      let added = 0,
+        removed = 0
       for (const state of states) {
         const label = config[TAG_SETTINGS[state]]
         let tagId = tagIds.get(label)
-        const wanted = new Set(items.filter(item => titleTagState(seasonsByTitle.get(libraryItemKey(item)) || []) === state).map(item => Number(item.id)))
+        const wanted = new Set(
+          items
+            .filter(item => titleTagState(seasonsByTitle.get(libraryItemKey(item)) || []) === state)
+            .map(item => Number(item.id)),
+        )
         const carries = (tags: number[] | undefined) => tagId !== undefined && Boolean(tags?.includes(tagId))
-        const add = items.filter(item => wanted.has(Number(item.id)) && !carries(item.tags)).map(item => Number(item.id))
+        const add = items
+          .filter(item => wanted.has(Number(item.id)) && !carries(item.tags))
+          .map(item => Number(item.id))
         const remove = [
           ...items.filter(item => !wanted.has(Number(item.id)) && carries(item.tags)).map(item => Number(item.id)),
           ...outOfScope.filter(item => carries(item.tags)).map(item => item.id),
         ]
         if (add.length && tagId === undefined) {
           tagId = Number((await arrWrite(instance, `${base}/tag`, 'POST', { label })).id)
-          if (!Number.isInteger(tagId)) throw new Error(`${instance.name} did not return an ID for the new tag "${label}"`)
+          if (!Number.isInteger(tagId))
+            throw new Error(`${instance.name} did not return an ID for the new tag "${label}"`)
         }
         if (tagId === undefined) continue
         await applyTag(instance, base, tagId, add, 'add')
         await applyTag(instance, base, tagId, remove, 'remove')
-        added += add.length; removed += remove.length
+        added += add.length
+        removed += remove.length
       }
       if (added || removed) log('INFO', `Status tags updated in ${instance.name}: ${added} added, ${removed} removed`)
     } catch (error) {
@@ -118,9 +166,16 @@ export async function removeArrTags(config: Config): Promise<{ removed: number; 
       const tagIds = await loadTags(instance, base)
       const managed = labels.map(label => tagIds.get(label)).filter((id): id is number => id !== undefined)
       if (!managed.length) continue
-      const titles = await api(`${base}/${instance.kind === 'sonarr' ? 'series' : 'movie'}`, instance.key, {}, instance.kind === 'sonarr') as JsonObject[]
+      const titles = (await api(
+        `${base}/${instance.kind === 'sonarr' ? 'series' : 'movie'}`,
+        instance.key,
+        {},
+        instance.kind === 'sonarr',
+      )) as JsonObject[]
       for (const tagId of managed) {
-        const ids = titles.filter(title => Array.isArray(title.tags) && title.tags.map(Number).includes(tagId)).map(title => Number(title.id))
+        const ids = titles
+          .filter(title => Array.isArray(title.tags) && title.tags.map(Number).includes(tagId))
+          .map(title => Number(title.id))
         await applyTag(instance, base, tagId, ids, 'remove')
         removed += ids.length
       }
@@ -128,6 +183,9 @@ export async function removeArrTags(config: Config): Promise<{ removed: number; 
       errors[instance.name] = errorMessage(error)
     }
   }
-  log(Object.keys(errors).length ? 'WARNING' : 'INFO', `Status tags removed from ${removed} title(s)${Object.keys(errors).length ? `; failed for ${Object.keys(errors).join(', ')}` : ''}`)
+  log(
+    Object.keys(errors).length ? 'WARNING' : 'INFO',
+    `Status tags removed from ${removed} title(s)${Object.keys(errors).length ? `; failed for ${Object.keys(errors).join(', ')}` : ''}`,
+  )
   return { removed, errors }
 }

@@ -34,8 +34,13 @@ Open the Vite URL printed in the terminal, normally [http://localhost:5173](http
 
 To run either server separately, use `npm run dev:server` or `npm run dev:frontend`.
 
+## Formatting
+
+Source code is formatted with [Prettier](https://prettier.io) using the repository's `.prettierrc.json`. Run `npm run format` before committing, or `npm run format:check` to verify without writing. Documentation, JSON, and YAML files are not formatted.
+
 ## Validation
 
+- `npm run typecheck` type-checks the server, the tests, and the frontend.
 - `npm test` builds the server and runs backend, HTTP, scheduling, and frontend utility regressions.
 - `npm run build` builds the server and frontend for production.
 - `npm run test:browser` builds the frontend and checks browser workflows with isolated local fixtures. It defaults to Microsoft Edge on Windows; set `BROWSER_PATH` to a Chromium executable on other systems.

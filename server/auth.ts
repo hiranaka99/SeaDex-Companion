@@ -1,3 +1,4 @@
+import { isRecord } from '../shared/guards.js'
 import { writeJsonAtomic } from './persistence.js'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto'
@@ -5,6 +6,9 @@ import { Algorithm, hash, verify } from '@node-rs/argon2'
 import type { IncomingMessage } from 'node:http'
 import { dirname, join } from 'node:path'
 import { DATA_DIR } from './paths.js'
+import { HttpError } from './http-error.js'
+import { clientAddress } from './http-response.js'
+import type { AuthState } from '../shared/contracts.js'
 
 export const AUTH_FILE = join(DATA_DIR, 'auth.json')
 export const AUTH_SESSIONS_FILE = join(DATA_DIR, 'auth_sessions.json')
@@ -44,37 +48,40 @@ interface LoginLimit {
   resetAt: number
 }
 
-export interface AuthState {
-  setup_required: boolean
-  authenticated: boolean
-  username: string | null
-}
-
-export class AuthError extends Error {
-  constructor(public readonly status: number, message: string) {
-    super(message)
-    this.name = 'AuthError'
-  }
-}
+/** A sign-in, setup or account request that was refused. */
+export class AuthError extends HttpError {}
 
 function loadSessions(): Map<string, Session> {
   if (!existsSync(AUTH_SESSIONS_FILE)) return new Map()
   try {
     const parsed = JSON.parse(readFileSync(AUTH_SESSIONS_FILE, 'utf8')) as unknown
     if (!Array.isArray(parsed)) return new Map()
-    return new Map(parsed.flatMap((value): Array<[string, Session]> => {
-      if (!value || typeof value !== 'object') return []
-      const record = value as Record<string, unknown>
-      if (typeof record.token !== 'string' || typeof record.username !== 'string' || typeof record.expiresAt !== 'number' || record.expiresAt <= Date.now()) return []
-      return [[record.token, { username: record.username, expiresAt: record.expiresAt }]]
-    }))
+    return new Map(
+      parsed.flatMap((value): Array<[string, Session]> => {
+        if (!value || typeof value !== 'object') return []
+        const record = value as Record<string, unknown>
+        if (
+          typeof record.token !== 'string' ||
+          typeof record.username !== 'string' ||
+          typeof record.expiresAt !== 'number' ||
+          record.expiresAt <= Date.now()
+        )
+          return []
+        return [[record.token, { username: record.username, expiresAt: record.expiresAt }]]
+      }),
+    )
   } catch {
     return new Map()
   }
 }
 
 function saveSessions(): void {
-  writeJsonAtomic(AUTH_SESSIONS_FILE, [...sessions].map(([token, session]) => ({ token, ...session })), false, 0o600)
+  writeJsonAtomic(
+    AUTH_SESSIONS_FILE,
+    [...sessions].map(([token, session]) => ({ token, ...session })),
+    false,
+    0o600,
+  )
 }
 
 const sessions = loadSessions()
@@ -85,9 +92,15 @@ let accountQueue: Promise<void> = Promise.resolve()
 async function withAccountLock<T>(operation: () => Promise<T>): Promise<T> {
   const previous = accountQueue
   let release!: () => void
-  accountQueue = new Promise<void>(resolve => { release = resolve })
+  accountQueue = new Promise<void>(resolve => {
+    release = resolve
+  })
   await previous
-  try { return await operation() } finally { release() }
+  try {
+    return await operation()
+  } finally {
+    release()
+  }
 }
 
 function deriveLegacyPassword(password: string, salt: Buffer): Promise<Buffer> {
@@ -103,7 +116,9 @@ async function createAuthRecord(username: string, password: string): Promise<Aut
   return { version: 2, username, password_hash: await hash(password, ARGON2_OPTIONS) }
 }
 
-function saveAuthRecord(record: AuthRecord): void { writeJsonAtomic(AUTH_FILE, record, true, 0o600) }
+function saveAuthRecord(record: AuthRecord): void {
+  writeJsonAtomic(AUTH_FILE, record, true, 0o600)
+}
 
 async function verifyPassword(record: StoredAuthRecord, password: string): Promise<boolean> {
   if (record.version === 2) return verify(record.password_hash, password)
@@ -130,7 +145,7 @@ function loadAuthRecord(): StoredAuthRecord {
   } catch {
     throw new AuthError(500, 'Could not read the authentication file')
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new AuthError(500, 'The authentication file is invalid')
+  if (!isRecord(parsed)) throw new AuthError(500, 'The authentication file is invalid')
   const validBase = typeof parsed.username === 'string' && typeof parsed.password_hash === 'string'
   const validLegacy = parsed.version === 1 && typeof parsed.salt === 'string'
   if (!validBase || (parsed.version !== 2 && !validLegacy)) {
@@ -144,8 +159,11 @@ function requestToken(request: IncomingMessage): string | null {
   for (const part of header.split(';')) {
     const [name, ...valueParts] = part.trim().split('=')
     if (name !== SESSION_COOKIE) continue
-    try { return decodeURIComponent(valueParts.join('=')) }
-    catch { return null }
+    try {
+      return decodeURIComponent(valueParts.join('='))
+    } catch {
+      return null
+    }
   }
   return null
 }
@@ -169,10 +187,6 @@ function createSession(username: string): string {
   sessions.set(token, { username, expiresAt: Date.now() + SESSION_TTL_SECONDS * 1000 })
   saveSessions()
   return token
-}
-
-function requestAddress(request: IncomingMessage): string {
-  return request.socket.remoteAddress || 'unknown'
 }
 
 function checkLoginLimit(address: string): void {
@@ -225,13 +239,21 @@ export function isAuthenticated(request: IncomingMessage): boolean {
   return authenticatedUsername(request) !== null
 }
 
-export async function setupAccount(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<{ token: string; username: string }> {
+export async function setupAccount(
+  request: IncomingMessage,
+  usernameValue: unknown,
+  passwordValue: unknown,
+): Promise<{ token: string; username: string }> {
   return withAccountLock(() => setupAccountLocked(request, usernameValue, passwordValue))
 }
 
-async function setupAccountLocked(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<{ token: string; username: string }> {
+async function setupAccountLocked(
+  request: IncomingMessage,
+  usernameValue: unknown,
+  passwordValue: unknown,
+): Promise<{ token: string; username: string }> {
   if (existsSync(AUTH_FILE)) throw new AuthError(409, 'An administrator account already exists')
-  const address = requestAddress(request)
+  const address = clientAddress(request)
   checkSetupLimit(address)
   recordSetupAttempt(address)
   const { username, password } = validateCredentials(usernameValue, passwordValue)
@@ -240,7 +262,8 @@ async function setupAccountLocked(request: IncomingMessage, usernameValue: unkno
   try {
     writeFileSync(AUTH_FILE, JSON.stringify(record, null, 2), { encoding: 'utf8', flag: 'wx', mode: 0o600 })
   } catch (error: unknown) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST') throw new AuthError(409, 'An administrator account already exists')
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')
+      throw new AuthError(409, 'An administrator account already exists')
     throw error
   }
   setupLimits.delete(address)
@@ -249,13 +272,21 @@ async function setupAccountLocked(request: IncomingMessage, usernameValue: unkno
   return { token: createSession(username), username }
 }
 
-export async function verifyLoginCredentials(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<string> {
+export async function verifyLoginCredentials(
+  request: IncomingMessage,
+  usernameValue: unknown,
+  passwordValue: unknown,
+): Promise<string> {
   return withAccountLock(() => verifyLoginCredentialsLocked(request, usernameValue, passwordValue))
 }
 
-async function verifyLoginCredentialsLocked(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<string> {
+async function verifyLoginCredentialsLocked(
+  request: IncomingMessage,
+  usernameValue: unknown,
+  passwordValue: unknown,
+): Promise<string> {
   if (!existsSync(AUTH_FILE)) throw new AuthError(409, 'Create the administrator account first')
-  const address = requestAddress(request)
+  const address = clientAddress(request)
   checkLoginLimit(address)
   const username = String(usernameValue ?? '').trim()
   const password = String(passwordValue ?? '')
@@ -274,24 +305,38 @@ async function verifyLoginCredentialsLocked(request: IncomingMessage, usernameVa
   return record.username
 }
 
-export async function login(request: IncomingMessage, usernameValue: unknown, passwordValue: unknown): Promise<{ token: string; username: string }> {
+export async function login(
+  request: IncomingMessage,
+  usernameValue: unknown,
+  passwordValue: unknown,
+): Promise<{ token: string; username: string }> {
   return withAccountLock(async () => {
     const username = await verifyLoginCredentialsLocked(request, usernameValue, passwordValue)
     return { token: createSession(username), username }
   })
 }
 
-export async function updateAccount(request: IncomingMessage, currentPasswordValue: unknown, usernameValue: unknown, newPasswordValue: unknown): Promise<{ token: string; username: string }> {
+export async function updateAccount(
+  request: IncomingMessage,
+  currentPasswordValue: unknown,
+  usernameValue: unknown,
+  newPasswordValue: unknown,
+): Promise<{ token: string; username: string }> {
   return withAccountLock(() => updateAccountLocked(request, currentPasswordValue, usernameValue, newPasswordValue))
 }
 
-async function updateAccountLocked(request: IncomingMessage, currentPasswordValue: unknown, usernameValue: unknown, newPasswordValue: unknown): Promise<{ token: string; username: string }> {
+async function updateAccountLocked(
+  request: IncomingMessage,
+  currentPasswordValue: unknown,
+  usernameValue: unknown,
+  newPasswordValue: unknown,
+): Promise<{ token: string; username: string }> {
   const activeUsername = authenticatedUsername(request)
   if (!activeUsername) throw new AuthError(401, 'Authentication required')
   const currentPassword = String(currentPasswordValue ?? '')
   if (!currentPassword) throw new AuthError(400, 'Current password is required')
   const current = loadAuthRecord()
-  if (!await verifyPassword(current, currentPassword)) {
+  if (!(await verifyPassword(current, currentPassword))) {
     throw new AuthError(401, 'Current password is incorrect')
   }
   const requestedPassword = String(newPasswordValue ?? '')

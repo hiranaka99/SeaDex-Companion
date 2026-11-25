@@ -31,10 +31,14 @@ export interface DownloadEstimate {
   whole_torrents: number
 }
 
-const validBytes = (size: unknown): size is number => typeof size === 'number' && Number.isSafeInteger(size) && size >= 0
+const validBytes = (size: unknown): size is number =>
+  typeof size === 'number' && Number.isSafeInteger(size) && size >= 0
 
 /** Mirrors bulk add: a hash is added once, file scopes are united, and any whole-torrent request wins. */
-export function estimateDownloads(selections: { release: EstimatableRelease; category: string }[], existingHashes: string[] = []): DownloadEstimate {
+export function estimateDownloads(
+  selections: { release: EstimatableRelease; category: string }[],
+  existingHashes: string[] = [],
+): DownloadEstimate {
   const existing = new Set(existingHashes.map(hash => hash.toLowerCase()))
   const torrents: EstimatedTorrent[] = planTorrents(selections).map(entry => {
     const { hash, category } = entry
@@ -42,11 +46,15 @@ export function estimateDownloads(selections: { release: EstimatableRelease; cat
     const wanted = new Set((entry.selectedFiles || []).map(normalizePath))
     const files = new Map<string, number>()
     let invalidMetadata = false
-    for (const release of entry.releases) for (const metadata of release.torrent_files || []) {
-      if (metadata.hash.toLowerCase() !== hash) continue
-      if (!metadata.files.length || metadata.files.some(file => !file.name || !validBytes(file.length))) invalidMetadata = true
-      for (const file of metadata.files) if (file.name && validBytes(file.length)) files.set(normalizePath(file.name), Math.max(files.get(normalizePath(file.name)) || 0, file.length))
-    }
+    for (const release of entry.releases)
+      for (const metadata of release.torrent_files || []) {
+        if (metadata.hash.toLowerCase() !== hash) continue
+        if (!metadata.files.length || metadata.files.some(file => !file.name || !validBytes(file.length)))
+          invalidMetadata = true
+        for (const file of metadata.files)
+          if (file.name && validBytes(file.length))
+            files.set(normalizePath(file.name), Math.max(files.get(normalizePath(file.name)) || 0, file.length))
+      }
     let bytes: number | null = null
     let approximate = false
     const requested = whole ? [...files.keys()] : [...wanted]
@@ -55,20 +63,40 @@ export function estimateDownloads(selections: { release: EstimatableRelease; cat
     } else {
       // Old saved results have only a release total. Never divide a multi-hash
       // total or sum overlapping scopes: neither reveals each torrent's size.
-      const singleHash = entry.releases.every(release => new Set(release.info_hashes.map(hash => hash.toLowerCase())).size === 1)
-      const scopes = new Set(entry.releases.map(release => JSON.stringify((release.selected_files || []).map(normalizePath).sort())))
-      const sizes = entry.releases.filter(release => !whole || !release.selected_files?.length).map(release => release.size)
-      if (singleHash && (whole || scopes.size === 1) && sizes.length && sizes.every(size => validBytes(size) && size > 0)) {
-        bytes = Math.max(...sizes as number[])
+      const singleHash = entry.releases.every(
+        release => new Set(release.info_hashes.map(hash => hash.toLowerCase())).size === 1,
+      )
+      const scopes = new Set(
+        entry.releases.map(release => JSON.stringify((release.selected_files || []).map(normalizePath).sort())),
+      )
+      const sizes = entry.releases
+        .filter(release => !whole || !release.selected_files?.length)
+        .map(release => release.size)
+      if (
+        singleHash &&
+        (whole || scopes.size === 1) &&
+        sizes.length &&
+        sizes.every(size => validBytes(size) && size > 0)
+      ) {
+        bytes = Math.max(...(sizes as number[]))
         approximate = true
       }
     }
-    return { hash, category, bytes, approximate, selected_file_count: whole ? null : wanted.size, existing: existing.has(hash) }
+    return {
+      hash,
+      category,
+      bytes,
+      approximate,
+      selected_file_count: whole ? null : wanted.size,
+      existing: existing.has(hash),
+    }
   })
   const fresh = torrents.filter(torrent => !torrent.existing)
   return {
-    torrents, new_bytes: fresh.reduce((sum, torrent) => sum + (torrent.bytes || 0), 0),
-    new_torrents: fresh.length, existing_torrents: torrents.length - fresh.length,
+    torrents,
+    new_bytes: fresh.reduce((sum, torrent) => sum + (torrent.bytes || 0), 0),
+    new_torrents: fresh.length,
+    existing_torrents: torrents.length - fresh.length,
     unknown_torrents: fresh.filter(torrent => torrent.bytes === null).length,
     approximate_torrents: fresh.filter(torrent => torrent.approximate).length,
     selected_file_count: fresh.reduce((sum, torrent) => sum + (torrent.selected_file_count || 0), 0),

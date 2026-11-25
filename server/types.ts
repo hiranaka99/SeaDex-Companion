@@ -1,8 +1,18 @@
 export type JsonObject = Record<string, any>
 
-export type { Config, ScanSchedule, ResultItem, Release, PublicConfig, ConfigUpdate, LibraryScope, ArrInstanceConfig, ReleasePreferences } from '../shared/contracts.js'
-import type { ResultItem, ScanTriggerName } from '../shared/contracts.js'
-export type ScanTrigger = ScanTriggerName
+export type {
+  Config,
+  ScanSchedule,
+  ScanTrigger,
+  ResultItem,
+  Release,
+  PublicConfig,
+  ConfigUpdate,
+  LibraryScope,
+  ArrInstanceConfig,
+  ReleasePreferences,
+} from '../shared/contracts.js'
+import type { ResultItem, ScanTrigger } from '../shared/contracts.js'
 
 /** Limits a scan to specific library items. Absent means the whole library. */
 export interface ScanScope {
@@ -90,8 +100,14 @@ export interface LocalItem {
   tags?: number[]
   seasons: Record<number, LocalSeason>
 }
-export interface SeaDexSlot { candidates: ReleaseCandidate[] }
-export interface SeaDexEntry { url: string; notes: string; seasons: Record<number, SeaDexSlot> }
+export interface SeaDexSlot {
+  candidates: ReleaseCandidate[]
+}
+export interface SeaDexEntry {
+  url: string
+  notes: string
+  seasons: Record<number, SeaDexSlot>
+}
 export interface ResolvedPart {
   label: string | null
   source: SeaDexEntry

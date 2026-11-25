@@ -24,19 +24,28 @@ export const autocheckState: { next: number | null; signature: string; pending: 
 
 let resultRevision = 0
 export function resultsRevision(): string {
-  const stamp = (file: string) => { try { const stat = statSync(file); return `${stat.mtimeMs}:${stat.size}` } catch { return '' } }
+  const stamp = (file: string) => {
+    try {
+      const stat = statSync(file)
+      return `${stat.mtimeMs}:${stat.size}`
+    } catch {
+      return ''
+    }
+  }
   return `${resultRevision}:${stamp(RESULTS_FILE)}:${stamp(USER_RULES_FILE)}:${stamp(RELEASE_CHANGES_FILE)}`
 }
 
 export function setState(values: Omit<Partial<ScanState>, 'results'> & { results?: readonly unknown[] }): void {
-  if ('results' in values) { resultRevision += 1; values = { ...values, results: normalizeResults(values.results) } }
+  if ('results' in values) {
+    resultRevision += 1
+    values = { ...values, results: normalizeResults(values.results) }
+  }
   Object.assign(scanState, values)
 }
 
 export function getState(): ScanState {
   return { ...scanState, results: scanState.results }
 }
-
 
 let activeScanController: AbortController | null = null
 export function beginScan(controller: AbortController): boolean {

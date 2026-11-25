@@ -1,3 +1,4 @@
+import { errorMessage } from '../../../shared/errors.js'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ResultItem, Config, Status, GroupedCard } from '../types'
 import { groupResults, seasonLabel, cardSizeDelta, hasCardUpgrade, STATUS_LABEL } from '../utils'
@@ -6,15 +7,17 @@ import { displayDateTime } from '../datetime'
 import Card from './Card'
 import BulkDownloadDialog from './BulkDownloadDialog'
 import BulkCancelDialog from './BulkCancelDialog'
-import type { DownloadJobStatus, DownloadUnitFailure } from '../api'
 import Icon, { IconName } from './Icons'
 import { useToast } from './Toast'
 import * as api from '../api'
 import { buttonBase, buttonPrimary, control, cx } from '../styles'
-import { BulkOperationState } from './OperationCenter'
+import type { BulkOperationState } from './OperationCenter'
 import LibrarySizeChange from './LibrarySizeChange'
-import BulkScopeSelector, { BulkScope } from './BulkScopeSelector'
+import BulkScopeSelector from './BulkScopeSelector'
 import { useLibraryMotion } from '../useLibraryMotion'
+import { useBulkActions } from '../useBulkActions'
+import { useHiddenCards } from '../useHiddenCards'
+import { describeSchedule, timeUntilCheck } from '../schedule-text'
 import { groupReleaseChanges, latestReleaseChange } from '../release-changes'
 import { preferencesAreDefault } from '../../../shared/settings'
 import { upgradeParts } from '../../../shared/download-plan'
@@ -50,12 +53,56 @@ function cardKey(group: GroupedCard): string {
 }
 
 function SkeletonCards() {
-  return <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]" aria-label="Loading library">
-    {Array.from({ length: 6 }, (_, index) => <div key={index} className="overflow-hidden rounded-card border border-line bg-panel"><div className="library-card-body"><div className="library-card-poster skeleton"/><div className="library-card-info"><div className="flex flex-col gap-3 p-3"><div className="skeleton h-5 w-full rounded-md"/><div className="skeleton h-5 w-2/3 rounded-md"/><div className="skeleton h-4 w-24 rounded-md"/></div></div></div><div className="flex gap-1.5 px-3.5 pb-3.5"><div className="skeleton h-8 w-11 rounded-md"/><div className="skeleton h-8 w-11 rounded-md"/></div><div className="border-t border-line p-3"><div className="skeleton h-9 rounded-lg"/></div></div>)}
-  </div>
+  return (
+    <div
+      className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]"
+      aria-label="Loading library"
+    >
+      {Array.from({ length: 6 }, (_, index) => (
+        <div key={index} className="overflow-hidden rounded-card border border-line bg-panel">
+          <div className="library-card-body">
+            <div className="library-card-poster skeleton" />
+            <div className="library-card-info">
+              <div className="flex flex-col gap-3 p-3">
+                <div className="skeleton h-5 w-full rounded-md" />
+                <div className="skeleton h-5 w-2/3 rounded-md" />
+                <div className="skeleton h-4 w-24 rounded-md" />
+              </div>
+            </div>
+          </div>
+          <div className="flex gap-1.5 px-3.5 pb-3.5">
+            <div className="skeleton h-8 w-11 rounded-md" />
+            <div className="skeleton h-8 w-11 rounded-md" />
+          </div>
+          <div className="border-t border-line p-3">
+            <div className="skeleton h-9 rounded-lg" />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
 }
 
-export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOperationActive = false, bulkReviewRequest, onBulkReviewReset, results, config, status, lastRun, onScan, loading, loadError, onReloadResults, onOpenConfig, onBulkOperationChange, operationsVisible, onResultsChanged }: Props) {
+export default function AnimeTab({
+  active,
+  openResultKey,
+  onResultOpened,
+  bulkOperationActive = false,
+  bulkReviewRequest,
+  onBulkReviewReset,
+  results,
+  config,
+  status,
+  lastRun,
+  onScan,
+  loading,
+  loadError,
+  onReloadResults,
+  onOpenConfig,
+  onBulkOperationChange,
+  operationsVisible,
+  onResultsChanged,
+}: Props) {
   const [search, setSearch] = useState('')
   const [arr, setArr] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -71,23 +118,18 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   const resultsRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const moreActionsRef = useRef<HTMLDetailsElement>(null)
-  const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
-  const hiddenKeysRef = useRef(hiddenKeys)
-  const hiddenRequests = useRef(new Map<string, Promise<unknown>>())
-  const [bulkConfirm, setBulkConfirm] = useState<'start' | 'cancel' | null>(null)
-  const [bulkBusy, setBulkBusy] = useState<'start' | 'cancel' | null>(null)
-  const bulkInFlight = useRef(false)
-  const [bulkJob, setBulkJob] = useState<DownloadJobStatus | null>(null)
-  const [bulkScope, setBulkScope] = useState<BulkScope>('filtered')
-  const [bulkReview, setBulkReview] = useState<{ filtered: ResultItem[]; all: ResultItem[]; description: string } | null>(null)
-  const reviewResults = useMemo(() => bulkReview ? bulkScope === 'filtered' ? bulkReview.filtered : bulkReview.all : [], [bulkReview, bulkScope])
-  const reviewCounts = useMemo(() => bulkReview ? {
-    filtered: groupResults(bulkReview.filtered).length,
-    all: groupResults(bulkReview.all).length,
-  } : { filtered: 0, all: 0 }, [bulkReview])
+  const bulk = useBulkActions({
+    active,
+    operationActive: bulkOperationActive,
+    reviewRequest: bulkReviewRequest,
+    onReviewReset: onBulkReviewReset,
+    onOperationChange: onBulkOperationChange,
+  })
   const toast = useToast()
 
-  useEffect(() => { if (!openResultKey) setPage(0) }, [search, arr, statusFilter, coverageFilter, sort, showHidden, showUnseen])
+  useEffect(() => {
+    if (!openResultKey) setPage(0)
+  }, [search, arr, statusFilter, coverageFilter, sort, showHidden, showUnseen])
 
   useEffect(() => {
     const closeOutside = (event: PointerEvent) => {
@@ -98,18 +140,21 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
     return () => document.removeEventListener('pointerdown', closeOutside)
   }, [])
 
-  useEffect(() => { if (!active) setBulkConfirm(null) }, [active])
-  useEffect(() => { if (bulkReviewRequest) setBulkConfirm('start') }, [bulkReviewRequest])
   useEffect(() => {
     if (!openResultKey) return
     const group = groupResults(results).find(group => group.seasons.some(season => season.key === openResultKey))
-    if (group) { setSearch(''); setArr(''); setStatusFilter(''); setCoverageFilter(''); setShowUnseen(false); setShowHidden(hiddenKeys.has(cardKey(group))) }
-    else { toast.show('This title is no longer in the current library', 'info'); onResultOpened() }
+    if (group) {
+      setSearch('')
+      setArr('')
+      setStatusFilter('')
+      setCoverageFilter('')
+      setShowUnseen(false)
+      setShowHidden(hiddenKeys.has(cardKey(group)))
+    } else {
+      toast.show('This title is no longer in the current library', 'info')
+      onResultOpened()
+    }
   }, [openResultKey])
-
-  useEffect(() => {
-    if (config?.hidden) { hiddenKeysRef.current = new Set(config.hidden); setHiddenKeys(hiddenKeysRef.current) }
-  }, [config?.hidden])
 
   const allGroups = useMemo(() => groupResults(results), [results])
   // One Sonarr and one Radarr keep the familiar two choices; additional instances are listed by name.
@@ -117,103 +162,127 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
     const named = [...new Set(allGroups.map(group => group.source))].sort((left, right) => left.localeCompare(right))
     return named.some(name => name !== 'Sonarr' && name !== 'Radarr') ? named : ['Sonarr', 'Radarr']
   }, [allGroups])
-  useEffect(() => { if (arr && !sources.includes(arr)) setArr('') }, [arr, sources])
+  useEffect(() => {
+    if (arr && !sources.includes(arr)) setArr('')
+  }, [arr, sources])
+  const titleFor = useCallback((key: string) => allGroups.find(group => cardKey(group) === key)?.title, [allGroups])
+  const { hiddenKeys, toggleHidden: toggleHiddenKey } = useHiddenCards(config?.hidden, titleFor)
+  const toggleHidden = useCallback((group: GroupedCard) => toggleHiddenKey(cardKey(group)), [toggleHiddenKey])
   // Filtering preserves this order, so typing never sorts the collection again.
   const orderedGroups = useMemo(() => {
     const ordered = [...allGroups]
-    if (showUnseen || sort === 'changed') return ordered.sort((a, b) => latestReleaseChange(b) - latestReleaseChange(a) || TITLE_ORDER.compare(a.title, b.title))
+    if (showUnseen || sort === 'changed')
+      return ordered.sort(
+        (a, b) => latestReleaseChange(b) - latestReleaseChange(a) || TITLE_ORDER.compare(a.title, b.title),
+      )
     if (sort === 'size') {
       const deltas = new Map(allGroups.map(group => [group, Math.abs(cardSizeDelta(group))]))
       return ordered.sort((a, b) => deltas.get(b)! - deltas.get(a)! || SIZE_TITLE_ORDER.compare(a.title, b.title))
     }
-    return ordered.sort((a, b) => (sort === 'title' ? 0 : STATUS_RANK[a.status] - STATUS_RANK[b.status]) || TITLE_ORDER.compare(a.title, b.title))
+    return ordered.sort(
+      (a, b) =>
+        (sort === 'title' ? 0 : STATUS_RANK[a.status] - STATUS_RANK[b.status]) || TITLE_ORDER.compare(a.title, b.title),
+    )
   }, [allGroups, sort, showUnseen])
   // Build searchable text once per scan, rather than once per keystroke/filter.
-  const searchText = useMemo(() => new Map(allGroups.map(group => [group,
-    `${group.title} ${group.seasons.map(season => `${season.title} ${season.best_group || ''} ${season.have.join(' ')} ${seasonLabel(season)}`).join(' ')}`.toLowerCase(),
-  ])), [allGroups])
+  const searchText = useMemo(
+    () =>
+      new Map(
+        allGroups.map(group => [
+          group,
+          `${group.title} ${group.seasons.map(season => `${season.title} ${season.best_group || ''} ${season.have.join(' ')} ${seasonLabel(season)}`).join(' ')}`.toLowerCase(),
+        ]),
+      ),
+    [allGroups],
+  )
   const searchQuery = search.trim().toLowerCase()
-  const scopeGroups = useMemo(() => orderedGroups.filter(group => {
-    if (hiddenKeys.has(cardKey(group)) !== showHidden || (arr && group.source !== arr)) return false
-    return !searchQuery || searchText.get(group)!.includes(searchQuery)
-  }), [orderedGroups, hiddenKeys, showHidden, arr, searchText, searchQuery])
-  const coverageGroups = useMemo(() => scopeGroups.filter(group => !coverageFilter || group.status === coverageFilter), [scopeGroups, coverageFilter])
-  const counts = useMemo(() => ({
-    upgrade: coverageGroups.filter(hasCardUpgrade).length,
-    review: coverageGroups.filter(group => group.status === 'review').length,
-    episodes: coverageGroups.filter(group => group.seasons.some(season => (season.missing_episode_count || 0) > 0)).length,
-  }), [coverageGroups])
+  const scopeGroups = useMemo(
+    () =>
+      orderedGroups.filter(group => {
+        if (hiddenKeys.has(cardKey(group)) !== showHidden || (arr && group.source !== arr)) return false
+        return !searchQuery || searchText.get(group)!.includes(searchQuery)
+      }),
+    [orderedGroups, hiddenKeys, showHidden, arr, searchText, searchQuery],
+  )
+  const coverageGroups = useMemo(
+    () => scopeGroups.filter(group => !coverageFilter || group.status === coverageFilter),
+    [scopeGroups, coverageFilter],
+  )
+  const counts = useMemo(
+    () => ({
+      upgrade: coverageGroups.filter(hasCardUpgrade).length,
+      review: coverageGroups.filter(group => group.status === 'review').length,
+      episodes: coverageGroups.filter(group => group.seasons.some(season => (season.missing_episode_count || 0) > 0))
+        .length,
+    }),
+    [coverageGroups],
+  )
 
-  const setCardHidden = useCallback(async (key: string, hidden: boolean, offerUndo = false): Promise<boolean> => {
-    const wasHidden = hiddenKeysRef.current.has(key)
-    const update = (value: boolean) => {
-      const next = new Set(hiddenKeysRef.current)
-      if (value) next.add(key); else next.delete(key)
-      hiddenKeysRef.current = next
-      setHiddenKeys(next)
-    }
-    update(hidden)
-    // Serialize writes for each card so a quick Undo cannot finish out of order.
-    const request = (hiddenRequests.current.get(key) || Promise.resolve()).catch(() => {}).then(() => api.setHidden(key, hidden))
-    hiddenRequests.current.set(key, request)
-    try {
-      await request
-      if (hiddenRequests.current.get(key) !== request) return false
-      const title = allGroups.find(group => cardKey(group) === key)?.title || 'Title'
-      toast.show(hidden ? `${title} hidden from the library` : `${title} restored to the library`, 'success', offerUndo ? 12000 : undefined, offerUndo ? {
-        label: 'Undo',
-        onClick: () => { void setCardHidden(key, wasHidden).then(restored => { if (restored) window.requestAnimationFrame(() => {
-          const button = [...document.querySelectorAll<HTMLButtonElement>('button[aria-label]')].find(button => button.getAttribute('aria-label') === `Details for ${title}`)
-          button?.scrollIntoView({ block: 'nearest' }); button?.focus({ preventScroll: true })
-        }) }) },
-      } : undefined)
-      return true
-    } catch (error: any) {
-      if (hiddenRequests.current.get(key) === request) update(wasHidden)
-      toast.show('Could not update hidden cards: ' + error.message, 'error')
-      return false
-    } finally {
-      if (hiddenRequests.current.get(key) === request) hiddenRequests.current.delete(key)
-    }
-  }, [allGroups, toast])
-  const toggleHidden = useCallback((group: GroupedCard) => {
-    const key = cardKey(group)
-    void setCardHidden(key, !hiddenKeysRef.current.has(key), true)
-  }, [setCardHidden])
-
-  const matchingGroups = useMemo(() => coverageGroups.filter(group => statusFilter === 'episodes'
-      ? group.seasons.some(season => (season.missing_episode_count || 0) > 0)
-      : statusFilter === 'upgrade' ? hasCardUpgrade(group) : !statusFilter || group.status === statusFilter), [coverageGroups, statusFilter])
+  const matchingGroups = useMemo(
+    () =>
+      coverageGroups.filter(group =>
+        statusFilter === 'episodes'
+          ? group.seasons.some(season => (season.missing_episode_count || 0) > 0)
+          : statusFilter === 'upgrade'
+            ? hasCardUpgrade(group)
+            : !statusFilter || group.status === statusFilter,
+      ),
+    [coverageGroups, statusFilter],
+  )
   const unseenGroups = useMemo(() => matchingGroups.filter(group => latestReleaseChange(group) > 0), [matchingGroups])
   const groups = showUnseen ? unseenGroups : matchingGroups
-  const handleReviewChanges = useCallback(async (ids: string[]) => {
-    if (reviewInFlight.current || !ids.length) return
-    reviewInFlight.current = true
-    setReviewingChanges(true)
-    const focused = document.activeElement
-    try {
-      await api.reviewReleaseChanges(ids)
-      await onResultsChanged()
-      toast.show('Changes marked reviewed', 'success')
-      window.requestAnimationFrame(() => { if (focused && !focused.isConnected) unseenFilterRef.current?.focus() })
-    } catch (error) {
-      toast.show(`Could not mark changes reviewed: ${error instanceof Error ? error.message : String(error)}`, 'error')
-    } finally { reviewInFlight.current = false; setReviewingChanges(false) }
-  }, [onResultsChanged, toast])
+  const handleReviewChanges = useCallback(
+    async (ids: string[]) => {
+      if (reviewInFlight.current || !ids.length) return
+      reviewInFlight.current = true
+      setReviewingChanges(true)
+      const focused = document.activeElement
+      try {
+        await api.reviewReleaseChanges(ids)
+        await onResultsChanged()
+        toast.show('Changes marked reviewed', 'success')
+        window.requestAnimationFrame(() => {
+          if (focused && !focused.isConnected) unseenFilterRef.current?.focus()
+        })
+      } catch (error) {
+        toast.show(`Could not mark changes reviewed: ${errorMessage(error)}`, 'error')
+      } finally {
+        reviewInFlight.current = false
+        setReviewingChanges(false)
+      }
+    },
+    [onResultsChanged, toast],
+  )
 
   const pageCount = Math.max(1, Math.ceil(groups.length / PAGE_SIZE))
-  const requestedIndex = openResultKey ? groups.findIndex(group => group.seasons.some(season => season.key === openResultKey)) : -1
+  const requestedIndex = openResultKey
+    ? groups.findIndex(group => group.seasons.some(season => season.key === openResultKey))
+    : -1
   const currentPage = requestedIndex >= 0 ? Math.floor(requestedIndex / PAGE_SIZE) : Math.min(page, pageCount - 1)
-  const visibleGroups = useMemo(() => groups.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE), [groups, currentPage])
-  const statusTotals = useMemo(() => groups.reduce<Record<string, number>>((acc, group) => { acc[group.status] = (acc[group.status] || 0) + 1; return acc }, {}), [groups])
+  const visibleGroups = useMemo(
+    () => groups.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE),
+    [groups, currentPage],
+  )
+  const statusTotals = useMemo(
+    () =>
+      groups.reduce<Record<string, number>>((acc, group) => {
+        acc[group.status] = (acc[group.status] || 0) + 1
+        return acc
+      }, {}),
+    [groups],
+  )
   const shownUpgrades = useMemo(() => groups.filter(hasCardUpgrade).length, [groups])
   const shownReviews = useMemo(() => groups.filter(group => group.status === 'review').length, [groups])
   const sectionLabels = sort === 'recommended' && !showUnseen && Object.keys(statusTotals).length > 1
   const motionRevision = useMemo(() => JSON.stringify(visibleGroups.map(cardKey)), [visibleGroups])
   useLibraryMotion(gridRef, motionRevision, active && !loading)
   // Persist a history destination's page before Card clears the open request.
-  useLayoutEffect(() => { if (requestedIndex >= 0) setPage(Math.floor(requestedIndex / PAGE_SIZE)) }, [requestedIndex])
-  useEffect(() => { setPage(value => Math.min(value, pageCount - 1)) }, [pageCount])
+  useLayoutEffect(() => {
+    if (requestedIndex >= 0) setPage(Math.floor(requestedIndex / PAGE_SIZE))
+  }, [requestedIndex])
+  useEffect(() => {
+    setPage(value => Math.min(value, pageCount - 1))
+  }, [pageCount])
   const changePage = (next: number) => {
     setPage(Math.max(0, Math.min(next, pageCount - 1)))
     window.requestAnimationFrame(() => {
@@ -222,22 +291,26 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
     })
   }
 
-
   const totalDelta = useMemo(() => groups.reduce((sum, group) => sum + cardSizeDelta(group), 0), [groups])
   // The same rule bulk review applies, so the button is offered exactly when the review has something to show.
-  const upgradeSeasonCount = useMemo(() => new Set(results.filter((result) => upgradeParts(result).length > 0).map((result) => result.key)).size, [results])
-  const libraryConfigured = Boolean(
-    (config?.sonarr_url && config.sonarr_key_configured) ||
-    (config?.radarr_url && config.radarr_key_configured),
+  const upgradeSeasonCount = useMemo(
+    () => new Set(results.filter(result => upgradeParts(result).length > 0).map(result => result.key)).size,
+    [results],
   )
-  const autoCheckMinutes = status.next_check ? Math.max(0, Math.round((status.next_check - Date.now() / 1000) / 60)) : null
-  const autoCheckLabel = autoCheckMinutes == null ? null : (() => { const hours = Math.floor(autoCheckMinutes / 60); const minutes = autoCheckMinutes % 60; return hours > 0 ? (minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`) : `${minutes} min` })()
-  const scheduleDescription = config?.scan_schedule?.enabled
-    ? config.scan_schedule.mode === 'interval'
-      ? `Every ${config.scan_schedule.interval_minutes >= 60 ? `${Math.floor(config.scan_schedule.interval_minutes / 60)}h ${config.scan_schedule.interval_minutes % 60 ? `${config.scan_schedule.interval_minutes % 60}m` : ''}`.trim() : `${config.scan_schedule.interval_minutes}m`}`
-      : `${config.scan_schedule.mode === 'daily' ? 'Daily' : config.scan_schedule.weekdays.map((day) => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ')} at ${config.scan_schedule.times.join(', ')} ${config.scan_schedule.timezone}`
-    : null
-  const clearFilters = () => { setSearch(''); setArr(''); setStatusFilter(''); setCoverageFilter(''); setSort('recommended'); setShowHidden(false); setShowUnseen(false) }
+  const libraryConfigured = Boolean(
+    (config?.sonarr_url && config.sonarr_key_configured) || (config?.radarr_url && config.radarr_key_configured),
+  )
+  const autoCheckLabel = timeUntilCheck(status.next_check)
+  const scheduleDescription = describeSchedule(config?.scan_schedule)
+  const clearFilters = () => {
+    setSearch('')
+    setArr('')
+    setStatusFilter('')
+    setCoverageFilter('')
+    setSort('recommended')
+    setShowHidden(false)
+    setShowUnseen(false)
+  }
   const coverageFilters = [
     { value: '', label: 'Any coverage' },
     { value: 'partial', label: 'Partially on SeaDex' },
@@ -250,164 +323,564 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
     { value: 'review', label: 'Match needs review', count: counts.review, tone: 'text-warn', icon: 'search' },
     { value: 'episodes', label: 'Episodes missing', count: counts.episodes, tone: 'text-warn', icon: 'alert' },
   ]
-  const activeOptions = [arr, coverageFilter ? coverageFilters.find(filter => filter.value === coverageFilter)?.label : '', showHidden ? 'Hidden only' : '', showUnseen ? '' : sort === 'title' ? 'Title A–Z' : sort === 'size' ? 'Largest size change' : sort === 'changed' ? 'Latest release change' : ''].filter(Boolean)
-  const activeFilters = [search.trim() ? `Search: ${search.trim()}` : '', ...activeOptions, statusFilter ? statusFilters.find(filter => filter.value === statusFilter)?.label : '', showUnseen ? 'Unseen changes' : ''].filter(Boolean)
-  const openBulkReview = (action: 'start' | 'cancel') => {
-    onBulkReviewReset()
-    setBulkScope('filtered')
-    setBulkReview({ filtered: groups.flatMap(group => group.seasons), all: [...results], description: activeFilters.join(' · ') || 'Current library results' })
-    setBulkJob(null)
-    setBulkConfirm(action)
-  }
-  const scopeControl = <BulkScopeSelector value={bulkScope} onChange={setBulkScope} filteredCount={reviewCounts.filtered} allCount={reviewCounts.all} description={bulkReview?.description || 'Current library results'} disabled={bulkBusy !== null || Boolean(bulkJob)}/>
-
-  const describeBulkFailures = (failures: DownloadUnitFailure[]): string => {
-    const shown = failures.slice(0, 3).map((failure) => `${failure.label} — ${failure.error}`)
-    return shown.join('; ') + (failures.length > 3 ? `; and ${failures.length - 3} more` : '')
-  }
-
-  const handleBulkStart = async (plan_id: string, acknowledge: { whole_source?: boolean; disk_space?: boolean }) => {
-    if (bulkInFlight.current || bulkOperationActive) return
-    bulkInFlight.current = true
-    setBulkBusy('start')
-    try {
-      onBulkOperationChange({ action: 'start', phase: 'running', settled: 0, total: 0, added: 0, failed: 0, message: 'Starting downloads…' })
-      const { job_id } = await api.startDownloadJob(plan_id, acknowledge)
-      const job = await api.followJob(job_id, current => {
-        setBulkJob(current)
-        const settled = current.added.length + current.existing.length + current.failures.length
-        onBulkOperationChange({
-          action: 'start',
-          phase: 'running',
-          settled,
-          total: settled + current.pending.length,
-          added: current.added.length,
-          failed: current.failures.length,
-          jobId: job_id,
-          message: `${current.added.length} sent · ${current.existing.length} already queued · ${current.pending.length} pending`,
-        })
-      })
-      const result = api.jobResult(job)
-      const failures = result.failures
-      if (result.count > 0 && !failures.length) toast.show(`Sent ${result.count} download${result.count === 1 ? '' : 's'}`, 'success')
-      else if (result.count > 0) toast.show(`Sent ${result.count} download${result.count === 1 ? '' : 's'}; ${failures.length} failed: ${describeBulkFailures(failures)}`, 'info')
-      else if (!failures.length) toast.show('Selected releases are already queued or no longer upgradable', 'info')
-      else toast.show(`${failures.length} download${failures.length === 1 ? '' : 's'} could not be added: ${describeBulkFailures(failures)}`, 'error')
-      const settled = job.added.length + job.existing.length + failures.length
-      onBulkOperationChange({
-        action: 'start',
-        phase: failures.length ? 'warning' : 'success',
-        settled,
-        total: settled,
-        added: job.added.length,
-        failed: failures.length,
-        failures,
-        jobId: job.id || job_id,
-        message: `${job.added.length} sent · ${job.existing.length} already queued${failures.length ? ` · ${failures.length} failed` : ''}`,
-      })
-      api.invalidateDownloadProgress()
-    } catch (error: any) {
-      toast.show(`Bulk download failed: ${error.message}`, 'error')
-      onBulkOperationChange({ action: 'start', phase: 'error', settled: 0, total: 0, added: 0, failed: 0, message: error.message })
-    } finally {
-      bulkInFlight.current = false
-      setBulkBusy(null)
-    }
-  }
-
-  const handleBulkCancel = async (record_ids: string[], deleteFiles: boolean) => {
-    if (bulkInFlight.current || bulkOperationActive) return
-    bulkInFlight.current = true
-    setBulkBusy('cancel')
-    try {
-      onBulkOperationChange({ action: 'cancel', phase: 'running', settled: 0, total: record_ids.length, added: 0, failed: 0, message: 'Removing selected incomplete downloads…' })
-      const result = await api.cancelDownloads(record_ids, deleteFiles)
-      const failed = result.failures.length
-      toast.show(result.removed.length
-        ? `Cancelled ${result.removed.length} download${result.removed.length === 1 ? '' : 's'}; ${deleteFiles ? 'downloaded files were deleted' : 'files were kept'}${failed ? `; ${failed} could not be removed` : ''}`
-        : 'No downloads were removed', failed ? 'info' : 'success')
-      onBulkOperationChange({ action: 'cancel', phase: failed ? 'warning' : 'success', settled: result.removed.length + failed, total: record_ids.length, added: 0, failed, failures: result.failures.map(failure => ({ label: failure.label, error: failure.error })), message: result.removed.length ? `Removed ${result.removed.length} download${result.removed.length === 1 ? '' : 's'}; ${deleteFiles ? 'files deleted' : 'files preserved'}` : 'No downloads were found' })
-      api.invalidateDownloadProgress()
-      if (!failed) setBulkConfirm(null)
-    } catch (error: any) {
-      toast.show(`Bulk cancel failed: ${error.message}`, 'error')
-      onBulkOperationChange({ action: 'cancel', phase: 'error', settled: 0, total: record_ids.length, added: 0, failed: record_ids.length, message: error.message })
-    } finally {
-      bulkInFlight.current = false
-      setBulkBusy(null)
-    }
-  }
+  const activeOptions = [
+    arr,
+    coverageFilter ? coverageFilters.find(filter => filter.value === coverageFilter)?.label : '',
+    showHidden ? 'Hidden only' : '',
+    showUnseen
+      ? ''
+      : sort === 'title'
+        ? 'Title A–Z'
+        : sort === 'size'
+          ? 'Largest size change'
+          : sort === 'changed'
+            ? 'Latest release change'
+            : '',
+  ].filter(Boolean)
+  const activeFilters = [
+    search.trim() ? `Search: ${search.trim()}` : '',
+    ...activeOptions,
+    statusFilter ? statusFilters.find(filter => filter.value === statusFilter)?.label : '',
+    showUnseen ? 'Unseen changes' : '',
+  ].filter(Boolean)
+  const openBulkReview = (action: 'start' | 'cancel') =>
+    bulk.open(action, {
+      filtered: groups.flatMap(group => group.seasons),
+      all: [...results],
+      description: activeFilters.join(' · ') || 'Current library results',
+    })
+  const scopeControl = (
+    <BulkScopeSelector
+      value={bulk.scope}
+      onChange={bulk.setScope}
+      filteredCount={bulk.reviewCounts.filtered}
+      allCount={bulk.reviewCounts.all}
+      description={bulk.review?.description || 'Current library results'}
+      disabled={bulk.busy !== null || Boolean(bulk.job)}
+    />
+  )
 
   return (
     <section>
       <header className="app-page-header mb-5 flex flex-wrap items-start justify-between gap-4 max-[600px]:mb-4 max-[600px]:gap-3">
-        <div><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted max-[600px]:hidden"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${displayDateTime(lastRun)}` : 'No completed scan'}</span>{autoCheckLabel !== null && <span title={scheduleDescription || undefined}>{scheduleDescription} · next in ~{autoCheckLabel}</span>}{status.webhook_scan.queued && <span className="text-accent-bright">{status.webhook_scan.sources.length ? 'Webhook scan queued' : 'Library check queued'}</span>}</div></div>
+        <div>
+          <h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1>
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted max-[600px]:hidden">
+            <span className="inline-flex items-center gap-1.5">
+              <Icon name="clock" size={15} />
+              {lastRun ? `Last scan ${displayDateTime(lastRun)}` : 'No completed scan'}
+            </span>
+            {autoCheckLabel !== null && (
+              <span title={scheduleDescription || undefined}>
+                {scheduleDescription} · next in ~{autoCheckLabel}
+              </span>
+            )}
+            {status.webhook_scan.queued && (
+              <span className="text-accent-bright">
+                {status.webhook_scan.sources.length ? 'Webhook scan queued' : 'Library check queued'}
+              </span>
+            )}
+          </div>
+        </div>
         <div className="library-actions flex flex-wrap items-center gap-2 max-[600px]:w-full">
-          <button type="button" className={cx(buttonBase, 'library-scan-button justify-center wrap-anywhere max-[600px]:text-xs')} onClick={onScan} disabled={!libraryConfigured || status.running || bulkBusy !== null || bulkOperationActive}>{status.running ? <span className="size-4 animate-spin rounded-full border-2 border-current/30 border-t-current"/> : <Icon name="play" size={17}/>}<span>{status.running ? 'Scanning…' : 'Scan library'}</span></button>
-          <button type="button" className={cx(buttonBase, 'library-bulk-button justify-center wrap-anywhere border-line bg-panel text-ink hover:bg-panel-raised max-[600px]:text-xs')} onClick={() => openBulkReview('start')} disabled={status.running || bulkBusy !== null || bulkOperationActive || upgradeSeasonCount === 0}><Icon name="download" size={17}/><span>Bulk download</span></button>
-          <details ref={moreActionsRef} className="library-more-actions relative shrink-0" onKeyDown={event => { if (event.key === 'Escape') { event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); event.stopPropagation() } }}><summary className="touch-target grid size-11 cursor-pointer list-none place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink"><Icon name="more" size={18}/><span className="sr-only">More library actions</span></summary><div className="absolute top-full right-0 z-30 mt-2 min-w-44 rounded-control bg-panel-raised p-2 shadow-card"><button type="button" className="touch-target inline-flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm text-bad hover:bg-bad/10 disabled:cursor-not-allowed disabled:opacity-50" onClick={event => { openBulkReview('cancel'); event.currentTarget.closest('details')?.removeAttribute('open') }} disabled={status.running || bulkBusy !== null || bulkOperationActive}><Icon name="trash" size={17}/>Bulk cancel</button></div></details>
+          <button
+            type="button"
+            className={cx(buttonBase, 'library-scan-button justify-center wrap-anywhere max-[600px]:text-xs')}
+            onClick={onScan}
+            disabled={!libraryConfigured || status.running || bulk.busy !== null || bulkOperationActive}
+          >
+            {status.running ? (
+              <span className="size-4 animate-spin rounded-full border-2 border-current/30 border-t-current" />
+            ) : (
+              <Icon name="play" size={17} />
+            )}
+            <span>{status.running ? 'Scanning…' : 'Scan library'}</span>
+          </button>
+          <button
+            type="button"
+            className={cx(
+              buttonBase,
+              'library-bulk-button justify-center wrap-anywhere border-line bg-panel text-ink hover:bg-panel-raised max-[600px]:text-xs',
+            )}
+            onClick={() => openBulkReview('start')}
+            disabled={status.running || bulk.busy !== null || bulkOperationActive || upgradeSeasonCount === 0}
+          >
+            <Icon name="download" size={17} />
+            <span>Bulk download</span>
+          </button>
+          <details
+            ref={moreActionsRef}
+            className="library-more-actions relative shrink-0"
+            onKeyDown={event => {
+              if (event.key === 'Escape') {
+                event.currentTarget.open = false
+                event.currentTarget.querySelector('summary')?.focus()
+                event.stopPropagation()
+              }
+            }}
+          >
+            <summary className="touch-target grid size-11 cursor-pointer list-none place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink">
+              <Icon name="more" size={18} />
+              <span className="sr-only">More library actions</span>
+            </summary>
+            <div className="absolute top-full right-0 z-30 mt-2 min-w-44 rounded-control bg-panel-raised p-2 shadow-card">
+              <button
+                type="button"
+                className="touch-target inline-flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm text-bad hover:bg-bad/10 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={event => {
+                  openBulkReview('cancel')
+                  event.currentTarget.closest('details')?.removeAttribute('open')
+                }}
+                disabled={status.running || bulk.busy !== null || bulkOperationActive}
+              >
+                <Icon name="trash" size={17} />
+                Bulk cancel
+              </button>
+            </div>
+          </details>
         </div>
       </header>
 
-      {loadError && <div className="mb-5 flex flex-wrap items-center gap-2.5 rounded-xl border border-bad/30 bg-bad/8 px-4 py-3 text-sm text-bad" role="alert"><Icon name="alert" size={18} className="shrink-0"/><span className="min-w-0 flex-1">Could not load scanned results: {loadError}</span><button type="button" className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')} onClick={onReloadResults}><Icon name="refresh" size={15}/>Retry</button><button type="button" className={cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')} onClick={onOpenConfig}>Open Config</button></div>}
+      {loadError && (
+        <div
+          className="mb-5 flex flex-wrap items-center gap-2.5 rounded-xl border border-bad/30 bg-bad/8 px-4 py-3 text-sm text-bad"
+          role="alert"
+        >
+          <Icon name="alert" size={18} className="shrink-0" />
+          <span className="min-w-0 flex-1">Could not load scanned results: {loadError}</span>
+          <button
+            type="button"
+            className={cx(buttonBase, 'border-bad/35 bg-bad/10 text-bad hover:bg-bad/18')}
+            onClick={onReloadResults}
+          >
+            <Icon name="refresh" size={15} />
+            Retry
+          </button>
+          <button
+            type="button"
+            className={cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')}
+            onClick={onOpenConfig}
+          >
+            Open Config
+          </button>
+        </div>
+      )}
 
-
-      <div className={cx('library-toolbar library-toolbar-refined z-20 mb-5 max-[600px]:mb-3 rounded-2xl border border-line', operationsVisible ? 'relative' : 'sticky top-0')}>
+      <div
+        className={cx(
+          'library-toolbar library-toolbar-refined z-20 mb-5 max-[600px]:mb-3 rounded-2xl border border-line',
+          operationsVisible ? 'relative' : 'sticky top-0',
+        )}
+      >
         <div className="toolbar-controls flex flex-wrap items-center gap-2.5">
-          <label className="relative min-w-0 flex-1 max-[600px]:basis-full"><span className="sr-only">Search anime</span><Icon name="search" size={17} className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-muted-dim"/><input type="search" className={cx(control, 'w-full pl-10')} placeholder="Search titles and release groups" value={search} onChange={(event) => setSearch(event.target.value)}/></label>
-          <select aria-label="Filter by status" className={cx(control, 'hidden min-w-0 flex-1 max-[600px]:block')} value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>{statusFilters.map(filter => <option key={filter.value} value={filter.value}>{filter.label} ({loading ? '–' : filter.count})</option>)}</select>
-          <button type="button" className={cx(buttonBase, 'justify-center border-line bg-panel px-3 text-xs text-ink max-[600px]:order-2 min-[601px]:hidden')} aria-expanded={optionsOpen} aria-controls="library-options" onClick={() => setOptionsOpen(value => !value)}><Icon name="filter" size={16}/><span>Filters & sort{activeOptions.length > 0 && ` (${activeOptions.length})`}</span></button>
-          <div id="library-options" className={cx('w-full min-w-0 flex-wrap items-center gap-2.5 [&>select]:min-w-0 [&>select]:max-w-full min-[601px]:contents', optionsOpen ? 'flex' : 'hidden', 'max-[600px]:order-3')}>
-          {autoCheckLabel !== null && <p className="m-0 w-full text-xs text-muted min-[601px]:hidden">{scheduleDescription} · next in ~{autoCheckLabel}</p>}
-          <select aria-label="Source" className={cx(control, 'min-w-36 shrink-0 cursor-pointer')} value={arr} onChange={(event) => setArr(event.target.value)}><option value="">All sources</option>{sources.map(source => <option key={source} value={source}>{source}</option>)}</select>
-          <select aria-label="SeaDex coverage" className={cx(control, 'min-w-44 shrink-0 cursor-pointer')} value={coverageFilter} onChange={event => setCoverageFilter(event.target.value)}>{coverageFilters.map(filter => <option key={filter.value} value={filter.value}>{filter.label}</option>)}</select>
-          <select aria-label="Sort library" title={showUnseen ? 'Sorted by latest changes while Unseen changes is on' : undefined} className={cx(control, 'min-w-48 shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-60')} value={showUnseen ? 'changed' : sort} disabled={showUnseen} onChange={(event) => setSort(event.target.value)}><option value="recommended">Recommended order</option><option value="title">Title A–Z</option><option value="size">Largest size change</option><option value="changed">Latest release change</option></select>
-          <button type="button" className={cx('touch-target inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors', showHidden ? 'bg-warn/10 text-warn' : 'text-muted hover:bg-panel hover:text-ink')} aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}><Icon name="eye-off" size={17}/>{showHidden ? 'Hidden only' : 'Show hidden only'}</button>
+          <label className="relative min-w-0 flex-1 max-[600px]:basis-full">
+            <span className="sr-only">Search anime</span>
+            <Icon
+              name="search"
+              size={17}
+              className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-muted-dim"
+            />
+            <input
+              type="search"
+              className={cx(control, 'w-full pl-10')}
+              placeholder="Search titles and release groups"
+              value={search}
+              onChange={event => setSearch(event.target.value)}
+            />
+          </label>
+          <select
+            aria-label="Filter by status"
+            className={cx(control, 'hidden min-w-0 flex-1 max-[600px]:block')}
+            value={statusFilter}
+            onChange={event => setStatusFilter(event.target.value)}
+          >
+            {statusFilters.map(filter => (
+              <option key={filter.value} value={filter.value}>
+                {filter.label} ({loading ? '–' : filter.count})
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className={cx(
+              buttonBase,
+              'justify-center border-line bg-panel px-3 text-xs text-ink max-[600px]:order-2 min-[601px]:hidden',
+            )}
+            aria-expanded={optionsOpen}
+            aria-controls="library-options"
+            onClick={() => setOptionsOpen(value => !value)}
+          >
+            <Icon name="filter" size={16} />
+            <span>Filters & sort{activeOptions.length > 0 && ` (${activeOptions.length})`}</span>
+          </button>
+          <div
+            id="library-options"
+            className={cx(
+              'w-full min-w-0 flex-wrap items-center gap-2.5 [&>select]:min-w-0 [&>select]:max-w-full min-[601px]:contents',
+              optionsOpen ? 'flex' : 'hidden',
+              'max-[600px]:order-3',
+            )}
+          >
+            {autoCheckLabel !== null && (
+              <p className="m-0 w-full text-xs text-muted min-[601px]:hidden">
+                {scheduleDescription} · next in ~{autoCheckLabel}
+              </p>
+            )}
+            <select
+              aria-label="Source"
+              className={cx(control, 'min-w-36 shrink-0 cursor-pointer')}
+              value={arr}
+              onChange={event => setArr(event.target.value)}
+            >
+              <option value="">All sources</option>
+              {sources.map(source => (
+                <option key={source} value={source}>
+                  {source}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="SeaDex coverage"
+              className={cx(control, 'min-w-44 shrink-0 cursor-pointer')}
+              value={coverageFilter}
+              onChange={event => setCoverageFilter(event.target.value)}
+            >
+              {coverageFilters.map(filter => (
+                <option key={filter.value} value={filter.value}>
+                  {filter.label}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Sort library"
+              title={showUnseen ? 'Sorted by latest changes while Unseen changes is on' : undefined}
+              className={cx(
+                control,
+                'min-w-48 shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-60',
+              )}
+              value={showUnseen ? 'changed' : sort}
+              disabled={showUnseen}
+              onChange={event => setSort(event.target.value)}
+            >
+              <option value="recommended">Recommended order</option>
+              <option value="title">Title A–Z</option>
+              <option value="size">Largest size change</option>
+              <option value="changed">Latest release change</option>
+            </select>
+            <button
+              type="button"
+              className={cx(
+                'touch-target inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
+                showHidden ? 'bg-warn/10 text-warn' : 'text-muted hover:bg-panel hover:text-ink',
+              )}
+              aria-pressed={showHidden}
+              onClick={() => setShowHidden(value => !value)}
+            >
+              <Icon name="eye-off" size={17} />
+              {showHidden ? 'Hidden only' : 'Show hidden only'}
+            </button>
           </div>
-        <div className="contents min-[601px]:flex min-[601px]:basis-full min-[601px]:flex-wrap min-[601px]:items-center min-[601px]:gap-1" role="group" aria-label="Filter by status">
-          {statusFilters.map((filter) => <button key={filter.value} type="button" className={cx('toolbar-status-filter touch-target hidden cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-colors min-[601px]:inline-flex', statusFilter === filter.value ? 'bg-accent/14 text-ink' : 'text-muted hover:bg-panel hover:text-ink')} aria-pressed={statusFilter === filter.value} onClick={() => setStatusFilter(filter.value)}><Icon name={filter.icon} size={15} className={cx('shrink-0', filter.tone)}/><span>{filter.label}</span><span className="toolbar-status-count text-xs tabular-nums text-muted">{loading ? '–' : filter.count}</span></button>)}
-          
-          <button ref={unseenFilterRef} type="button" className={cx('toolbar-status-filter touch-target inline-flex max-[600px]:order-1 max-[600px]:border-line max-[600px]:bg-panel max-[600px]:px-4 cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-colors', showUnseen ? 'bg-accent/14 text-ink' : 'text-muted hover:bg-panel hover:text-ink')} aria-label={`Unseen changes (${unseenGroups.length} ${unseenGroups.length === 1 ? 'title' : 'titles'})`} aria-pressed={showUnseen} onClick={() => setShowUnseen(value => !value)}><Icon name="clock" size={15} className="shrink-0 text-accent-bright"/><span className="max-[600px]:sr-only">Unseen changes</span><span className="toolbar-status-count text-xs tabular-nums text-muted">{loading ? '–' : unseenGroups.length}</span></button>
-          {activeFilters.length > 0 && <button type="button" className="touch-target ml-auto hidden cursor-pointer rounded-lg px-3 py-2 text-xs font-semibold text-accent-bright hover:bg-accent/10 min-[601px]:inline-flex" onClick={clearFilters}>Clear filters</button>}
+          <div
+            className="contents min-[601px]:flex min-[601px]:basis-full min-[601px]:flex-wrap min-[601px]:items-center min-[601px]:gap-1"
+            role="group"
+            aria-label="Filter by status"
+          >
+            {statusFilters.map(filter => (
+              <button
+                key={filter.value}
+                type="button"
+                className={cx(
+                  'toolbar-status-filter touch-target hidden cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-colors min-[601px]:inline-flex',
+                  statusFilter === filter.value ? 'bg-accent/14 text-ink' : 'text-muted hover:bg-panel hover:text-ink',
+                )}
+                aria-pressed={statusFilter === filter.value}
+                onClick={() => setStatusFilter(filter.value)}
+              >
+                <Icon name={filter.icon} size={15} className={cx('shrink-0', filter.tone)} />
+                <span>{filter.label}</span>
+                <span className="toolbar-status-count text-xs tabular-nums text-muted">
+                  {loading ? '–' : filter.count}
+                </span>
+              </button>
+            ))}
+
+            <button
+              ref={unseenFilterRef}
+              type="button"
+              className={cx(
+                'toolbar-status-filter touch-target inline-flex max-[600px]:order-1 max-[600px]:border-line max-[600px]:bg-panel max-[600px]:px-4 cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-colors',
+                showUnseen ? 'bg-accent/14 text-ink' : 'text-muted hover:bg-panel hover:text-ink',
+              )}
+              aria-label={`Unseen changes (${unseenGroups.length} ${unseenGroups.length === 1 ? 'title' : 'titles'})`}
+              aria-pressed={showUnseen}
+              onClick={() => setShowUnseen(value => !value)}
+            >
+              <Icon name="clock" size={15} className="shrink-0 text-accent-bright" />
+              <span className="max-[600px]:sr-only">Unseen changes</span>
+              <span className="toolbar-status-count text-xs tabular-nums text-muted">
+                {loading ? '–' : unseenGroups.length}
+              </span>
+            </button>
+            {activeFilters.length > 0 && (
+              <button
+                type="button"
+                className="touch-target ml-auto hidden cursor-pointer rounded-lg px-3 py-2 text-xs font-semibold text-accent-bright hover:bg-accent/10 min-[601px]:inline-flex"
+                onClick={clearFilters}
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
         </div>
-        </div>
-        {showUnseen && <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line pt-2">
-          <span className="min-w-0 flex-1 basis-48 text-xs text-muted">Latest changes first · stays unseen until reviewed</span>
-          {unseenGroups.length > 0 && <button type="button" className="touch-target ml-auto cursor-pointer rounded-lg px-3 py-2 text-xs font-semibold text-accent-bright hover:bg-accent/10 disabled:cursor-wait disabled:opacity-60" title="Mark all changes matching the current library filters reviewed, across all pages" disabled={reviewingChanges || loading} onClick={() => void handleReviewChanges(unseenGroups.flatMap(group => groupReleaseChanges(group).map(({ change }) => change.id)))}>{reviewingChanges ? 'Marking reviewed…' : 'Mark all reviewed'}</button>}
-        </div>}
-        {statusFilter === 'upgrade' && <p className="mt-2 mb-0 text-xs text-muted">Includes partially covered titles with available upgrades.</p>}
-        <p className="sr-only" role="status" aria-atomic="true">{groups.length} matching titles{activeFilters.length ? ` · ${activeFilters.join(' · ')}` : ''}</p>
-        {activeFilters.length > 0 && <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line pt-2 text-xs text-muted min-[601px]:hidden" aria-label="Active library filters"><span className="min-w-0 flex-1 wrap-anywhere">{[search.trim() ? `Search: ${search.trim()}` : '', ...activeOptions].filter(Boolean).join(' · ') || 'Filtered'}</span><button type="button" className="touch-target cursor-pointer rounded-md px-2 py-1 font-semibold text-accent-bright hover:underline" onClick={clearFilters}>Clear filters</button></div>}
+        {showUnseen && (
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line pt-2">
+            <span className="min-w-0 flex-1 basis-48 text-xs text-muted">
+              Latest changes first · stays unseen until reviewed
+            </span>
+            {unseenGroups.length > 0 && (
+              <button
+                type="button"
+                className="touch-target ml-auto cursor-pointer rounded-lg px-3 py-2 text-xs font-semibold text-accent-bright hover:bg-accent/10 disabled:cursor-wait disabled:opacity-60"
+                title="Mark all changes matching the current library filters reviewed, across all pages"
+                disabled={reviewingChanges || loading}
+                onClick={() =>
+                  void handleReviewChanges(
+                    unseenGroups.flatMap(group => groupReleaseChanges(group).map(({ change }) => change.id)),
+                  )
+                }
+              >
+                {reviewingChanges ? 'Marking reviewed…' : 'Mark all reviewed'}
+              </button>
+            )}
+          </div>
+        )}
+        {statusFilter === 'upgrade' && (
+          <p className="mt-2 mb-0 text-xs text-muted">Includes partially covered titles with available upgrades.</p>
+        )}
+        <p className="sr-only" role="status" aria-atomic="true">
+          {groups.length} matching titles{activeFilters.length ? ` · ${activeFilters.join(' · ')}` : ''}
+        </p>
+        {activeFilters.length > 0 && (
+          <div
+            className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line pt-2 text-xs text-muted min-[601px]:hidden"
+            aria-label="Active library filters"
+          >
+            <span className="min-w-0 flex-1 wrap-anywhere">
+              {[search.trim() ? `Search: ${search.trim()}` : '', ...activeOptions].filter(Boolean).join(' · ') ||
+                'Filtered'}
+            </span>
+            <button
+              type="button"
+              className="touch-target cursor-pointer rounded-md px-2 py-1 font-semibold text-accent-bright hover:underline"
+              onClick={clearFilters}
+            >
+              Clear filters
+            </button>
+          </div>
+        )}
       </div>
 
-
-      {!loading && results.length > 0 && status.settings_changed && !status.running && <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-warn/30 bg-warn/8 px-4 py-3 text-sm text-ink" role="status"><Icon name="info" size={18} className="shrink-0 text-warn"/><span className="min-w-0 flex-1 basis-56">Library scope or release preferences changed since the last scan. These results still reflect the earlier settings.</span><button type="button" className={cx(buttonBase, 'border-warn/35 bg-warn/10 text-ink hover:bg-warn/18')} onClick={onScan} disabled={!libraryConfigured || bulkBusy !== null || bulkOperationActive}><Icon name="play" size={16}/>Scan library</button></div>}
-      {!loading && results.length > 0 && <p className="library-summary" aria-label="Library summary">{shownUpgrades > 0 ? <span><strong>{shownUpgrades}</strong> {shownUpgrades === 1 ? 'title' : 'titles'} can be upgraded{totalDelta > 0 && <> · <LibrarySizeChange delta={totalDelta} note="if all are downloaded"/></>}</span> : <span>No upgrades available</span>}{shownReviews > 0 && <span className="max-[600px]:hidden"><strong>{shownReviews}</strong> {shownReviews === 1 ? 'match needs' : 'matches need'} review</span>}<span className="library-summary-count">{groups.length} shown</span><span className="library-scan-freshness min-[601px]:hidden">{lastRun ? `Last scan ${displayDateTime(lastRun)}` : 'No completed scan'}</span></p>}
-      {(loading || (status.running && results.length === 0)) && <SkeletonCards/>}
-      {!loading && results.length > 0 && groups.length > 0 && <div ref={resultsRef} className="library-results" tabIndex={-1} role="region" aria-label="Library results">
-        {pageCount > 1 && <nav className="mb-4 flex flex-wrap items-center justify-between gap-2 max-[600px]:justify-end" aria-label="Library pages"><span className="text-xs text-muted max-[600px]:hidden" role="status">{(currentPage * PAGE_SIZE + 1).toLocaleString()}–{Math.min((currentPage + 1) * PAGE_SIZE, groups.length).toLocaleString()} of {groups.length.toLocaleString()} titles</span><div className="flex flex-wrap items-center gap-2"><button type="button" className={cx(buttonBase, 'touch-target border-line bg-panel text-xs text-ink')} disabled={currentPage === 0} onClick={() => changePage(currentPage - 1)}><Icon name="chevron-left" size={15}/><span className="max-[600px]:sr-only">Previous</span></button><select className={cx(control, 'text-xs')} aria-label="Library page" value={currentPage} onChange={event => changePage(Number(event.target.value))}>{Array.from({ length: pageCount }, (_, index) => <option key={index} value={index}>Page {index + 1} of {pageCount}</option>)}</select><button type="button" className={cx(buttonBase, 'touch-target border-line bg-panel text-xs text-ink')} disabled={currentPage >= pageCount - 1} onClick={() => changePage(currentPage + 1)}><span className="max-[600px]:sr-only">Next</span><Icon name="chevron-right" size={15}/></button></div></nav>}
-        <div ref={gridRef} className="library-grid grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]">{visibleGroups.map((group, index) => <Fragment key={cardKey(group)}>{sectionLabels && (index === 0 || visibleGroups[index - 1].status !== group.status) && <h2 className="library-section-label" data-status={group.status}>{STATUS_LABEL[group.status]}<span>{statusTotals[group.status]}</span></h2>}<Card active={active} openRequested={group.seasons.some(season => season.key === openResultKey)} onOpened={onResultOpened} group={group} index={index} config={config} hidden={hiddenKeys.has(cardKey(group))} onToggle={toggleHidden} onRulesChanged={onResultsChanged} onRescan={onScan} reviewingChanges={reviewingChanges} onReviewChanges={handleReviewChanges}/></Fragment>)}</div>
-      </div>}
-      {!loading && !loadError && results.length === 0 && !status.running && <div className="rounded-2xl border border-dashed border-line-strong bg-panel/45 px-6 py-16 text-center"><span className="mx-auto mb-4 grid size-14 place-items-center rounded-2xl bg-accent/10 text-accent-bright"><Icon name="library" size={26}/></span><h2 className="mb-2 text-lg font-bold">{libraryConfigured ? 'Your library is ready to be scanned' : 'Connect your library first'}</h2><p className="mx-auto mb-5 max-w-md text-sm text-muted">{libraryConfigured ? 'Compare your Sonarr and Radarr collection with the best releases available on SeaDex.' : 'Configure Sonarr or Radarr before running your first scan.'}</p><div className="flex flex-wrap justify-center gap-2"><button type="button" className={libraryConfigured ? buttonPrimary : cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')} onClick={onScan} disabled={!libraryConfigured}><Icon name="play" size={17}/>Scan library</button><button type="button" className={libraryConfigured ? cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink') : buttonPrimary} onClick={onOpenConfig}><Icon name="settings" size={17}/>Open Config</button></div></div>}
-      {!loading && results.length > 0 && groups.length === 0 && <div className="rounded-2xl border border-dashed border-line-strong px-4 py-14 text-center"><Icon name={showUnseen ? 'check' : 'filter'} size={26} className="mx-auto mb-3 text-muted-dim"/><h2 className="mb-1 text-lg font-bold">{showUnseen ? 'No unseen changes' : 'No matching titles'}</h2><p className="mb-4 text-sm text-muted">{showUnseen ? 'New release changes will appear here after future scans. Other library filters still apply.' : 'Try changing or clearing the active filters.'}</p><button type="button" className="touch-target cursor-pointer text-sm font-bold text-accent-bright" onClick={clearFilters}>Clear filters</button></div>}
+      {!loading && results.length > 0 && status.settings_changed && !status.running && (
+        <div
+          className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-warn/30 bg-warn/8 px-4 py-3 text-sm text-ink"
+          role="status"
+        >
+          <Icon name="info" size={18} className="shrink-0 text-warn" />
+          <span className="min-w-0 flex-1 basis-56">
+            Library scope or release preferences changed since the last scan. These results still reflect the earlier
+            settings.
+          </span>
+          <button
+            type="button"
+            className={cx(buttonBase, 'border-warn/35 bg-warn/10 text-ink hover:bg-warn/18')}
+            onClick={onScan}
+            disabled={!libraryConfigured || bulk.busy !== null || bulkOperationActive}
+          >
+            <Icon name="play" size={16} />
+            Scan library
+          </button>
+        </div>
+      )}
+      {!loading && results.length > 0 && (
+        <p className="library-summary" aria-label="Library summary">
+          {shownUpgrades > 0 ? (
+            <span>
+              <strong>{shownUpgrades}</strong> {shownUpgrades === 1 ? 'title' : 'titles'} can be upgraded
+              {totalDelta > 0 && (
+                <>
+                  {' '}
+                  · <LibrarySizeChange delta={totalDelta} note="if all are downloaded" />
+                </>
+              )}
+            </span>
+          ) : (
+            <span>No upgrades available</span>
+          )}
+          {shownReviews > 0 && (
+            <span className="max-[600px]:hidden">
+              <strong>{shownReviews}</strong> {shownReviews === 1 ? 'match needs' : 'matches need'} review
+            </span>
+          )}
+          <span className="library-summary-count">{groups.length} shown</span>
+          <span className="library-scan-freshness min-[601px]:hidden">
+            {lastRun ? `Last scan ${displayDateTime(lastRun)}` : 'No completed scan'}
+          </span>
+        </p>
+      )}
+      {(loading || (status.running && results.length === 0)) && <SkeletonCards />}
+      {!loading && results.length > 0 && groups.length > 0 && (
+        <div ref={resultsRef} className="library-results" tabIndex={-1} role="region" aria-label="Library results">
+          {pageCount > 1 && (
+            <nav
+              className="mb-4 flex flex-wrap items-center justify-between gap-2 max-[600px]:justify-end"
+              aria-label="Library pages"
+            >
+              <span className="text-xs text-muted max-[600px]:hidden" role="status">
+                {(currentPage * PAGE_SIZE + 1).toLocaleString()}–
+                {Math.min((currentPage + 1) * PAGE_SIZE, groups.length).toLocaleString()} of{' '}
+                {groups.length.toLocaleString()} titles
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className={cx(buttonBase, 'touch-target border-line bg-panel text-xs text-ink')}
+                  disabled={currentPage === 0}
+                  onClick={() => changePage(currentPage - 1)}
+                >
+                  <Icon name="chevron-left" size={15} />
+                  <span className="max-[600px]:sr-only">Previous</span>
+                </button>
+                <select
+                  className={cx(control, 'text-xs')}
+                  aria-label="Library page"
+                  value={currentPage}
+                  onChange={event => changePage(Number(event.target.value))}
+                >
+                  {Array.from({ length: pageCount }, (_, index) => (
+                    <option key={index} value={index}>
+                      Page {index + 1} of {pageCount}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className={cx(buttonBase, 'touch-target border-line bg-panel text-xs text-ink')}
+                  disabled={currentPage >= pageCount - 1}
+                  onClick={() => changePage(currentPage + 1)}
+                >
+                  <span className="max-[600px]:sr-only">Next</span>
+                  <Icon name="chevron-right" size={15} />
+                </button>
+              </div>
+            </nav>
+          )}
+          <div
+            ref={gridRef}
+            className="library-grid grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))]"
+          >
+            {visibleGroups.map((group, index) => (
+              <Fragment key={cardKey(group)}>
+                {sectionLabels && (index === 0 || visibleGroups[index - 1].status !== group.status) && (
+                  <h2 className="library-section-label" data-status={group.status}>
+                    {STATUS_LABEL[group.status]}
+                    <span>{statusTotals[group.status]}</span>
+                  </h2>
+                )}
+                <Card
+                  active={active}
+                  openRequested={group.seasons.some(season => season.key === openResultKey)}
+                  onOpened={onResultOpened}
+                  group={group}
+                  index={index}
+                  config={config}
+                  hidden={hiddenKeys.has(cardKey(group))}
+                  onToggle={toggleHidden}
+                  onRulesChanged={onResultsChanged}
+                  onRescan={onScan}
+                  reviewingChanges={reviewingChanges}
+                  onReviewChanges={handleReviewChanges}
+                />
+              </Fragment>
+            ))}
+          </div>
+        </div>
+      )}
+      {!loading && !loadError && results.length === 0 && !status.running && (
+        <div className="rounded-2xl border border-dashed border-line-strong bg-panel/45 px-6 py-16 text-center">
+          <span className="mx-auto mb-4 grid size-14 place-items-center rounded-2xl bg-accent/10 text-accent-bright">
+            <Icon name="library" size={26} />
+          </span>
+          <h2 className="mb-2 text-lg font-bold">
+            {libraryConfigured ? 'Your library is ready to be scanned' : 'Connect your library first'}
+          </h2>
+          <p className="mx-auto mb-5 max-w-md text-sm text-muted">
+            {libraryConfigured
+              ? 'Compare your Sonarr and Radarr collection with the best releases available on SeaDex.'
+              : 'Configure Sonarr or Radarr before running your first scan.'}
+          </p>
+          <div className="flex flex-wrap justify-center gap-2">
+            <button
+              type="button"
+              className={
+                libraryConfigured ? buttonPrimary : cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')
+              }
+              onClick={onScan}
+              disabled={!libraryConfigured}
+            >
+              <Icon name="play" size={17} />
+              Scan library
+            </button>
+            <button
+              type="button"
+              className={
+                libraryConfigured ? cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink') : buttonPrimary
+              }
+              onClick={onOpenConfig}
+            >
+              <Icon name="settings" size={17} />
+              Open Config
+            </button>
+          </div>
+        </div>
+      )}
+      {!loading && results.length > 0 && groups.length === 0 && (
+        <div className="rounded-2xl border border-dashed border-line-strong px-4 py-14 text-center">
+          <Icon name={showUnseen ? 'check' : 'filter'} size={26} className="mx-auto mb-3 text-muted-dim" />
+          <h2 className="mb-1 text-lg font-bold">{showUnseen ? 'No unseen changes' : 'No matching titles'}</h2>
+          <p className="mb-4 text-sm text-muted">
+            {showUnseen
+              ? 'New release changes will appear here after future scans. Other library filters still apply.'
+              : 'Try changing or clearing the active filters.'}
+          </p>
+          <button
+            type="button"
+            className="touch-target cursor-pointer text-sm font-bold text-accent-bright"
+            onClick={clearFilters}
+          >
+            Clear filters
+          </button>
+        </div>
+      )}
       <BulkDownloadDialog
-        open={active && bulkConfirm === 'start'}
-        results={reviewResults}
+        open={active && bulk.confirm === 'start'}
+        results={bulk.reviewResults}
         scopeControl={scopeControl}
         hiddenKeys={hiddenKeys}
-        busy={bulkBusy === 'start'}
-        job={bulkJob}
+        busy={bulk.busy === 'start'}
+        job={bulk.job}
         downloadMode={config?.download_mode || 'torrent_only'}
         preferTarget={Boolean(config?.release_preferences && !preferencesAreDefault(config.release_preferences))}
         sabEnabled={Boolean(config?.sabnzbd_url && config?.sabnzbd_key_configured)}
-        onConfirm={(plan_id, acknowledge) => void handleBulkStart(plan_id, acknowledge)}
-        onClose={() => setBulkConfirm(null)}
+        onConfirm={(planId, acknowledge) => void bulk.start(planId, acknowledge)}
+        onClose={bulk.close}
       />
       <BulkCancelDialog
-        open={active && bulkConfirm === 'cancel'}
-        busy={bulkBusy === 'cancel'}
-        onConfirm={(record_ids, deleteFiles) => void handleBulkCancel(record_ids, deleteFiles)}
-        onClose={() => { if (!bulkBusy) setBulkConfirm(null) }}
+        open={active && bulk.confirm === 'cancel'}
+        busy={bulk.busy === 'cancel'}
+        onConfirm={(recordIds, deleteFiles) => void bulk.cancel(recordIds, deleteFiles)}
+        onClose={() => {
+          if (!bulk.busy) bulk.close()
+        }}
       />
     </section>
   )
