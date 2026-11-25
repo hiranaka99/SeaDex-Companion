@@ -222,7 +222,11 @@ export default function ReleaseDetails({
       : 'size unavailable'
   const fileCount = `${fileScope.files.length} selected file${fileScope.files.length === 1 ? '' : 's'}`
   const scopeLabel = fileScope.selected ? `${fileCount} · ${sizeLabel}` : `Whole release · ${sizeLabel}`
-  const episodes = useMemo(() => episodeRangeLabel(fileScope.files.map(file => file.name)), [fileScope])
+  // Movies have no episodes; a number in a movie's filename is a version, year or audio layout.
+  const episodes = useMemo(
+    () => (r.arr === 'Sonarr' ? episodeRangeLabel(fileScope.files.map(file => file.name)) : null),
+    [fileScope, r.arr],
+  )
   /** Re-sending an owned release waits for a second click, so a duplicate download is never one stray tap away. */
   const [confirmingRedownload, setConfirmingRedownload] = useState(false)
   const rowRef = useRef<HTMLElement>(null)
