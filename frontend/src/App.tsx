@@ -10,7 +10,7 @@ import OperationCenter from './components/OperationCenter'
 import HistoryTab from './components/HistoryTab'
 import SidebarResizer from './components/SidebarResizer'
 import { useToast } from './components/Toast'
-import type { AuthState } from './types'
+import type { AuthState, LibraryFilterRequest } from './types'
 import * as api from './api'
 import { useBulkOperation } from './useBulkOperation'
 import { useHashTab } from './useHashTab'
@@ -31,11 +31,19 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   const bulk = useBulkOperation()
   const toast = useToast()
   const [openResultKey, setOpenResultKey] = useState<string | null>(null)
+  const [libraryFilter, setLibraryFilter] = useState<(LibraryFilterRequest & { id: number }) | null>(null)
   const [configFooterTarget, setConfigFooterTarget] = useState<HTMLDivElement | null>(null)
   const { status, config, scanCompleted, scanCancelledDismissed } = library
   const busy = status.running || bulk.running
 
   const handleResultOpened = useCallback(() => setOpenResultKey(null), [])
+  const handleOpenHistoryResult = useCallback(
+    (key: string) => {
+      setOpenResultKey(key)
+      changeTab('anime')
+    },
+    [changeTab],
+  )
   // Trackers named by the current results, offered as one-click choices in the release preferences.
   const { results } = library
   const knownTrackers = useMemo(
@@ -154,6 +162,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
                   Boolean(bulk.operation)
                 }
                 onResultsChanged={library.reloadResults}
+                filterRequest={libraryFilter}
               />
             </div>
             {visited.has('history') && (
@@ -161,10 +170,16 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
                 <HistoryTab
                   active={tab === 'history'}
                   results={library.results}
-                  onOpenResult={key => {
-                    setOpenResultKey(key)
+                  resultsLoading={library.resultsLoading}
+                  resultsError={library.resultsError}
+                  scanDisabled={busy}
+                  onScan={() => void handleScan()}
+                  onOpenResult={handleOpenHistoryResult}
+                  onOpenLibrary={filter => {
+                    setLibraryFilter(current => ({ ...filter, id: (current?.id ?? 0) + 1 }))
                     changeTab('anime')
                   }}
+                  onOpenLog={() => changeTab('log')}
                 />
               </div>
             )}

@@ -14,6 +14,14 @@ export type CardStatus = 'upgrade' | 'best' | 'missing' | 'partial' | 'review'
 
 export type TabId = 'anime' | 'history' | 'config' | 'log'
 
+/** A request from another page to open the library with one status or coverage filter applied. */
+export interface LibraryFilterRequest {
+  /** Library status filter, e.g. "upgrade"; empty for none. */
+  status: string
+  /** Library coverage filter, e.g. "best", "missing" or "partial"; empty for none. */
+  coverage: string
+}
+
 export interface GroupedCard {
   /** Identity of the card: stable across scans and distinct per library instance. Hidden cards are saved by it. */
   key: string

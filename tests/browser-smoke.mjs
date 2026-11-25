@@ -2485,16 +2485,30 @@ try {
 
     fixtureHistory = readableHistory()
     await click('Scan history')
-    await wait(`document.body.textContent.includes('Still upgradable')`)
+    await wait(`document.querySelector('article [data-history-row]')?.closest('section')`)
     assert.ok(
-      await evaluate(`!document.body.textContent.includes('Upgrade available → Upgrade available')`),
-      'History omits unchanged status transitions',
+      await evaluate(
+        `(() => { const row = [...document.querySelectorAll('article [data-history-row]')].find(row => row.textContent.includes('To LOVE-Ru')); return row && row.textContent.includes('unchanged') && !row.textContent.includes('→toUpgrade available') })()`,
+      ),
+      'History marks an unchanged status instead of showing a transition',
     )
     assert.ok(
       await evaluate(
-        `(() => { const row = [...document.querySelectorAll('article > div > ul > li')].find(row => row.textContent.includes('To LOVE-Ru')); return row && row.textContent.includes('Torrent replaced') && row.textContent.includes('Old group (AB) → New group (Nyaa)') && row.textContent.includes('Season 2') })()`,
+        `(() => { const row = [...document.querySelectorAll('article [data-history-row]')].find(row => row.textContent.includes('To LOVE-Ru')); return row && row.textContent.includes('Torrent replaced') && row.textContent.includes('Old group (AB) → New group (Nyaa)') && row.textContent.includes('Season 2') })()`,
       ),
       'Compact history shows the action, season and both release groups',
+    )
+    assert.ok(
+      await evaluate(
+        `[...document.querySelectorAll('article h4')].map(heading => heading.firstChild.textContent).join('|') === 'Resolved|Updated|Added|Removed'`,
+      ),
+      'An expanded scan sections its changes by type',
+    )
+    assert.ok(
+      await evaluate(
+        `(() => { const digest = document.querySelector('[aria-labelledby="history-digest-title"]')?.textContent || ''; return digest.includes('Nothing new needs your attention') && digest.includes('3 updated') && !digest.includes('Example anime') })()`,
+      ),
+      'The digest leaves out a resolution the current library no longer shows',
     )
     await evaluate(
       `[...document.querySelectorAll('article details summary')].find(summary => summary.textContent.includes('SeaDex note updated')).focus()`,
@@ -2511,7 +2525,7 @@ try {
     await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
     assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth`), 'Readable history fits mobile')
     await evaluate(
-      `[...document.querySelectorAll('article > div > ul > li')].find(row => row.textContent.includes('To LOVE-Ru')).scrollIntoView({ block: 'start' })`,
+      `[...document.querySelectorAll('article [data-history-row]')].find(row => row.textContent.includes('To LOVE-Ru')).scrollIntoView({ block: 'start' })`,
     )
     await capture('history-clear-mobile')
     await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
@@ -2586,13 +2600,13 @@ try {
     )
     assert.ok(
       await evaluate(
-        `(() => { const open = ${historyCards}.find(card => card.querySelector('[aria-expanded="true"]')); return open.textContent.includes('Upgrade target') && open.textContent.includes('6 titles removed from your library') && open.querySelectorAll(':scope > div > ul > li').length === 2 })()`,
+        `(() => { const open = ${historyCards}.find(card => card.querySelector('[aria-expanded="true"]')); return open.textContent.includes('Upgrade target') && open.textContent.includes('6 titles removed from your library') && open.querySelectorAll('[data-history-row]').length === 2 })()`,
       ),
       'Six bare removals fold into one group beneath the upgrade',
     )
     assert.ok(
       await evaluate(
-        `${historyRoot}.textContent.includes('1 upgradable') && ${historyRoot}.textContent.includes('6 removed') && ${historyRoot}.textContent.includes('Fixture catalog failure')`,
+        `${historyRoot}.textContent.includes('1upgrade available') && ${historyRoot}.textContent.includes('6removed') && ${historyRoot}.textContent.includes('Fixture catalog failure')`,
       ),
       'Scan headers summarize change types and keep failure reasons visible',
     )
@@ -2633,7 +2647,7 @@ try {
     await evaluate(
       `(() => { const root = ${historyRoot}; const select = root.querySelector('select[aria-label="Scans shown"]'); select.value = 'all'; select.dispatchEvent(new Event('change', { bubbles: true })); [...root.querySelectorAll('button')].find(button => button.textContent.trim() === 'Refresh').click() })()`,
     )
-    await wait(`document.body.textContent.includes('Still upgradable')`)
+    await wait(`document.body.textContent.includes('To LOVE-Ru')`)
     fixtureHistory = null
     await click('Example anime')
     await wait(`document.querySelector('dialog[open]')?.textContent.includes('Correct match')`)
@@ -3631,11 +3645,11 @@ try {
       if (route === 'history') {
         await wait(`document.body.textContent.includes('Torrent updated')`)
         await evaluate(
-          `[...document.querySelectorAll('article > div > ul > li')].find(row => row.textContent.includes('To LOVE-Ru')).scrollIntoView({ block: 'start' })`,
+          `[...document.querySelectorAll('article [data-history-row]')].find(row => row.textContent.includes('To LOVE-Ru')).scrollIntoView({ block: 'start' })`,
         )
         assert.ok(
           await evaluate(
-            `(() => { const rows = [...document.querySelectorAll('article > div > ul > li')]; return rows.length === 6 && rows.every(row => row.scrollWidth <= row.clientWidth + 1) && !rows.some(row => row.textContent.includes('Upgrade available → Upgrade available')) })()`,
+            `(() => { const rows = [...document.querySelectorAll('article [data-history-row]')]; return rows.length === 6 && rows.every(row => row.scrollWidth <= row.clientWidth + 1) && !rows.some(row => row.textContent.includes('Upgrade available → Upgrade available')) })()`,
           ),
           'History details and long names remain readable without clipping',
         )
