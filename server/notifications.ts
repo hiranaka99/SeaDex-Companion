@@ -8,10 +8,16 @@ import { log } from './logging.js'
 import { errorMessage } from '../shared/errors.js'
 import { isSeasonUpgradable } from '../shared/download-plan.js'
 import { seasonTag } from '../shared/ids.js'
+import { sourceNameOf } from './arr-instances.js'
+import type { ImportProblem } from './import-follow.js'
 import type { Config, JsonObject, ResultItem } from './types.js'
 
 /** A result about to be announced, with what changed since the previous scan when that is known. */
-export type NotifiedResult = ResultItem & { change_details?: string[] }
+export type NotifiedResult = ResultItem & {
+  change_details?: string[]
+  /** Why the result lost its best release, when a library change caused it. */
+  regression?: string
+}
 
 export function loadNotified(file = NOTIFIED_FILE): Set<string> {
   return loadStringSet(file, 'Could not read notification history')
@@ -64,7 +70,9 @@ export function discordMessageBody(result: NotifiedResult): JsonObject {
     256,
   )
   const info = bestReleaseInfo(result)
-  const details = (result.change_details || []).filter(Boolean)
+  const regression = result.regression || ''
+  const mismatched = [...new Set(Object.values(result.mismatched_by_part || {}).flat())]
+  const details = regression ? [regression] : (result.change_details || []).filter(Boolean)
   const fields: Array<{ name: string; value: string; inline?: boolean }> = []
   if (details.length) fields.push({ name: 'What changed', value: truncateText(details.join('\n'), 1024) })
   fields.push({ name: 'Have', value: truncateText(result.have.join(', ') || '—', 300), inline: true })
@@ -80,15 +88,22 @@ export function discordMessageBody(result: NotifiedResult): JsonObject {
   if (notes && notes !== '-') fields.push({ name: 'Notes', value: truncateText(notes, 1024) })
   const embed: JsonObject = {
     title,
-    color: DISCORD_EMBED_COLORS[result.status] ?? 0x5865f2,
-    author: { name: `SeaDex · ${result.arr || 'Library'}` },
+    color: regression ? 0xed4245 : (DISCORD_EMBED_COLORS[result.status] ?? 0x5865f2),
+    author: { name: `SeaDex · ${result.arr ? sourceNameOf(result) : 'Library'}` },
     fields,
     footer: { text: 'seadex.moe' },
     timestamp: new Date().toISOString(),
   }
   if (result.url) embed.url = result.url
   if (result.image) embed.thumbnail = { url: result.image }
-  const content = info.group ? `${title} — new best release ${info.group}` : `${title} — upgrade available`
+  // A regression or a file mismatch is not a new recommendation, so the headline says what happened instead.
+  const content = regression
+    ? `${title} — no longer on its best release`
+    : mismatched.length
+      ? `${title} — your ${mismatched.join(', ')} files differ from the listed release`
+      : info.group
+        ? `${title} — new best release ${info.group}`
+        : `${title} — upgrade available`
   return { content: truncateText(content, 1900), embeds: [embed] }
 }
 
@@ -135,6 +150,8 @@ export interface NotificationDependencies {
   save?: typeof saveNotified
   send?: typeof sendToDiscord
   previous?: ResultItem[]
+  /** Result keys that lost their best release because the library files changed, with what changed. */
+  regressions?: Record<string, string>
 }
 
 /** True when at least one best release of the result sits outside the user's excluded cours. */
@@ -144,6 +161,51 @@ function hasIncludedBestPart(result: ResultItem & { excluded_parts?: string[] })
     result.releases.filter(release => release.kind === 'best').map(release => release.part || ''),
   )
   return bestParts.size === 0 || [...bestParts].some(part => !excludedParts.has(part))
+}
+
+/** One notification for a finished download that Sonarr or Radarr did not import. */
+export async function sendImportProblem(config: Config, problem: ImportProblem): Promise<boolean> {
+  if (!config.webhook) return false
+  const season = problem.season ? ` (${seasonTag(problem.season)})` : ''
+  const title = truncateText(`${problem.title}${season}`, 256)
+  const headline =
+    problem.state === 'blocked'
+      ? `${problem.app} is not importing a finished download`
+      : `A finished download was not imported by ${problem.app}`
+  const fields = [
+    ...(problem.releaseGroup
+      ? [{ name: 'Release', value: truncateText(problem.releaseGroup, 300), inline: true }]
+      : []),
+    ...(problem.message ? [{ name: `${problem.app} reports`, value: truncateText(problem.message, 1024) }] : []),
+  ]
+  try {
+    const response = await fetchWithTimeout(
+      config.webhook,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: truncateText(`${title} — ${headline}`, 1900),
+          embeds: [
+            {
+              title,
+              color: 0xe67e22,
+              author: { name: `SeaDex · ${problem.app}` },
+              fields,
+              footer: { text: 'SeaDex Companion' },
+              timestamp: new Date().toISOString(),
+            },
+          ],
+        }),
+      },
+      30_000,
+    )
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return true
+  } catch (error) {
+    log('ERROR', `Discord webhook failed for the import problem of ${problem.title}: ${errorMessage(error)}`)
+    return false
+  }
 }
 
 export async function autoNotifyNew(config: Config, dependencies: NotificationDependencies = {}): Promise<number> {
@@ -175,7 +237,9 @@ export async function autoNotifyNew(config: Config, dependencies: NotificationDe
   )
   if (!fresh.length) return skip('INFO', 'Discord notifications: no new upgrades to send')
   const previous = dependencies.previous || []
+  const regressions = dependencies.regressions || {}
   const payload: NotifiedResult[] = fresh.map(result => {
+    if (regressions[result.key]) return { ...result, regression: regressions[result.key] }
     if (!previous.length) return result
     const details = describeResultChange(matchPreviousResult(previous, result), result)
     return details.length ? { ...result, change_details: details } : result

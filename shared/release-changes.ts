@@ -1,11 +1,13 @@
 import { isInfoHash } from './ids.js'
 import type { Release, ReleaseChange, ReleaseChangeDetail, ResultItem } from './contracts.js'
+import { isSeasonUpgradable } from './download-plan.js'
 
 export const RELEASE_CHANGE_LABELS: Record<ReleaseChange['kind'], string> = {
   best: 'New best release',
   alternative: 'New alternative',
   updated: 'Release updated',
   removed: 'Release removed',
+  regression: 'No longer the best release',
 }
 
 export function releaseResultIdentity(result: ResultItem): string {
@@ -136,4 +138,26 @@ export function describeReleaseChanges(previous: ResultItem, current: ResultItem
     if (!oldUnavailable.has(part))
       changes.push({ kind: 'removed', part, description: `${part} no longer available on SeaDex` })
   return changes
+}
+
+/**
+ * A season that held its best release and no longer does, although SeaDex still recommends
+ * the same releases. The cause is in the library: Sonarr or Radarr replaced the files, or
+ * they stopped matching the listed release. A changed recommendation is never a regression.
+ */
+export function describeRegression(previous: ResultItem, current: ResultItem): ReleaseChangeDetail | null {
+  if (previous.status !== 'best' || !isSeasonUpgradable(current)) return null
+  if (describeReleaseChanges(previous, current).some(change => !change.note_change)) return null
+  const groups = (result: ResultItem) =>
+    [...new Set((result.have || []).map(clean).filter(Boolean))].sort((left, right) => left.localeCompare(right))
+  const before = groups(previous),
+    after = groups(current)
+  const renamed = values(before) !== values(after)
+  if (!renamed && (previous.local_size || 0) === (current.local_size || 0)) return null
+  return {
+    kind: 'regression',
+    description: renamed
+      ? `Your files changed: ${before.join(', ') || 'none'} → ${after.join(', ') || 'none'}`
+      : 'Your files changed and no longer match the best release',
+  }
 }

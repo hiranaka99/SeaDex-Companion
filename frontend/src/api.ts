@@ -32,7 +32,7 @@ export type {
   PreflightBlocked,
   SubmissionRow,
 } from '../../shared/download-contracts.js'
-import type { ConfigUpdate } from '../../shared/contracts.js'
+import type { ArrScopeOptions, ConfigUpdate } from '../../shared/contracts.js'
 import type { AuthState, Config, ResultItem, ScanHistoryEntry, ScannedDataInfo, Status } from './types.js'
 
 export const DOWNLOAD_ACTIONS = ['pause', 'resume', 'remove'] as const
@@ -134,7 +134,27 @@ export const saveConfig = (cfg: ConfigUpdate) =>
     return config
   })
 
-export type IntegrationService = 'sonarr' | 'radarr' | 'qbittorrent' | 'discord' | 'sabnzbd' | 'animetosho' | 'amenzb'
+/** `arr:<id>` addresses an additional Sonarr or Radarr instance. */
+export type IntegrationService =
+  | 'sonarr'
+  | 'radarr'
+  | 'qbittorrent'
+  | 'discord'
+  | 'sabnzbd'
+  | 'animetosho'
+  | 'amenzb'
+  | `arr:${string}`
+
+/** Tags and root folders an instance offers for its library scope, read with the unsaved draft. */
+export const getArrOptions = (service: IntegrationService, config: ConfigUpdate) =>
+  api<{ ok: boolean } & ArrScopeOptions>('/api/arr/options', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ service, config }),
+  })
+
+export const removeArrTags = () =>
+  api<{ ok: boolean; removed: number }>('/api/arr-tags/remove', { method: 'POST' }, 120_000)
 
 export const testConnection = (service: IntegrationService, config: ConfigUpdate) =>
   api<{ ok: boolean; message: string }>('/api/config/test', {

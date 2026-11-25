@@ -12,7 +12,7 @@ import { releaseIdentity } from '../../shared/releases'
 import type { Release, ResultItem } from './types'
 import type { GroupedCard } from './types'
 import type { DownloadEntry } from './components/DownloadsPanel'
-import { toDownloadEntry, clientName } from './components/DownloadsPanel'
+import { toDownloadEntry, clientName, importUnsettled } from './components/DownloadsPanel'
 import { seasonLabel } from './utils'
 import type { DownloadProtocol, UsenetAvailabilityResult } from './api'
 import { availabilityKey, observeUsenetAvailability, type AvailabilitySnapshot } from './usenet-observation'
@@ -51,7 +51,8 @@ export function useCardDownloads(group: GroupedCard, notify: Notify) {
       const state = ((dlBySeason[ref.key] ||= {})[ref.release] ||= { transfers: [] })
       state.transfers.push(entry)
     }
-    if (progress.phase !== 'complete' || !associations.length) activeDownloads.push(entry)
+    // A finished download stays on the card until Sonarr or Radarr imported it or the person dealt with it.
+    if (progress.phase !== 'complete' || !associations.length || importUnsettled(entry)) activeDownloads.push(entry)
   }
 
   const handleDownload = async (key: string, index: number, protocol: DownloadProtocol) => {

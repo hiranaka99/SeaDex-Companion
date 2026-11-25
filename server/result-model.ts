@@ -33,6 +33,9 @@ export function normalizeResults(value: unknown): ResultItem[] {
           ...(text(source.part) ? { part: String(source.part) } : {}),
           ...(text(source.url) ? { url: String(source.url) } : {}),
           ...(strings(source.selected_files).length ? { selected_files: strings(source.selected_files) } : {}),
+          ...(source.target === true ? { target: true } : {}),
+          ...(typeof source.satisfies === 'boolean' ? { satisfies: source.satisfies } : {}),
+          ...(text(source.excluded_by) ? { excluded_by: String(source.excluded_by) } : {}),
           ...(Array.isArray(source.torrent_files)
             ? {
                 torrent_files: source.torrent_files.map(raw => {
@@ -62,6 +65,12 @@ export function normalizeResults(value: unknown): ResultItem[] {
         key: text(item.key) || '',
         group_id: typeof item.group_id === 'number' ? item.group_id : null,
         arr: text(item.arr) || '',
+        ...(text(item.instance)
+          ? {
+              instance: String(item.instance),
+              ...(text(item.instance_name) ? { instance_name: String(item.instance_name) } : {}),
+            }
+          : {}),
         title: text(item.title) || '',
         season: typeof item.season === 'number' ? item.season : null,
         status,
@@ -87,6 +96,13 @@ export function normalizeResults(value: unknown): ResultItem[] {
         precise_part_ownership: item.precise_part_ownership === true,
         have_by_part: dictionary(item.have_by_part, strings),
         owned_by_part: dictionary(item.owned_by_part, strings),
+        ...(Object.keys(asRecord(item.verified_by_part)).length
+          ? { verified_by_part: dictionary(item.verified_by_part, strings) }
+          : {}),
+        ...(Object.keys(asRecord(item.mismatched_by_part)).length
+          ? { mismatched_by_part: dictionary(item.mismatched_by_part, strings) }
+          : {}),
+        ...(item.preference_blocked === true ? { preference_blocked: true } : {}),
         local_size_by_part: dictionary(item.local_size_by_part, number),
         notes_by_part: dictionary(item.notes_by_part, value => text(value) || ''),
         excluded: item.excluded === true,

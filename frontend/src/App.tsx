@@ -1,5 +1,5 @@
 import { errorMessage } from '../../shared/errors.js'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import TopBar from './components/TopBar'
 import AnimeTab from './components/AnimeTab'
 import ConfigTab from './components/ConfigTab'
@@ -36,6 +36,15 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   const busy = status.running || bulk.running
 
   const handleResultOpened = useCallback(() => setOpenResultKey(null), [])
+  // Trackers named by the current results, offered as one-click choices in the release preferences.
+  const { results } = library
+  const knownTrackers = useMemo(
+    () =>
+      [
+        ...new Set(results.flatMap(result => result.releases.map(release => release.tracker.trim()).filter(Boolean))),
+      ].sort((left, right) => left.localeCompare(right)),
+    [results],
+  )
   const openConfig = () => changeTab('config')
 
   const { startScan } = library
@@ -170,6 +179,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
                   config={config}
                   status={status}
                   username={username}
+                  knownTrackers={knownTrackers}
                   onRunScan={handleScan}
                   onAccountUpdated={onAccountUpdated}
                   onSaved={library.applySavedConfig}

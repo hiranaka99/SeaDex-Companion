@@ -12,7 +12,7 @@ import { currentGeneration } from './config-generation.js'
 import type { StoredPlan } from './download-plans.js'
 import { planDownloads } from './download-preflight.js'
 import { downloadJobs } from './download-jobs.js'
-import { addDownloadRecord, markDownloadRemoved, setDownloadNative } from './download-store.js'
+import { addDownloadRecord, markDownloadRemoved, setDownloadNative, type LibraryTarget } from './download-store.js'
 import { CLIENT_FOR_PROTOCOL, downloadClients } from './download-clients.js'
 import type { DownloadClientAdapter, SubmissionUnit } from './download-client-types.js'
 import { HttpError } from './http-error.js'
@@ -62,6 +62,24 @@ function cardFor(selections: DownloadSelectionRef[], resultsByKey: Map<string, R
     tracker: release.tracker,
     size: release.size ?? 0,
   }
+}
+
+/** The library seasons a source is downloaded for, so its import can be confirmed against later scans. */
+function libraryTargets(selections: DownloadSelectionRef[], resultsById: Map<string, ResultItem>): LibraryTarget[] {
+  const targets = new Map<string, LibraryTarget>()
+  for (const selection of selections) {
+    const result = resultsById.get(selection.key)
+    const release = result?.releases?.[selection.release]
+    if (!result?.library_key || !release) continue
+    const target = {
+      key: result.library_key,
+      season: result.season ?? null,
+      part: release.part || '',
+      group: release.releaseGroup,
+    }
+    targets.set(JSON.stringify(target), target)
+  }
+  return [...targets.values()]
 }
 
 /**
@@ -161,7 +179,13 @@ export async function acceptDownloadPlan(
   const completion = serialized(async () => {
     try {
       for (const unit of newUnits)
-        await submitUnit(clients[unit.protocol], job.id, unit, cardFor(unit.selections, resultsByKey))
+        await submitUnit(
+          clients[unit.protocol],
+          job.id,
+          unit,
+          cardFor(unit.selections, resultsByKey),
+          libraryTargets(unit.selections, resultsByKey),
+        )
       return jobResult(downloadJobs.finish(job.id))
     } catch (error) {
       try {
@@ -188,6 +212,7 @@ async function submitUnit(
   jobId: string,
   unit: SubmissionUnit,
   card: ReturnType<typeof cardFor>,
+  library: LibraryTarget[],
 ): Promise<void> {
   const record = addDownloadRecord({
     protocol: client.protocol,
@@ -203,6 +228,7 @@ async function submitUnit(
     card,
     labels: unit.labels,
     rows: unit.selections,
+    library,
   })
   let accepted = false
   let forgotten = false

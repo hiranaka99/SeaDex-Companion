@@ -3,7 +3,8 @@ import { readJson, writeJsonAtomic } from './persistence.js'
 import { titleKey } from './anilist.js'
 import { isSeasonUpgradable } from '../shared/download-plan.js'
 import { isRecord } from '../shared/guards.js'
-import { describeReleaseChanges } from '../shared/release-changes.js'
+import { describeRegression, describeReleaseChanges } from '../shared/release-changes.js'
+import { sourceKeyOf, sourceNameOf } from './arr-instances.js'
 import type { ResultItem, ScanHistoryChange, ScanHistoryEntry, ScanTrigger } from '../shared/contracts.js'
 
 /** Facts about one scan run that are recorded next to its result changes. */
@@ -13,16 +14,17 @@ export interface ScanRunMetadata {
   sourceErrors?: Record<string, string>
   outcome?: ScanHistoryEntry['outcome']
   error?: string
+  /** The results were computed under different preferences, so status moves are not regressions. */
+  settingsChanged?: boolean
 }
 
 function resultIdentity(result: ResultItem): string {
-  const base =
-    result.library_key || `${result.arr || 'Unknown'}:${result.group_id ?? result.anilist_id ?? result.title}`
+  const base = result.library_key || `${sourceKeyOf(result)}:${result.group_id ?? result.anilist_id ?? result.title}`
   return `${base}:${result.season || 0}`
 }
 
 function resultFallbackIdentity(result: ResultItem): string {
-  return `${result.arr || 'Unknown'}:${titleKey(result.title || 'unknown')}:${result.season || 0}`
+  return `${sourceKeyOf(result)}:${titleKey(result.title || 'unknown')}:${result.season || 0}`
 }
 
 /** A partial season with an open upgrade counts as an upgrade for history and notifications. */
@@ -95,6 +97,11 @@ export function describeResultChange(previous: ResultItem | null, current: Resul
   for (const label of currentUnavailable)
     if (!previousUnavailable.has(label)) details.push(`${label} no longer available on SeaDex`)
   if ((previous.notes || '').trim() !== (current.notes || '').trim()) details.push('seadex.moe notes updated')
+  const mismatched = (result: ResultItem) => [...new Set(Object.values(result.mismatched_by_part || {}).flat())].sort()
+  const nowMismatched = mismatched(current).filter(group => !mismatched(previous).includes(group))
+  if (nowMismatched.length) details.push(`Your ${nowMismatched.join(', ')} files differ from the listed release`)
+  if (!previous.preference_blocked && current.preference_blocked)
+    details.push('No listed release fits your release preferences')
   if (!details.length) details.push(...describeReleaseChanges(previous, current).map(change => change.description))
   return details.slice(0, 6)
 }
@@ -116,7 +123,7 @@ export function buildScanHistoryEntry(
     library_key: result.library_key,
     key: resultIdentity(result),
     title: result.title || 'Unknown title',
-    arr: result.arr,
+    arr: sourceNameOf(result),
     season: result.season || 0,
     best_group: result.best_group || null,
   })
@@ -131,14 +138,17 @@ export function buildScanHistoryEntry(
     const from = automationStatus(old)
     const releaseChanges = describeReleaseChanges(old, result)
     if (from === to && (old.best_group || '') === (result.best_group || '') && !releaseChanges.length) continue
-    const type =
-      from !== 'upgrade' && to === 'upgrade'
+    const regression = metadata.settingsChanged ? null : describeRegression(old, result)
+    const type = regression
+      ? 'regression'
+      : from !== 'upgrade' && to === 'upgrade'
         ? 'upgrade'
         : from === 'upgrade' && to !== 'upgrade'
           ? 'resolved'
           : 'changed'
-    const details = releaseChanges.length
-      ? releaseChanges.map(change => change.description)
+    const listed = regression ? [regression] : releaseChanges
+    const details = listed.length
+      ? listed.map(change => change.description)
       : type === 'resolved'
         ? []
         : describeResultChange(old, result)
@@ -148,7 +158,7 @@ export function buildScanHistoryEntry(
       from,
       to,
       details,
-      ...(releaseChanges.length ? { release_changes: releaseChanges } : {}),
+      ...(listed.length ? { release_changes: listed } : {}),
     })
   }
   for (const [key, result] of before) {

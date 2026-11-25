@@ -1,18 +1,30 @@
 import { seasonTag } from '../shared/ids.js'
-import type { ChainEntry, ResultItem, LocalItem, LocalSeason, SeaDexEntry, ResolvedPart } from './types.js'
+import type {
+  ChainEntry,
+  ResultItem,
+  LocalItem,
+  LocalSeason,
+  ReleaseCandidate,
+  ReleasePreferences,
+  SeaDexEntry,
+  ResolvedPart,
+} from './types.js'
 import {
   effectiveSeasonParts,
   entryParts,
+  exclusionReason,
   localPartOwnership,
   seadexSlot,
   pickBest,
   scopeReleaseToPart,
   scopeReleaseToSeasonRange,
-  partBestGroups,
   commonBestRelease,
   orderedPartReleases,
   releaseDict,
 } from './matching.js'
+import { verifyPart } from './verification.js'
+import { sourceKeyOf } from './arr-instances.js'
+import { DEFAULT_RELEASE_PREFERENCES, PREFERENCE_BLOCKED_REASON } from '../shared/settings.js'
 
 export interface ResolvedSeasonChain {
   entry: ChainEntry | undefined
@@ -142,6 +154,18 @@ export function resolveSeasonChainEntry(item: LocalItem, season: number, chain: 
   return { entry: undefined, seasonEpisodeOffset: 0, multiSeasonSplit: false }
 }
 
+/** Settings that change how a season is judged; a change makes earlier results incomparable. */
+export interface AssessmentSettings {
+  preferences: ReleasePreferences
+  /** Compare library file sizes with the listed release before counting it as owned. */
+  verify: boolean
+}
+
+export const DEFAULT_ASSESSMENT: AssessmentSettings = { preferences: DEFAULT_RELEASE_PREFERENCES, verify: true }
+export { PREFERENCE_BLOCKED_REASON }
+
+const groupKey = (group: string) => group.trim().toLowerCase()
+
 /** Everything one season's recommendation is computed from. */
 export interface SeasonAssessment {
   item: LocalItem
@@ -157,6 +181,8 @@ export interface SeasonAssessment {
   arrUrl: string | null
   /** The user's manual match for this season, which replaces the automatic chain entry. */
   override?: { entry: ChainEntry | null; groupId: number | null; ids: number[] }
+  /** Release preferences and ownership verification; defaults apply when omitted. */
+  settings?: AssessmentSettings
 }
 
 export function assessSeason({
@@ -169,6 +195,7 @@ export function assessSeason({
   mappingId,
   arrUrl,
   override,
+  settings = DEFAULT_ASSESSMENT,
 }: SeasonAssessment): ResultItem {
   const localGroups: string[] = local.groups
   const automatic = resolveSeasonChainEntry(item, season, chain)
@@ -185,11 +212,17 @@ export function assessSeason({
       }
     : automatic
   const groupId = override ? override.groupId : (chain[0]?.id ?? null)
+  // Results of an additional instance carry its key prefix, so the same anime in two libraries stays two results.
+  const source = sourceKeyOf(item)
+  const instance = item.instance
+    ? { instance: item.instance, ...(item.instance_name ? { instance_name: item.instance_name } : {}) }
+    : {}
   if (!entry) {
     return {
-      key: `${item.arr}:item${item.id}:${season}:missing`,
+      key: `${source}:item${item.id}:${season}:missing`,
       group_id: groupId,
       arr: item.arr,
+      ...instance,
       title: item.title,
       season,
       library_key: libraryKey,
@@ -213,11 +246,14 @@ export function assessSeason({
     }
   }
   const alid = entry.id
+  // A movie is a single file, so a per-episode size limit says nothing about it.
+  const preferences = season === 0 ? { ...settings.preferences, max_episode_gb: 0 } : settings.preferences
   const parts = effectiveSeasonParts(local, entryParts(entry))
   const partOwnership = localPartOwnership(local, parts)
   const common: Omit<ResultItem, 'key' | 'status' | 'best_group' | 'best_size' | 'releases'> = {
     group_id: groupId,
     arr: item.arr,
+    ...instance,
     title: item.title,
     season,
     have: [...localGroups].sort(),
@@ -239,29 +275,30 @@ export function assessSeason({
     arr_url: arrUrl,
   }
   const resolved: ResolvedPart[] = []
+  const resolvedOutcome: number[] = []
   const sources: { label: string; url: string }[] = []
   const unavailableParts: { label: string; reason: string }[] = []
   const outcomes: ('missing' | 'uncovered' | 'resolved')[] = []
+  const partName = (label: string | null) => label || (season ? seasonTag(season) : 'Movie')
   let episodeOffset = seasonEpisodeOffset
   for (const [partIndex, part] of parts.entries()) {
     const currentEpisodeOffset = episodeOffset
     episodeOffset += Number(part.episodeCount || 0)
     const label = parts.length > 1 ? `Cour ${partIndex + 1}` : null
-    const seasonName = season ? seasonTag(season) : 'Movie'
     const source = best.get(part.id)
     if (!source) {
       outcomes.push('missing')
-      unavailableParts.push({ label: label || seasonName, reason: 'Not listed on SeaDex' })
+      unavailableParts.push({ label: partName(label), reason: 'Not listed on SeaDex' })
       continue
     }
     sources.push({ label: label || 'seadex.moe', url: source.url })
     const slot = seadexSlot(source, season)
     if (!slot) {
       outcomes.push('uncovered')
-      unavailableParts.push({ label: label || seasonName, reason: 'No releases available on SeaDex' })
+      unavailableParts.push({ label: partName(label), reason: 'No releases available on SeaDex' })
       continue
     }
-    const eligibleCandidates = multiSeasonSplit
+    const slotCandidates = multiSeasonSplit
       ? slot.candidates.flatMap(candidate => {
           const episodeNumbers =
             part.episodeNumbers || Array.from({ length: Number(part.episodeCount || 0) }, (_, index) => index + 1)
@@ -269,15 +306,24 @@ export function assessSeason({
           return scoped ? [scoped] : []
         })
       : slot.candidates
-    const [selected, alternatives] = pickBest(eligibleCandidates, part.episodeCount)
+    // The catalog is shared between library titles, so exclusions are noted on copies.
+    const eligibleCandidates = slotCandidates.map((candidate): ReleaseCandidate => {
+      const reason = exclusionReason(candidate, part.episodeCount, preferences)
+      return reason ? { ...candidate, excluded_by: reason } : candidate
+    })
+    let [selected, alternatives] = pickBest(eligibleCandidates, part.episodeCount, preferences)
+    // When the preferences exclude every release, SeaDex's own pick still shows what the library holds.
+    const blocked = !selected && eligibleCandidates.length > 0
+    if (blocked) [selected, alternatives] = pickBest(eligibleCandidates, part.episodeCount)
     if (!selected) {
       outcomes.push('uncovered')
       unavailableParts.push({
-        label: label || seasonName,
+        label: partName(label),
         reason: multiSeasonSplit ? 'No releases available on SeaDex' : 'No release candidates available',
       })
       continue
     }
+    resolvedOutcome.push(outcomes.length)
     outcomes.push('resolved')
     resolved.push({
       label,
@@ -290,6 +336,8 @@ export function assessSeason({
           ? release
           : scopeReleaseToPart(release, part.episodeCount, partIndex, parts.length, currentEpisodeOffset, season),
       ),
+      ...(blocked ? { blocked } : {}),
+      ...(part.episodeNumbers ? { episodeNumbers: part.episodeNumbers } : {}),
     })
   }
   common.urls = sources
@@ -305,51 +353,114 @@ export function assessSeason({
     const status = outcomes.includes('missing') ? 'missing' : 'uncovered'
     return {
       ...common,
-      key: `${item.arr}:${alid}:${season}:${status}`,
+      key: `${source}:${alid}:${season}:${status}`,
       status,
       best_group: null,
       best_size: 0,
       releases: [],
     }
   }
+
+  // Ownership: release group names, corrected by the file-size fingerprint of each listed release.
+  const candidatesOf = (part: ResolvedPart) => [part.best, ...part.alts]
+  const verification = resolved.map(part =>
+    settings.verify && (parts.length === 1 || part.episodeNumbers)
+      ? verifyPart(local, part.episodeNumbers, partOwnership.owned[part.label || ''] || [], candidatesOf(part))
+      : { verified: [], mismatched: [] },
+  )
+  const ownedByPart = resolved.map((part, index) => {
+    const owned = new Set<string>((partOwnership.owned[part.label || ''] || []).map(groupKey))
+    for (const group of verification[index].mismatched) owned.delete(groupKey(group))
+    for (const group of verification[index].verified) owned.add(groupKey(group))
+    return owned
+  })
+  const byPart = (pick: (index: number) => string[]) =>
+    Object.fromEntries(
+      resolved.flatMap((part, index) => (pick(index).length ? [[part.label || '', [...pick(index)].sort()]] : [])),
+    )
+  const verifiedByPart = byPart(index => verification[index].verified)
+  const mismatchedByPart = byPart(index => verification[index].mismatched)
+  if (Object.keys(verifiedByPart).length) common.verified_by_part = verifiedByPart
+  if (Object.keys(mismatchedByPart).length) common.mismatched_by_part = mismatchedByPart
+
+  // SeaDex marks its picks as best; an unmarked listing treats the chosen release as its best.
+  const isBestKind = (part: ResolvedPart, release: ReleaseCandidate) =>
+    release.is_best ||
+    (!candidatesOf(part).some(candidate => candidate.is_best) &&
+      groupKey(release.releaseGroup) === groupKey(part.best.releaseGroup))
+  const settlingGroups = (part: ResolvedPart): Set<string> =>
+    preferences.strict && !part.blocked
+      ? new Set([groupKey(part.best.releaseGroup)])
+      : new Set(
+          candidatesOf(part)
+            .filter(release => isBestKind(part, release) || preferences.accept_alternatives)
+            .map(release => groupKey(release.releaseGroup)),
+        )
+  const settled = resolved.map((part, index) => [...settlingGroups(part)].some(group => ownedByPart[index].has(group)))
+  // A part whose releases are all excluded has nothing to offer unless the library already settles it.
+  const dormant = resolved.map((part, index) => Boolean(part.blocked) && !settled[index])
+  resolved.forEach((part, index) => {
+    if (!dormant[index]) return
+    outcomes[resolvedOutcome[index]] = 'uncovered'
+    unavailableParts.push({ label: partName(part.label), reason: PREFERENCE_BLOCKED_REASON })
+  })
+  const listReleases = (part: ResolvedPart, primary: ReleaseCandidate) =>
+    orderedPartReleases(primary, part.alts).map(([, release]) => {
+      const kind = isBestKind(part, release) ? 'best' : 'alt'
+      const satisfies = settlingGroups(part).has(groupKey(release.releaseGroup))
+      return releaseDict(kind, release, part.label, part.source.url, {
+        target: !part.blocked && groupKey(release.releaseGroup) === groupKey(part.best.releaseGroup),
+        // Stored only where it departs from the kind, which is what older results imply.
+        ...(satisfies !== (kind === 'best') ? { satisfies } : {}),
+      })
+    })
+  const active = resolved.filter((_, index) => !dormant[index])
+  if (!active.length) {
+    const status = outcomes.includes('missing') ? 'missing' : 'uncovered'
+    return {
+      ...common,
+      key: `${source}:${alid}:${season}:${status}`,
+      status,
+      best_group: null,
+      best_size: 0,
+      preference_blocked: true,
+      releases: resolved.flatMap(part => listReleases(part, part.best)),
+    }
+  }
   const partiallyResolved = outcomes.some(outcome => outcome !== 'resolved')
-  const bestGroups = [...new Set(resolved.map(part => part.best.releaseGroup))]
+  const bestGroups = [...new Set(active.map(part => part.best.releaseGroup))]
   let bestGroup = bestGroups.join(' + ')
-  let bestSize = resolved.reduce((sum, part) => sum + (part.best.size || 0), 0)
-  const localGroupKeys = new Set(localGroups.map(group => group.toLowerCase()))
-  const fullyOwnedByPart = resolved.map(
-    part => new Set<string>((partOwnership.owned[part.label || ''] || []).map(group => group.toLowerCase())),
+  let bestSize = active.reduce((sum, part) => sum + (part.best.size || 0), 0)
+  let ownsAllBest = resolved.every((_, index) => dormant[index] || settled[index])
+  const activeOwned = resolved.flatMap((_, index) => (dormant[index] ? [] : [ownedByPart[index]]))
+  const commonOwnedGroups = [
+    ...activeOwned
+      .slice(1)
+      .reduce((commonGroups, groups) => new Set([...commonGroups].filter(group => groups.has(group))), activeOwned[0]),
+  ]
+  let commonBest = commonBestRelease(active, new Set(commonOwnedGroups))
+  // In strict mode only the targeted release settles a part, so a shared batch must be that target.
+  if (
+    commonBest &&
+    preferences.strict &&
+    !active.every(part => part.blocked || groupKey(part.best.releaseGroup) === groupKey(commonBest!.releaseGroup))
   )
-  let ownsAllBest = resolved.every((part, index) =>
-    [...partBestGroups(part)].some(group => fullyOwnedByPart[index].has(group)),
-  )
-  const commonOwnedGroups = fullyOwnedByPart.length
-    ? [
-        ...fullyOwnedByPart
-          .slice(1)
-          .reduce(
-            (commonGroups, groups) => new Set([...commonGroups].filter(group => groups.has(group))),
-            fullyOwnedByPart[0],
-          ),
-      ]
-    : [...localGroupKeys]
-  const commonBest = commonBestRelease(resolved, new Set(commonOwnedGroups))
+    commonBest = null
   if (commonBest) {
     bestGroup = commonBest.releaseGroup
     bestSize = commonBest.size || 0
     ownsAllBest = true
   }
-  const releases = resolved.flatMap(part =>
-    orderedPartReleases(!partiallyResolved && ownsAllBest ? commonBest || part.best : part.best, part.alts).map(
-      ([kind, release]) => releaseDict(kind, release, part.label, part.source.url),
-    ),
+  const releases = resolved.flatMap((part, index) =>
+    listReleases(part, !dormant[index] && !partiallyResolved && ownsAllBest ? commonBest || part.best : part.best),
   )
   const status = partiallyResolved ? 'partial' : ownsAllBest ? 'best' : 'upgrade'
   return {
     ...common,
-    key: `${item.arr}:${alid}:${season}:${bestGroup}`,
+    key: `${source}:${alid}:${season}:${bestGroup}`,
     status,
     ...(partiallyResolved ? { upgrade_available: !ownsAllBest } : {}),
+    ...(dormant.some(Boolean) ? { preference_blocked: true } : {}),
     best_group: bestGroup,
     best_size: bestSize,
     releases,

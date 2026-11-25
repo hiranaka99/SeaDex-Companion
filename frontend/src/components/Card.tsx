@@ -106,6 +106,8 @@ function Card({
   const [copyOverflows, setCopyOverflows] = useState(false)
   const toast = useToast()
   const srcClass = group.arr === 'Sonarr' ? 'sonarr' : 'radarr'
+  // An additional instance is named on the card, so the same anime in two libraries can be told apart.
+  const namedSource = group.source !== group.arr
   const st = group.status === 'review' ? 'partial' : group.status || 'upgrade'
 
   useEffect(() => {
@@ -261,11 +263,13 @@ function Card({
     onRescan()
   }
 
+  // SeaDex does list these seasons; the saved preferences exclude every release, which is not the same as unlisted.
+  const outsidePreferences = group.status === 'missing' && group.seasons.every(season => season.preference_blocked)
   const statusBadge = (
     <div className="library-status-badge" data-library-status={group.status}>
       <span className="library-status-label">
         <Icon name={CARD_STATUS[group.status].icon} size={14} className="shrink-0" />
-        <span>{STATUS_LABEL[group.status]}</span>
+        <span>{outsidePreferences ? 'Outside your preferences' : STATUS_LABEL[group.status]}</span>
       </span>
       {group.status === 'partial' && upgradableSeasonCount > 0 && (
         <span className="library-status-upgrades">
@@ -302,7 +306,7 @@ function Card({
           rel="noopener"
         >
           <Icon name="server" size={15} />
-          Open in {group.arr}
+          Open in {group.source}
         </a>
       )}
       {typeof group.anilist_id === 'number' && (
@@ -345,7 +349,7 @@ function Card({
   return (
     <>
       <article
-        data-library-key={String(group.anilist_id ?? `${group.arr}:${group.title}`)}
+        data-library-key={group.key}
         data-library-status={group.status}
         data-needs-action={group.status === 'review' || upgradableSeasonCount > 0 ? 'true' : 'false'}
         className={cx(
@@ -489,23 +493,39 @@ function Card({
           <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1">
             {group.arr_url ? (
               <a
-                className="library-card-source touch-target grid size-8 shrink-0 place-items-center rounded-lg transition-colors hover:bg-panel-raised"
+                className={cx(
+                  'library-card-source touch-target shrink-0 rounded-lg transition-colors hover:bg-panel-raised',
+                  namedSource
+                    ? 'inline-flex h-8 max-w-36 items-center gap-1.5 px-1.5 hover:no-underline'
+                    : 'grid size-8 place-items-center',
+                )}
                 href={group.arr_url}
                 target="_blank"
                 rel="noopener"
-                title={`Open ${group.title} in ${group.arr}`}
-                aria-label={`Open ${group.title} in ${group.arr} (new tab)`}
+                title={`Open ${group.title} in ${group.source}`}
+                aria-label={`Open ${group.title} in ${group.source} (new tab)`}
               >
                 <BrandLogo name={srcClass} size={20} />
+                {namedSource && (
+                  <span className="min-w-0 truncate text-xs font-semibold text-muted">{group.source}</span>
+                )}
               </a>
             ) : (
               <span
-                className="library-card-source grid size-8 shrink-0 place-items-center rounded-lg"
-                title={group.arr}
-                role="img"
-                aria-label={`Source: ${group.arr}`}
+                className={cx(
+                  'library-card-source shrink-0 rounded-lg',
+                  namedSource
+                    ? 'inline-flex h-8 max-w-36 items-center gap-1.5 px-1.5'
+                    : 'grid size-8 place-items-center',
+                )}
+                title={group.source}
+                role={namedSource ? undefined : 'img'}
+                aria-label={namedSource ? undefined : `Source: ${group.source}`}
               >
                 <BrandLogo name={srcClass} size={20} />
+                {namedSource && (
+                  <span className="min-w-0 truncate text-xs font-semibold text-muted">{group.source}</span>
+                )}
               </span>
             )}
             <button
@@ -575,7 +595,7 @@ function Card({
                       {group.title}
                     </h2>
                     <p className="mt-1 mb-0 text-xs text-muted wrap-anywhere">
-                      {group.arr} · {seasonCount}{' '}
+                      {group.source} · {seasonCount}{' '}
                       {group.arr === 'Radarr'
                         ? seasonCount === 1
                           ? 'movie'

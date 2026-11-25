@@ -16,17 +16,68 @@ export function loadCache(): JsonObject {
 export function saveCache(cache: JsonObject): void {
   writeJsonAtomic(CACHE_FILE, cache, true)
 }
-export function saveLastResults(results: ResultItem[], lastRun: string): void {
-  const previous = loadLastResults()?.results || []
-  recordReleaseChanges(previous, results)
-  writeJsonAtomic(RESULTS_FILE, { results, last_run: lastRun })
+/** Signatures of the settings the saved results were computed under. */
+export interface ResultSettings {
+  assessment?: string
+  library?: string
 }
-export function loadLastResults(): { results: ResultItem[]; last_run: string | null } | null {
+
+export function saveLastResults(
+  results: ResultItem[],
+  lastRun: string,
+  options: { settings?: ResultSettings; baseline?: boolean } = {},
+): void {
+  const previous = loadLastResults()?.results || []
+  recordReleaseChanges(previous, results, undefined, undefined, { baseline: options.baseline })
+  writeJsonAtomic(RESULTS_FILE, {
+    results,
+    last_run: lastRun,
+    ...(options.settings ? { settings: options.settings } : {}),
+  })
+}
+export function loadLastResults(): {
+  results: ResultItem[]
+  last_run: string | null
+  settings?: ResultSettings
+} | null {
   const saved = readJson<JsonObject | null>(RESULTS_FILE, null)
   if (!saved || typeof saved !== 'object' || !Array.isArray(saved.results)) return null
+  const settings =
+    saved.settings && typeof saved.settings === 'object' && !Array.isArray(saved.settings)
+      ? (saved.settings as JsonObject)
+      : null
   return {
     results: normalizeResults(saved.results),
     last_run: typeof saved.last_run === 'string' ? saved.last_run : null,
+    ...(settings
+      ? {
+          settings: {
+            ...(typeof settings.assessment === 'string' ? { assessment: settings.assessment } : {}),
+            ...(typeof settings.library === 'string' ? { library: settings.library } : {}),
+          },
+        }
+      : {}),
+  }
+}
+
+/** The settings signatures of the saved results, without normalizing the results themselves. */
+export function loadResultSettings(): { count: number; settings?: ResultSettings } {
+  const saved = readJson<JsonObject | null>(RESULTS_FILE, null)
+  if (!saved || typeof saved !== 'object' || !Array.isArray(saved.results)) return { count: 0 }
+  const settings =
+    saved.settings && typeof saved.settings === 'object' && !Array.isArray(saved.settings)
+      ? (saved.settings as JsonObject)
+      : null
+  return {
+    count: saved.results.length,
+    ...(settings
+      ? {
+          settings: {
+            ...(typeof settings.assessment === 'string' ? { assessment: settings.assessment } : {}),
+            ...(typeof settings.library === 'string' ? { library: settings.library } : {}),
+          },
+        }
+      : {}),
   }
 }
 

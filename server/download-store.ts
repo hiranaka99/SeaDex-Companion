@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { DATA_DIR, DOWNLOAD_RECORDS_FILE, OWNED_TORRENTS_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
 import { log } from './logging.js'
-import type { DownloadClient, DownloadPhase, DownloadProtocol } from '../shared/download-contracts.js'
+import type { DownloadClient, DownloadPhase, DownloadProtocol, ImportState } from '../shared/download-contracts.js'
 import type { UsenetProvider } from '../shared/usenet-contracts.js'
 
 const OWNED_DOWNLOADS_FILE = join(DATA_DIR, 'owned_downloads.json')
@@ -48,6 +48,30 @@ export interface OwnedDownloadRecord {
   last_phase?: DownloadPhase
   card?: { title: string; season: number | null; part: string; release_group: string; tracker: string; size: number }
   labels: string[]
+  /** Library seasons this download is meant for, kept so its import can be confirmed after rescans. */
+  library?: LibraryTarget[]
+  /** Import follow-through; absent on records that predate it. */
+  import?: ImportTracking
+}
+
+export interface LibraryTarget {
+  key: string
+  season: number | null
+  part: string
+  group: string
+}
+
+export interface ImportTracking {
+  state: ImportState
+  /** When the current state was entered. */
+  since: string
+  completed_at?: string
+  /** Library rescans requested to look for the imported files. */
+  rescans?: number
+  rescan_at?: string
+  message?: string
+  /** A problem notification was sent for this download. */
+  notified?: boolean
 }
 
 interface CardSnapshot {
@@ -134,6 +158,51 @@ function decodeRecord(value: unknown): OwnedDownloadRecord | null {
           .slice(0, 16)
           .map(label => safeText(label, 200))
       : [],
+    ...(decodeLibrary(raw.library).length ? { library: decodeLibrary(raw.library) } : {}),
+    ...(decodeImport(raw.import) ? { import: decodeImport(raw.import) } : {}),
+  }
+}
+
+const IMPORT_STATES: Record<string, true> = {
+  waiting: true,
+  pending: true,
+  blocked: true,
+  imported: true,
+  not_imported: true,
+}
+
+function decodeLibrary(value: unknown): LibraryTarget[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .flatMap(raw => {
+      if (!raw || typeof raw !== 'object') return []
+      const target = raw as Record<string, unknown>
+      return typeof target.key === 'string' && target.key
+        ? [
+            {
+              key: target.key.slice(0, 120),
+              season: nullableInteger(target.season),
+              part: safeText(target.part, 80),
+              group: safeText(target.group, 120),
+            },
+          ]
+        : []
+    })
+    .slice(0, 32)
+}
+
+function decodeImport(value: unknown): ImportTracking | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const raw = value as Record<string, unknown>
+  if (typeof raw.state !== 'string' || !IMPORT_STATES[raw.state]) return undefined
+  return {
+    state: raw.state as ImportState,
+    since: typeof raw.since === 'string' ? raw.since : now(),
+    ...(typeof raw.completed_at === 'string' ? { completed_at: raw.completed_at } : {}),
+    ...(Number.isInteger(raw.rescans) ? { rescans: raw.rescans as number } : {}),
+    ...(typeof raw.rescan_at === 'string' ? { rescan_at: raw.rescan_at } : {}),
+    ...(typeof raw.message === 'string' && raw.message ? { message: safeText(raw.message, 600) } : {}),
+    ...(raw.notified === true ? { notified: true } : {}),
   }
 }
 
@@ -364,6 +433,7 @@ export interface NewDownloadRecord {
   card?: CardSnapshot
   labels?: string[]
   rows?: AssociationRow[]
+  library?: LibraryTarget[]
 }
 
 /** Creates the durable record. Torrent records reuse `t:<hash>`; Usenet gets `u:<hash>:<uuid>`. */
@@ -390,6 +460,10 @@ export function addDownloadRecord(input: NewDownloadRecord): OwnedDownloadRecord
     updated_at: timestamp,
     ...(input.card ? { card: structuredClone(input.card) } : {}),
     labels: [...new Set(input.labels || [])].slice(0, 16),
+    // Import is only followed for downloads whose library seasons are known.
+    ...(input.library?.length
+      ? { library: structuredClone(input.library), import: { state: 'waiting' as const, since: timestamp } }
+      : {}),
   }
   const existing = file.records.find(candidate => candidate.id === id)
   if (existing) Object.assign(record, { added_at: existing.added_at })
@@ -461,9 +535,29 @@ export function markDownloadRemoved(id: string): OwnedDownloadRecord | null {
 
 export function setDownloadPhase(id: string, phase: DownloadPhase): void {
   const record = current().records.find(record => record.id === id)
-  if (!record || record.last_phase === phase) return
+  if (!record) return
+  // The first sight of a finished download starts the wait for Sonarr or Radarr to import it.
+  const finished = record.import?.state === 'waiting' && (phase === 'complete' || phase === 'seeding')
+  if (record.last_phase === phase && !finished) return
   mutate(id, record => {
     record.last_phase = phase
+    if (finished) {
+      const at = now()
+      record.import = { state: 'pending', since: at, completed_at: at }
+    }
+  })
+}
+
+/** Applies a change to a record's import tracking and persists it; the state's `since` follows state changes. */
+export function updateDownloadImport(id: string, change: Partial<ImportTracking>): OwnedDownloadRecord | null {
+  const record = current().records.find(record => record.id === id)
+  if (!record?.import) return null
+  return mutate(id, record => {
+    const previous = record.import!
+    const next: ImportTracking = { ...previous, ...change }
+    if (change.state && change.state !== previous.state) next.since = now()
+    for (const key of Object.keys(next) as (keyof ImportTracking)[]) if (next[key] === undefined) delete next[key]
+    record.import = next
   })
 }
 

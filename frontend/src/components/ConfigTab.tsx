@@ -1,6 +1,21 @@
 import { errorMessage } from '../../../shared/errors.js'
-import type { ConfigUpdate, SecretConfigKey } from '../../../shared/contracts'
+import type {
+  ArrKind,
+  ConfigUpdate,
+  LibraryScope,
+  PublicArrInstance,
+  ReleasePreferences,
+  SecretConfigKey,
+} from '../../../shared/contracts'
 import type { DownloadMode } from '../../../shared/download-contracts'
+import {
+  ARR_TAG_KEYS,
+  ARR_TAG_PATTERN,
+  DEFAULT_ARR_TAGS,
+  DEFAULT_RELEASE_PREFERENCES,
+  EMPTY_LIBRARY_SCOPE,
+  type ArrTagKey,
+} from '../../../shared/settings'
 import { useEffect, useRef, useState, useId, FormEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Config, ScanSchedule, ScannedDataInfo, Status } from '../types'
@@ -20,6 +35,7 @@ import {
   downloadModes,
   subheading,
   Field,
+  InputField,
   ToggleRow,
   StatusChip,
   Section,
@@ -29,16 +45,42 @@ import {
 } from './config/parts'
 import { ScheduleEditor, scheduleErrors } from './config/ScheduleEditor'
 import ChangePasswordForm from './config/ChangePasswordForm'
+import LibraryScopeEditor from './LibraryScopeEditor'
+import ReleasePreferencesEditor, { summarizePreferences } from './ReleasePreferencesEditor'
 import { useConnectionTests } from '../useConnectionTests'
 import {
+  instanceConfigured,
+  instanceService,
   isSecretKey,
+  KIND_NAMES,
   serviceOfField,
   SERVICE_IDS,
   SERVICES,
   withoutSavedFlags,
   type ConfigDraft,
+  type IntegrationService,
   type Service,
 } from '../config-services'
+
+/** The status tags in the order a person reads them, with what each one means on a title. */
+const TAG_FIELDS: [ArrTagKey, string, string][] = [
+  ['arr_tag_best', 'Best release owned', 'Every season is on its best release'],
+  ['arr_tag_upgrade', 'Upgrade available', 'At least one season can be upgraded'],
+  ['arr_tag_unlisted', 'Not on SeaDex', 'SeaDex lists no season of the title'],
+  ['arr_tag_review', 'Match needs review', 'The AniList match is not confirmed yet'],
+]
+
+/** The settings a scan judges the library under. When they change, the saved results describe the earlier settings. */
+const scanSettings = (config: Config) =>
+  JSON.stringify([
+    config.release_preferences,
+    config.verify_release_files,
+    config.sonarr_url,
+    config.radarr_url,
+    config.sonarr_scope,
+    config.radarr_scope,
+    (config.arr_instances || []).map(instance => [instance.id, instance.url, instance.scope, instance.key_configured]),
+  ])
 
 interface Props {
   active: boolean
@@ -49,6 +91,7 @@ interface Props {
   config: Config | null
   status: Status
   username: string
+  knownTrackers: string[]
   onRunScan: () => void
   onAccountUpdated: (username: string) => void
   onSaved: (config: Config) => void
@@ -63,6 +106,7 @@ export default function ConfigTab({
   config,
   status,
   username,
+  knownTrackers,
   onRunScan,
   onAccountUpdated,
   onSaved,
@@ -85,9 +129,11 @@ export default function ConfigTab({
   const [clearDataOpen, setClearDataOpen] = useState(false)
   const [clearingData, setClearingData] = useState(false)
   const [scannedData, setScannedData] = useState<ScannedDataInfo | null>(null)
+  const [removeTagsOpen, setRemoveTagsOpen] = useState(false)
+  const [removingTags, setRemovingTags] = useState(false)
   const toast = useToast()
   const tests = useConnectionTests(form, clearedSecrets)
-  const { connections, testingAll, test, describe, failed } = tests
+  const { connection, testingAll, test, describe, failed } = tests
 
   useEffect(() => {
     if (!config) return
@@ -137,6 +183,7 @@ export default function ConfigTab({
     if (!active) {
       setPendingClear(null)
       setClearDataOpen(false)
+      setRemoveTagsOpen(false)
     }
   }, [active])
 
@@ -157,6 +204,58 @@ export default function ConfigTab({
     setForm(current =>
       current.scan_schedule ? { ...current, scan_schedule: { ...current.scan_schedule, ...changes } } : current,
     )
+  const instances: PublicArrInstance[] = form.arr_instances || []
+  const setInstances = (next: PublicArrInstance[]) => setForm(current => ({ ...current, arr_instances: next }))
+  const updateInstance = (id: string, changes: Partial<PublicArrInstance>) => {
+    setInstances(instances.map(instance => (instance.id === id ? { ...instance, ...changes } : instance)))
+    if ('url' in changes || 'key' in changes) tests.invalidate(`arr:${id}`)
+  }
+  const addInstance = (kind: ArrKind) => {
+    const taken = new Set(['sonarr', 'radarr', ...instances.map(instance => instance.name.trim().toLowerCase())])
+    let number = 2
+    while (taken.has(`${kind} ${number}`)) number += 1
+    const id = crypto.randomUUID().replace(/-/g, '').slice(0, 8)
+    setInstances([
+      ...instances,
+      {
+        id,
+        kind,
+        name: `${KIND_NAMES[kind]} ${number}`,
+        url: '',
+        key: '',
+        key_configured: false,
+        category: `${kind}-anime`,
+        sabnzbd_category: `${kind}-anime`,
+        scope: EMPTY_LIBRARY_SCOPE,
+      },
+    ])
+    window.requestAnimationFrame(() =>
+      document.getElementById(`instance-${id}`)?.querySelector<HTMLInputElement>('input')?.focus(),
+    )
+  }
+  const removeInstance = (instance: PublicArrInstance) => {
+    const index = instances.indexOf(instance)
+    setInstances(instances.filter(other => other.id !== instance.id))
+    toast.show(`${instance.name} removed. Save the configuration to apply it.`, 'info', 12000, {
+      label: 'Undo',
+      onClick: () =>
+        setForm(current => {
+          const list = current.arr_instances || []
+          return list.some(other => other.id === instance.id)
+            ? current
+            : { ...current, arr_instances: [...list.slice(0, index), instance, ...list.slice(index)] }
+        }),
+    })
+  }
+  const loadScopeOptions = (service: IntegrationService) => () =>
+    api.getArrOptions(service, { ...form, clear_secrets: [...clearedSecrets] })
+  const scopeOf = (name: 'sonarr_scope' | 'radarr_scope'): LibraryScope => form[name] || EMPTY_LIBRARY_SCOPE
+  const preferences: ReleasePreferences = form.release_preferences || DEFAULT_RELEASE_PREFERENCES
+  const tagProblem = (key: ArrTagKey) => {
+    const label = String(form[key] ?? '').trim()
+    return label && !ARR_TAG_PATTERN.test(label.toLowerCase()) ? 'Use lowercase letters, digits, and hyphens only' : ''
+  }
+
   const clearSecret = (name: SecretConfigKey) => {
     set(name, '')
     setForm(current => ({ ...current, [`${name}_configured`]: false }))
@@ -178,6 +277,13 @@ export default function ConfigTab({
   const chip = (service: Service) => (
     <StatusChip key={service} label={SERVICES[service].label} status={describe(service)} />
   )
+  const instanceChip = (instance: PublicArrInstance) => (
+    <StatusChip
+      key={instance.id}
+      label={instance.name.trim() || KIND_NAMES[instance.kind]}
+      status={describe(instanceService(instance))}
+    />
+  )
   const shownDownloadServices = SERVICE_IDS.filter(service => SERVICES[service].protocol && isRelevant(service))
 
   const submit = async (event: FormEvent) => {
@@ -189,17 +295,49 @@ export default function ConfigTab({
       toast.show('Fix the automatic scan schedule before saving', 'error')
       return
     }
+    if (ARR_TAG_KEYS.some(key => tagProblem(key))) {
+      if (automationRef.current) automationRef.current.open = true
+      toast.show('Fix the status tag names before saving', 'error')
+      return
+    }
     setSaving(true)
     const data: ConfigUpdate = { ...withoutSavedFlags(form), clear_secrets: [...clearedSecrets] }
     try {
       const saved = await api.saveConfig(data)
+      // Results are judged under the settings of their scan; say so when those settings changed.
+      const rescan = config !== null && scanSettings(config) !== scanSettings(saved)
       setClearedSecrets(new Set())
       onSaved(saved)
-      toast.show('Configuration saved', 'success')
+      toast.show(
+        rescan
+          ? 'Configuration saved. Scan the library to apply the new scope and preferences.'
+          : 'Configuration saved',
+        'success',
+        rescan ? 12000 : undefined,
+        rescan && !scanDisabled ? { label: 'Scan now', onClick: onRunScan } : undefined,
+      )
     } catch (error) {
       toast.show('Could not save configuration: ' + errorMessage(error), 'error')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const removeTags = async () => {
+    setRemovingTags(true)
+    try {
+      const result = await api.removeArrTags()
+      toast.show(
+        result.removed
+          ? `Removed status tags from ${result.removed} title${result.removed === 1 ? '' : 's'}`
+          : 'No title carried a status tag',
+        'success',
+      )
+    } catch (error) {
+      toast.show('Could not remove the status tags: ' + errorMessage(error), 'error')
+      throw error
+    } finally {
+      setRemovingTags(false)
     }
   }
 
@@ -221,7 +359,10 @@ export default function ConfigTab({
     }
   }
 
-  const configuredServices = SERVICE_IDS.filter(service => configured[service] && isRelevant(service))
+  const configuredServices: IntegrationService[] = [
+    ...SERVICE_IDS.filter(service => configured[service] && isRelevant(service)),
+    ...instances.filter(instanceConfigured).map(instanceService),
+  ]
   const testAll = () => tests.testAll(configuredServices)
 
   if (!config)
@@ -353,7 +494,7 @@ export default function ConfigTab({
                 <li>
                   <strong className="block text-ink">1. Connect & test</strong>
                   <span className="text-muted">
-                    {connections[librarySource].phase === 'success'
+                    {connection(librarySource).phase === 'success'
                       ? 'Connection tested'
                       : 'Enter a URL and API key, then test'}
                   </span>
@@ -415,6 +556,7 @@ export default function ConfigTab({
               <span className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
                 {showSonarr && chip('sonarr')}
                 {showRadarr && chip('radarr')}
+                {!guidedSetup && instances.map(instanceChip)}
               </span>
             </div>
             <div className={cx('grid gap-4', !guidedSetup && 'grid-cols-2 max-[1100px]:grid-cols-1')}>
@@ -424,7 +566,7 @@ export default function ConfigTab({
                   title="Sonarr"
                   description="Series library and season metadata"
                   configured={configured.sonarr}
-                  connection={connections.sonarr}
+                  connection={connection('sonarr')}
                   onTest={() => void test('sonarr')}
                 >
                   <Field
@@ -457,6 +599,14 @@ export default function ConfigTab({
                     form={form}
                     set={set}
                   />
+                  <LibraryScopeEditor
+                    kind="sonarr"
+                    appName="Sonarr"
+                    scope={scopeOf('sonarr_scope')}
+                    onChange={scope => set('sonarr_scope', scope)}
+                    canLoad={configured.sonarr}
+                    loadOptions={loadScopeOptions('sonarr')}
+                  />
                 </IntegrationCard>
               )}
               {showRadarr && (
@@ -465,7 +615,7 @@ export default function ConfigTab({
                   title="Radarr"
                   description="Movie library and release metadata"
                   configured={configured.radarr}
-                  connection={connections.radarr}
+                  connection={connection('radarr')}
                   onTest={() => void test('radarr')}
                 >
                   <Field
@@ -498,9 +648,129 @@ export default function ConfigTab({
                     form={form}
                     set={set}
                   />
+                  <LibraryScopeEditor
+                    kind="radarr"
+                    appName="Radarr"
+                    scope={scopeOf('radarr_scope')}
+                    onChange={scope => set('radarr_scope', scope)}
+                    canLoad={configured.radarr}
+                    loadOptions={loadScopeOptions('radarr')}
+                  />
                 </IntegrationCard>
               )}
             </div>
+            {!guidedSetup && instances.length > 0 && (
+              <div className="mt-4 grid grid-cols-2 gap-4 max-[1100px]:grid-cols-1">
+                {instances.map(instance => {
+                  const app = KIND_NAMES[instance.kind]
+                  const name = instance.name.trim() || `New ${app} instance`
+                  return (
+                    <div key={instance.id} id={`instance-${instance.id}`} className="contents">
+                      <IntegrationCard
+                        brand={instance.kind}
+                        title={name}
+                        description={
+                          instance.kind === 'sonarr'
+                            ? 'Additional Sonarr series library'
+                            : 'Additional Radarr movie library'
+                        }
+                        configured={instanceConfigured(instance)}
+                        connection={connection(instanceService(instance))}
+                        onTest={() => void test(instanceService(instance))}
+                        footerAction={
+                          <button
+                            type="button"
+                            className={cx(
+                              buttonBase,
+                              'justify-center border-line bg-canvas-soft text-bad hover:border-bad/40 hover:bg-bad/10',
+                            )}
+                            aria-label={`Remove ${name}`}
+                            onClick={() => removeInstance(instance)}
+                          >
+                            <Icon name="trash" size={15} />
+                            Remove
+                          </button>
+                        }
+                      >
+                        <InputField
+                          label="Name"
+                          hint="Shown on library cards, in the source filter, and in scan messages"
+                          placeholder={`${app} 4K`}
+                          required
+                          value={instance.name}
+                          onChange={value => updateInstance(instance.id, { name: value })}
+                        />
+                        <InputField
+                          type="url"
+                          label="Server URL"
+                          hint="The /api/v3 path is added automatically"
+                          placeholder={`https://${instance.kind}-4k.example.com`}
+                          required
+                          value={instance.url}
+                          onChange={value => updateInstance(instance.id, { url: value })}
+                        />
+                        <InputField
+                          type="password"
+                          label="API key"
+                          placeholder={`Enter the ${app} API key`}
+                          required={!instance.key_configured}
+                          configured={instance.key_configured && !instance.key}
+                          value={instance.key}
+                          onChange={value => updateInstance(instance.id, { key: value })}
+                        />
+                        {torrentShown && (
+                          <InputField
+                            label="qBittorrent category"
+                            hint={`Must match the category configured in ${name}`}
+                            placeholder={`${instance.kind}-4k`}
+                            value={instance.category}
+                            onChange={value => updateInstance(instance.id, { category: value })}
+                          />
+                        )}
+                        {usenetShown && (
+                          <InputField
+                            label="SABnzbd category"
+                            hint={`Must match the category configured in ${name}`}
+                            placeholder={`${instance.kind}-4k`}
+                            value={instance.sabnzbd_category}
+                            onChange={value => updateInstance(instance.id, { sabnzbd_category: value })}
+                          />
+                        )}
+                        <LibraryScopeEditor
+                          kind={instance.kind}
+                          appName={name}
+                          scope={instance.scope || EMPTY_LIBRARY_SCOPE}
+                          onChange={scope => updateInstance(instance.id, { scope })}
+                          canLoad={instanceConfigured(instance)}
+                          loadOptions={loadScopeOptions(instanceService(instance))}
+                        />
+                      </IntegrationCard>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            {!guidedSetup && (
+              <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2">
+                {(['sonarr', 'radarr'] as const).map(kind => (
+                  <button
+                    key={kind}
+                    type="button"
+                    className={cx(buttonBase, 'border-line bg-panel text-ink hover:bg-panel-raised')}
+                    disabled={instances.length >= 10}
+                    onClick={() => addInstance(kind)}
+                  >
+                    <Icon name="plus" size={16} />
+                    Add {KIND_NAMES[kind]} instance
+                  </button>
+                ))}
+                <span className="min-w-0 flex-1 basis-56 text-xs text-muted">
+                  {instances.length >= 10
+                    ? 'Ten additional instances is the limit.'
+                    : 'For a second library, such as a 4K or anime-only instance. Each one is scanned and shown separately.'}
+                </span>
+              </div>
+            )}
           </section>
 
           <Section
@@ -556,7 +826,7 @@ export default function ConfigTab({
                   title="qBittorrent"
                   description="Sends public torrent releases directly to your client"
                   configured={configured.qbittorrent}
-                  connection={connections.qbittorrent}
+                  connection={connection('qbittorrent')}
                   onTest={() => void test('qbittorrent')}
                 >
                   <Field
@@ -593,7 +863,7 @@ export default function ConfigTab({
                   title="SABnzbd"
                   description="Usenet downloader, required for Usenet downloads"
                   configured={configured.sabnzbd}
-                  connection={connections.sabnzbd}
+                  connection={connection('sabnzbd')}
                   onTest={() => void test('sabnzbd')}
                 >
                   <Field
@@ -648,7 +918,7 @@ export default function ConfigTab({
                     description="Usenet anime index; no API key needed"
                     configured={configured.animetosho}
                     disabled={!form.animetosho_enabled}
-                    connection={connections.animetosho}
+                    connection={connection('animetosho')}
                     onTest={() => void test('animetosho')}
                   >
                     <ToggleRow
@@ -679,7 +949,7 @@ export default function ConfigTab({
                     description="Hash-linked Usenet index; requires your account API key"
                     configured={configured.amenzb}
                     disabled={!form.amenzb_enabled}
-                    connection={connections.amenzb}
+                    connection={connection('amenzb')}
                     onTest={() => void test('amenzb')}
                   >
                     <ToggleRow
@@ -712,21 +982,45 @@ export default function ConfigTab({
             )}
           </Section>
 
+          <Section
+            title="Release preferences"
+            summary={summarizePreferences(preferences, form.verify_release_files !== false).map(fact => (
+              <span key={fact}>{fact}</span>
+            ))}
+          >
+            <ReleasePreferencesEditor
+              preferences={preferences}
+              verify={form.verify_release_files !== false}
+              knownTrackers={knownTrackers}
+              onChange={next => set('release_preferences', next)}
+              onVerifyChange={checked => set('verify_release_files', checked)}
+            />
+          </Section>
+
           <Section title="Notifications" attention={failed(['discord'])} summary={chip('discord')}>
             <IntegrationCard
               brand="discord"
               title="Discord"
-              description="Notify a channel when new upgrades are found"
+              description="Notify a channel about upgrades and problems"
               configured={configured.discord}
-              connection={connections.discord}
+              connection={connection('discord')}
               onTest={() => void test('discord')}
+              testLabel="Send test message"
             >
               <ToggleRow
                 label="Discord notifications"
-                hint="Send newly discovered upgrades"
+                hint="Send newly discovered upgrades, and seasons that lose their best release because their files changed"
                 checked={!!form.notify_enabled}
                 onChange={checked => set('notify_enabled', checked)}
               />
+              {!!form.notify_enabled && (
+                <ToggleRow
+                  label="Import problems"
+                  hint="Also notify when Sonarr or Radarr does not import a finished download"
+                  checked={form.notify_import_problems !== false}
+                  onChange={checked => set('notify_import_problems', checked)}
+                />
+              )}
               <Field
                 name="webhook"
                 type="url"
@@ -761,22 +1055,83 @@ export default function ConfigTab({
               onChange={checked => set('unhide_on_new_best', checked)}
             />
             <div className="border-t border-line pt-6">
+              <ToggleRow
+                id="arr-status-tags"
+                label="Status tags in Sonarr and Radarr"
+                hint="After every scan, tag each series and movie with its SeaDex status, so you can filter by it there. Only the tags named here are ever added or removed."
+                checked={!!form.arr_tags_enabled}
+                onChange={checked => set('arr_tags_enabled', checked)}
+              />
+              {!!form.arr_tags_enabled && (
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  {TAG_FIELDS.map(([key, label, meaning]) => (
+                    <div key={key}>
+                      <Field
+                        name={key}
+                        type="text"
+                        label={label}
+                        hint={`${meaning}. Leave empty to skip this tag.`}
+                        placeholder={DEFAULT_ARR_TAGS[key]}
+                        form={form}
+                        set={set}
+                      />
+                      {tagProblem(key) && (
+                        <p className="mt-1.5 mb-0 text-xs text-bad" role="alert">
+                          {tagProblem(key)}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2">
+                <button
+                  type="button"
+                  className={cx(buttonBase, 'border-line bg-panel text-ink hover:bg-panel-raised')}
+                  disabled={removingTags || dirty}
+                  onClick={() => setRemoveTagsOpen(true)}
+                >
+                  {removingTags ? (
+                    <span className="size-4 animate-spin rounded-full border-2 border-current/30 border-t-current motion-reduce:animate-none" />
+                  ) : (
+                    <Icon name="trash" size={15} />
+                  )}
+                  {removingTags ? 'Removing tags…' : 'Remove these tags from all titles'}
+                </button>
+                <span className="min-w-0 flex-1 basis-56 text-xs text-muted">
+                  {dirty
+                    ? 'Save your changes before removing tags.'
+                    : 'Turning the tags off leaves existing tags in place until you remove them.'}
+                </span>
+              </div>
+            </div>
+            <div className="border-t border-line pt-6">
               <h3 className={subheading}>Incoming webhooks</h3>
               <p className="mt-1 mb-4 text-xs text-muted">
-                Add these URLs to Sonarr and Radarr to scan right after a new series or movie is added. Scheduled scans
-                still refresh existing titles.
+                Add each URL as a Webhook connection in its app. Enable the event for added series or movies to scan new
+                titles right away, and the import and upgrade events to refresh a title as soon as its files change.
+                Scheduled scans still refresh everything else.
               </p>
               <div className="space-y-3">
                 <CopyRow label="Sonarr" value={`${location.origin}/api/webhooks/sonarr`} />
                 <CopyRow label="Radarr" value={`${location.origin}/api/webhooks/radarr`} />
+                {instances.map(instance => (
+                  <CopyRow
+                    key={instance.id}
+                    label={instance.name.trim() || KIND_NAMES[instance.kind]}
+                    value={`${location.origin}/api/webhooks/${instance.kind}/${instance.id}`}
+                  />
+                ))}
               </div>
               <p className="mt-3 mb-0 text-xs text-muted">
-                Configure HTTP Basic Authentication in Sonarr or Radarr using your SeaDex username and password.
-                New-entry events are grouped for 10 seconds before scanning.
+                Configure HTTP Basic Authentication in Sonarr or Radarr using your SeaDex username and password. Events
+                are grouped for 10 seconds before scanning.
               </p>
               {status.webhook_scan.queued && (
                 <p className="mt-2 mb-0 text-xs text-accent-bright">
-                  A {status.webhook_scan.sources.join(' + ')} scan is queued.
+                  {status.webhook_scan.sources.length
+                    ? `A ${status.webhook_scan.sources.join(' + ')} scan is queued.`
+                    : 'A library check for a finished download is queued.'}
                 </p>
               )}
             </div>
@@ -895,6 +1250,19 @@ export default function ConfigTab({
           if (pendingClear) clearSecret(pendingClear)
         }}
         onClose={() => setPendingClear(null)}
+      />
+      <ConfirmDialog
+        open={removeTagsOpen}
+        title="Remove status tags?"
+        description={`The tags ${
+          ARR_TAG_KEYS.map(key => config[key])
+            .filter(Boolean)
+            .join(', ') || 'named in the settings'
+        } are removed from every series and movie in Sonarr and Radarr. Nothing else changes there. They return with the next scan while status tags stay enabled.`}
+        confirmLabel="Remove tags"
+        dangerous
+        onConfirm={removeTags}
+        onClose={() => setRemoveTagsOpen(false)}
       />
       <ConfirmDialog
         open={clearDataOpen}

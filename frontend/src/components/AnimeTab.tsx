@@ -18,8 +18,9 @@ import { useLibraryMotion } from '../useLibraryMotion'
 import { useBulkActions } from '../useBulkActions'
 import { useHiddenCards } from '../useHiddenCards'
 import { describeSchedule, timeUntilCheck } from '../schedule-text'
-import { isSeasonUpgradable } from '../../../shared/download-plan.js'
 import { groupReleaseChanges, latestReleaseChange } from '../release-changes'
+import { preferencesAreDefault } from '../../../shared/settings'
+import { upgradeParts } from '../../../shared/download-plan'
 
 interface Props {
   active: boolean
@@ -48,7 +49,7 @@ const SIZE_TITLE_ORDER = new Intl.Collator()
 const STATUS_RANK: Record<string, number> = { review: 0, upgrade: 1, partial: 2, missing: 3, best: 4 }
 
 function cardKey(group: GroupedCard): string {
-  return group.anilist_id !== null ? String(group.anilist_id) : `${group.arr}:${group.title}`
+  return group.key
 }
 
 function SkeletonCards() {
@@ -156,6 +157,14 @@ export default function AnimeTab({
   }, [openResultKey])
 
   const allGroups = useMemo(() => groupResults(results), [results])
+  // One Sonarr and one Radarr keep the familiar two choices; additional instances are listed by name.
+  const sources = useMemo(() => {
+    const named = [...new Set(allGroups.map(group => group.source))].sort((left, right) => left.localeCompare(right))
+    return named.some(name => name !== 'Sonarr' && name !== 'Radarr') ? named : ['Sonarr', 'Radarr']
+  }, [allGroups])
+  useEffect(() => {
+    if (arr && !sources.includes(arr)) setArr('')
+  }, [arr, sources])
   const titleFor = useCallback((key: string) => allGroups.find(group => cardKey(group) === key)?.title, [allGroups])
   const { hiddenKeys, toggleHidden: toggleHiddenKey } = useHiddenCards(config?.hidden, titleFor)
   const toggleHidden = useCallback((group: GroupedCard) => toggleHiddenKey(cardKey(group)), [toggleHiddenKey])
@@ -190,7 +199,7 @@ export default function AnimeTab({
   const scopeGroups = useMemo(
     () =>
       orderedGroups.filter(group => {
-        if (hiddenKeys.has(cardKey(group)) !== showHidden || (arr && group.arr !== arr)) return false
+        if (hiddenKeys.has(cardKey(group)) !== showHidden || (arr && group.source !== arr)) return false
         return !searchQuery || searchText.get(group)!.includes(searchQuery)
       }),
     [orderedGroups, hiddenKeys, showHidden, arr, searchText, searchQuery],
@@ -283,17 +292,9 @@ export default function AnimeTab({
   }
 
   const totalDelta = useMemo(() => groups.reduce((sum, group) => sum + cardSizeDelta(group), 0), [groups])
+  // The same rule bulk review applies, so the button is offered exactly when the review has something to show.
   const upgradeSeasonCount = useMemo(
-    () =>
-      new Set(
-        results
-          .filter(result => {
-            if (result.excluded || !isSeasonUpgradable(result)) return false
-            const excludedParts = new Set(result.excluded_parts || [])
-            return result.releases.some(release => release.kind === 'best' && !excludedParts.has(release.part || ''))
-          })
-          .map(result => result.key),
-      ).size,
+    () => new Set(results.filter(result => upgradeParts(result).length > 0).map(result => result.key)).size,
     [results],
   )
   const libraryConfigured = Boolean(
@@ -374,7 +375,11 @@ export default function AnimeTab({
                 {scheduleDescription} · next in ~{autoCheckLabel}
               </span>
             )}
-            {status.webhook_scan.queued && <span className="text-accent-bright">Webhook scan queued</span>}
+            {status.webhook_scan.queued && (
+              <span className="text-accent-bright">
+                {status.webhook_scan.sources.length ? 'Webhook scan queued' : 'Library check queued'}
+              </span>
+            )}
           </div>
         </div>
         <div className="library-actions flex flex-wrap items-center gap-2 max-[600px]:w-full">
@@ -528,8 +533,11 @@ export default function AnimeTab({
               onChange={event => setArr(event.target.value)}
             >
               <option value="">All sources</option>
-              <option value="Sonarr">Sonarr</option>
-              <option value="Radarr">Radarr</option>
+              {sources.map(source => (
+                <option key={source} value={source}>
+                  {source}
+                </option>
+              ))}
             </select>
             <select
               aria-label="SeaDex coverage"
@@ -672,6 +680,27 @@ export default function AnimeTab({
         )}
       </div>
 
+      {!loading && results.length > 0 && status.settings_changed && !status.running && (
+        <div
+          className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-warn/30 bg-warn/8 px-4 py-3 text-sm text-ink"
+          role="status"
+        >
+          <Icon name="info" size={18} className="shrink-0 text-warn" />
+          <span className="min-w-0 flex-1 basis-56">
+            Library scope or release preferences changed since the last scan. These results still reflect the earlier
+            settings.
+          </span>
+          <button
+            type="button"
+            className={cx(buttonBase, 'border-warn/35 bg-warn/10 text-ink hover:bg-warn/18')}
+            onClick={onScan}
+            disabled={!libraryConfigured || bulk.busy !== null || bulkOperationActive}
+          >
+            <Icon name="play" size={16} />
+            Scan library
+          </button>
+        </div>
+      )}
       {!loading && results.length > 0 && (
         <p className="library-summary" aria-label="Library summary">
           {shownUpgrades > 0 ? (
@@ -840,6 +869,7 @@ export default function AnimeTab({
         busy={bulk.busy === 'start'}
         job={bulk.job}
         downloadMode={config?.download_mode || 'torrent_only'}
+        preferTarget={Boolean(config?.release_preferences && !preferencesAreDefault(config.release_preferences))}
         sabEnabled={Boolean(config?.sabnzbd_url && config?.sabnzbd_key_configured)}
         onConfirm={(planId, acknowledge) => void bulk.start(planId, acknowledge)}
         onClose={bulk.close}

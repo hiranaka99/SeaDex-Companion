@@ -1,8 +1,10 @@
-import { SECRET_CONFIG_KEYS, type SecretConfigKey } from '../../shared/contracts.js'
+import { SECRET_CONFIG_KEYS, type PublicArrInstance, type SecretConfigKey } from '../../shared/contracts.js'
 import type { DownloadProtocol } from '../../shared/download-contracts.js'
 import type { Config } from './types'
 
 export type Service = 'sonarr' | 'radarr' | 'qbittorrent' | 'sabnzbd' | 'animetosho' | 'amenzb' | 'discord'
+/** A fixed integration, or `arr:<id>` for an additional Sonarr or Radarr instance. */
+export type IntegrationService = Service | `arr:${string}`
 
 /** The settings form: the saved configuration without hidden titles, edited in place. */
 export type ConfigDraft = Partial<Omit<Config, 'hidden'>>
@@ -73,6 +75,8 @@ export const SERVICE_IDS = Object.keys(SERVICES) as Service[]
 
 /** The service a setting belongs to, if any. */
 export function serviceOfField(name: string): Service | undefined {
+  // A library scope does not change whether the connection works, so it keeps the last test result.
+  if (name.endsWith('_scope')) return undefined
   return SERVICE_IDS.find(
     service => name === SERVICES[service].fieldPrefix || name.startsWith(`${SERVICES[service].fieldPrefix}_`),
   )
@@ -85,4 +89,27 @@ export function withoutSavedFlags(form: ConfigDraft): ConfigDraft {
   const fields = { ...form }
   for (const key of SECRET_CONFIG_KEYS) delete fields[`${key}_configured`]
   return fields
+}
+
+export const KIND_NAMES = { sonarr: 'Sonarr', radarr: 'Radarr' } as const
+
+/** The connection-test address of an additional instance. */
+export const instanceService = (instance: Pick<PublicArrInstance, 'id'>): IntegrationService => `arr:${instance.id}`
+
+/** Enough of an additional instance is filled in to attempt a connection. */
+export const instanceConfigured = (instance: PublicArrInstance): boolean =>
+  Boolean(instance.url.trim() && (instance.key.trim() || instance.key_configured))
+
+/** The additional instance a connection-test address names, if it is in the draft. */
+export function instanceOfService(form: ConfigDraft, service: IntegrationService): PublicArrInstance | undefined {
+  return service.startsWith('arr:')
+    ? (form.arr_instances || []).find(instance => instanceService(instance) === service)
+    : undefined
+}
+
+/** How an integration is named in messages. */
+export function serviceLabel(form: ConfigDraft, service: IntegrationService): string {
+  if (!service.startsWith('arr:')) return SERVICES[service as Service].label
+  const instance = instanceOfService(form, service)
+  return instance?.name.trim() || (instance ? KIND_NAMES[instance.kind] : 'Instance')
 }

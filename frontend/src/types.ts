@@ -15,8 +15,12 @@ export type CardStatus = 'upgrade' | 'best' | 'missing' | 'partial' | 'review'
 export type TabId = 'anime' | 'history' | 'config' | 'log'
 
 export interface GroupedCard {
+  /** Identity of the card: stable across scans and distinct per library instance. Hidden cards are saved by it. */
+  key: string
   title: string
   arr: string
+  /** Name of the Sonarr or Radarr instance the title belongs to. */
+  source: string
   image: string | null
   banner: string | null
   url: string | null
