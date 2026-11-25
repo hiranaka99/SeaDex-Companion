@@ -3,7 +3,7 @@ import { releaseOwned } from '../../../shared/download-plan'
 import type { Config, ResultItem } from '../types'
 import { currentReleases, releaseCours, releaseQuality } from '../release-status'
 import { buttonBase, cx } from '../styles'
-import { IDLE_DOWNLOAD, type SeasonAvailability } from '../useCardDownloads'
+import { IDLE_DOWNLOAD, sendKey, type LowSpaceHold, type SeasonAvailability } from '../useCardDownloads'
 import Icon from './Icons'
 import type { DownloadEntry } from './DownloadsPanel'
 import ReleaseDetails from './ReleaseDetails'
@@ -60,13 +60,20 @@ interface Props {
   onProtocol: (index: number, protocol: DownloadProtocol) => void
   onRefreshAvailability: () => void
   onOpened: () => void
-  onDownload: (release: number) => void
+  /** `sendAnyway` sends after a low free-space warning. */
+  onDownload: (release: number, sendAnyway?: boolean) => void
+  /** A send of a release in this season that is waiting for the low-space decision. */
+  lowSpace: LowSpaceHold | null
+  sendErrors: Record<string, string>
+  onCancelLowSpace: () => void
+  onDismissSendError: (release: number) => void
   onPause: (entry: DownloadEntry) => void
   onResume: (entry: DownloadEntry) => void
   onRemove: (entry: DownloadEntry) => void
   ruleBusy: string
   onToggleExclusion: (part: string, excluded: boolean) => void
   onCorrectMatch: () => void
+  onCorrectTitleMatch: () => void
 }
 
 export default function DetailsSeason({
@@ -83,12 +90,17 @@ export default function DetailsSeason({
   onRefreshAvailability,
   onOpened,
   onDownload,
+  lowSpace,
+  sendErrors,
+  onCancelLowSpace,
+  onDismissSendError,
   onPause,
   onResume,
   onRemove,
   ruleBusy,
   onToggleExclusion,
   onCorrectMatch,
+  onCorrectTitleMatch,
 }: Props) {
   const root = useRef<HTMLElement>(null)
   const groups = releaseCours(r)
@@ -97,6 +109,8 @@ export default function DetailsSeason({
   const quality = releaseQuality(r)
   const ignored = Boolean(r.excluded)
   const mismatchedGroups = [...new Set(Object.values(r.mismatched_by_part || {}).flat())]
+  // A season of a matched title is matched on its own; anything else needs the title's match.
+  const seasonMatch = r.arr === 'Sonarr' && !!r.season && r.group_id !== null
   const blockedByPreferences = Boolean(r.preference_blocked) && (r.status === 'missing' || r.status === 'uncovered')
   const sources = (r.urls?.length ? r.urls : r.url ? [{ label: 'seadex.moe', url: r.url }] : []).filter(
     source => source.label === 'seadex.moe',
@@ -177,6 +191,11 @@ export default function DetailsSeason({
             onProtocol={protocol => onProtocol(index, protocol)}
             onRefreshAvailability={onRefreshAvailability}
             onDownload={() => onDownload(index)}
+            lowSpace={lowSpace?.release === index ? lowSpace.checks : null}
+            onSendAnyway={() => onDownload(index, true)}
+            onCancelLowSpace={onCancelLowSpace}
+            sendError={sendErrors[sendKey(r.key, index)] || null}
+            onDismissSendError={() => onDismissSendError(index)}
             onPause={onPause}
             onResume={onResume}
             onRemove={onRemove}
@@ -249,15 +268,38 @@ export default function DetailsSeason({
               try again.
             </p>
           )}
-          {!split && (r.status === 'missing' || r.status === 'uncovered') && (
+          {quality.kind === 'review' && (
+            <div className="details-review-prompt">
+              <p className="m-0 text-sm text-ink">
+                {seasonMatch
+                  ? `No AniList entry matched ${seasonName}, so its SeaDex releases cannot be checked.`
+                  : 'No AniList entry matched this title, so its SeaDex releases cannot be checked.'}
+              </p>
+              <p className="mt-1 mb-0 text-xs text-muted">
+                Choose the right AniList entry and the library rescans with it.
+              </p>
+              <button
+                type="button"
+                className={cx(
+                  buttonBase,
+                  'mt-3 min-h-11 border-transparent bg-accent px-3 text-xs text-on-accent enabled:hover:bg-accent-bright',
+                )}
+                disabled={!r.library_key || Boolean(ruleBusy)}
+                title={!r.library_key ? 'Run a new scan to enable manual matching' : undefined}
+                onClick={seasonMatch ? onCorrectMatch : onCorrectTitleMatch}
+              >
+                <Icon name="search" size={15} />
+                Choose AniList match
+              </button>
+            </div>
+          )}
+          {!split && quality.kind !== 'review' && (r.status === 'missing' || r.status === 'uncovered') && (
             <p className="mb-3 text-sm text-muted">
-              {quality.kind === 'review'
-                ? 'Confirm the AniList match to check this release.'
-                : blockedByPreferences
-                  ? 'SeaDex lists releases for this season, but your release preferences exclude all of them. Each release below says why.'
-                  : r.status === 'uncovered'
-                    ? 'This season has no releases on SeaDex.'
-                    : 'Not listed on seadex.moe.'}
+              {blockedByPreferences
+                ? 'SeaDex lists releases for this season, but your release preferences exclude all of them. Each release below says why.'
+                : r.status === 'uncovered'
+                  ? 'This season has no releases on SeaDex.'
+                  : 'Not listed on seadex.moe.'}
             </p>
           )}
           {!split && <RecommendationNotes notes={r.notes} />}
@@ -275,11 +317,13 @@ export default function DetailsSeason({
                 key={cour.part}
                 className="details-cour"
                 aria-label={`${seasonName} · ${cour.part}`}
+                data-needs-action={courStatus.kind === 'upgrade' || courStatus.kind === 'review' || undefined}
               >
                 <summary className="details-summary cursor-pointer">
                   <span className="min-w-0">
                     <span className="details-season-name">{cour.part}</span>
-                    <CurrentRelease groups={currentReleases(r, cour.part)} unscoped={!r.precise_part_ownership} />
+                    {/* Without per-cour ownership the season summary already names the files once. */}
+                    {r.precise_part_ownership && <CurrentRelease groups={currentReleases(r, cour.part)} />}
                     {r.excluded_parts?.includes(cour.part) && !ignored && (
                       <span className="details-summary-note text-warn">Ignored for bulk</span>
                     )}
@@ -321,7 +365,7 @@ export default function DetailsSeason({
               </details>
             )
           })}
-          <details className="details-season-actions" open={quality.kind === 'review' || undefined}>
+          <details className="details-season-actions">
             <summary className="touch-target flex cursor-pointer items-center gap-1.5 py-2 text-xs font-semibold text-muted">
               {r.arr === 'Radarr' ? 'Movie actions' : 'Season actions'}
               <Icon name="more" size={16} />

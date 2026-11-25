@@ -656,6 +656,53 @@ html.sidebar-resizing .app-shell {
 .details-management {
   margin-top: 16px;
 }
+.details-review-links {
+  margin-bottom: 20px;
+}
+.details-review-prompt {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--color-warn) 35%, transparent);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--color-warn) 6%, var(--color-canvas));
+}
+/* An inline decision or failure on one release row, in place of a detached notification. */
+.release-alert {
+  padding: 12px 14px;
+  border: 1px solid;
+  border-radius: var(--radius-lg);
+}
+.release-alert-warn {
+  border-color: color-mix(in srgb, var(--color-warn) 40%, transparent);
+  background: color-mix(in srgb, var(--color-warn) 7%, var(--color-canvas));
+}
+.release-alert-bad {
+  border-color: color-mix(in srgb, var(--color-bad) 40%, transparent);
+  background: color-mix(in srgb, var(--color-bad) 7%, var(--color-canvas));
+}
+.anime-details-panel p {
+  text-wrap: pretty;
+}
+/* Jump targets are landmarks, not controls: the landing tint shows where focus went, then fades. */
+.details-season:focus {
+  outline: none;
+}
+.details-landing {
+  animation: details-landing 1.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes details-landing {
+  from {
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .details-landing {
+    animation-duration: 0.01s;
+  }
+}
 .anime-details-body .release-row {
   padding: 16px;
   container-type: inline-size;

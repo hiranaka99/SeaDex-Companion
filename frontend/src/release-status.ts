@@ -107,12 +107,17 @@ export function releaseOverview(seasons: ResultItem[], arr: string) {
       title: `You have the best release${seasons.length === 1 ? '' : 's'}`,
       description: `${seasons.length === 1 ? 'Your ' + unit + ' matches' : 'All ' + quantity(seasons.length) + ' match'} SeaDex recommendations.`,
     }
-  if (review)
+  if (review) {
+    // The title already counts the reviews; the description says what else is known, or why the review matters.
+    const others = description.split(' · ').filter(part => part && !part.includes('match review'))
     return {
       kind: 'review' as const,
       title: `${quantity(review)} ${review === 1 ? 'needs' : 'need'} a match review`,
-      description,
+      description: others.length
+        ? others.join(' · ')
+        : 'SeaDex releases can be checked once the right AniList entry is chosen.',
     }
+  }
   if (upgrades) return { kind: 'upgrade' as const, title: `${quantity(upgrades)} can be upgraded`, description }
   if (incomplete) return { kind: 'incomplete' as const, title: 'Your library has missing episodes', description }
   if (missing === seasons.length && blocked === missing)
