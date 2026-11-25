@@ -3,6 +3,7 @@ import * as api from '../api'
 import { Status, TabId } from '../types'
 import { cx } from '../styles'
 import Icon, { IconName } from './Icons'
+import type { BulkOperationState } from './OperationCenter'
 import SidebarStatus from './SidebarStatus'
 import { useToast } from './Toast'
 import UpdateDialog, { UPDATED_FLAG } from './UpdateDialog'
@@ -28,10 +29,13 @@ interface Props {
   status: Status
   scanCompleted: string | null
   scanCancelledDismissed: boolean
+  bulk: BulkOperationState | null
   onCancelScan: () => void
   onRetryScan: () => void
   onOpenConfig: () => void
   onDismissScan: () => void
+  onDismissBulk: () => void
+  onReviewBulk?: () => void
 }
 
 function Brand({ compact = false }: { compact?: boolean }) {
@@ -81,10 +85,13 @@ function TopBar({
   status,
   scanCompleted,
   scanCancelledDismissed,
+  bulk,
   onCancelScan,
   onRetryScan,
   onOpenConfig,
   onDismissScan,
+  onDismissBulk,
+  onReviewBulk,
 }: Props) {
   const toast = useToast()
   const [update, setUpdate] = useState<UpdateInfo | null>(null)
@@ -186,7 +193,7 @@ function TopBar({
             onClick={onToggleCollapsed}
             aria-label="Expand sidebar"
             title="Expand sidebar"
-            className="relative mx-auto grid size-11 animate-fade cursor-pointer place-items-center rounded-xl transition-transform duration-300 hover:scale-105"
+            className="relative mx-auto grid size-11 shrink-0 animate-fade cursor-pointer place-items-center rounded-xl transition-transform duration-300 hover:scale-105"
           >
             <img src="/favicon.png" alt="" className="size-9 rounded-lg border border-line-strong object-cover" />
             <span className="absolute -bottom-1 -right-1 grid size-5 place-items-center rounded-full border border-line-strong bg-panel-raised text-muted shadow-card">
@@ -194,7 +201,7 @@ function TopBar({
             </span>
           </button>
         ) : (
-          <div className="flex items-center gap-2 px-2 animate-fade">
+          <div className="flex shrink-0 items-center gap-2 px-2 animate-fade">
             <Brand />
             <button
               type="button"
@@ -210,7 +217,7 @@ function TopBar({
 
         <nav
           ref={desktopNavRef}
-          className="sidebar-nav relative mt-9 flex flex-col gap-1.5"
+          className="sidebar-nav relative mt-9 flex shrink-0 flex-col gap-1.5"
           aria-label="Primary navigation"
         >
           <span
@@ -246,18 +253,29 @@ function TopBar({
           ))}
         </nav>
 
-        <div className={cx('mt-auto', collapsed && 'flex w-full flex-col items-center')}>
+        <div
+          className={cx(
+            'app-scrollbar -mx-1 mt-4 flex min-h-0 flex-1 flex-col overflow-y-auto px-1',
+            collapsed && 'items-center',
+          )}
+        >
           <SidebarStatus
             status={status}
             scanCompleted={scanCompleted}
             scanCancelledDismissed={scanCancelledDismissed}
+            bulk={bulk}
             collapsed={collapsed}
             onCancelScan={onCancelScan}
             onRetryScan={onRetryScan}
             onOpenConfig={onOpenConfig}
             onDismissScan={onDismissScan}
+            onDismissBulk={onDismissBulk}
+            onReviewBulk={onReviewBulk}
             onExpand={onToggleCollapsed}
           />
+        </div>
+
+        <div className={cx('shrink-0', collapsed && 'flex w-full flex-col items-center')}>
           {collapsed ? (
             <div className="flex w-full flex-col items-center gap-3 animate-fade">
               {update ? (
