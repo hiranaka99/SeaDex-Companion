@@ -1,4 +1,12 @@
-import type { LibraryScope, ReleasePreferences } from './contracts.js'
+import type { LibraryScope, ReleasePreferences, TrackerMode } from './contracts.js'
+
+export const DEFAULT_TRACKER_MODE: TrackerMode = 'public'
+
+export function normalizeTrackerMode(value: unknown): TrackerMode {
+  if (value === undefined || value === null || value === '') return DEFAULT_TRACKER_MODE
+  if (value !== 'public' && value !== 'private') throw new Error('tracker_mode must be public or private')
+  return value
+}
 
 export const DEFAULT_RELEASE_PREFERENCES: ReleasePreferences = {
   size: 'largest',
@@ -12,6 +20,9 @@ export const DEFAULT_RELEASE_PREFERENCES: ReleasePreferences = {
 
 /** Shown wherever SeaDex lists releases for a season or cour but the saved preferences accept none of them. */
 export const PREFERENCE_BLOCKED_REASON = 'No listed release fits your release preferences'
+
+/** Shown wherever SeaDex lists releases for a season or cour only on private trackers, in public-tracker mode. */
+export const PRIVATE_ONLY_REASON = 'No release on a public tracker'
 
 export const EMPTY_LIBRARY_SCOPE: LibraryScope = {
   anime_only: false,

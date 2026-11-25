@@ -280,11 +280,19 @@ function Card({
 
   // SeaDex does list these seasons; the saved preferences exclude every release, which is not the same as unlisted.
   const outsidePreferences = group.status === 'missing' && group.seasons.every(season => season.preference_blocked)
+  // Likewise, seasons SeaDex lists only on private trackers are listed, just not in public-tracker mode.
+  const privateOnly = group.status === 'missing' && group.seasons.every(season => season.private_only)
   const statusBadge = (
     <div className="library-status-badge" data-library-status={group.status}>
       <span className="library-status-label">
         <Icon name={STATUS_PRESENTATION[group.status].icon} size={14} className="shrink-0" />
-        <span>{outsidePreferences ? 'Outside your preferences' : STATUS_LABEL[group.status]}</span>
+        <span>
+          {outsidePreferences
+            ? 'Outside your preferences'
+            : privateOnly
+              ? 'No public release'
+              : STATUS_LABEL[group.status]}
+        </span>
       </span>
       {group.status === 'partial' && upgradableSeasonCount > 0 && (
         <span className="library-status-upgrades">
