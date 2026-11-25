@@ -1262,7 +1262,9 @@ try {
     )
     await wait(`document.querySelector('.anime-details-body .release-row')`)
     assert.ok(
-      await evaluate(`document.querySelector('.release-row').textContent.includes('1 selected file · 120 B')`),
+      await evaluate(
+        `document.querySelector('.release-row .release-sizes dd').textContent === '120 B' && document.querySelector('.release-row .release-send-facts').textContent.startsWith('1 selected file')`,
+      ),
       'Details use selected-file bytes rather than the full 200 B release',
     )
     assert.ok(
@@ -1315,7 +1317,7 @@ try {
     await wait(`document.querySelector('.release-row')`)
     assert.ok(
       await evaluate(
-        `document.querySelector('.release-row').textContent.includes('1 selected file · size unavailable')`,
+        `document.querySelector('.release-row .release-sizes dd').textContent === 'Size unavailable' && document.querySelector('.release-row .release-send-facts').textContent.startsWith('1 selected file')`,
       ),
       'Missing file metadata never presents the full-release fallback as selected-file bytes',
     )
@@ -1383,6 +1385,7 @@ try {
     )
     await wait(`!document.querySelector('.release-row[data-owned] .release-alert')`)
     assert.equal(singleRequests.length, sendsBeforeRedownload, 'Keeping current files sends nothing')
+    await wait(`document.activeElement?.matches('.release-row[data-owned] .release-download-button')`)
     await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 900, deviceScaleFactor: 1, mobile: true })
     await evaluate(`document.documentElement.style.fontSize='32px'`)
     await pause(150)
@@ -1400,7 +1403,7 @@ try {
     )
     assert.ok(
       await evaluate(
-        `(() => { const season = document.activeElement; return Boolean(season.querySelector('.release-notes').compareDocumentPosition(season.querySelector('.release-row')) & Node.DOCUMENT_POSITION_FOLLOWING) && season.querySelector('button[aria-label="Ignore Season 2 in bulk downloads and notifications"]').textContent.includes('Ignore for bulk') })()`,
+        `(() => { const season = document.activeElement; return Boolean(season.querySelector('.release-notes').compareDocumentPosition(season.querySelector('.release-row')) & Node.DOCUMENT_POSITION_FOLLOWING) && season.querySelector('button[aria-label="Ignore Season 2 for bulk downloads and notifications"]').textContent.includes('Ignore Season 2 for bulk') })()`,
       ),
       'Upgrade navigation lands at recommendation evidence and a clear bulk action',
     )
@@ -2791,6 +2794,13 @@ try {
     await wait(`document.querySelector('dialog[open] .release-alert')?.textContent.includes('Not enough free space')`)
     await pause(200)
     assert.equal(singleRequests.length, beforeLowSpace, 'A client reporting too little space stops a single send')
+    assert.equal(
+      await evaluate(
+        `document.activeElement?.closest('.release-alert') ? document.activeElement.textContent.trim() : 'outside'`,
+      ),
+      'Cancel',
+      'The low-space alert takes focus on its safe action',
+    )
     await evaluate(
       `[...document.querySelectorAll('dialog[open] .release-alert button')].find(button => button.textContent.trim() === 'Send anyway').click()`,
     )

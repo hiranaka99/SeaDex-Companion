@@ -696,7 +696,8 @@ function Card({
                         <p className="details-verdict-facts m-0 text-xs wrap-anywhere">{verdictFacts}</p>
                       )}
                     </div>
-                    {action && (
+                    {/* A title's only season already opens below the summary, so a jump to it would go nowhere. */}
+                    {action && seasonCount > 1 && (
                       <div className="details-index">
                         <button
                           type="button"
