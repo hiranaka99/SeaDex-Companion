@@ -25,9 +25,8 @@ const {
 } = await import('../server/download-store.js')
 const { findAcquisitionRecord, findSabnzbdRecord, findTorrentRecord } = await import('./support/ledger.js')
 const { DEFAULT_CONFIG } = await import('../server/config.js')
-const { cancelRecords, collectDownloadProgress, controlRecord, listCancelable } = await import(
-  '../server/download-progress.js'
-)
+const { cancelRecords, collectDownloadProgress, controlRecord, listCancelable } =
+  await import('../server/download-progress.js')
 const { qbEndpointId, sabEndpoint } = await import('../server/client-identity.js')
 const { resetQbRuntime } = await import('../server/qbittorrent.js')
 

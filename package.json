@@ -20,12 +20,12 @@
     "format:check": "prettier --check server shared tests frontend/src frontend/vite.config.ts"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=26"
   },
   "devDependencies": {
-    "@types/node": "24.19.2",
+    "@types/node": "26.6.10",
     "concurrently": "^10.0.7",
-    "prettier": "3.6.2",
+    "prettier": "3.10.1",
     "tsx": "^4.23.15",
     "typescript": "7.0.2"
   },

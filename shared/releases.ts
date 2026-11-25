@@ -53,7 +53,7 @@ export function episodeRangeLabel(names: string[]): string | null {
   if (!numbers.length || numbers.some(number => !Number.isInteger(number))) return null
   numbers.sort((a, b) => a - b)
   const ranges: string[] = []
-  for (let index = 0; index < numbers.length; ) {
+  for (let index = 0; index < numbers.length;) {
     let end = index
     while (end + 1 < numbers.length && numbers[end + 1] === numbers[end] + 1) end++
     ranges.push(end > index ? `${numbers[index]}–${numbers[end]}` : String(numbers[index]))

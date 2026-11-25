@@ -364,11 +364,10 @@ export function assessSeason({
 
   // Ownership: release group names, corrected by the file-size fingerprint of each listed release.
   const candidatesOf = (part: ResolvedPart) => [part.best, ...part.alts]
-  const verification = resolved.map(
-    (part): PartVerification =>
-      settings.verify && (parts.length === 1 || part.episodeNumbers)
-        ? verifyPart(local, part.episodeNumbers, partOwnership.owned[part.label || ''] || [], candidatesOf(part))
-        : { verified: [], mismatched: [], other: [], matches: [] },
+  const verification = resolved.map((part): PartVerification =>
+    settings.verify && (parts.length === 1 || part.episodeNumbers)
+      ? verifyPart(local, part.episodeNumbers, partOwnership.owned[part.label || ''] || [], candidatesOf(part))
+      : { verified: [], mismatched: [], other: [], matches: [] },
   )
   const ownedByPart = resolved.map((part, index) => {
     const owned = new Set<string>((partOwnership.owned[part.label || ''] || []).map(groupKey))
