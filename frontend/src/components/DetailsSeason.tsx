@@ -377,6 +377,9 @@ export default function DetailsSeason({
                 rel.kind === 'best' &&
                 !releaseOwned(r, rel) &&
                 !mismatchedGroups.some(group => group.toLowerCase() === rel.releaseGroup.toLowerCase()) &&
+                !r.releases.some(
+                  other => other.files_match && other.releaseGroup.toLowerCase() === rel.releaseGroup.toLowerCase(),
+                ) &&
                 r.have.some(group => group.toLowerCase() === rel.releaseGroup.toLowerCase()),
             ) && (
               <p className="mt-3 text-xs text-muted">
