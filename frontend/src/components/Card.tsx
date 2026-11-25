@@ -6,12 +6,13 @@ import { seasonLabel, STATUS_LABEL, cardSizeDelta, formatBytes, isSeasonUpgradab
 import { displayDateTimeMinutes } from '../datetime'
 import * as api from '../api'
 import { buttonBase, cx } from '../styles'
-import Icon, { IconName } from './Icons'
+import Icon from './Icons'
 import BrandLogo from './BrandLogo'
 import { useToast } from './Toast'
 import DownloadsPanel, { clientName, DownloadEntry } from './DownloadsPanel'
 import type { DownloadProtocol } from '../api'
 import ConfirmDialog from './ConfirmDialog'
+import ErrorBoundary from './ErrorBoundary'
 import Modal from './Modal'
 
 import MappingDialog from './MappingDialog'
@@ -24,6 +25,7 @@ import { releaseOverview, releaseQuality } from '../release-status'
 import { groupReleaseChanges, presentReleaseChange } from '../release-changes'
 import ReleaseChangeLine from './ReleaseChangeLine'
 import { releaseIdentity } from '../../../shared/releases'
+import { STATUS_PRESENTATION } from '../status-presentation'
 
 function HideActionIcon({ hidden }: { hidden: boolean }) {
   return <Icon name={hidden ? 'eye' : 'eye-off'} size={18} />
@@ -73,13 +75,6 @@ function jumpToDetails(id: string) {
 
 const CARD_BASE =
   'group/card relative flex flex-col overflow-hidden rounded-card border border-line bg-panel transition-opacity duration-200'
-const CARD_STATUS: Record<string, { icon: IconName; color: string }> = {
-  upgrade: { icon: 'arrow-up', color: 'text-accent-bright' },
-  best: { icon: 'check', color: 'text-good' },
-  missing: { icon: 'minus', color: 'text-muted' },
-  partial: { icon: 'alert', color: 'text-warn' },
-  review: { icon: 'alert', color: 'text-warn' },
-}
 const ICON_BUTTON =
   'grid size-9 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-panel-raised hover:text-ink'
 function Card({
@@ -288,7 +283,7 @@ function Card({
   const statusBadge = (
     <div className="library-status-badge" data-library-status={group.status}>
       <span className="library-status-label">
-        <Icon name={CARD_STATUS[group.status].icon} size={14} className="shrink-0" />
+        <Icon name={STATUS_PRESENTATION[group.status].icon} size={14} className="shrink-0" />
         <span>{outsidePreferences ? 'Outside your preferences' : STATUS_LABEL[group.status]}</span>
       </span>
       {group.status === 'partial' && upgradableSeasonCount > 0 && (
@@ -462,19 +457,20 @@ function Card({
               role={copyOverflows ? 'group' : undefined}
               aria-label={copyOverflows ? `${group.title}: scroll to read the full title` : undefined}
             >
-              <h2
+              <h3
                 className="anime-art-title relative m-0 text-lg leading-snug font-bold text-white wrap-anywhere"
                 title={group.title}
               >
                 {group.title}
-              </h2>
+              </h3>
             </div>
             <div className="library-status-banner app-scrollbar">{statusBadge}</div>
           </div>
         </div>
         <div
           className="library-card-seasons flex flex-wrap gap-1.5 px-3.5 pb-3.5 max-[600px]:px-3 max-[600px]:pb-3"
-          aria-label={`${seasonCount} seasons`}
+          role="group"
+          aria-label={`${group.title}: ${seasonCount} ${unit}${seasonCount === 1 ? '' : 's'}`}
         >
           {group.seasons.slice(0, 6).map((season, seasonIndex) => (
             <SeasonBadge
@@ -614,197 +610,211 @@ function Card({
           </div>
         </footer>
       </article>
-      {detailsOpen && (
-        <Modal
-          open={detailsOpen}
-          labelledBy={titleId}
-          onClose={requestClose}
-          className="overflow-clip bg-transparent p-0"
-        >
-          <div
-            className={cx(
-              'details-backdrop absolute inset-0 bg-black/65',
-              detailsVisible && 'details-backdrop-visible',
-            )}
-          />
-          <div
-            className={cx(
-              'anime-details-frame absolute inset-0 flex items-center justify-center transition-opacity duration-200 ease-out',
-              detailsVisible ? 'opacity-100' : 'opacity-0',
-            )}
-            onMouseDown={event => {
-              if (event.target === event.currentTarget) requestClose()
-            }}
+      <ErrorBoundary
+        resetKey={detailsOpen}
+        onError={() => {
+          closing.current = false
+          setDetailsVisible(false)
+          setDetailsOpen(false)
+          toast.show(`Details for ${group.title} could not be shown. Try opening them again.`, 'error')
+        }}
+      >
+        {detailsOpen && (
+          <Modal
+            open={detailsOpen}
+            labelledBy={titleId}
+            onClose={requestClose}
+            className="overflow-clip bg-transparent p-0"
           >
-            <aside className="anime-details-panel flex min-h-0 min-w-0 w-full flex-col overflow-hidden rounded-2xl bg-canvas shadow-[0_24px_60px_rgba(0,0,0,.45)]">
-              <div
-                className={cx(
-                  'anime-details-hero relative shrink-0 border-b border-line',
-                  group.banner && 'anime-details-hero-art',
-                )}
-              >
-                {group.banner && (
-                  <div
-                    className="anime-details-banner pointer-events-none absolute inset-0 bg-panel bg-cover bg-center"
-                    style={{ backgroundImage: `url('${group.banner}')` }}
-                    aria-hidden="true"
-                  />
-                )}
-                <header className="anime-details-header relative flex items-start">
-                  {group.image && <img src={group.image} alt="" className="anime-details-cover" />}
-                  <div className="min-w-0 flex-1">
-                    <h2
-                      id={titleId}
-                      className="m-0 text-2xl leading-tight font-extrabold tracking-tight wrap-anywhere max-[600px]:text-xl"
-                    >
-                      {group.title}
-                    </h2>
-                    <p className="mt-1 mb-0 text-xs text-muted wrap-anywhere">
-                      {group.source} · {seasonCount}{' '}
-                      {group.arr === 'Radarr'
-                        ? seasonCount === 1
-                          ? 'movie'
-                          : 'movies'
-                        : seasonCount === 1
-                          ? 'season'
-                          : 'seasons'}
-                    </p>
-                    {managementLinks}
-                  </div>
-                  <button
-                    ref={closeRef}
-                    type="button"
-                    className="anime-details-close grid shrink-0 cursor-pointer place-items-center rounded-control border border-line-strong bg-panel text-ink hover:bg-panel-raised"
-                    onClick={requestClose}
-                    aria-label="Close details"
-                  >
-                    <Icon name="close" />
-                  </button>
-                </header>
-              </div>
-              <div className="anime-details-body app-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain">
-                <div className="anime-details-content">
-                  <section
-                    className="details-verdict"
-                    data-quality={overview.kind}
-                    aria-label="Release quality summary"
-                  >
-                    <Icon name={QUALITY_ICONS[overview.kind]} size={20} className="details-verdict-icon shrink-0" />
-                    <div className="details-verdict-copy min-w-0">
-                      <h3 className="m-0 text-base font-extrabold tracking-tight wrap-anywhere">{overview.title}</h3>
-                      {verdictFacts && (
-                        <p className="details-verdict-facts m-0 text-xs wrap-anywhere">{verdictFacts}</p>
-                      )}
-                    </div>
-                    {action && (
-                      <div className="details-index">
-                        <button
-                          type="button"
-                          className={cx(
-                            buttonBase,
-                            'min-h-11 border-accent/40 bg-accent/10 px-3 text-xs text-accent-bright hover:bg-accent/16',
-                          )}
-                          onClick={() => jumpToDetails(sectionId(action.targets[0]))}
-                        >
-                          <Icon name={action.icon} size={15} />
-                          {action.label}
-                        </button>
-                      </div>
-                    )}
-                  </section>
-                  {unseenChanges.length > 0 && (
-                    <details className="details-changes" aria-label="What changed">
-                      <summary className="touch-target flex cursor-pointer list-none items-center gap-1.5 py-2 text-sm font-semibold text-accent-bright">
-                        <Icon name="chevron-right" size={15} className="disclosure-chevron" />
-                        What changed ({unseenChanges.length})
-                      </summary>
-                      <section className="pt-1 pb-2">
-                        <ul className="m-0 list-none divide-y divide-line p-0">
-                          {unseenChanges.map(({ season, change }) => (
-                            <li key={change.id} className="min-w-0 py-2 first:pt-0 last:pb-0">
-                              <ReleaseChangeLine
-                                detail={presentReleaseChange(change)}
-                                context={detailsSeasonName(season)}
-                              />
-                              <time className="block text-xs text-muted" dateTime={change.detected_at}>
-                                Detected {displayDateTimeMinutes(change.detected_at)}
-                              </time>
-                            </li>
-                          ))}
-                        </ul>
-                        <button
-                          type="button"
-                          className={cx(
-                            buttonBase,
-                            'mt-3 min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised',
-                          )}
-                          disabled={reviewingChanges}
-                          onClick={() => void onReviewChanges(changeIds)}
-                        >
-                          <Icon name="check" size={15} />
-                          {reviewingChanges ? 'Marking reviewed…' : 'Mark reviewed'}
-                        </button>
-                      </section>
-                    </details>
+            <div
+              className={cx(
+                'details-backdrop absolute inset-0 bg-black/65',
+                detailsVisible && 'details-backdrop-visible',
+              )}
+            />
+            <div
+              className={cx(
+                'anime-details-frame absolute inset-0 flex items-center justify-center transition-opacity duration-200 ease-out',
+                detailsVisible ? 'opacity-100' : 'opacity-0',
+              )}
+              onMouseDown={event => {
+                if (event.target === event.currentTarget) requestClose()
+              }}
+            >
+              <aside className="anime-details-panel flex min-h-0 min-w-0 w-full flex-col overflow-hidden rounded-2xl bg-canvas shadow-[0_24px_60px_rgba(0,0,0,.45)]">
+                <div
+                  className={cx(
+                    'anime-details-hero relative shrink-0 border-b border-line',
+                    group.banner && 'anime-details-hero-art',
                   )}
-                  {group.seasons.map((season, index) => (
-                    <DetailsSeason
-                      key={season.key}
-                      sectionId={sectionId(index)}
-                      defaultOpen={seasonCount === 1 || decisionTargets.has(index)}
-                      nextAction={nextActionFor(index)}
-                      onJump={jumpToDetails}
-                      r={season}
-                      config={config}
-                      dl={dlBySeason[season.key] || {}}
-                      busyDownload={busyDownload}
-                      sendingIndex={
-                        sendingRelease === null ? null : sendingRelease.key === season.key ? sendingRelease.release : -1
-                      }
-                      usenetEnabled={usenetEnabled}
-                      availability={availability[season.key]}
-                      protocolFor={index => protocolFor(season, index)}
-                      onProtocol={(index, protocol) =>
-                        setProtocols(current => ({ ...current, [protocolKey(season.key, index)]: protocol }))
-                      }
-                      onRefreshAvailability={() => void loadAvailability(season, true)}
-                      onOpened={() => void loadAvailability(season)}
-                      onDownload={(release, sendAnyway) =>
-                        void handleDownload(
-                          season.key,
-                          release,
-                          config?.download_mode === 'usenet_only' ? 'usenet' : protocolFor(season, release),
-                          sendAnyway,
-                        )
-                      }
-                      lowSpace={lowSpace?.key === season.key ? lowSpace : null}
-                      sendErrors={sendErrors}
-                      onCancelLowSpace={cancelLowSpace}
-                      onDismissSendError={release => dismissSendError(season.key, release)}
-                      onPause={entry => void handleDownloadAction(entry, 'pause')}
-                      onResume={entry => void handleDownloadAction(entry, 'resume')}
-                      onRemove={entry => {
-                        setDeleteFiles(false)
-                        setRemoveTarget(entry)
-                      }}
-                      ruleBusy={ruleBusy}
-                      onToggleExclusion={(part, excluded) => void toggleExclusion(season, part, excluded)}
-                      onCorrectMatch={() => {
-                        setMappingSeason(season)
-                        setMappingOpen(true)
-                      }}
-                      onCorrectTitleMatch={() => {
-                        setMappingSeason(null)
-                        setMappingOpen(true)
-                      }}
+                >
+                  {group.banner && (
+                    <div
+                      className="anime-details-banner pointer-events-none absolute inset-0 bg-panel bg-cover bg-center"
+                      style={{ backgroundImage: `url('${group.banner}')` }}
+                      aria-hidden="true"
                     />
-                  ))}
+                  )}
+                  <header className="anime-details-header relative flex items-start">
+                    {group.image && <img src={group.image} alt="" className="anime-details-cover" />}
+                    <div className="min-w-0 flex-1">
+                      <h2
+                        id={titleId}
+                        className="m-0 text-2xl leading-tight font-extrabold tracking-tight wrap-anywhere max-[600px]:text-xl"
+                      >
+                        {group.title}
+                      </h2>
+                      <p className="mt-1 mb-0 text-xs text-muted wrap-anywhere">
+                        {group.source} · {seasonCount}{' '}
+                        {group.arr === 'Radarr'
+                          ? seasonCount === 1
+                            ? 'movie'
+                            : 'movies'
+                          : seasonCount === 1
+                            ? 'season'
+                            : 'seasons'}
+                      </p>
+                      {managementLinks}
+                    </div>
+                    <button
+                      ref={closeRef}
+                      type="button"
+                      className="anime-details-close grid shrink-0 cursor-pointer place-items-center rounded-control border border-line-strong bg-panel text-ink hover:bg-panel-raised"
+                      onClick={requestClose}
+                      aria-label="Close details"
+                    >
+                      <Icon name="close" />
+                    </button>
+                  </header>
                 </div>
-              </div>
-            </aside>
-          </div>
-        </Modal>
-      )}
+                <div className="anime-details-body app-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain">
+                  <div className="anime-details-content">
+                    <section
+                      className="details-verdict"
+                      data-quality={overview.kind}
+                      aria-label="Release quality summary"
+                    >
+                      <Icon name={QUALITY_ICONS[overview.kind]} size={20} className="details-verdict-icon shrink-0" />
+                      <div className="details-verdict-copy min-w-0">
+                        <h3 className="m-0 text-base font-extrabold tracking-tight wrap-anywhere">{overview.title}</h3>
+                        {verdictFacts && (
+                          <p className="details-verdict-facts m-0 text-xs wrap-anywhere">{verdictFacts}</p>
+                        )}
+                      </div>
+                      {action && (
+                        <div className="details-index">
+                          <button
+                            type="button"
+                            className={cx(
+                              buttonBase,
+                              'min-h-11 border-accent/40 bg-accent/10 px-3 text-xs text-accent-bright hover:bg-accent/16',
+                            )}
+                            onClick={() => jumpToDetails(sectionId(action.targets[0]))}
+                          >
+                            <Icon name={action.icon} size={15} />
+                            {action.label}
+                          </button>
+                        </div>
+                      )}
+                    </section>
+                    {unseenChanges.length > 0 && (
+                      <details className="details-changes" aria-label="What changed">
+                        <summary className="touch-target flex cursor-pointer list-none items-center gap-1.5 py-2 text-sm font-semibold text-accent-bright">
+                          <Icon name="chevron-right" size={15} className="disclosure-chevron" />
+                          What changed ({unseenChanges.length})
+                        </summary>
+                        <section className="pt-1 pb-2">
+                          <ul className="m-0 list-none divide-y divide-line p-0">
+                            {unseenChanges.map(({ season, change }) => (
+                              <li key={change.id} className="min-w-0 py-2 first:pt-0 last:pb-0">
+                                <ReleaseChangeLine
+                                  detail={presentReleaseChange(change)}
+                                  context={detailsSeasonName(season)}
+                                />
+                                <time className="block text-xs text-muted" dateTime={change.detected_at}>
+                                  Detected {displayDateTimeMinutes(change.detected_at)}
+                                </time>
+                              </li>
+                            ))}
+                          </ul>
+                          <button
+                            type="button"
+                            className={cx(
+                              buttonBase,
+                              'mt-3 min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised',
+                            )}
+                            disabled={reviewingChanges}
+                            onClick={() => void onReviewChanges(changeIds)}
+                          >
+                            <Icon name="check" size={15} />
+                            {reviewingChanges ? 'Marking reviewed…' : 'Mark reviewed'}
+                          </button>
+                        </section>
+                      </details>
+                    )}
+                    {group.seasons.map((season, index) => (
+                      <DetailsSeason
+                        key={season.key}
+                        sectionId={sectionId(index)}
+                        defaultOpen={seasonCount === 1 || decisionTargets.has(index)}
+                        nextAction={nextActionFor(index)}
+                        onJump={jumpToDetails}
+                        r={season}
+                        config={config}
+                        dl={dlBySeason[season.key] || {}}
+                        busyDownload={busyDownload}
+                        sendingIndex={
+                          sendingRelease === null
+                            ? null
+                            : sendingRelease.key === season.key
+                              ? sendingRelease.release
+                              : -1
+                        }
+                        usenetEnabled={usenetEnabled}
+                        availability={availability[season.key]}
+                        protocolFor={index => protocolFor(season, index)}
+                        onProtocol={(index, protocol) =>
+                          setProtocols(current => ({ ...current, [protocolKey(season.key, index)]: protocol }))
+                        }
+                        onRefreshAvailability={() => void loadAvailability(season, true)}
+                        onOpened={() => void loadAvailability(season)}
+                        onDownload={(release, sendAnyway) =>
+                          void handleDownload(
+                            season.key,
+                            release,
+                            config?.download_mode === 'usenet_only' ? 'usenet' : protocolFor(season, release),
+                            sendAnyway,
+                          )
+                        }
+                        lowSpace={lowSpace?.key === season.key ? lowSpace : null}
+                        sendErrors={sendErrors}
+                        onCancelLowSpace={cancelLowSpace}
+                        onDismissSendError={release => dismissSendError(season.key, release)}
+                        onPause={entry => void handleDownloadAction(entry, 'pause')}
+                        onResume={entry => void handleDownloadAction(entry, 'resume')}
+                        onRemove={entry => {
+                          setDeleteFiles(false)
+                          setRemoveTarget(entry)
+                        }}
+                        ruleBusy={ruleBusy}
+                        onToggleExclusion={(part, excluded) => void toggleExclusion(season, part, excluded)}
+                        onCorrectMatch={() => {
+                          setMappingSeason(season)
+                          setMappingOpen(true)
+                        }}
+                        onCorrectTitleMatch={() => {
+                          setMappingSeason(null)
+                          setMappingOpen(true)
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </Modal>
+        )}
+      </ErrorBoundary>
       <ConfirmDialog
         open={removeTarget !== null}
         title={

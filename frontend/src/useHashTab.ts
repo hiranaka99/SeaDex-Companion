@@ -4,7 +4,8 @@ import type { TabId } from './types'
 const TABS: TabId[] = ['anime', 'history', 'config', 'log']
 
 function readTab(): TabId {
-  const value = window.location.hash.slice(1)
+  // The Library page keeps its filters after a `?`, e.g. `#anime?status=upgrade`.
+  const value = window.location.hash.slice(1).split('?')[0]
   return TABS.find(tab => tab === value) ?? 'anime'
 }
 

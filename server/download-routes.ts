@@ -1,6 +1,7 @@
 import { loadConfig } from './config.js'
 import { currentGeneration } from './config-generation.js'
 import { downloadJobs } from './download-jobs.js'
+import { downloadSpace } from './download-space.js'
 import { consumePlan, type StoredPlan } from './download-plans.js'
 import { buildDownloadPlan, parseSelections } from './download-preflight.js'
 import { cancelRecords, collectDownloadProgress, controlRecord, listCancelable } from './download-progress.js'
@@ -150,6 +151,9 @@ export const downloadRoutes: Route[] = [
   route('GET', /^\/api\/download-jobs\/([^/]+)$/, context => sendJob(context.params[0])(context)),
   route('GET', '/api/downloads', async ({ response }) =>
     sendJson(response, 200, await throughClient(() => collectDownloadProgress(loadConfig()))),
+  ),
+  route('GET', '/api/download-space', async ({ response }) =>
+    sendJson(response, 200, { ok: true, locations: await downloadSpace(loadConfig()) }),
   ),
   route('GET', '/api/downloads/cancelable', async ({ response }) =>
     sendJson(response, 200, await throughClient(() => listCancelable(loadConfig()))),
