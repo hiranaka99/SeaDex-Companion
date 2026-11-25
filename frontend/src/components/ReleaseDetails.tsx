@@ -6,7 +6,7 @@ import { buttonBase, cx, downloadTextTone } from '../styles'
 import Icon from './Icons'
 import { DownloadActions, ImportStatusLine, clientName, phaseLabel, type DownloadEntry } from './DownloadsPanel'
 import { estimateDownloads } from '../../../shared/download-estimate'
-import type { DownloadProtocol, UsenetAvailabilityResult } from '../api'
+import type { DownloadPhase, DownloadProtocol, UsenetAvailabilityResult } from '../api'
 import type { DetailsDownloadState } from '../useCardDownloads'
 import { releaseIdentity } from '../../../shared/releases'
 import { displayDateTime } from '../datetime'
@@ -36,6 +36,27 @@ interface Props {
 }
 
 const bytesOrUnknown = (bytes: number) => (bytes > 0 ? formatBytes(bytes) : 'Size unavailable')
+
+const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() || path
+/** qBittorrent names a magnet by its hash until the metadata arrives. */
+const HASH_NAME = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i
+const ATTENTION_PHASES = new Set<DownloadPhase>(['error', 'missing', 'acceptance_unknown'])
+/** Order of the per-phase counts in a multi-torrent summary: active work first. */
+const PHASE_ORDER: DownloadPhase[] = [
+  'downloading',
+  'verifying',
+  'repairing',
+  'unpacking',
+  'post_processing',
+  'queued',
+  'paused',
+  'acceptance_unknown',
+  'error',
+  'missing',
+  'unavailable',
+  'seeding',
+  'complete',
+]
 
 interface UsenetInfo {
   usable: boolean
@@ -188,6 +209,68 @@ export default function ReleaseDetails({
   const scopeLabel = fileScope.selected
     ? `${fileScope.files.length} selected file${fileScope.files.length === 1 ? '' : 's'} · ${sizeLabel}`
     : `Whole release · ${sizeLabel}`
+
+  const catalogByHash = useMemo(
+    () => new Map((rel.torrent_files || []).map(catalog => [catalog.hash.toLowerCase(), catalog.files])),
+    [rel],
+  )
+  const catalogFiles = (transfer: DownloadEntry) =>
+    transfer.source_hash ? catalogByHash.get(transfer.source_hash.toLowerCase()) : undefined
+
+  /** Names a torrent by its file when the selection, SeaDex's file list, or the client knows it. */
+  const transferName = (transfer: DownloadEntry): { label: string; path: string } | null => {
+    const scope = transfer.scope || []
+    if (scope.length === 1) return { label: baseName(scope[0]), path: scope[0] }
+    const files = catalogFiles(transfer)
+    if (files?.length === 1) return { label: baseName(files[0].name), path: files[0].name }
+    const live = transfer.title.trim()
+    if (live && live !== r.title && !live.startsWith('usenet:') && !HASH_NAME.test(live))
+      return { label: live, path: live }
+    if (scope.length > 1) return { label: `${scope.length} selected files`, path: scope.join('\n') }
+    return null
+  }
+
+  /** Expected bytes of one torrent; SeaDex's file list fills in before the client has the metadata. */
+  const expectedBytes = (transfer: DownloadEntry) => {
+    if (transfer.total_size > 0) return transfer.total_size
+    const files = catalogFiles(transfer)
+    if (!files) return 0
+    const scope = transfer.scope?.length ? new Set(transfer.scope.map(normalizeFile)) : null
+    return files.reduce((sum, file) => sum + (!scope || scope.has(normalizeFile(file.name)) ? file.length : 0), 0)
+  }
+
+  const overall = (() => {
+    let downloaded = 0
+    let total = 0
+    let speed = 0
+    let unknown = 0
+    let attention = 0
+    const counts = new Map<DownloadPhase, number>()
+    for (const transfer of transfers) {
+      const bytes = expectedBytes(transfer) || (transfer.phase === 'complete' ? transfer.downloaded : 0)
+      if (bytes > 0) {
+        total += bytes
+        downloaded += transfer.phase === 'complete' ? bytes : Math.min(transfer.downloaded, bytes)
+      } else unknown++
+      if (transfer.phase === 'downloading' && transfer.client === 'qbittorrent') speed += transfer.speed
+      if (ATTENTION_PHASES.has(transfer.phase) || transfer.unbound) attention++
+      counts.set(transfer.phase, (counts.get(transfer.phase) || 0) + 1)
+    }
+    const phaseSummary = [...counts]
+      .sort(([a], [b]) => PHASE_ORDER.indexOf(a) - PHASE_ORDER.indexOf(b))
+      .map(([phase, count]) => `${count} ${phaseLabel(phase).toLowerCase()}`)
+      .join(' · ')
+    return {
+      downloaded,
+      total,
+      speed,
+      unknown,
+      attention,
+      phaseSummary,
+      percent: total > 0 ? Math.min(100, Math.round((downloaded / total) * 1000) / 10) : 0,
+      anyBar: transfers.some(transfer => transfer.phase !== 'complete'),
+    }
+  })()
 
   const buttonTitle = complete
     ? `Download completed in ${clientName(transfers[0].client)}`
@@ -498,103 +581,162 @@ export default function ReleaseDetails({
           </ul>
         </details>
       )}
-      {transfers.map(transfer => {
-        const percent = Math.max(0, Math.min(100, Math.round(transfer.progress * 1000) / 10))
-        const showsBar = transfer.phase !== 'complete'
-        const client = clientName(transfer.client)
-        return (
-          <div key={transfer.record_id} className="mt-3 border-t border-line pt-3">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs tabular-nums">
-              <span className={cx('font-semibold', downloadTextTone(transfer.phase))}>
-                {transfer.phase === 'complete'
-                  ? `Completed in ${client}`
-                  : `${phaseLabel(transfer.phase)} in ${client}`}
+      {transfers.length > 1 && (
+        <div className="mt-3 border-t border-line pt-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs tabular-nums">
+            <span className="font-semibold text-ink">{overall.phaseSummary}</span>
+            {overall.total > 0 && (
+              <span className="text-muted">
+                {overall.percent.toFixed(1)}% · {formatBytes(overall.downloaded) || '0 B'} /{' '}
+                {overall.unknown > 0 ? '~' : ''}
+                {formatBytes(overall.total)}
               </span>
-              {transfer.total_size > 0 && (
-                <span className="text-muted">
-                  {percent.toFixed(1)}% · {formatBytes(transfer.downloaded) || '0 B'} /{' '}
-                  {formatBytes(transfer.total_size)}
-                </span>
-              )}
-            </div>
-            {showsBar && (
-              <div
-                role="progressbar"
-                aria-label={`Download progress · ${seasonLabel(r)} · ${rel.releaseGroup}`}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={transfer.phase === 'acceptance_unknown' ? undefined : percent}
-                aria-valuetext={`${phaseLabel(transfer.phase)} · ${percent.toFixed(1)}%`}
-                className="h-1.5 overflow-hidden rounded-full bg-panel-raised"
-              >
-                <div
-                  className="h-full rounded-full bg-accent transition-[width] duration-500"
-                  style={{
-                    width: `${Math.max(percent, transfer.phase === 'queued' || transfer.phase === 'acceptance_unknown' ? 2 : 0)}%`,
-                  }}
-                />
-              </div>
             )}
-            {transfer.phase === 'error' && (
-              <div className="mt-3 rounded-lg bg-bad/5 p-3">
-                <p className="m-0 text-sm font-semibold text-bad">{client} reported a download error</p>
-                <p className="mt-1 mb-2 text-xs text-ink wrap-anywhere">
-                  {transfer.error || `Open this download in ${client}, resolve the issue, then retry.`}
-                </p>
-              </div>
-            )}
-            {transfer.phase === 'acceptance_unknown' && (
-              <p className="mt-2 mb-0 text-xs text-warn">
-                {client} was asked to start this download but did not confirm it. It is picked up automatically if it
-                appears in {client}. If it is not there, stop tracking it to send it again.
-              </p>
-            )}
-            {transfer.phase === 'missing' && (
-              <p className="mt-2 mb-0 text-xs text-bad">
-                This download is no longer in {client}. Remove the entry and send it again if you still want it.
-              </p>
-            )}
-            {transfer.unbound && (
-              <p className="mt-2 mb-0 text-xs text-warn">
-                This download belongs to a different client URL and cannot be controlled from here.
-              </p>
-            )}
-            {transfer.import && transfer.import.state !== 'waiting' && (
-              <div className="mt-2">
-                <ImportStatusLine entry={transfer} />
-              </div>
-            )}
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs text-muted wrap-anywhere">
-                {transfer.phase === 'downloading'
-                  ? [
-                      transfer.speed > 0 && transfer.client === 'qbittorrent' ? `${formatBytes(transfer.speed)}/s` : '',
-                      transfer.client === 'qbittorrent'
-                        ? formatEta(Math.max(0, transfer.total_size - transfer.downloaded), transfer.speed)
-                        : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')
-                  : transfer.phase === 'post_processing' || transfer.phase === 'unpacking'
-                    ? `${client} is preparing the files…`
-                    : ''}
-              </span>
-              <span className="ml-auto inline-flex gap-2">
-                <DownloadActions
-                  entry={transfer}
-                  busy={busy}
-                  onPause={() => onPause(transfer)}
-                  onResume={() => onResume(transfer)}
-                  onRemove={() => onRemove(transfer)}
-                />
-              </span>
-            </div>
           </div>
-        )
-      })}
+          {overall.anyBar && (
+            <div
+              role="progressbar"
+              aria-label={`Overall download progress · ${seasonLabel(r)} · ${rel.releaseGroup}`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={overall.percent}
+              aria-valuetext={`${overall.phaseSummary} · ${overall.percent.toFixed(1)}%`}
+              className="h-1.5 overflow-hidden rounded-full bg-panel-raised"
+            >
+              <div
+                className="h-full rounded-full bg-accent transition-[width] duration-500"
+                style={{ width: `${Math.max(overall.percent, 2)}%` }}
+              />
+            </div>
+          )}
+          {(overall.speed > 0 || overall.unknown > 0) && (
+            <p className="mt-2 mb-0 text-xs text-muted wrap-anywhere">
+              {[
+                overall.speed > 0 ? `${formatBytes(overall.speed)}/s` : '',
+                overall.speed > 0 ? formatEta(Math.max(0, overall.total - overall.downloaded), overall.speed) : '',
+                overall.unknown > 0
+                  ? `size not known yet for ${overall.unknown} torrent${overall.unknown === 1 ? '' : 's'}`
+                  : '',
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </p>
+          )}
+          <details className="group mt-2 min-w-0" open={overall.attention > 0 || undefined}>
+            <summary className="touch-target flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md text-xs font-semibold text-accent-bright [&::-webkit-details-marker]:hidden">
+              <Icon name="chevron-right" size={14} className="transition-transform duration-150 group-open:rotate-90" />
+              {transfers.length} torrents
+              {overall.attention > 0 && (
+                <span className="font-normal text-warn">· {overall.attention} need attention</span>
+              )}
+            </summary>
+            {transfers.map(transfer => renderTransfer(transfer, true))}
+          </details>
+        </div>
+      )}
+      {transfers.length === 1 && renderTransfer(transfers[0], false)}
       <span className="sr-only" role="status" aria-atomic="true">
         {statusCopy && `${rel.releaseGroup} · ${statusCopy}`}
       </span>
     </article>
   )
+
+  function renderTransfer(transfer: DownloadEntry, nested: boolean) {
+    const percent = Math.max(0, Math.min(100, Math.round(transfer.progress * 1000) / 10))
+    const showsBar = transfer.phase !== 'complete'
+    const client = clientName(transfer.client)
+    const name = transferName(transfer)
+    return (
+      <div key={transfer.record_id} className={cx('border-t border-line', nested ? 'mt-2 pt-2.5' : 'mt-3 pt-3')}>
+        {name && (
+          <p className="m-0 mb-1.5 text-xs font-semibold text-ink wrap-anywhere" title={name.path}>
+            {name.label}
+          </p>
+        )}
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs tabular-nums">
+          <span className={cx('font-semibold', downloadTextTone(transfer.phase))}>
+            {transfer.phase === 'complete' ? `Completed in ${client}` : `${phaseLabel(transfer.phase)} in ${client}`}
+          </span>
+          {transfer.total_size > 0 && (
+            <span className="text-muted">
+              {percent.toFixed(1)}% · {formatBytes(transfer.downloaded) || '0 B'} / {formatBytes(transfer.total_size)}
+            </span>
+          )}
+        </div>
+        {showsBar && (
+          <div
+            role="progressbar"
+            aria-label={`Download progress · ${seasonLabel(r)} · ${rel.releaseGroup}${nested && name ? ` · ${name.label}` : ''}`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={transfer.phase === 'acceptance_unknown' ? undefined : percent}
+            aria-valuetext={`${phaseLabel(transfer.phase)} · ${percent.toFixed(1)}%`}
+            className="h-1.5 overflow-hidden rounded-full bg-panel-raised"
+          >
+            <div
+              className="h-full rounded-full bg-accent transition-[width] duration-500"
+              style={{
+                width: `${Math.max(percent, transfer.phase === 'queued' || transfer.phase === 'acceptance_unknown' ? 2 : 0)}%`,
+              }}
+            />
+          </div>
+        )}
+        {transfer.phase === 'error' && (
+          <div className="mt-3 rounded-lg bg-bad/5 p-3">
+            <p className="m-0 text-sm font-semibold text-bad">{client} reported a download error</p>
+            <p className="mt-1 mb-2 text-xs text-ink wrap-anywhere">
+              {transfer.error || `Open this download in ${client}, resolve the issue, then retry.`}
+            </p>
+          </div>
+        )}
+        {transfer.phase === 'acceptance_unknown' && (
+          <p className="mt-2 mb-0 text-xs text-warn">
+            {client} was asked to start this download but did not confirm it. It is picked up automatically if it
+            appears in {client}. If it is not there, stop tracking it to send it again.
+          </p>
+        )}
+        {transfer.phase === 'missing' && (
+          <p className="mt-2 mb-0 text-xs text-bad">
+            This download is no longer in {client}. Remove the entry and send it again if you still want it.
+          </p>
+        )}
+        {transfer.unbound && (
+          <p className="mt-2 mb-0 text-xs text-warn">
+            This download belongs to a different client URL and cannot be controlled from here.
+          </p>
+        )}
+        {transfer.import && transfer.import.state !== 'waiting' && (
+          <div className="mt-2">
+            <ImportStatusLine entry={transfer} />
+          </div>
+        )}
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs text-muted wrap-anywhere">
+            {transfer.phase === 'downloading'
+              ? [
+                  transfer.speed > 0 && transfer.client === 'qbittorrent' ? `${formatBytes(transfer.speed)}/s` : '',
+                  transfer.client === 'qbittorrent'
+                    ? formatEta(Math.max(0, transfer.total_size - transfer.downloaded), transfer.speed)
+                    : '',
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
+              : transfer.phase === 'post_processing' || transfer.phase === 'unpacking'
+                ? `${client} is preparing the files…`
+                : ''}
+          </span>
+          <span className="ml-auto inline-flex gap-2">
+            <DownloadActions
+              entry={transfer}
+              busy={busy}
+              onPause={() => onPause(transfer)}
+              onResume={() => onResume(transfer)}
+              onRemove={() => onRemove(transfer)}
+              name={nested ? name?.label : undefined}
+            />
+          </span>
+        </div>
+      </div>
+    )
+  }
 }

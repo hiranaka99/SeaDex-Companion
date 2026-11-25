@@ -23,6 +23,10 @@ export interface DownloadEntry {
   error?: string
   /** The client at a different URL no longer serves this record. */
   unbound?: boolean
+  /** Client-native source hash (torrent info hash), used to look up the release's file list. */
+  source_hash?: string
+  /** Selected torrent files; absent means the whole source. */
+  scope?: string[]
   /** Whether Sonarr or Radarr imported the finished download; absent for downloads that are not followed. */
   import?: DownloadImport
 }
@@ -46,6 +50,8 @@ export function toDownloadEntry(p: DownloadProgress): DownloadEntry {
     size: p.size,
     error: p.error,
     unbound: p.state === 'unbound',
+    source_hash: p.source_hash,
+    ...(p.scope ? { scope: p.scope } : {}),
     ...(p.import ? { import: p.import } : {}),
   }
 }
@@ -145,6 +151,8 @@ interface DownloadActionsProps {
   onPause: () => void
   onResume: () => void
   onRemove: () => void
+  /** Names the download when several rows share a season and release group. */
+  name?: string
 }
 
 const ACTION_BUTTON =
@@ -152,9 +160,9 @@ const ACTION_BUTTON =
 const REMOVE_BUTTON =
   'touch-target grid size-7 shrink-0 cursor-pointer place-items-center rounded-md border border-line bg-panel-raised text-ink transition-colors hover:border-bad/50 hover:text-bad disabled:cursor-not-allowed disabled:opacity-50'
 
-export function DownloadActions({ entry, busy, onPause, onResume, onRemove }: DownloadActionsProps) {
+export function DownloadActions({ entry, busy, onPause, onResume, onRemove, name }: DownloadActionsProps) {
   const busyRow = busy || entry.unbound
-  const label = `${entry.season} · ${entry.releaseGroup}`
+  const label = `${entry.season} · ${entry.releaseGroup}${name ? ` · ${name}` : ''}`
   return (
     <>
       {entry.capabilities.pause && (
