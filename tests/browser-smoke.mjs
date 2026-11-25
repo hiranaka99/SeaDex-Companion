@@ -3909,10 +3909,23 @@ try {
     'Dismissed bulk banners must not return after reload',
   )
   bulkState = { ...bulkState, id: 'newer-bulk-job' }
+  statusOverrides = { cancelled: true }
   await evaluate(`location.reload()`)
   await wait(
-    `document.querySelector('[aria-label="Application operations"]')?.textContent.includes('1 already queued')`,
+    `document.querySelector('.sidebar-status')?.textContent.includes('1 already queued') && document.querySelector('.sidebar-status')?.textContent.includes('Scan cancelled')`,
   )
+  assert.equal(
+    await evaluate(`getComputedStyle(document.querySelector('.operation-center')).display`),
+    'none',
+    'Desktop keeps scan and bulk notifications in the sidebar instead of the top banner',
+  )
+  assert.ok(
+    await evaluate(
+      `(() => { const box = document.querySelector('.sidebar-status').getBoundingClientRect(); return box.width > 0 && box.top >= 0 && box.bottom <= innerHeight })()`,
+    ),
+    'Combined scan and bulk notifications stay visible inside the sidebar',
+  )
+  statusOverrides = {}
   console.log('PASS dismissed bulk download banners stay dismissed across reloads while newer jobs still restore')
   if (process.env.SCREENSHOT_DIR)
     writeFileSync(join(process.env.SCREENSHOT_DIR, 'ui-evidence.json'), JSON.stringify(uiEvidence, null, 2))
