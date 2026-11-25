@@ -21,6 +21,7 @@ const {
   resetOwnedRuntime,
   setDownloadNative,
   setDownloadPhase,
+  updateDownloadImport,
 } = await import('../server/download-store.js')
 const { findAcquisitionRecord, findSabnzbdRecord, findTorrentRecord } = await import('./support/ledger.js')
 const { DEFAULT_CONFIG } = await import('../server/config.js')
@@ -637,6 +638,70 @@ test('a torrent no read ever confirmed is dropped from tracking after a grace pe
     assert.deepEqual(state.controls, [], 'The client is never touched')
   } finally {
     Date.now = realNow
+    restore()
+  }
+})
+
+test('a finished download that Sonarr or Radarr removed from the client is not shown as missing', async () => {
+  cleanLedger()
+  const config = progressConfig()
+  const state: ProgressRouter = {
+    torrents: [
+      { hash: h1, state: 'stalledUP', progress: 1, size: 1000 },
+      { hash: h2, state: 'stalledUP', progress: 1, size: 1000 },
+      { hash: h3, state: 'pausedUP', progress: 1, size: 1000 },
+    ],
+    controls: [],
+  }
+  const restore = installProgressRouter(state)
+  try {
+    const library = [{ key: 'Sonarr:item10', season: 1, part: '', group: 'Best' }]
+    const awaitingImport = addDownloadRecord({
+      protocol: 'torrent',
+      client: 'qbittorrent',
+      endpoint: qbEndpointId(config),
+      state: 'accepted',
+      source_hash: h1,
+      category: 'anime',
+      library,
+    })
+    const imported = addDownloadRecord({
+      protocol: 'torrent',
+      client: 'qbittorrent',
+      endpoint: qbEndpointId(config),
+      state: 'accepted',
+      source_hash: h2,
+      category: 'anime',
+      library,
+    })
+    const untracked = addDownloadRecord({
+      protocol: 'torrent',
+      client: 'qbittorrent',
+      endpoint: qbEndpointId(config),
+      state: 'accepted',
+      source_hash: h3,
+      category: 'anime',
+    })
+    await collectDownloadProgress(config)
+    assert.equal(findDownloadRecord(awaitingImport.id)?.import?.state, 'pending')
+    updateDownloadImport(imported.id, { state: 'imported' })
+
+    state.torrents = []
+    const after = await collectDownloadProgress(config)
+    const view = after.downloads[awaitingImport.id]
+    assert.equal(view.phase, 'complete', 'A finished download that left the client is not a warning')
+    assert.equal(view.error, undefined)
+    assert.equal(view.import?.state, 'pending', 'The import is still confirmed from the library files')
+    assert.equal(view.capabilities.remove, true)
+    for (const record of [imported, untracked]) {
+      assert.equal(after.downloads[record.id], undefined, 'Nothing left to follow, so tracking ends quietly')
+      assert.ok(findDownloadRecord(record.id)?.removed_at)
+    }
+
+    await controlRecord(config, awaitingImport.id, 'remove', true)
+    assert.ok(findDownloadRecord(awaitingImport.id)?.removed_at)
+    assert.deepEqual(state.controls, [], 'The client is never touched')
+  } finally {
     restore()
   }
 })
