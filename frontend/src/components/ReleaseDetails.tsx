@@ -10,6 +10,7 @@ import type { DownloadPhase, DownloadProtocol, UsenetAvailabilityResult } from '
 import { DiskLine } from './PlanReview'
 import type { DetailsDownloadState, LowSpaceHold } from '../useCardDownloads'
 import { episodeRangeLabel, releaseIdentity } from '../../../shared/releases'
+import { DEFAULT_TRACKER_MODE } from '../../../shared/settings'
 import { displayDateTimeMinutes } from '../datetime'
 import { availabilityErrors } from '../usenet-observation'
 
@@ -172,7 +173,7 @@ export default function ReleaseDetails({
   const complete = transfers.length > 0 && active.length === 0
   const inClient = active.length > 0
   const mode = config?.download_mode || 'torrent_only'
-  const publicOnly = (config?.tracker_mode || 'public') === 'public'
+  const publicOnly = (config?.tracker_mode || DEFAULT_TRACKER_MODE) === 'public'
   const category = (r.arr === 'Sonarr' ? config?.sonarr_category : config?.radarr_category)?.trim() || r.arr
   const usenetEnabled = mode !== 'torrent_only'
   const sabReady = sabnzbdConfigured || Boolean(config?.sabnzbd_url && config?.sabnzbd_key_configured)

@@ -498,19 +498,19 @@ test('saved results are stale once scope, instances, or release preferences chan
   const saved = { count: 3, settings: { assessment: assessmentSignature(config), library: librarySignature(config) } }
   assert.equal(resultSettingsChanged(config, saved), false)
   assert.equal(resultSettingsChanged(config, { count: 0 }), false, 'Without results there is nothing to refresh')
-  const allTrackers = { ...config, tracker_mode: 'private' as const }
-  assert.equal(
-    resultSettingsChanged(allTrackers, { count: 3 }),
-    false,
-    'Results from before these settings existed are current under the defaults, which listed every tracker',
-  )
+  const publicOnly = { ...config, tracker_mode: 'public' as const }
   assert.equal(
     resultSettingsChanged(config, { count: 3 }),
+    false,
+    'Results from before these settings existed are current under the defaults, which list every tracker',
+  )
+  assert.equal(
+    resultSettingsChanged(publicOnly, { count: 3 }),
     true,
     'Results from before tracker modes list private releases that public-tracker mode leaves out',
   )
-  assert.equal(resultSettingsChanged({ ...allTrackers, verify_release_files: false }, { count: 3 }), true)
-  assert.equal(resultSettingsChanged(allTrackers, saved), true, 'Switching tracker mode makes results stale')
+  assert.equal(resultSettingsChanged({ ...config, verify_release_files: false }, { count: 3 }), true)
+  assert.equal(resultSettingsChanged(publicOnly, saved), true, 'Switching tracker mode makes results stale')
   assert.equal(
     resultSettingsChanged({ ...config, release_preferences: { ...config.release_preferences, strict: true } }, saved),
     true,
