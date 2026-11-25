@@ -2,6 +2,7 @@ import { baseGroupKey, resultGroupKey } from '../../shared/ids.js'
 import { seasonTag } from '../../shared/ids.js'
 import { isSeasonUpgradable, upgradeParts } from '../../shared/download-plan.js'
 import { estimateDownloads } from '../../shared/download-estimate.js'
+import { DEFAULT_TRACKER_MODE } from '../../shared/settings.js'
 import type { CardStatus, Config, GroupedCard, Release, ResultItem } from './types.js'
 
 const USENET_PROVIDER_NAMES = { animetosho: 'AnimeTosho', amenzb: 'AmeNZB' } as const
@@ -74,7 +75,8 @@ export const PROVIDER_LABEL: Record<string, string> = {
 /** Prowlarr is set up and Release preferences include private trackers, so private-tracker releases can be found. */
 export function prowlarrReady(config: Config | null | undefined): boolean {
   return Boolean(
-    config?.tracker_mode === 'private' &&
+    config &&
+    (config.tracker_mode || DEFAULT_TRACKER_MODE) === 'private' &&
     config.prowlarr_enabled &&
     config.prowlarr_url &&
     config.prowlarr_key_configured,

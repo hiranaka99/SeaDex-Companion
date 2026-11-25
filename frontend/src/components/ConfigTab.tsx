@@ -13,6 +13,7 @@ import {
   ARR_TAG_PATTERN,
   DEFAULT_ARR_TAGS,
   DEFAULT_RELEASE_PREFERENCES,
+  DEFAULT_TRACKER_MODE,
   EMPTY_LIBRARY_SCOPE,
   type ArrTagKey,
 } from '../../../shared/settings'
@@ -37,16 +38,15 @@ import {
   Field,
   InputField,
   ToggleRow,
-  StatusChip,
-  Section,
   IntegrationCard,
   CopyRow,
   ConfigSkeleton,
 } from './config/parts'
 import { ScheduleEditor, scheduleErrors } from './config/ScheduleEditor'
 import ChangePasswordForm from './config/ChangePasswordForm'
+import { SettingsPanel, SettingsTabs, type SettingsTabId } from './config/SettingsTabs'
 import LibraryScopeEditor from './LibraryScopeEditor'
-import ReleasePreferencesEditor, { summarizePreferences } from './ReleasePreferencesEditor'
+import ReleasePreferencesEditor from './ReleasePreferencesEditor'
 import { useConnectionTests } from '../useConnectionTests'
 import {
   instanceConfigured,
@@ -121,7 +121,10 @@ export default function ConfigTab({
   const [guidedSetup, setGuidedSetup] = useState(false)
   const [librarySource, setLibrarySource] = useState<'sonarr' | 'radarr'>('sonarr')
   const setupInitialized = useRef(false)
-  const automationRef = useRef<HTMLDetailsElement>(null)
+  const [settingsTab, setSettingsTab] = useState<SettingsTabId>('library')
+  const tabsAnchor = useRef<HTMLDivElement>(null)
+  const [tabsStuck, setTabsStuck] = useState(false)
+  const invalidSeen = useRef(false)
   const [clearedSecrets, setClearedSecrets] = useState<Set<SecretConfigKey>>(new Set())
   const dirty = Boolean(
     config && Object.keys(form).length && (JSON.stringify(form) !== savedForm.current || clearedSecrets.size),
@@ -134,7 +137,7 @@ export default function ConfigTab({
   const [removingTags, setRemovingTags] = useState(false)
   const toast = useToast()
   const tests = useConnectionTests(form, clearedSecrets)
-  const { connection, testingAll, test, describe, failed } = tests
+  const { connection, testingAll, test, failed } = tests
 
   useEffect(() => {
     if (!config) return
@@ -170,6 +173,19 @@ export default function ConfigTab({
     const timer = window.setInterval(load, 30_000)
     return () => window.clearInterval(timer)
   }, [active])
+
+  // The tab strip gains a backdrop only once content scrolls beneath it; at rest it sits on the page itself.
+  const configLoaded = config !== null
+  useEffect(() => {
+    const anchor = tabsAnchor.current
+    const pane = anchor?.closest('.app-scroll-pane')
+    if (!anchor || !pane) return
+    const observer = new IntersectionObserver(([entry]) => setTabsStuck(!entry.isIntersecting && active), {
+      root: pane,
+    })
+    observer.observe(anchor)
+    return () => observer.disconnect()
+  }, [active, configLoaded])
 
   useEffect(() => {
     if (!dirty) return
@@ -275,32 +291,32 @@ export default function ConfigTab({
     const { protocol } = SERVICES[service]
     return protocol === 'torrent' ? torrentShown : protocol === 'usenet' ? usenetShown : true
   }
-  const chip = (service: Service) => (
-    <StatusChip key={service} label={SERVICES[service].label} status={describe(service)} />
-  )
-  const instanceChip = (instance: PublicArrInstance) => (
-    <StatusChip
-      key={instance.id}
-      label={instance.name.trim() || KIND_NAMES[instance.kind]}
-      status={describe(instanceService(instance))}
-    />
-  )
   // Prowlarr serves both download methods, so it is summarized here once it is switched on.
   const shownDownloadServices = SERVICE_IDS.filter(
     service => (SERVICES[service].protocol || (service === 'prowlarr' && form.prowlarr_enabled)) && isRelevant(service),
   )
+
+  const selectTab = (tab: SettingsTabId) => {
+    setSettingsTab(tab)
+    // A section scrolled far down must not leave the next one starting off-screen: return to the top of the strip.
+    const anchor = tabsAnchor.current
+    const pane = anchor?.closest('.app-scroll-pane')
+    if (!anchor || !pane) return
+    const top = anchor.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop
+    if (pane.scrollTop > top) pane.scrollTop = top
+  }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     const schedule = form.scan_schedule
     if (!schedule) return
     if (scheduleErrors(schedule).length) {
-      if (automationRef.current) automationRef.current.open = true
+      selectTab('automation')
       toast.show('Fix the automatic scan schedule before saving', 'error')
       return
     }
     if (ARR_TAG_KEYS.some(key => tagProblem(key))) {
-      if (automationRef.current) automationRef.current.open = true
+      selectTab('automation')
       toast.show('Fix the status tag names before saving', 'error')
       return
     }
@@ -401,6 +417,13 @@ export default function ConfigTab({
   const cacheInvalid = Boolean(scannedData && (!scannedData.cache_valid || !scannedData.results_valid))
   const showSonarr = !guidedSetup || librarySource === 'sonarr'
   const showRadarr = !guidedSetup || librarySource === 'radarr'
+  const tabAttention: Partial<Record<SettingsTabId, boolean>> = {
+    library: failed(['sonarr', 'radarr', ...instances.map(instanceService)]),
+    downloads: failed(shownDownloadServices),
+    notifications: failed(['discord']),
+    automation: scheduleErrors(schedule).length > 0 || ARR_TAG_KEYS.some(key => tagProblem(key)),
+    maintenance: cacheInvalid,
+  }
 
   const saveControls = (
     <div className="configuration-save-controls flex flex-wrap items-center justify-between gap-3 max-[600px]:gap-2">
@@ -458,18 +481,90 @@ export default function ConfigTab({
             <button
               type="button"
               className={cx(buttonBase, 'border-line bg-panel text-ink')}
-              onClick={() => setGuidedSetup(true)}
+              onClick={() => {
+                setGuidedSetup(true)
+                selectTab('library')
+              }}
             >
               Connection checklist
             </button>
           )}
         </div>
       </header>
+      {guidedSetup && (
+        <section
+          className="mb-4 rounded-card border border-accent/25 bg-accent/6 p-4"
+          aria-label="Connection checklist"
+        >
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="m-0 text-base font-bold">Connect your library</h2>
+            <button
+              type="button"
+              className="touch-target cursor-pointer rounded-lg px-2 text-xs font-semibold text-accent-bright hover:bg-accent/10"
+              onClick={() => setGuidedSetup(false)}
+            >
+              Show all settings
+            </button>
+          </div>
+          <ol className="m-0 grid list-none gap-2 p-0 text-xs sm:grid-cols-3">
+            <li>
+              <strong className="block text-ink">1. Connect & test</strong>
+              <span className="text-muted">
+                {connection(librarySource).phase === 'success'
+                  ? 'Connection tested'
+                  : 'Enter a URL and API key, then test'}
+              </span>
+            </li>
+            <li>
+              <strong className="block text-ink">2. Save connection</strong>
+              <span className="text-muted">
+                {savedSelectedSource && !dirty ? 'Connection saved' : 'Use Save configuration below'}
+              </span>
+            </li>
+            <li className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <strong className="block text-ink">3. Scan library</strong>
+                <span className="text-muted">{status.running ? 'Scan in progress' : 'Find your first upgrades'}</span>
+              </div>
+              <button
+                type="button"
+                className={cx(buttonBase, 'border-accent/35 bg-accent/10 text-accent-bright')}
+                disabled={!savedSelectedSource || dirty || scanDisabled}
+                onClick={() => {
+                  onRunScan()
+                  setGuidedSetup(false)
+                }}
+              >
+                Scan library
+              </button>
+            </li>
+          </ol>
+        </section>
+      )}
+      <div ref={tabsAnchor} aria-hidden="true" />
+      <div className="configuration-tabs border-b border-line" data-stuck={tabsStuck ? '' : undefined}>
+        <SettingsTabs base={formId} active={settingsTab} attention={tabAttention} onSelect={selectTab} />
+      </div>
       <form
         id={formId}
         onSubmit={submit}
         onInvalidCapture={event => {
           if (event.target instanceof HTMLElement) {
+            // The first invalid field decides the section to show. Reveal its panel at once so the browser can
+            // focus the field and explain the problem; the state change then keeps that section selected.
+            const panel = event.target.closest<HTMLElement>('[data-settings-tab]')
+            if (!invalidSeen.current) {
+              invalidSeen.current = true
+              window.setTimeout(() => {
+                invalidSeen.current = false
+              })
+              if (panel?.hidden) {
+                panel.parentElement?.querySelectorAll<HTMLElement>('[data-settings-tab]').forEach(other => {
+                  other.hidden = other !== panel
+                })
+                selectTab(panel.dataset.settingsTab as SettingsTabId)
+              }
+            }
             let disclosure = event.target.closest('details')
             while (disclosure) {
               disclosure.open = true
@@ -479,310 +574,244 @@ export default function ConfigTab({
         }}
       >
         <fieldset disabled={saving} className="configuration-disclosures m-0 min-w-0 border-0 p-0">
-          {guidedSetup && (
-            <section
-              className="mb-4 rounded-card border border-accent/25 bg-accent/6 p-4"
-              aria-label="Connection checklist"
-            >
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <h2 className="m-0 text-base font-bold">Connect your library</h2>
-                <button
-                  type="button"
-                  className="touch-target cursor-pointer rounded-lg px-2 text-xs font-semibold text-accent-bright hover:bg-accent/10"
-                  onClick={() => setGuidedSetup(false)}
-                >
-                  Show all settings
-                </button>
-              </div>
-              <ol className="m-0 grid list-none gap-2 p-0 text-xs sm:grid-cols-3">
-                <li>
-                  <strong className="block text-ink">1. Connect & test</strong>
-                  <span className="text-muted">
-                    {connection(librarySource).phase === 'success'
-                      ? 'Connection tested'
-                      : 'Enter a URL and API key, then test'}
-                  </span>
-                </li>
-                <li>
-                  <strong className="block text-ink">2. Save connection</strong>
-                  <span className="text-muted">
-                    {savedSelectedSource && !dirty ? 'Connection saved' : 'Use Save configuration below'}
-                  </span>
-                </li>
-                <li className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <strong className="block text-ink">3. Scan library</strong>
-                    <span className="text-muted">
-                      {status.running ? 'Scan in progress' : 'Find your first upgrades'}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    className={cx(buttonBase, 'border-accent/35 bg-accent/10 text-accent-bright')}
-                    disabled={!savedSelectedSource || dirty || scanDisabled}
-                    onClick={() => {
-                      onRunScan()
-                      setGuidedSetup(false)
-                    }}
-                  >
-                    Scan library
-                  </button>
-                </li>
-              </ol>
-            </section>
-          )}
-          {guidedSetup && (
-            <div className="mb-4 flex flex-wrap gap-2" role="group" aria-label="Choose library source">
-              {(['sonarr', 'radarr'] as const).map(service => (
-                <button
-                  key={service}
-                  type="button"
-                  aria-pressed={librarySource === service}
-                  className={cx(
-                    buttonBase,
-                    librarySource === service
-                      ? 'border-accent bg-accent/12 text-ink'
-                      : 'border-line bg-panel text-muted',
-                  )}
-                  onClick={() => setLibrarySource(service)}
-                >
-                  {service === 'sonarr' ? 'Sonarr · series' : 'Radarr · movies'}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <section className="pb-3" aria-labelledby={`${formId}-library`}>
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 pb-4">
-              <h2 id={`${formId}-library`} className="m-0 text-lg font-extrabold tracking-tight">
-                Library
-              </h2>
-              <span className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
-                {showSonarr && chip('sonarr')}
-                {showRadarr && chip('radarr')}
-                {!guidedSetup && instances.map(instanceChip)}
-              </span>
-            </div>
-            <div className={cx('grid gap-4', !guidedSetup && 'grid-cols-2 max-[1100px]:grid-cols-1')}>
-              {showSonarr && (
-                <IntegrationCard
-                  brand="sonarr"
-                  title="Sonarr"
-                  description="Series library and season metadata"
-                  configured={configured.sonarr}
-                  connection={connection('sonarr')}
-                  onTest={() => void test('sonarr')}
-                >
-                  <Field
-                    name="sonarr_url"
-                    type="url"
-                    label="Server URL"
-                    hint="The /api/v3 path is added automatically"
-                    placeholder="https://sonarr.example.com"
-                    required={configured.sonarr}
-                    form={form}
-                    set={set}
-                  />
-                  <Field
-                    name="sonarr_key"
-                    type="password"
-                    label="API key"
-                    placeholder="Enter the Sonarr API key"
-                    required={configured.sonarr && !form.sonarr_key_configured}
-                    configured={!!form.sonarr_key_configured}
-                    onClear={() => setPendingClear('sonarr_key')}
-                    form={form}
-                    set={set}
-                  />
-                  <Field
-                    name="sonarr_category"
-                    type="text"
-                    label="qBittorrent category"
-                    hint="Must match the category configured in Sonarr"
-                    placeholder="sonarr-anime"
-                    form={form}
-                    set={set}
-                  />
-                  <LibraryScopeEditor
-                    kind="sonarr"
-                    appName="Sonarr"
-                    scope={scopeOf('sonarr_scope')}
-                    onChange={scope => set('sonarr_scope', scope)}
-                    canLoad={configured.sonarr}
-                    loadOptions={loadScopeOptions('sonarr')}
-                  />
-                </IntegrationCard>
+          <SettingsPanel base={formId} tab="library" active={settingsTab === 'library'}>
+            <div>
+              {guidedSetup && (
+                <div className="mb-4 flex flex-wrap gap-2" role="group" aria-label="Choose library source">
+                  {(['sonarr', 'radarr'] as const).map(service => (
+                    <button
+                      key={service}
+                      type="button"
+                      aria-pressed={librarySource === service}
+                      className={cx(
+                        buttonBase,
+                        librarySource === service
+                          ? 'border-accent bg-accent/12 text-ink'
+                          : 'border-line bg-panel text-muted',
+                      )}
+                      onClick={() => setLibrarySource(service)}
+                    >
+                      {service === 'sonarr' ? 'Sonarr · series' : 'Radarr · movies'}
+                    </button>
+                  ))}
+                </div>
               )}
-              {showRadarr && (
-                <IntegrationCard
-                  brand="radarr"
-                  title="Radarr"
-                  description="Movie library and release metadata"
-                  configured={configured.radarr}
-                  connection={connection('radarr')}
-                  onTest={() => void test('radarr')}
-                >
-                  <Field
-                    name="radarr_url"
-                    type="url"
-                    label="Server URL"
-                    hint="The /api/v3 path is added automatically"
-                    placeholder="https://radarr.example.com"
-                    required={configured.radarr}
-                    form={form}
-                    set={set}
-                  />
-                  <Field
-                    name="radarr_key"
-                    type="password"
-                    label="API key"
-                    placeholder="Enter the Radarr API key"
-                    required={configured.radarr && !form.radarr_key_configured}
-                    configured={!!form.radarr_key_configured}
-                    onClear={() => setPendingClear('radarr_key')}
-                    form={form}
-                    set={set}
-                  />
-                  <Field
-                    name="radarr_category"
-                    type="text"
-                    label="qBittorrent category"
-                    hint="Must match the category configured in Radarr"
-                    placeholder="radarr-anime"
-                    form={form}
-                    set={set}
-                  />
-                  <LibraryScopeEditor
-                    kind="radarr"
-                    appName="Radarr"
-                    scope={scopeOf('radarr_scope')}
-                    onChange={scope => set('radarr_scope', scope)}
-                    canLoad={configured.radarr}
-                    loadOptions={loadScopeOptions('radarr')}
-                  />
-                </IntegrationCard>
+              <div className={cx('grid gap-4', !guidedSetup && 'grid-cols-2 max-[1100px]:grid-cols-1')}>
+                {showSonarr && (
+                  <IntegrationCard
+                    brand="sonarr"
+                    title="Sonarr"
+                    description="Series library and season metadata"
+                    configured={configured.sonarr}
+                    connection={connection('sonarr')}
+                    onTest={() => void test('sonarr')}
+                  >
+                    <Field
+                      name="sonarr_url"
+                      type="url"
+                      label="Server URL"
+                      hint="The /api/v3 path is added automatically"
+                      placeholder="https://sonarr.example.com"
+                      required={configured.sonarr}
+                      form={form}
+                      set={set}
+                    />
+                    <Field
+                      name="sonarr_key"
+                      type="password"
+                      label="API key"
+                      placeholder="Enter the Sonarr API key"
+                      required={configured.sonarr && !form.sonarr_key_configured}
+                      configured={!!form.sonarr_key_configured}
+                      onClear={() => setPendingClear('sonarr_key')}
+                      form={form}
+                      set={set}
+                    />
+                    <Field
+                      name="sonarr_category"
+                      type="text"
+                      label="qBittorrent category"
+                      hint="Must match the category configured in Sonarr"
+                      placeholder="sonarr-anime"
+                      form={form}
+                      set={set}
+                    />
+                    <LibraryScopeEditor
+                      kind="sonarr"
+                      appName="Sonarr"
+                      scope={scopeOf('sonarr_scope')}
+                      onChange={scope => set('sonarr_scope', scope)}
+                      canLoad={configured.sonarr}
+                      loadOptions={loadScopeOptions('sonarr')}
+                    />
+                  </IntegrationCard>
+                )}
+                {showRadarr && (
+                  <IntegrationCard
+                    brand="radarr"
+                    title="Radarr"
+                    description="Movie library and release metadata"
+                    configured={configured.radarr}
+                    connection={connection('radarr')}
+                    onTest={() => void test('radarr')}
+                  >
+                    <Field
+                      name="radarr_url"
+                      type="url"
+                      label="Server URL"
+                      hint="The /api/v3 path is added automatically"
+                      placeholder="https://radarr.example.com"
+                      required={configured.radarr}
+                      form={form}
+                      set={set}
+                    />
+                    <Field
+                      name="radarr_key"
+                      type="password"
+                      label="API key"
+                      placeholder="Enter the Radarr API key"
+                      required={configured.radarr && !form.radarr_key_configured}
+                      configured={!!form.radarr_key_configured}
+                      onClear={() => setPendingClear('radarr_key')}
+                      form={form}
+                      set={set}
+                    />
+                    <Field
+                      name="radarr_category"
+                      type="text"
+                      label="qBittorrent category"
+                      hint="Must match the category configured in Radarr"
+                      placeholder="radarr-anime"
+                      form={form}
+                      set={set}
+                    />
+                    <LibraryScopeEditor
+                      kind="radarr"
+                      appName="Radarr"
+                      scope={scopeOf('radarr_scope')}
+                      onChange={scope => set('radarr_scope', scope)}
+                      canLoad={configured.radarr}
+                      loadOptions={loadScopeOptions('radarr')}
+                    />
+                  </IntegrationCard>
+                )}
+              </div>
+              {!guidedSetup && instances.length > 0 && (
+                <div className="mt-4 grid grid-cols-2 gap-4 max-[1100px]:grid-cols-1">
+                  {instances.map(instance => {
+                    const app = KIND_NAMES[instance.kind]
+                    const name = instance.name.trim() || `New ${app} instance`
+                    return (
+                      <div key={instance.id} id={`instance-${instance.id}`} className="contents">
+                        <IntegrationCard
+                          brand={instance.kind}
+                          title={name}
+                          description={
+                            instance.kind === 'sonarr'
+                              ? 'Additional Sonarr series library'
+                              : 'Additional Radarr movie library'
+                          }
+                          configured={instanceConfigured(instance)}
+                          connection={connection(instanceService(instance))}
+                          onTest={() => void test(instanceService(instance))}
+                          footerAction={
+                            <button
+                              type="button"
+                              className={cx(
+                                buttonBase,
+                                'justify-center border-line bg-canvas-soft text-bad hover:border-bad/40 hover:bg-bad/10',
+                              )}
+                              aria-label={`Remove ${name}`}
+                              onClick={() => removeInstance(instance)}
+                            >
+                              <Icon name="trash" size={15} />
+                              Remove
+                            </button>
+                          }
+                        >
+                          <InputField
+                            label="Name"
+                            hint="Shown on library cards, in the source filter, and in scan messages"
+                            placeholder={`${app} 4K`}
+                            required
+                            value={instance.name}
+                            onChange={value => updateInstance(instance.id, { name: value })}
+                          />
+                          <InputField
+                            type="url"
+                            label="Server URL"
+                            hint="The /api/v3 path is added automatically"
+                            placeholder={`https://${instance.kind}-4k.example.com`}
+                            required
+                            value={instance.url}
+                            onChange={value => updateInstance(instance.id, { url: value })}
+                          />
+                          <InputField
+                            type="password"
+                            label="API key"
+                            placeholder={`Enter the ${app} API key`}
+                            required={!instance.key_configured}
+                            configured={instance.key_configured && !instance.key}
+                            value={instance.key}
+                            onChange={value => updateInstance(instance.id, { key: value })}
+                          />
+                          {torrentShown && (
+                            <InputField
+                              label="qBittorrent category"
+                              hint={`Must match the category configured in ${name}`}
+                              placeholder={`${instance.kind}-4k`}
+                              value={instance.category}
+                              onChange={value => updateInstance(instance.id, { category: value })}
+                            />
+                          )}
+                          {usenetShown && (
+                            <InputField
+                              label="SABnzbd category"
+                              hint={`Must match the category configured in ${name}`}
+                              placeholder={`${instance.kind}-4k`}
+                              value={instance.sabnzbd_category}
+                              onChange={value => updateInstance(instance.id, { sabnzbd_category: value })}
+                            />
+                          )}
+                          <LibraryScopeEditor
+                            kind={instance.kind}
+                            appName={name}
+                            scope={instance.scope || EMPTY_LIBRARY_SCOPE}
+                            onChange={scope => updateInstance(instance.id, { scope })}
+                            canLoad={instanceConfigured(instance)}
+                            loadOptions={loadScopeOptions(instanceService(instance))}
+                          />
+                        </IntegrationCard>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              {!guidedSetup && (
+                <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2">
+                  {(['sonarr', 'radarr'] as const).map(kind => (
+                    <button
+                      key={kind}
+                      type="button"
+                      className={cx(buttonBase, 'border-line bg-panel text-ink hover:bg-panel-raised')}
+                      disabled={instances.length >= 10}
+                      onClick={() => addInstance(kind)}
+                    >
+                      <Icon name="plus" size={16} />
+                      Add {KIND_NAMES[kind]} instance
+                    </button>
+                  ))}
+                  <span className="min-w-0 flex-1 basis-56 text-xs text-muted">
+                    {instances.length >= 10
+                      ? 'Ten additional instances is the limit.'
+                      : 'For a second library, such as a 4K or anime-only instance. Each one is scanned and shown separately.'}
+                  </span>
+                </div>
               )}
             </div>
-            {!guidedSetup && instances.length > 0 && (
-              <div className="mt-4 grid grid-cols-2 gap-4 max-[1100px]:grid-cols-1">
-                {instances.map(instance => {
-                  const app = KIND_NAMES[instance.kind]
-                  const name = instance.name.trim() || `New ${app} instance`
-                  return (
-                    <div key={instance.id} id={`instance-${instance.id}`} className="contents">
-                      <IntegrationCard
-                        brand={instance.kind}
-                        title={name}
-                        description={
-                          instance.kind === 'sonarr'
-                            ? 'Additional Sonarr series library'
-                            : 'Additional Radarr movie library'
-                        }
-                        configured={instanceConfigured(instance)}
-                        connection={connection(instanceService(instance))}
-                        onTest={() => void test(instanceService(instance))}
-                        footerAction={
-                          <button
-                            type="button"
-                            className={cx(
-                              buttonBase,
-                              'justify-center border-line bg-canvas-soft text-bad hover:border-bad/40 hover:bg-bad/10',
-                            )}
-                            aria-label={`Remove ${name}`}
-                            onClick={() => removeInstance(instance)}
-                          >
-                            <Icon name="trash" size={15} />
-                            Remove
-                          </button>
-                        }
-                      >
-                        <InputField
-                          label="Name"
-                          hint="Shown on library cards, in the source filter, and in scan messages"
-                          placeholder={`${app} 4K`}
-                          required
-                          value={instance.name}
-                          onChange={value => updateInstance(instance.id, { name: value })}
-                        />
-                        <InputField
-                          type="url"
-                          label="Server URL"
-                          hint="The /api/v3 path is added automatically"
-                          placeholder={`https://${instance.kind}-4k.example.com`}
-                          required
-                          value={instance.url}
-                          onChange={value => updateInstance(instance.id, { url: value })}
-                        />
-                        <InputField
-                          type="password"
-                          label="API key"
-                          placeholder={`Enter the ${app} API key`}
-                          required={!instance.key_configured}
-                          configured={instance.key_configured && !instance.key}
-                          value={instance.key}
-                          onChange={value => updateInstance(instance.id, { key: value })}
-                        />
-                        {torrentShown && (
-                          <InputField
-                            label="qBittorrent category"
-                            hint={`Must match the category configured in ${name}`}
-                            placeholder={`${instance.kind}-4k`}
-                            value={instance.category}
-                            onChange={value => updateInstance(instance.id, { category: value })}
-                          />
-                        )}
-                        {usenetShown && (
-                          <InputField
-                            label="SABnzbd category"
-                            hint={`Must match the category configured in ${name}`}
-                            placeholder={`${instance.kind}-4k`}
-                            value={instance.sabnzbd_category}
-                            onChange={value => updateInstance(instance.id, { sabnzbd_category: value })}
-                          />
-                        )}
-                        <LibraryScopeEditor
-                          kind={instance.kind}
-                          appName={name}
-                          scope={instance.scope || EMPTY_LIBRARY_SCOPE}
-                          onChange={scope => updateInstance(instance.id, { scope })}
-                          canLoad={instanceConfigured(instance)}
-                          loadOptions={loadScopeOptions(instanceService(instance))}
-                        />
-                      </IntegrationCard>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-            {!guidedSetup && (
-              <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2">
-                {(['sonarr', 'radarr'] as const).map(kind => (
-                  <button
-                    key={kind}
-                    type="button"
-                    className={cx(buttonBase, 'border-line bg-panel text-ink hover:bg-panel-raised')}
-                    disabled={instances.length >= 10}
-                    onClick={() => addInstance(kind)}
-                  >
-                    <Icon name="plus" size={16} />
-                    Add {KIND_NAMES[kind]} instance
-                  </button>
-                ))}
-                <span className="min-w-0 flex-1 basis-56 text-xs text-muted">
-                  {instances.length >= 10
-                    ? 'Ten additional instances is the limit.'
-                    : 'For a second library, such as a 4K or anime-only instance. Each one is scanned and shown separately.'}
-                </span>
-              </div>
-            )}
-          </section>
+          </SettingsPanel>
 
-          <Section
-            title="Downloads"
-            attention={failed(shownDownloadServices)}
-            expand={!guidedSetup && (configured.qbittorrent || configured.sabnzbd)}
-            summary={shownDownloadServices.map(chip)}
-          >
+          <SettingsPanel base={formId} tab="downloads" active={settingsTab === 'downloads'}>
             <div>
               <h3 id={methodId} className={subheading}>
                 Download method
@@ -1025,7 +1054,7 @@ export default function ConfigTab({
                     form={form}
                     set={set}
                   />
-                  {form.prowlarr_enabled && (form.tracker_mode || 'public') === 'public' && (
+                  {form.prowlarr_enabled && (form.tracker_mode || DEFAULT_TRACKER_MODE) === 'public' && (
                     <p className="m-0 flex items-start gap-1.5 text-xs text-warn" role="note">
                       <Icon name="info" size={14} className="mt-0.5 shrink-0" />
                       <span>
@@ -1037,30 +1066,21 @@ export default function ConfigTab({
                 </IntegrationCard>
               </div>
             </div>
-          </Section>
+          </SettingsPanel>
 
-          <Section
-            title="Release preferences"
-            summary={summarizePreferences(
-              preferences,
-              form.verify_release_files !== false,
-              form.tracker_mode || 'public',
-            ).map(fact => (
-              <span key={fact}>{fact}</span>
-            ))}
-          >
+          <SettingsPanel base={formId} tab="preferences" active={settingsTab === 'preferences'}>
             <ReleasePreferencesEditor
               preferences={preferences}
               verify={form.verify_release_files !== false}
-              trackerMode={form.tracker_mode || 'public'}
+              trackerMode={form.tracker_mode || DEFAULT_TRACKER_MODE}
               knownTrackers={knownTrackers}
               onChange={next => set('release_preferences', next)}
               onVerifyChange={checked => set('verify_release_files', checked)}
               onTrackerModeChange={mode => set('tracker_mode', mode)}
             />
-          </Section>
+          </SettingsPanel>
 
-          <Section title="Notifications" attention={failed(['discord'])} summary={chip('discord')}>
+          <SettingsPanel base={formId} tab="notifications" active={settingsTab === 'notifications'}>
             <IntegrationCard
               brand="discord"
               title="Discord"
@@ -1099,9 +1119,9 @@ export default function ConfigTab({
                 The test button sends one visible test message to the configured channel.
               </div>
             </IntegrationCard>
-          </Section>
+          </SettingsPanel>
 
-          <Section title="Automation" detailsRef={automationRef}>
+          <SettingsPanel base={formId} tab="automation" active={settingsTab === 'automation'}>
             <ScheduleEditor
               schedule={schedule}
               nextCheck={status.next_check}
@@ -1198,9 +1218,9 @@ export default function ConfigTab({
                 </p>
               )}
             </div>
-          </Section>
+          </SettingsPanel>
 
-          <Section title="General">
+          <SettingsPanel base={formId} tab="general" active={settingsTab === 'general'}>
             <div>
               <label htmlFor="datetime-format-input" className={cx(subheading, 'block')}>
                 Date &amp; time format
@@ -1233,22 +1253,9 @@ export default function ConfigTab({
               )}
             </div>
             <ChangePasswordForm username={username} onAccountUpdated={onAccountUpdated} />
-          </Section>
+          </SettingsPanel>
 
-          <Section
-            title="Maintenance"
-            attention={cacheInvalid}
-            summary={
-              scannedData &&
-              (cacheInvalid ? (
-                <span className="font-bold text-bad">Invalid cached data detected</span>
-              ) : (
-                <span>
-                  {scannedData.results} saved result{scannedData.results === 1 ? '' : 's'}
-                </span>
-              ))
-            }
-          >
+          <SettingsPanel base={formId} tab="maintenance" active={settingsTab === 'maintenance'}>
             <section className="rounded-2xl border border-bad/30 bg-bad/5 p-5">
               <header className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 max-[600px]:grid-cols-[auto_minmax(0,1fr)]">
                 <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-bad/10 text-bad">
@@ -1299,7 +1306,7 @@ export default function ConfigTab({
                 </button>
               </header>
             </section>
-          </Section>
+          </SettingsPanel>
         </fieldset>
       </form>
       {active && (footerTarget ? createPortal(saveControls, footerTarget) : saveControls)}

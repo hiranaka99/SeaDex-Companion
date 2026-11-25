@@ -14,7 +14,7 @@ SeaDex Companion compares your **Sonarr** and **Radarr** anime libraries with th
 - See all seasons of an anime together, with clear upgrade and ownership summaries.
 - Compare your current release groups, episode coverage, and file sizes with SeaDex recommendations.
 - Confirm that your files are the exact release SeaDex lists, not just a release by the same group.
-- Work with public trackers only (the default), or include releases from private trackers and download them through Prowlarr.
+- Include releases from private trackers (the default) and download them through Prowlarr, or work with public trackers only.
 - Set release preferences: smaller or larger releases, dual audio, a size limit per episode, and groups or trackers to leave out.
 - Scan several Sonarr and Radarr instances, and limit each one to its anime by series type, tag, or root folder.
 - Find titles by name, release group, source, or upgrade status.
@@ -132,7 +132,7 @@ If your files are changed after import, for example remuxed or stripped of track
 
 SeaDex often lists more than one best release for a season, such as a remux and a smaller encode. Under **Configuration → Release preferences** you choose which one SeaDex Companion targets:
 
-- **Trackers**: **Public trackers only** (the default) leaves out every release that has no public torrent, such as releases on AnimeBytes. They do not appear in results, release details, bulk downloads, or notifications, and the best release available on a public tracker becomes the target. A season SeaDex lists only on private trackers shows **No public release**. Choose **Include private trackers** to list those releases too. You download them from the tracker yourself, or let SeaDex Companion find them through [Prowlarr](#private-tracker-releases-through-prowlarr).
+- **Trackers**: **Include private trackers** (the default) lists releases from every tracker SeaDex indexes. Releases on private trackers, such as AnimeBytes, have no public torrent, so you download them from the tracker yourself, or let SeaDex Companion find them through [Prowlarr](#private-tracker-releases-through-prowlarr). Choose **Public trackers only** to leave out every release that has no public torrent. Those releases then do not appear in results, release details, bulk downloads, or notifications, and the best release available on a public tracker becomes the target. A season SeaDex lists only on private trackers shows **No public release**.
 - **Download target**: the largest release (the default) or the smallest.
 - **Prefer dual audio**: whenever a dual-audio release is listed for a season, it becomes the target.
 - **Size limit per episode**: releases above this average episode size are never offered. Movies are not limited.
@@ -196,7 +196,7 @@ SeaDex does not publish a magnet for releases on private trackers such as AnimeB
 
 To set it up:
 
-1. Under **Configuration → Release preferences**, choose **Include private trackers**. Prowlarr is never used in public-tracker mode.
+1. Under **Configuration → Release preferences**, keep **Include private trackers** (the default) selected. Prowlarr is never used with **Public trackers only**.
 2. Under **Configuration → Downloads → Private-tracker releases**, turn on **Find private-tracker releases through Prowlarr**. Enter Prowlarr's URL, including any URL base such as `/prowlarr`, and the API key from **Prowlarr → Settings → General**. Then run **Test connection**; it reports how many Usenet and private torrent indexers Prowlarr offers.
 3. In Prowlarr, add the private tracker (for example AnimeBytes) for torrents, or your Usenet indexers for NZBs.
 4. Run a new library scan. Results saved by earlier versions do not include the file lists needed to check a private-tracker release.

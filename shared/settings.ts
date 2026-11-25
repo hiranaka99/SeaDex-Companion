@@ -1,6 +1,6 @@
 import type { LibraryScope, ReleasePreferences, TrackerMode } from './contracts.js'
 
-export const DEFAULT_TRACKER_MODE: TrackerMode = 'public'
+export const DEFAULT_TRACKER_MODE: TrackerMode = 'private'
 
 export function normalizeTrackerMode(value: unknown): TrackerMode {
   if (value === undefined || value === null || value === '') return DEFAULT_TRACKER_MODE
