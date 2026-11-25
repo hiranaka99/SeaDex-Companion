@@ -13,6 +13,7 @@ import {
   ARR_TAG_PATTERN,
   DEFAULT_ARR_TAGS,
   DEFAULT_RELEASE_PREFERENCES,
+  DEFAULT_TRACKER_MODE,
   EMPTY_LIBRARY_SCOPE,
   type ArrTagKey,
 } from '../../../shared/settings'
@@ -1015,7 +1016,7 @@ export default function ConfigTab({
             <ReleasePreferencesEditor
               preferences={preferences}
               verify={form.verify_release_files !== false}
-              trackerMode={form.tracker_mode || 'public'}
+              trackerMode={form.tracker_mode || DEFAULT_TRACKER_MODE}
               knownTrackers={knownTrackers}
               onChange={next => set('release_preferences', next)}
               onVerifyChange={checked => set('verify_release_files', checked)}
