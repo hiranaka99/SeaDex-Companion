@@ -20,9 +20,11 @@ import {
   ARR_TAG_PATTERN,
   DEFAULT_ARR_TAGS,
   DEFAULT_RELEASE_PREFERENCES,
+  DEFAULT_TRACKER_MODE,
   EMPTY_LIBRARY_SCOPE,
   normalizeLibraryScope,
   normalizeReleasePreferences,
+  normalizeTrackerMode,
 } from '../shared/settings.js'
 import { configuredArrInstances, instanceOf, PRIMARY_INSTANCE_IDS } from './arr-instances.js'
 import type { ArrInstanceConfig, Config, JsonObject, PublicConfig } from './types.js'
@@ -39,6 +41,7 @@ export const DEFAULT_CONFIG: Config = {
   radarr_scope: EMPTY_LIBRARY_SCOPE,
   arr_instances: [],
   release_preferences: DEFAULT_RELEASE_PREFERENCES,
+  tracker_mode: DEFAULT_TRACKER_MODE,
   verify_release_files: true,
   arr_tags_enabled: false,
   ...DEFAULT_ARR_TAGS,
@@ -308,6 +311,7 @@ export function applyConfigUpdate(config: Config, input: unknown): Config {
   if ('arr_instances' in data)
     next.arr_instances = normalizeArrInstances(data.arr_instances, config.arr_instances || [])
   if ('release_preferences' in data) next.release_preferences = normalizeReleasePreferences(data.release_preferences)
+  if ('tracker_mode' in data) next.tracker_mode = normalizeTrackerMode(data.tracker_mode)
   for (const key of ARR_TAG_KEYS) {
     if (!(key in data)) continue
     const label = String(data[key] ?? '')

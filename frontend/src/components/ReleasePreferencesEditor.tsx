@@ -1,5 +1,5 @@
 import { useId } from 'react'
-import type { ReleasePreferences } from '../../../shared/contracts'
+import type { ReleasePreferences, TrackerMode } from '../../../shared/contracts'
 import { control, cx } from '../styles'
 import { ListField, ToggleRow, subheading } from './config/parts'
 
@@ -7,11 +7,26 @@ interface Props {
   preferences: ReleasePreferences
   /** Whether owned releases are checked against the listed file sizes. */
   verify: boolean
+  trackerMode: TrackerMode
   onChange: (preferences: ReleasePreferences) => void
   onVerifyChange: (verify: boolean) => void
+  onTrackerModeChange: (mode: TrackerMode) => void
   /** Trackers that appear in the current library results, offered as one-click choices. */
   knownTrackers: string[]
 }
+
+const TRACKER_MODES: [TrackerMode, string, string][] = [
+  [
+    'public',
+    'Public trackers only',
+    'Releases that need a private-tracker account are left out. This is SeaDex Companion’s default.',
+  ],
+  [
+    'private',
+    'Include private trackers',
+    'Releases from private trackers are listed too. You download those from the tracker yourself.',
+  ],
+]
 
 const TARGETS: [ReleasePreferences['size'], string, string][] = [
   ['largest', 'Largest release', 'Usually the remux or highest-bitrate encode. This is SeaDex Companion’s default.'],
@@ -19,9 +34,14 @@ const TARGETS: [ReleasePreferences['size'], string, string][] = [
 ]
 
 /** Short facts about the saved preferences for the collapsed section header. */
-export function summarizePreferences(preferences: ReleasePreferences, verify: boolean): string[] {
+export function summarizePreferences(
+  preferences: ReleasePreferences,
+  verify: boolean,
+  trackerMode: TrackerMode = 'public',
+): string[] {
   const ignored = preferences.ignored_groups.length + preferences.ignored_trackers.length
   return [
+    trackerMode === 'private' ? 'Private trackers included' : 'Public trackers only',
     preferences.size === 'smallest' ? 'Smallest release' : 'Largest release',
     preferences.dual_audio ? 'Dual audio preferred' : '',
     preferences.max_episode_gb > 0 ? `Up to ${preferences.max_episode_gb} GB per episode` : '',
@@ -34,23 +54,53 @@ export function summarizePreferences(preferences: ReleasePreferences, verify: bo
 
 /**
  * Chooses the download target among the releases SeaDex lists, and what counts as already
- * having the best release. Flat rows, in the order a person decides them: what to aim for,
- * what to leave out, then how strictly the library is judged.
+ * having the best release. Flat rows, in the order a person decides them: which trackers count,
+ * what to aim for, what to leave out, then how strictly the library is judged.
  */
 export default function ReleasePreferencesEditor({
   preferences,
   verify,
+  trackerMode,
   onChange,
   onVerifyChange,
+  onTrackerModeChange,
   knownTrackers,
 }: Props) {
+  const trackersId = useId()
   const targetId = useId()
   const limitId = useId()
   const set = <K extends keyof ReleasePreferences>(key: K, value: ReleasePreferences[K]) =>
     onChange({ ...preferences, [key]: value })
+  const option =
+    'flex min-h-11 cursor-pointer items-start gap-3 rounded-xl border border-line bg-canvas-soft p-4 text-sm has-[:checked]:border-accent has-[:checked]:bg-accent/10'
   return (
     <>
       <div>
+        <h3 id={trackersId} className={subheading}>
+          Trackers
+        </h3>
+        <p className="mt-1 mb-3 text-xs text-muted">
+          SeaDex lists releases from public and private trackers. Choose which ones the library is judged against.
+        </p>
+        <div role="radiogroup" aria-labelledby={trackersId} className="grid gap-2 md:grid-cols-2">
+          {TRACKER_MODES.map(([value, label, hint]) => (
+            <label key={value} className={option}>
+              <input
+                type="radio"
+                name="tracker_mode"
+                className="mt-0.5 size-4 shrink-0 accent-accent"
+                checked={trackerMode === value}
+                onChange={() => onTrackerModeChange(value)}
+              />
+              <span className="min-w-0">
+                <span className="block font-semibold text-ink">{label}</span>
+                <span className="mt-1 block text-xs text-muted">{hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+      <div className="border-t border-line pt-6">
         <h3 id={targetId} className={subheading}>
           Download target
         </h3>
@@ -59,10 +109,7 @@ export default function ReleasePreferencesEditor({
         </p>
         <div role="radiogroup" aria-labelledby={targetId} className="grid gap-2 md:grid-cols-2">
           {TARGETS.map(([value, label, hint]) => (
-            <label
-              key={value}
-              className="flex min-h-11 cursor-pointer items-start gap-3 rounded-xl border border-line bg-canvas-soft p-4 text-sm has-[:checked]:border-accent has-[:checked]:bg-accent/10"
-            >
+            <label key={value} className={option}>
               <input
                 type="radio"
                 name="release_target_size"

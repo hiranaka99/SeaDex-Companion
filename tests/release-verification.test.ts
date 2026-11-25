@@ -58,7 +58,11 @@ const catalog = (entries: Record<number, ReleaseCandidate[]>, season = 1) =>
       { url: `https://seadex.moe/${id}/`, notes: '', seasons: { [season]: { candidates } } },
     ]),
   )
-const settings = (verify: boolean): AssessmentSettings => ({ preferences: DEFAULT_RELEASE_PREFERENCES, verify })
+const settings = (verify: boolean): AssessmentSettings => ({
+  preferences: DEFAULT_RELEASE_PREFERENCES,
+  verify,
+  trackers: 'public',
+})
 
 function assess(local: LocalSeason, candidates: ReleaseCandidate[], verify = true) {
   const item: LocalItem = { arr: 'Sonarr', id: 1, title: 'Show', seasons: { 1: local } }
@@ -184,7 +188,11 @@ test('a movie lists every release of a group, and the one the library holds is m
       best: catalog({ 42: [megaMTBB, large, small] }, 0),
       libraryKey: 'Radarr:item7',
       arrUrl: null,
-      settings: { preferences: { ...DEFAULT_RELEASE_PREFERENCES, accept_alternatives }, verify: true },
+      settings: {
+        preferences: { ...DEFAULT_RELEASE_PREFERENCES, accept_alternatives },
+        verify: true,
+        trackers: 'public',
+      },
     })
 
   const result = assessMovie(false)

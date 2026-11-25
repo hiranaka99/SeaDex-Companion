@@ -20,19 +20,25 @@ import { syncArrTags } from './arr-tags.js'
 import { settleImports } from './import-follow.js'
 import { arrInstances, configuredArrInstances, instanceSourceKey, sourceNameOf } from './arr-instances.js'
 import { describeRegression } from '../shared/release-changes.js'
-import { DEFAULT_RELEASE_PREFERENCES, normalizeReleasePreferences } from '../shared/settings.js'
+import { DEFAULT_RELEASE_PREFERENCES, normalizeReleasePreferences, normalizeTrackerMode } from '../shared/settings.js'
 import type { Config, ScanScope, ScanTrigger, LocalItem, LocalSeason, ResultItem, SeaDexEntry } from './types.js'
 
 /** Identifies the settings a season is judged under; results computed under another signature are not comparable. */
-export function assessmentSignature(config: Pick<Config, 'release_preferences' | 'verify_release_files'>): string {
+export function assessmentSignature(
+  config: Pick<Config, 'release_preferences' | 'verify_release_files'> & Partial<Pick<Config, 'tracker_mode'>>,
+): string {
   return JSON.stringify([
     normalizeReleasePreferences(config.release_preferences),
     config.verify_release_files !== false,
+    // Results from before tracker modes listed every tracker, so only public mode extends the signature.
+    ...(normalizeTrackerMode(config.tracker_mode) === 'public' ? ['public'] : []),
   ])
 }
+/** What results saved without a signature were judged under: default preferences across every tracker. */
 const DEFAULT_ASSESSMENT_SIGNATURE = assessmentSignature({
   release_preferences: DEFAULT_RELEASE_PREFERENCES,
   verify_release_files: true,
+  tracker_mode: 'private',
 })
 
 /** Identifies which libraries, and which part of each, a scan covers. */
@@ -179,6 +185,7 @@ async function performScan(
     const settings: AssessmentSettings = {
       preferences: normalizeReleasePreferences(config.release_preferences),
       verify: config.verify_release_files !== false,
+      trackers: normalizeTrackerMode(config.tracker_mode),
     }
     const signatures = { assessment: assessmentSignature(config), library: librarySignature(config) }
     // Results judged under other preferences are a new baseline: their differences are neither SeaDex changes nor regressions.

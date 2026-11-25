@@ -1,5 +1,5 @@
 import { releaseOwned, releaseSatisfies, isSeasonUpgradable } from '../../shared/download-plan.js'
-import { PREFERENCE_BLOCKED_REASON } from '../../shared/settings.js'
+import { PREFERENCE_BLOCKED_REASON, PRIVATE_ONLY_REASON } from '../../shared/settings.js'
 import type { Release, ResultItem } from './types.js'
 import { isUnconfirmedMatch } from './utils.js'
 
@@ -50,6 +50,13 @@ export function releaseQuality(season: ResultItem, cour?: CourReleases): Quality
       : season.status === 'missing' || season.status === 'uncovered')
   )
     return { kind: 'missing', label: 'Outside your preferences' }
+  // SeaDex lists releases here, but only on private trackers, which public-tracker mode leaves out.
+  if (
+    cour
+      ? cour.unavailable === PRIVATE_ONLY_REASON
+      : season.private_only && (season.status === 'missing' || season.status === 'uncovered')
+  )
+    return { kind: 'missing', label: 'No public release' }
   if (cour?.unavailable || (!cour && (season.status === 'missing' || season.status === 'uncovered')))
     return { kind: 'missing', label: 'Not on SeaDex' }
   if (!cour && season.status === 'partial') return { kind: 'partial', label: 'Partially on SeaDex' }
@@ -81,6 +88,10 @@ export function releaseOverview(seasons: ResultItem[], arr: string) {
   const blocked = seasons.filter(
     (season, index) => statuses[index].kind === 'missing' && season.preference_blocked,
   ).length
+  // Seasons SeaDex lists only on private trackers, in public-tracker mode.
+  const privateOnly = seasons.filter(
+    (season, index) => statuses[index].kind === 'missing' && !season.preference_blocked && season.private_only,
+  ).length
   const partialCoverage = seasons.filter(
     (season, index) => season.status === 'partial' && statuses[index].kind === 'partial',
   ).length
@@ -95,8 +106,9 @@ export function releaseOverview(seasons: ResultItem[], arr: string) {
     review && `${review} ${review === 1 ? 'needs' : 'need'} a match review`,
     partialCoverage && `${partialCoverage} partially on SeaDex`,
     partial > partialCoverage && `${partial - partialCoverage} ownership unconfirmed`,
-    missing > blocked && `${missing - blocked} not on SeaDex`,
+    missing > blocked + privateOnly && `${missing - blocked - privateOnly} not on SeaDex`,
     blocked && `${blocked} outside your preferences`,
+    privateOnly && `${privateOnly} without a public release`,
     incomplete && `${incomplete} with missing episodes`,
   ].filter((fact): fact is string => Boolean(fact))
   // The title already states one of these facts; the description only adds what the title does not say.
@@ -127,6 +139,8 @@ export function releaseOverview(seasons: ResultItem[], arr: string) {
     }
   if (missing === seasons.length && blocked === missing)
     return { kind: 'missing' as const, title: 'No listed release fits your preferences', description: '' }
+  if (missing === seasons.length && privateOnly === missing)
+    return { kind: 'missing' as const, title: 'No release on a public tracker', description: '' }
   if (missing === seasons.length)
     return { kind: 'missing' as const, title: 'No releases found on SeaDex', description: besides('not on SeaDex') }
   return { kind: 'partial' as const, title: 'Some releases still need checking', description: facts.join(' · ') }

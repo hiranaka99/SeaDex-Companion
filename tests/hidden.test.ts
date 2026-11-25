@@ -98,6 +98,9 @@ test('first scans establish a baseline and retained incremental results do not r
   assert.deepEqual(config.hidden, ['99'])
 })
 
+/** Seeded results carry no settings signature, which reads as results judged across every tracker. */
+const LEGACY_CONFIG = { ...DEFAULT_CONFIG, tracker_mode: 'private' as const }
+
 test('a completed scan unhides after saving results and failures or cancellation never unhide', async () => {
   resetRuntimeForTests()
   const previous = [anime()]
@@ -120,7 +123,7 @@ test('a completed scan unhides after saving results and failures or cancellation
     },
   }
   try {
-    await createScanService(dependencies).run(DEFAULT_CONFIG)
+    await createScanService(dependencies).run(LEGACY_CONFIG)
     assert.deepEqual(calls, ['save', 'unhide'])
     assert.deepEqual(compared, { before: normalizedPrevious, after: [] })
     calls.length = 0
@@ -129,7 +132,7 @@ test('a completed scan unhides after saving results and failures or cancellation
       seadexBest: async () => {
         throw new Error('Catalog unavailable')
       },
-    }).run(DEFAULT_CONFIG)
+    }).run(LEGACY_CONFIG)
     assert.deepEqual(calls, [])
     assert.match(getState().error || '', /Catalog unavailable/)
     await createScanService({
@@ -137,7 +140,7 @@ test('a completed scan unhides after saving results and failures or cancellation
       seadexBest: async () => {
         throw new DOMException('Cancelled', 'AbortError')
       },
-    }).run(DEFAULT_CONFIG)
+    }).run(LEGACY_CONFIG)
     assert.deepEqual(calls, [])
     assert.equal(getState().cancelled, true)
   } finally {
@@ -193,13 +196,13 @@ test('scans persist restored visibility using current settings and allow hiding 
   try {
     saveConfig(latest)
     // The scan's initial configuration can be stale by the time it completes.
-    await createScanService(dependencies).run(DEFAULT_CONFIG)
+    await createScanService(dependencies).run(LEGACY_CONFIG)
     assert.equal(getState().error, null)
     assert.deepEqual(loadConfig().hidden, ['99'])
     assert.equal(loadConfig().unhide_on_new_best, true)
     assert.equal(loadConfig().sonarr_category, 'edited-during-scan')
     saveConfig(latest)
-    await createScanService(dependencies).run(DEFAULT_CONFIG)
+    await createScanService(dependencies).run(LEGACY_CONFIG)
     assert.deepEqual(
       loadConfig().hidden,
       ['42', '99'],

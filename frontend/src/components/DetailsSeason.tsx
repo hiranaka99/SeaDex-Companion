@@ -385,9 +385,11 @@ export default function DetailsSeason({
             <p className="mb-3 text-sm text-muted">
               {blockedByPreferences
                 ? 'SeaDex lists releases for this season, but your release preferences exclude all of them. Each release below says why.'
-                : r.status === 'uncovered'
-                  ? 'This season has no releases on SeaDex.'
-                  : 'Not listed on seadex.moe.'}
+                : r.private_only
+                  ? 'SeaDex lists releases for this season only on private trackers, which are turned off in Release preferences.'
+                  : r.status === 'uncovered'
+                    ? 'This season has no releases on SeaDex.'
+                    : 'Not listed on seadex.moe.'}
             </p>
           )}
           {!split && <RecommendationNotes notes={r.notes} />}

@@ -3,16 +3,18 @@ import { test } from 'node:test'
 import { assessSeason } from '../server/assessment.js'
 import { exclusionReason, pickBest } from '../server/matching.js'
 import { buildDownloadPlan } from '../server/download-preflight.js'
-import { DEFAULT_CONFIG } from '../server/config.js'
+import { applyConfigUpdate, DEFAULT_CONFIG } from '../server/config.js'
 import { normalizeResults } from '../server/result-model.js'
 import { releaseOffered, releaseOwned, releaseSatisfies, upgradeParts } from '../shared/download-plan.js'
 import { releaseIdentity } from '../shared/releases.js'
 import {
   DEFAULT_RELEASE_PREFERENCES,
   PREFERENCE_BLOCKED_REASON,
+  PRIVATE_ONLY_REASON,
   normalizeReleasePreferences,
   preferencesAreDefault,
 } from '../shared/settings.js'
+import type { TrackerMode } from '../shared/contracts.js'
 import type {
   ChainEntry,
   LocalItem,
@@ -70,7 +72,12 @@ function season(groups: string[] = ['Old']): LocalSeason {
 }
 
 const chain: ChainEntry[] = [{ season: 1, id: 42, ids: [42], parts: [{ id: 42, episodeCount: 12 }], episodeCount: 12 }]
-function assess(candidates: ReleaseCandidate[], preferences: ReleasePreferences, groups?: string[]) {
+function assess(
+  candidates: ReleaseCandidate[],
+  preferences: ReleasePreferences,
+  groups?: string[],
+  trackers: TrackerMode = 'public',
+) {
   const local = season(groups)
   const item: LocalItem = { arr: 'Sonarr', id: 1, title: 'Show', seasons: { 1: local } }
   const catalog = new Map<number, SeaDexEntry>([
@@ -87,6 +94,7 @@ function assess(candidates: ReleaseCandidate[], preferences: ReleasePreferences,
     settings: {
       preferences,
       verify: true,
+      trackers,
     },
   })
 }
@@ -183,7 +191,7 @@ test('movies are not held to a per-episode limit', () => {
     best: new Map([[42, { url: 'https://seadex.moe/42/', notes: '', seasons: { 0: { candidates: [movie] } } }]]),
     libraryKey: 'Radarr:item5',
     arrUrl: null,
-    settings: { preferences: prefs({ max_episode_gb: 2 }), verify: true },
+    settings: { preferences: prefs({ max_episode_gb: 2 }), verify: true, trackers: 'public' },
   })
   assert.equal(result.status, 'upgrade')
   assert.equal(result.releases[0].excluded_by, undefined)
@@ -195,13 +203,13 @@ test('ignored groups and trackers are never targeted', () => {
     'Encode',
     'Group names are matched without regard to case',
   )
-  const result = assess([privateBest, encode], prefs({ ignored_trackers: ['ab'] }))
+  const result = assess([privateBest, encode], prefs({ ignored_trackers: ['ab'] }), undefined, 'private')
   assert.equal(targetOf(result), 'Encode')
   assert.equal(result.releases.find(release => release.releaseGroup === 'Vault')?.excluded_by, 'Ignored tracker')
 })
 
 test('when the preferences exclude every release the season offers nothing, but the releases stay visible', () => {
-  const result = assess([remux, privateBest], prefs({ max_episode_gb: 2 }))
+  const result = assess([remux, privateBest], prefs({ max_episode_gb: 2 }), undefined, 'private')
   assert.equal(result.status, 'uncovered')
   assert.equal(result.preference_blocked, true)
   assert.equal(result.best_group, null)
@@ -217,9 +225,56 @@ test('when the preferences exclude every release the season offers nothing, but 
     'Even a forced upgrade status offers no excluded release',
   )
   // The same library already holding one of them is simply on its best release.
-  const owned = assess([remux, privateBest], prefs({ max_episode_gb: 2 }), ['Remux'])
+  const owned = assess([remux, privateBest], prefs({ max_episode_gb: 2 }), ['Remux'], 'private')
   assert.equal(owned.status, 'best')
   assert.equal(owned.preference_blocked, undefined)
+})
+
+test('public-tracker mode is the default and the only other mode includes private trackers', () => {
+  assert.equal(DEFAULT_CONFIG.tracker_mode, 'public')
+  assert.equal(applyConfigUpdate(DEFAULT_CONFIG, { tracker_mode: 'private' }).tracker_mode, 'private')
+  assert.equal(applyConfigUpdate(DEFAULT_CONFIG, { tracker_mode: null }).tracker_mode, 'public')
+  assert.throws(
+    () => applyConfigUpdate(DEFAULT_CONFIG, { tracker_mode: 'all' }),
+    /tracker_mode must be public or private/,
+  )
+})
+
+test('public-tracker mode leaves out releases that have no public torrent', () => {
+  const result = assess([privateBest, encode], prefs())
+  assert.deepEqual(
+    result.releases.map(release => release.releaseGroup),
+    ['Encode'],
+  )
+  assert.equal(targetOf(result), 'Encode')
+  assert.equal(result.private_only, undefined)
+  const listed = assess([privateBest, encode], prefs(), undefined, 'private')
+  assert.deepEqual(listed.releases.map(release => release.releaseGroup).sort(), ['Encode', 'Vault'])
+  assert.equal(targetOf(listed), 'Encode', 'A release nobody can send is never the target while another can be')
+})
+
+test('public-tracker mode targets the best public release when SeaDex flags only a private one', () => {
+  const publicAlts = [candidate('Mini', 1, { is_best: false }), candidate('Bigger', 3, { is_best: false })]
+  const result = assess([privateBest, ...publicAlts], prefs())
+  assert.equal(result.status, 'upgrade')
+  assert.equal(targetOf(result), 'Bigger')
+  assert.equal(result.releases.find(release => release.releaseGroup === 'Bigger')?.kind, 'best')
+  assert.equal(assess([privateBest, ...publicAlts], prefs(), ['Bigger']).status, 'best')
+})
+
+test('a season SeaDex lists only on private trackers has no public release in public-tracker mode', () => {
+  const result = assess([privateBest], prefs())
+  assert.equal(result.status, 'uncovered')
+  assert.equal(result.private_only, true)
+  assert.equal(result.preference_blocked, undefined)
+  assert.deepEqual(result.releases, [])
+  assert.deepEqual(result.unavailable_parts, [{ label: 'S01', reason: PRIVATE_ONLY_REASON }])
+  const listed = assess([privateBest], prefs(), undefined, 'private')
+  assert.equal(listed.private_only, undefined)
+  assert.deepEqual(
+    listed.releases.map(release => release.releaseGroup),
+    ['Vault'],
+  )
 })
 
 test('owning any best release settles a season unless only the target counts', () => {
