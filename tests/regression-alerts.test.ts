@@ -10,7 +10,7 @@ import { DEFAULT_CONFIG } from '../server/config.js'
 import { resetRuntimeForTests } from './support/runtime.js'
 import { setState } from '../server/scan-state.js'
 import { describeRegression } from '../shared/release-changes.js'
-import { changeTypeLabel, historyDetails, historyStatus, summarizeChanges } from '../frontend/src/history.js'
+import { changeTypeLabel, historyDetails, historyStatusText, summarizeChanges } from '../frontend/src/history.js'
 import { presentReleaseChange } from '../frontend/src/release-changes.js'
 import type { Release, ResultItem, ScanHistoryChange } from '../shared/contracts.js'
 import type { JsonObject } from '../server/types.js'
@@ -165,10 +165,10 @@ test('scan history tells a regression apart from a new upgrade', () => {
   const shown = entry.changes as unknown as ScanHistoryChange[]
   assert.deepEqual(summarizeChanges(shown), [
     { type: 'regression', count: 1, label: 'no longer best' },
-    { type: 'upgrade', count: 1, label: 'upgradable' },
+    { type: 'upgrade', count: 1, label: 'upgrade available' },
   ])
   assert.equal(changeTypeLabel.regression, 'No longer best')
-  assert.equal(historyStatus(shown[0]), 'Best owned → Upgrade available')
+  assert.equal(historyStatusText(shown[0]), 'Best owned → Upgrade available')
   assert.deepEqual(historyDetails(shown[0]), [
     { summary: 'No longer on the best release', release: 'Your files changed: Best → Weekly', part: undefined },
   ])

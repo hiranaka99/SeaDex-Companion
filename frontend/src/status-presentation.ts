@@ -2,7 +2,7 @@ import type { IconName } from './components/Icons'
 import type { CardStatus } from './types'
 
 /**
- * One glyph and colour per library status, shared by card badges, section headings, the status
+ * One glyph and colour per library status, shared by card badges, scan history, section headings, the status
  * filter row and the status guide. Each status keeps a glyph of its own so it never relies on colour.
  */
 export const STATUS_PRESENTATION: Record<CardStatus, { icon: IconName; tone: string }> = {
