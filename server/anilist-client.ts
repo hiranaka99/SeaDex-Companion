@@ -1,5 +1,6 @@
+import { errorMessage } from '../shared/errors.js'
 import { ANILIST, sleep, fetchWithTimeout, scanRequests } from './http.js'
-import { log, errorMessage } from './logging.js'
+import { log } from './logging.js'
 import type { JsonObject } from './types.js'
 
 type RequestKind = 'media' | 'search' | 'batch'
@@ -8,17 +9,25 @@ function waitForTurn(previous: Promise<void>, signal?: AbortSignal): Promise<voi
   if (!signal) return previous
   return new Promise((resolve, reject) => {
     const abort = () => reject(signal.reason)
-    if (signal.aborted) { abort(); return }
+    if (signal.aborted) {
+      abort()
+      return
+    }
     signal.addEventListener('abort', abort, { once: true })
-    void previous.then(() => { signal.removeEventListener('abort', abort); resolve() })
+    void previous.then(() => {
+      signal.removeEventListener('abort', abort)
+      resolve()
+    })
   })
 }
 
-export function createAniListClient(dependencies: {
-  fetch?: typeof fetchWithTimeout
-  sleep?: (milliseconds: number) => Promise<void>
-  now?: () => number
-} = {}) {
+export function createAniListClient(
+  dependencies: {
+    fetch?: typeof fetchWithTimeout
+    sleep?: (milliseconds: number) => Promise<void>
+    now?: () => number
+  } = {},
+) {
   const transport = dependencies.fetch || fetchWithTimeout
   const pause = dependencies.sleep || sleep
   const now = dependencies.now || Date.now
@@ -35,9 +44,15 @@ export function createAniListClient(dependencies: {
       if (wait > 0) await pause(wait)
       let response: Response
       try {
-        response = await transport(ANILIST, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-        }, 30_000)
+        response = await transport(
+          ANILIST,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          },
+          30_000,
+        )
       } catch (error) {
         lastCompleted = now()
         scanRequests.getStore()?.throwIfAborted()
@@ -69,16 +84,19 @@ export function createAniListClient(dependencies: {
       let body: JsonObject
       try {
         body = await response.json()
-        if (kind === 'batch' && !body?.errors?.length && !Array.isArray(body?.data?.Page?.media)) throw new Error('missing Page.media array')
-      }
-      catch (error) {
+        if (kind === 'batch' && !body?.errors?.length && !Array.isArray(body?.data?.Page?.media))
+          throw new Error('missing Page.media array')
+      } catch (error) {
         lastError = `invalid JSON: ${errorMessage(error)}`
         log('WARNING', `AniList ${label}response was invalid, retrying: ${lastError}`)
         await pause(3000)
         continue
       }
       if (Array.isArray(body?.errors) && body.errors.length) {
-        if (kind !== 'batch' && body.errors.every((error: JsonObject) => error?.status === 404 || error?.message === 'Not Found.')) {
+        if (
+          kind !== 'batch' &&
+          body.errors.every((error: JsonObject) => error?.status === 404 || error?.message === 'Not Found.')
+        ) {
           log('WARNING', `AniList ${label}returned GraphQL 404 Not Found, skipping`)
           return search ? [] : {}
         }
@@ -87,7 +105,7 @@ export function createAniListClient(dependencies: {
         await pause(3000)
         continue
       }
-      return search ? (body?.data?.Page?.media || []) : (body?.data?.Media || {})
+      return search ? body?.data?.Page?.media || [] : body?.data?.Media || {}
     }
     throw new Error(`AniList ${label}request failed after 6 attempts: ${lastError}`)
   }
@@ -95,14 +113,18 @@ export function createAniListClient(dependencies: {
   async function request(payload: JsonObject, kind: RequestKind): Promise<any> {
     const previous = tail
     let unlock!: () => void
-    const current = new Promise<void>(resolve => { unlock = resolve })
+    const current = new Promise<void>(resolve => {
+      unlock = resolve
+    })
     tail = previous.then(() => current)
     try {
       // Searches and scans share one rate limit. Cancelled queued scans may
       // leave promptly without allowing later requests to overtake the queue.
       await waitForTurn(previous, scanRequests.getStore())
       return await perform(payload, kind)
-    } finally { unlock() }
+    } finally {
+      unlock()
+    }
   }
 
   return {

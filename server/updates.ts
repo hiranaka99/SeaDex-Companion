@@ -4,8 +4,11 @@ import { BASE_DIR } from './paths.js'
 import { api } from './http.js'
 
 export const APP_VERSION = (() => {
-  try { return String(JSON.parse(readFileSync(join(BASE_DIR, 'package.json'), 'utf8')).version || '0.0.0') }
-  catch { return '0.0.0' }
+  try {
+    return String(JSON.parse(readFileSync(join(BASE_DIR, 'package.json'), 'utf8')).version || '0.0.0')
+  } catch {
+    return '0.0.0'
+  }
 })()
 
 const GITHUB_RELEASES_URL = 'https://api.github.com/repos/hiranaka99/SeaDex-Companion/releases/latest'
@@ -19,8 +22,8 @@ export interface UpdateInfo {
 }
 
 export function compareVersions(left: string, right: string): number {
-  const a = left.split('.').map((part) => Number.parseInt(part, 10) || 0)
-  const b = right.split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const a = left.split('.').map(part => Number.parseInt(part, 10) || 0)
+  const b = right.split('.').map(part => Number.parseInt(part, 10) || 0)
   for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
     const diff = (a[index] ?? 0) - (b[index] ?? 0)
     if (diff !== 0) return diff
@@ -53,12 +56,20 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
         ok = true
         const tag = String(release?.tag_name || '').replace(/^v/, '')
         if (tag && compareVersions(tag, APP_VERSION) > 0) {
-          result = { current: APP_VERSION, latest: tag, url: String(release.html_url || 'https://github.com/hiranaka99/SeaDex-Companion/releases') }
+          result = {
+            current: APP_VERSION,
+            latest: tag,
+            url: String(release.html_url || 'https://github.com/hiranaka99/SeaDex-Companion/releases'),
+          }
         }
-      } catch { /* GitHub unreachable or rate limited; keep reporting up to date. */ }
+      } catch {
+        /* GitHub unreachable or rate limited; keep reporting up to date. */
+      }
       updateCheck = { result, at: Date.now(), ttl: ok ? UPDATE_CHECK_TTL : UPDATE_CHECK_RETRY_TTL }
       return result
-    })().finally(() => { updateCheckInFlight = null })
+    })().finally(() => {
+      updateCheckInFlight = null
+    })
   }
   return updateCheckInFlight
 }

@@ -2,12 +2,33 @@
 // NZB retrieval through `t=get`. The API key is only ever sent to the configured
 // base URL and never appears in a message.
 
+import { INFO_HASH_PATTERN } from '../shared/ids.js'
+import { isRecord } from '../shared/guards.js'
 import type { UsenetProvider } from '../shared/usenet-contracts.js'
 import {
-  AMENZB_ENTRY_PATTERN, HASH_PATTERN, LOOKUP_MAX_BYTES, LOOKUP_TIMEOUT_MS, NZB_TIMEOUT_MS,
-  ProviderProtocolError, ResponseTooLargeError, classifyFailure, classifyNewznabError, decodeText, detectXmlError,
-  failedFrom, failedLookup, findNewznabError, httpStatusFailure, isRecord, listOf, parseProviderXml, providerRequest,
-  readNzbBody, readResponseCapped, safeByteSize, safeText, text, validateNzbBytes,
+  AMENZB_ENTRY_PATTERN,
+  LOOKUP_MAX_BYTES,
+  LOOKUP_TIMEOUT_MS,
+  NZB_TIMEOUT_MS,
+  ProviderProtocolError,
+  ResponseTooLargeError,
+  classifyFailure,
+  classifyNewznabError,
+  decodeText,
+  detectXmlError,
+  failedFrom,
+  failedLookup,
+  findNewznabError,
+  httpStatusFailure,
+  listOf,
+  parseProviderXml,
+  providerRequest,
+  readNzbBody,
+  readResponseCapped,
+  safeByteSize,
+  safeText,
+  text,
+  validateNzbBytes,
 } from './usenet-provider-types.js'
 import type { ProviderLookup, ProviderSettings, UsenetMatch } from './usenet-provider-types.js'
 
@@ -46,8 +67,11 @@ function elementText(value: unknown): string | undefined {
 function urlEntryId(url: string | undefined): string | undefined {
   if (!url) return undefined
   let segments: string[]
-  try { segments = new URL(url).pathname.split('/').filter(Boolean) }
-  catch { return undefined }
+  try {
+    segments = new URL(url).pathname.split('/').filter(Boolean)
+  } catch {
+    return undefined
+  }
   const withExtension = [...segments].reverse().find(segment => /\.nzb$/i.test(segment))
   const candidate = withExtension ?? segments[segments.length - 1]
   return candidate?.replace(/\.nzb$/i, '')
@@ -83,15 +107,19 @@ async function search(settings: ProviderSettings, requested: string, fetchImpl: 
   const path = `/api?t=search&apikey=${encodeURIComponent(settings.apiKey)}&info_hash=${requested}`
 
   let response: Response
-  try { response = await providerRequest(settings, path, 'application/xml', LOOKUP_TIMEOUT_MS, fetchImpl) }
-  catch (error) { return failedFrom(error, settings, 'lookup') }
+  try {
+    response = await providerRequest(settings, path, 'application/xml', LOOKUP_TIMEOUT_MS, fetchImpl)
+  } catch (error) {
+    return failedFrom(error, settings, 'lookup')
+  }
 
   const status = httpStatusFailure(response, 'AmeNZB')
   if (status) return failedLookup(status.code, status.message, status.retryAfterMs)
 
   let document: unknown
-  try { document = parseProviderXml(decodeText(await readResponseCapped(response, LOOKUP_MAX_BYTES))) }
-  catch (error) {
+  try {
+    document = parseProviderXml(decodeText(await readResponseCapped(response, LOOKUP_MAX_BYTES)))
+  } catch (error) {
     if (error instanceof ResponseTooLargeError) return failedLookup('invalid_response', safeText(error.message))
     if (error instanceof ProviderProtocolError) return failedLookup('invalid_response', safeText(error.message))
     return failedFrom(error, settings, 'lookup')
@@ -120,7 +148,8 @@ async function search(settings: ProviderSettings, requested: string, fetchImpl: 
   if (items.length > 1) {
     // Only a unique hash agreement resolves multiple entries; never guess by title.
     if (matching.length === 1) return { kind: 'match', match: toMatch(matching[0], requested) }
-    if (hashed.length === 1) return failedLookup('invalid_response', 'AmeNZB source hash did not match the requested hash')
+    if (hashed.length === 1)
+      return failedLookup('invalid_response', 'AmeNZB source hash did not match the requested hash')
     return failedLookup('invalid_response', 'ambiguous provider response')
   }
 
@@ -145,9 +174,14 @@ function toMatch(item: AmeNZBItem, requested: string): UsenetMatch {
 }
 
 /** Look up one source hash; hash agreement is required whenever the indexer supplies one. */
-export async function lookupAmeNZB(settings: ProviderSettings, hash: string, fetchImpl: typeof fetch): Promise<ProviderLookup> {
+export async function lookupAmeNZB(
+  settings: ProviderSettings,
+  hash: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<ProviderLookup> {
   const requested = hash.toLowerCase()
-  if (!HASH_PATTERN.test(requested)) return failedLookup('invalid_response', 'source hash was not a normalized SHA-1 digest')
+  if (!INFO_HASH_PATTERN.test(requested))
+    return failedLookup('invalid_response', 'source hash was not a normalized SHA-1 digest')
   return await search(settings, requested, fetchImpl)
 }
 
@@ -155,20 +189,30 @@ export async function lookupAmeNZB(settings: ProviderSettings, hash: string, fet
  * Authenticated read-only search. Capabilities cannot validate a key/IP binding,
  * so this probes the hash endpoint instead and succeeds on any valid RSS answer.
  */
-export async function testAmeNZB(settings: ProviderSettings, fetchImpl: typeof fetch): Promise<void> {
+export async function testAmeNZB(
+  settings: ProviderSettings,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<void> {
   const result = await search(settings, PROBE_HASH, fetchImpl)
   if (result.kind === 'failed') throw new Error(result.message)
 }
 
 /** Fetch and validate `t=get` for a matched entry from the configured origin. */
-export async function fetchAmeNZBNzb(settings: ProviderSettings, match: UsenetMatch, fetchImpl: typeof fetch): Promise<Uint8Array> {
+export async function fetchAmeNZBNzb(
+  settings: ProviderSettings,
+  match: UsenetMatch,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<Uint8Array> {
   if (!settings.apiKey) throw new Error('AmeNZB API key is not configured')
   if (!AMENZB_ENTRY_PATTERN.test(match.entry_id)) throw new Error('AmeNZB NZB reference was not usable')
   const path = `/api?t=get&apikey=${encodeURIComponent(settings.apiKey)}&id=${encodeURIComponent(match.entry_id)}`
 
   let response: Response
-  try { response = await providerRequest(settings, path, 'application/octet-stream', NZB_TIMEOUT_MS, fetchImpl) }
-  catch (error) { throw new Error(classifyFailure(error, settings, 'NZB fetch').message) }
+  try {
+    response = await providerRequest(settings, path, 'application/octet-stream', NZB_TIMEOUT_MS, fetchImpl)
+  } catch (error) {
+    throw new Error(classifyFailure(error, settings, 'NZB fetch').message)
+  }
 
   const status = httpStatusFailure(response, 'AmeNZB')
   if (status) throw new Error(status.message)

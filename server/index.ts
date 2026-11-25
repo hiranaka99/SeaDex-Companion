@@ -1,380 +1,91 @@
-import { downloadJobs } from './download-jobs.js'
-import { applyConfigUpdate, integrationConfig } from './config.js'
-import { invalidateQbSnapshots } from './qbittorrent.js'
-import { migrateConfig } from './config.js'
-import { SECURITY_HEADERS, sendJson, readJson } from './http-response.js'
-import { handleDownloadRequest } from './download-routes.js'
-import { resetWebhookScanState, queueWebhookScan, webhookScanState, startScheduler, refreshAutocheckSchedule } from './scheduler.js'
-export * from './scheduler.js'
-import { createReadStream, existsSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { extname, isAbsolute, normalize, relative, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-
-
-
-import { createAuthArtworkCache } from './auth-artwork.js'
-import { searchAniListTitles } from './anilist.js'
-import { loadConfig, publicConfig, saveConfig, SECRET_CONFIG_KEYS } from './config.js'
-import { downloadRecords, migrateOwnedDownloads } from './download-store.js'
-import { resultsForRequest } from './downloads.js'
-import { loadScanHistory } from './history.js'
-import { reviewReleaseChanges, withReleaseChanges } from './release-changes.js'
-import { log, readLogTail } from './logging.js'
-import { DATA_DIR, STATIC_DIR } from './paths.js'
-import { testIntegration } from './integration-tests.js'
+import { AuthError, isAuthenticated } from './auth.js'
+import { authRoutes } from './auth-routes.js'
 import { qbEndpointId } from './client-identity.js'
-import { bumpGeneration } from './config-generation.js'
+import { loadConfig, migrateConfig } from './config.js'
+import { configRoutes } from './config-routes.js'
+import { downloadJobs } from './download-jobs.js'
+import { downloadRoutes } from './download-routes.js'
+import { downloadRecords, migrateOwnedDownloads } from './download-store.js'
+import { HttpError } from './http-error.js'
+import { clientAddress, sendJson } from './http-response.js'
+import { libraryRoutes } from './library-routes.js'
+import { log } from './logging.js'
+import { DATA_DIR, STATIC_DIR } from './paths.js'
+import { loadLastResults } from './results.js'
+import { matchRoute, type Route } from './router.js'
+import { scanRoutes } from './scan-routes.js'
+import { startScheduler } from './scheduler.js'
+import { serveStatic } from './static-files.js'
 import { flushUsenetCache, invalidateUsenetLookups } from './usenet.js'
-import { enableUsenetPrefetch, prefetchSavedResults, prefetchUsenetAvailability, stopUsenetPrefetch, usenetPrefetchProgress } from './usenet-prefetch.js'
-import { invalidatePlans } from './download-plans.js'
-import { clearScannedData, loadLastResults, scannedDataInfo } from './results.js'
-import { runScan } from './scan.js'
-import { autocheckState, cancelScan, getState, resultsRevision, setState } from './scan-state.js'
-import { checkForUpdates } from './updates.js'
-import { applyUserRulesToResults, exclusionRuleKey, loadUserRules, saveUserRules, seasonMappingKey, validSeasonMappingIds } from './user-rules.js'
-import { AuthError, authState, expiredSessionCookie, isAuthenticated, login, logout, sessionCookie, setupAccount, updateAccount, verifyLoginCredentials } from './auth.js'
-import type { Config, JsonObject } from './types.js'
+import { enableUsenetPrefetch, prefetchUsenetAvailability, stopUsenetPrefetch } from './usenet-prefetch.js'
+import { errorMessage } from '../shared/errors.js'
 
-function clientAddress(request: IncomingMessage): string { return request.socket.remoteAddress || 'unknown' }
-
-const authArtwork = createAuthArtworkCache(resolve(DATA_DIR, 'auth-artwork.json'))
-/** Settings that change which provider answers lookups (and so invalidate in-flight work). */
-const USENET_PROVIDER_KEYS = ['animetosho_enabled', 'animetosho_url', 'amenzb_enabled', 'amenzb_url', 'amenzb_key'] as const
-/** Settings that only decide whether the background sweep runs. */
-const USENET_ELIGIBILITY_KEYS = ['download_mode', 'sabnzbd_url', 'sabnzbd_key'] as const
-
-const MIME_TYPES: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
-  '.woff': 'font/woff', '.woff2': 'font/woff2',
-}
-
-function serveStatic(pathname: string, response: ServerResponse, head = false): boolean {
-  const relativeFile = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '')
-  const root = resolve(STATIC_DIR)
-  const target = resolve(root, normalize(relativeFile))
-  const containedPath = relative(root, target)
-  if (containedPath.startsWith('..') || isAbsolute(containedPath)) return false
-  if (!existsSync(target) || !statSync(target).isFile()) return false
-  const headers: Record<string, string> = { ...SECURITY_HEADERS, 'Content-Type': MIME_TYPES[extname(target)] || 'application/octet-stream' }
-  // Vite emits content-hashed files under /assets/ — they never change once built,
-  // so let the browser cache them indefinitely. index.html (and any non-hashed file)
-  // must stay uncached so new deploys are picked up on reload.
-  if (relativeFile.startsWith('assets/')) headers['Cache-Control'] = 'public, max-age=31536000, immutable'
-  response.writeHead(200, headers)
-  if (head) response.end()
-  else {
-    const stream = createReadStream(target)
-    stream.on('error', () => response.destroy())
-    response.on('close', () => stream.destroy())
-    stream.pipe(response)
-  }
-  return true
-}
-
-async function authenticateWebhook(request: IncomingMessage): Promise<void> {
-  const authorization = String(request.headers.authorization || '')
-  if (!authorization.startsWith('Basic ')) throw new AuthError(401, 'SeaDex login credentials required')
-  let decoded = ''
-  try { decoded = Buffer.from(authorization.slice(6), 'base64').toString('utf8') } catch { throw new AuthError(401, 'SeaDex login credentials required') }
-  const separator = decoded.indexOf(':')
-  if (separator < 0) throw new AuthError(401, 'SeaDex login credentials required')
-  await verifyLoginCredentials(request, decoded.slice(0, separator), decoded.slice(separator + 1))
-}
+const routes: Route[] = [...scanRoutes, ...authRoutes, ...configRoutes, ...libraryRoutes, ...downloadRoutes]
 
 async function handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
   const method = request.method || 'GET'
   const path = url.pathname
-
-  if ((method === 'GET' || method === 'HEAD') && path === '/healthz') {
-    if (method === 'HEAD') {
-      response.writeHead(200, { ...SECURITY_HEADERS, 'Cache-Control': 'no-store' })
-      response.end()
-      return
-    }
-    return sendJson(response, 200, { status: 'ok' })
-  }
-
-  const webhookMatch = path.match(/^\/api\/webhooks\/(sonarr|radarr)$/)
-  if (method === 'POST' && webhookMatch) {
-    const source = webhookMatch[1] as 'sonarr' | 'radarr'
-    await authenticateWebhook(request)
-    const data = await readJson(request)
-    const queued = queueWebhookScan(source, data.eventType, source === 'sonarr' ? data.series?.id : data.movie?.id)
-    if (!queued.accepted) { response.writeHead(204, { ...SECURITY_HEADERS, 'Cache-Control': 'no-store' }); response.end(); return }
-    return sendJson(response, 202, { accepted: true, action: 'scan_queued', due_at: queued.dueAt }, { 'Cache-Control': 'no-store' })
-  }
-
-  if (method === 'GET' && path === '/api/auth/status') {
-    return sendJson(response, 200, authState(request), { 'Cache-Control': 'no-store' })
-  }
-
-  if (method === 'GET' && path === '/api/auth/artwork') {
-    return sendJson(response, 200, { covers: await authArtwork.get() })
-  }
-
-  if (method === 'POST' && path === '/api/auth/setup') {
-    const data = await readJson(request)
-    const result = await setupAccount(request, data.username, data.password)
-    log('INFO', `Administrator account created: ${result.username} (client: ${clientAddress(request)})`)
-    return sendJson(response, 201, { setup_required: false, authenticated: true, username: result.username }, {
-      'Cache-Control': 'no-store', 'Set-Cookie': sessionCookie(request, result.token),
-    })
-  }
-
-  if (method === 'POST' && path === '/api/auth/login') {
-    const data = await readJson(request)
-    const result = await login(request, data.username, data.password)
-    log('INFO', `Login successful: ${result.username} (client: ${clientAddress(request)})`)
-    return sendJson(response, 200, { setup_required: false, authenticated: true, username: result.username }, {
-      'Cache-Control': 'no-store', 'Set-Cookie': sessionCookie(request, result.token),
-    })
-  }
-
-  if (method === 'POST' && path === '/api/auth/logout') {
-    const username = authState(request).username
-    logout(request)
-    log('INFO', `Logout${username ? `: ${username}` : ''} (client: ${clientAddress(request)})`)
-    return sendJson(response, 200, { ok: true }, {
-      'Cache-Control': 'no-store', 'Set-Cookie': expiredSessionCookie(request),
-    })
-  }
-
-  if (path.startsWith('/api/') && !isAuthenticated(request)) {
-    return sendJson(response, 401, { error: 'Authentication required' }, { 'Cache-Control': 'no-store' })
-  }
-
-  if (method === 'POST' && path === '/api/auth/account') {
-    const data = await readJson(request)
-    const result = await updateAccount(request, data.current_password, data.username, data.new_password)
-    log('INFO', `Administrator account updated: ${result.username}; all other sessions revoked (client: ${clientAddress(request)})`)
-    return sendJson(response, 200, { setup_required: false, authenticated: true, username: result.username }, {
-      'Cache-Control': 'no-store', 'Set-Cookie': sessionCookie(request, result.token),
-    })
-  }
-
-  if (method === 'GET' && path === '/api/config') return sendJson(response, 200, publicConfig(loadConfig()))
-
-  if (method === 'GET' && path === '/api/history') return sendJson(response, 200, { scans: loadScanHistory() })
-
-  if (method === 'GET' && path === '/api/anilist/search') {
-    const query = String(url.searchParams.get('q') || '').trim()
-    if (query.length < 2) return sendJson(response, 400, { error: 'Enter at least two characters' })
-    return sendJson(response, 200, { results: await searchAniListTitles(query) })
-  }
-
-  if (method === 'POST' && path === '/api/mapping-overrides') {
-    if (getState().running) return sendJson(response, 409, { error: 'Wait for the current scan to finish before changing a match' })
-    const data = await readJson(request)
-    if (getState().running) return sendJson(response, 409, { error: 'Wait for the current scan to finish before changing a match' })
-    const libraryKey = String(data.library_key || '').trim()
-    if (!libraryKey || !resultsForRequest().some((result) => result.library_key === libraryKey)) return sendJson(response, 404, { error: 'Library title not found — run a scan first' })
-    const rules = loadUserRules()
-    if (data.season !== undefined) {
-      const season = data.season
-      if (!Number.isSafeInteger(season) || season <= 0) return sendJson(response, 400, { error: 'A positive Sonarr season number is required' })
-      if (!resultsForRequest().some(result => result.library_key === libraryKey && result.arr === 'Sonarr' && result.season === season)) return sendJson(response, 404, { error: 'Season not found — run a scan first' })
-      const ids = data.anilist_ids
-      if (ids !== null && !validSeasonMappingIds(ids)) return sendJson(response, 400, { error: 'Choose 1–20 distinct AniList IDs in episode order, or null to restore automatic matching' })
-      const key = seasonMappingKey(libraryKey, season)
-      rules.season_mappings ||= {}
-      if (ids === null) delete rules.season_mappings[key]
-      else rules.season_mappings[key] = ids
-      saveUserRules(rules)
-      log('INFO', `${ids === null ? 'Removed season AniList match' : `Set season AniList match to ${ids.join(', ')}`} for ${libraryKey} season ${season}`)
-      return sendJson(response, 200, { ok: true, season, anilist_ids: ids })
-    }
-    if (data.anilist_id == null) delete rules.mappings[libraryKey]
-    else {
-      const anilistId = Number(data.anilist_id)
-      if (!Number.isInteger(anilistId) || anilistId <= 0) return sendJson(response, 400, { error: 'A valid AniList ID is required' })
-      rules.mappings[libraryKey] = anilistId
-    }
-    saveUserRules(rules)
-    log('INFO', `${data.anilist_id == null ? 'Removed manual AniList match' : `Set manual AniList match to ${rules.mappings[libraryKey]}`} for ${libraryKey}`)
-    return sendJson(response, 200, { ok: true, anilist_id: rules.mappings[libraryKey] || null })
-  }
-
-  if (method === 'POST' && path === '/api/exclusions') {
-    const data = await readJson(request)
-    const libraryKey = String(data.library_key || '').trim()
-    const season = Number(data.season || 0)
-    const part = String(data.part || '').trim()
-    if (!libraryKey || !Number.isInteger(season) || season < 0 || !resultsForRequest().some((result) => result.library_key === libraryKey && Number(result.season || 0) === season)) {
-      return sendJson(response, 404, { error: 'Season not found — run a scan first' })
-    }
-    const rules = loadUserRules(); const exclusions = new Set(rules.exclusions)
-    const key = exclusionRuleKey(libraryKey, season, part)
-    if (data.excluded) exclusions.add(key); else exclusions.delete(key)
-    rules.exclusions = [...exclusions]; saveUserRules(rules)
-    log('INFO', `${data.excluded ? 'Ignored' : 'Restored'} ${libraryKey} season ${season || 'Movie'}${part ? ` ${part}` : ''} for bulk downloads and notifications`)
-    return sendJson(response, 200, { ok: true, excluded: Boolean(data.excluded) })
-  }
-
-  if (method === 'GET' && path === '/api/scanned-data') return sendJson(response, 200, { ok: true, ...scannedDataInfo() })
-
-  if (method === 'DELETE' && path === '/api/scanned-data') {
-    if (getState().running) return sendJson(response, 409, { ok: false, error: 'Wait for the current scan to finish before clearing scanned data' })
-    const cleared = clearScannedData()
-    stopUsenetPrefetch()
-    log('INFO', `Scanned data cleared (saved results: ${cleared.results}; AniList cache entries: ${cleared.cacheEntries})`)
-    return sendJson(response, 200, { ok: true, cleared })
-  }
-
-  if (method === 'POST' && path === '/api/config') {
-    const data = await readJson(request)
-    let config: Config
-    const previous = loadConfig()
-    try { config = applyConfigUpdate(previous, data) }
-    catch (error) { return sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }) }
-    const clearedSecrets = new Set<string>(Array.isArray(data.clear_secrets) ? data.clear_secrets.filter((key: unknown): key is string => typeof key === 'string' && SECRET_CONFIG_KEYS.some(secret => secret === key)) : [])
-    saveConfig(config)
-    invalidateQbSnapshots()
-    bumpGeneration()
-    // Unrelated settings must not cancel in-flight provider lookups or restart the sweep.
-    const providersChanged = USENET_PROVIDER_KEYS.some(key => previous[key] !== config[key])
-    if (providersChanged) invalidateUsenetLookups(config)
-    invalidatePlans()
-    if (providersChanged || USENET_ELIGIBILITY_KEYS.some(key => previous[key] !== config[key])) prefetchSavedResults(config)
-    refreshAutocheckSchedule(config)
-    const updatedSecrets = SECRET_CONFIG_KEYS.filter((key) => key in data && Boolean(String(data[key] || '').trim()))
-    const integrationState = [
-      `Sonarr=${config.sonarr_url && config.sonarr_key ? 'configured' : 'incomplete'}`,
-      `Radarr=${config.radarr_url && config.radarr_key ? 'configured' : 'incomplete'}`,
-      `qBittorrent=${config.qbittorrent_url && config.qbittorrent_user && config.qbittorrent_pass ? 'configured' : 'incomplete'}`,
-      `Discord=${config.webhook ? 'configured' : 'incomplete'}`,
-    ].join(', ')
-    const secretChanges = [...updatedSecrets.map((key) => `${key} updated`), ...[...clearedSecrets].map((key) => `${key} cleared`)]
-    log('INFO', `Configuration saved (${integrationState}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'}; notifications: ${config.notify_enabled ? 'enabled' : 'disabled'}; hidden titles: ${config.hidden.length}${secretChanges.length ? `; credentials: ${secretChanges.join(', ')}` : ''})`)
-    return sendJson(response, 200, publicConfig(config))
-  }
-
-  if (method === 'POST' && path === '/api/config/test') {
-    const data = await readJson(request)
-    const service = String(data.service || '').toLowerCase()
-    const submitted = data.config && typeof data.config === 'object' ? data.config as JsonObject : {}
-    let config: Config
-    try { config = integrationConfig(loadConfig(), service, submitted) }
-    catch (error) { return sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }) }
-    const started = Date.now()
-    log('INFO', `Integration test started: ${service}`)
-    try {
-      const message = await testIntegration(config, service)
-      log('INFO', `Integration test passed: ${service} in ${((Date.now() - started) / 1000).toFixed(1)}s (${message})`)
-      return sendJson(response, 200, { ok: true, message })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      log('ERROR', `Integration test failed: ${service} after ${((Date.now() - started) / 1000).toFixed(1)}s (${message})`)
-      return sendJson(response, 502, { ok: false, error: message })
-    }
-  }
-
-  if (method === 'GET' && path === '/api/status') {
-    const state = getState()
-    return sendJson(response, 200, {
-      running: state.running, progress: state.progress, total: state.total, message: state.message,
-      error: state.error, cancelled: state.cancelled, trigger: state.trigger, source_errors: state.source_errors,
-      last_run: state.last_run || (!state.running ? loadLastResults()?.last_run ?? null : null), next_check: autocheckState.next,
-      usenet_prefetch: usenetPrefetchProgress(),
-      results_revision: resultsRevision(),
-      webhook_scan: { queued: webhookScanState.dueAt !== null, due_at: webhookScanState.dueAt, sources: [...webhookScanState.sources] },
-    })
-  }
-
-  if (method === 'GET' && path === '/api/update-check') {
-    return sendJson(response, 200, await checkForUpdates(), { 'Cache-Control': 'no-store' })
-  }
-
-  if (method === 'GET' && path === '/api/results') {
-    const state = getState()
-    const payload = state.running || state.results.length ? { results: state.results, last_run: state.last_run } : (loadLastResults() || { results: [], last_run: null })
-    return sendJson(response, 200, { ...payload, results: applyUserRulesToResults(withReleaseChanges(payload.results || [])), hidden: loadConfig().hidden })
-  }
-
-  if (method === 'POST' && path === '/api/release-changes/review') {
-    const data = await readJson(request)
-    if (!Array.isArray(data.ids) || !data.ids.every((id: unknown) => typeof id === 'string' && id.length > 0 && id.length <= 100)) {
-      return sendJson(response, 400, { error: 'Provide the change IDs to mark reviewed' })
-    }
-    return sendJson(response, 200, { ok: true, reviewed: reviewReleaseChanges(data.ids) })
-  }
-
-  if (method === 'GET' && path === '/api/logs') {
-    const requested = Number.parseInt(url.searchParams.get('lines') || '500', 10)
-    const count = Math.max(1, Math.min(Number.isFinite(requested) ? requested : 500, 2000))
-    const lines = readLogTail().slice(-count)
-    return sendJson(response, 200, { lines, total: lines.length })
-  }
-
-  if (method === 'POST' && path === '/api/scan/cancel') {
-    if (!cancelScan()) return sendJson(response, 409, { ok: false, error: 'No scan is running' })
-    return sendJson(response, 202, { ok: true })
-  }
-
-  if (method === 'POST' && path === '/api/scan') {
-    if (getState().running) {
-      log('WARNING', 'Manual scan request ignored: a scan is already running')
-      return sendJson(response, 409, { ok: false, error: 'Scan already running' })
-    }
-    let config: Config
-    try { config = loadConfig() } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      log('ERROR', `Manual scan could not start: ${message}`)
-      return sendJson(response, 500, { ok: false, error: message })
-    }
-    resetWebhookScanState(); autocheckState.pending = false
-    setState({ running: true })
-    void runScan(config, {}, 'manual')
-    return sendJson(response, 200, { ok: true })
-  }
-
-  if (method === 'POST' && path === '/api/hidden') {
-    const data = await readJson(request)
-    const key = String(data.key || '').trim()
-    if (!key) return sendJson(response, 400, { ok: false, error: 'No key provided' })
-    const config = loadConfig()
-    const hidden = new Set(config.hidden || [])
-    if (data.hidden) hidden.add(key); else hidden.delete(key)
-    config.hidden = [...hidden].sort(); saveConfig(config)
-    const result = resultsForRequest().find((item) => String(item.group_id ?? item.anilist_id ?? item.title) === key)
-    log('INFO', `${data.hidden ? 'Hidden' : 'Restored'} library title: ${result?.title || key} (key: ${key}; hidden total: ${config.hidden.length})`)
-    return sendJson(response, 200, { ok: true, hidden: config.hidden })
-  }
-
-  if (path.startsWith('/api/download') || path === '/api/usenet/availability') return handleDownloadRequest(request, response, url)
-
-  if ((method === 'GET' || method === 'HEAD') && !path.startsWith('/api/') && serveStatic(path, response, method === 'HEAD')) return
+  const match = matchRoute(routes, method, path)
+  if (match?.route.access === 'public') return match.route.handle({ request, response, url, params: match.params })
+  // Everything under /api needs a session, whether or not the path exists.
+  if (path.startsWith('/api/')) {
+    if (!isAuthenticated(request)) return sendJson(response, 401, { error: 'Authentication required' })
+    if (match) return match.route.handle({ request, response, url, params: match.params })
+  } else if ((method === 'GET' || method === 'HEAD') && serveStatic(path, response, method === 'HEAD')) return
   sendJson(response, 404, { error: 'Not found' })
+}
+
+/** Turns a thrown error into the response; only failures the server did not choose are logged as errors. */
+function sendFailure(request: IncomingMessage, response: ServerResponse, url: URL, error: unknown): void {
+  const message = errorMessage(error)
+  const where = `${request.method || 'GET'} ${url.pathname}`
+  const status = error instanceof HttpError ? error.status : 500
+  if (error instanceof AuthError)
+    log('WARNING', `Request rejected: ${where} → HTTP ${status} (client: ${clientAddress(request)}; ${message})`)
+  else if (!(error instanceof HttpError))
+    log('ERROR', `Request failed: ${where} (client: ${clientAddress(request)}; ${message})`)
+  if (response.headersSent) response.end()
+  else sendJson(response, status, { ...(error instanceof HttpError ? error.fields : {}), error: message })
 }
 
 export function makeServer() {
   migrateConfig()
-  invalidateUsenetLookups(loadConfig())
-  try { migrateOwnedDownloads(qbEndpointId(loadConfig())) }
-  catch (error) { log('ERROR', `Acquisition ledger migration deferred: ${error instanceof Error ? error.message : String(error)}`) }
+  const config = loadConfig()
+  invalidateUsenetLookups(config)
+  try {
+    migrateOwnedDownloads(qbEndpointId(config))
+  } catch (error) {
+    log('ERROR', `Acquisition ledger migration deferred: ${errorMessage(error)}`)
+  }
   downloadJobs.restore()
   return createServer((request, response) => {
     let url: URL
-    try { url = new URL(request.url || '/', 'http://localhost') }
-    catch { sendJson(response, 400, { error: 'Invalid request URL' }); return }
-    void handle(request, response, url).catch((error) => {
-      const message = error instanceof Error ? error.message : String(error)
-      const requestMethod = request.method || 'GET'
-      const requestPath = url.pathname
-      if (error instanceof AuthError) {
-        log('WARNING', `Request rejected: ${requestMethod} ${requestPath} → HTTP ${error.status} (client: ${clientAddress(request)}; ${message})`)
-        if (!response.headersSent) sendJson(response, error.status, { error: message }, { 'Cache-Control': 'no-store' }); else response.end()
-        return
-      }
-      log('ERROR', `Request failed: ${requestMethod} ${requestPath} (client: ${clientAddress(request)}; ${message})`)
-      if (!response.headersSent) sendJson(response, 400, { error: message }); else response.end()
-    })
+    try {
+      url = new URL(request.url || '/', 'http://localhost')
+    } catch {
+      sendJson(response, 400, { error: 'Invalid request URL' })
+      return
+    }
+    void handle(request, response, url).catch(error => sendFailure(request, response, url, error))
   })
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-if (isMain) {
+function reportRestoredState(): void {
+  const config = loadConfig()
+  const saved = loadLastResults()?.results
+  log(
+    'INFO',
+    `Runtime state restored (saved results: ${saved?.length || 0}; owned acquisitions: ${downloadRecords().length}; hidden titles: ${config.hidden.length}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'})`,
+  )
+  enableUsenetPrefetch()
+  // Delay the startup sweep so the first interactive lookups after boot own the providers.
+  if (saved) setTimeout(() => prefetchUsenetAvailability(config, saved, 'startup'), 30_000).unref()
+}
+
+function main(): void {
   const port = Number.parseInt(process.env.PORT || '8080', 10)
   const scheduler = startScheduler()
   const server = makeServer()
@@ -390,7 +101,7 @@ if (isMain) {
       process.exit(1)
     }, 10_000)
     deadline.unref()
-    server.close((error) => {
+    server.close(error => {
       clearTimeout(deadline)
       if (error) log('ERROR', `Shutdown failed: ${error.message}`)
       else log('INFO', 'Server stopped')
@@ -401,18 +112,16 @@ if (isMain) {
   process.once('SIGINT', () => shutdown('SIGINT'))
   process.once('SIGTERM', () => shutdown('SIGTERM'))
   server.listen(port, '0.0.0.0', () => {
-    log('INFO', `Server listening on 0.0.0.0:${port} (Node ${process.version}; data: ${DATA_DIR}; static: ${STATIC_DIR})`)
+    log(
+      'INFO',
+      `Server listening on 0.0.0.0:${port} (Node ${process.version}; data: ${DATA_DIR}; static: ${STATIC_DIR})`,
+    )
     try {
-      const config = loadConfig()
-      const savedResults = loadLastResults()?.results?.length || 0
-      const hiddenCount = Array.isArray(config.hidden) ? config.hidden.length : 0
-      log('INFO', `Runtime state restored (saved results: ${savedResults}; owned acquisitions: ${downloadRecords().length}; hidden titles: ${hiddenCount}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'})`)
-      enableUsenetPrefetch()
-      const saved = loadLastResults()?.results
-      // Delay the startup sweep so the first interactive lookups after boot own the providers.
-      if (saved) setTimeout(() => prefetchUsenetAvailability(config, saved, 'startup'), 30_000).unref?.()
+      reportRestoredState()
     } catch (error) {
-      log('ERROR', `Runtime configuration could not be restored: ${error instanceof Error ? error.message : String(error)}`)
+      log('ERROR', `Runtime configuration could not be restored: ${errorMessage(error)}`)
     }
   })
 }
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main()

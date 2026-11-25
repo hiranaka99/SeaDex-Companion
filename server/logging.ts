@@ -1,10 +1,6 @@
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, statSync } from 'node:fs'
 import { LOG_DIR, LOG_FILE } from './paths.js'
 
-export function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 export function timestamp(date = new Date()): string {
   const pad = (value: number) => String(value).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
@@ -26,7 +22,12 @@ function rotateLog(): void {
 export function log(level: 'INFO' | 'WARNING' | 'ERROR', message: string): void {
   const line = `${timestamp()} [${level}] ${message}`
   rotateLog()
-  try { mkdirSync(LOG_DIR, { recursive: true }); appendFileSync(LOG_FILE, `${line}\n`, 'utf8') } catch { /* stdout is still available */ }
+  try {
+    mkdirSync(LOG_DIR, { recursive: true })
+    appendFileSync(LOG_FILE, `${line}\n`, 'utf8')
+  } catch {
+    /* stdout is still available */
+  }
   if (level === 'ERROR') console.error(line)
   else if (level === 'WARNING') console.warn(line)
   else console.log(line)

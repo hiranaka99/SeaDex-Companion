@@ -26,7 +26,7 @@ async function availablePort(): Promise<number> {
 
 async function waitForStartup(): Promise<void> {
   for (;;) {
-    const [chunk] = await once(child.stdout, 'data') as [Buffer]
+    const [chunk] = (await once(child.stdout, 'data')) as [Buffer]
     if (chunk.toString('utf8').includes('Server listening on')) return
   }
 }
@@ -42,7 +42,14 @@ before(async () => {
   const staticDir = join(dataDir, 'static')
   mkdirSync(staticDir)
   writeFileSync(join(staticDir, 'index.html'), '<!doctype html><title>Test</title>')
-  writeFileSync(join(dataDir, 'auth-artwork.json'), JSON.stringify({ version: 2, updatedAt: Date.now(), covers: [1, 2, 3].map(id => `https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/${id}.jpg`) }))
+  writeFileSync(
+    join(dataDir, 'auth-artwork.json'),
+    JSON.stringify({
+      version: 2,
+      updatedAt: Date.now(),
+      covers: [1, 2, 3].map(id => `https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/${id}.jpg`),
+    }),
+  )
   const port = await availablePort()
   baseUrl = `http://127.0.0.1:${port}`
   child = spawn(process.execPath, ['dist/server/index.js'], {
@@ -74,13 +81,19 @@ test('health and application responses carry browser security headers', async ()
 test('sign-in artwork is public and contains only cached cover URLs', async () => {
   const response = await fetch(`${baseUrl}/api/auth/artwork`)
   assert.equal(response.status, 200)
-  assert.deepEqual(await response.json(), { covers: [1, 2, 3].map(id => `https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/${id}.jpg`) })
+  assert.deepEqual(await response.json(), {
+    covers: [1, 2, 3].map(id => `https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/${id}.jpg`),
+  })
   assert.equal(response.headers.get('cache-control'), 'no-store')
 })
 
 test('non-object JSON request bodies are rejected cleanly', async () => {
   for (const body of ['null', '[]', '"string"', '7']) {
-    const response = await fetch(`${baseUrl}/api/auth/setup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+    const response = await fetch(`${baseUrl}/api/auth/setup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    })
     assert.equal(response.status, 400)
     assert.match(String((await response.json()).error), /JSON object/)
   }
@@ -97,12 +110,17 @@ test('static HEAD responses include browser security headers and no response bod
 test('legacy scrypt credentials migrate to Argon2ID after successful login', async () => {
   const password = 'legacy correct horse battery staple'
   const salt = Buffer.alloc(16, 7)
-  writeFileSync(join(dataDir, 'auth.json'), JSON.stringify({
-    version: 1,
-    username: 'legacy-admin',
-    salt: salt.toString('base64'),
-    password_hash: scryptSync(password, salt, 64, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }).toString('base64'),
-  }))
+  writeFileSync(
+    join(dataDir, 'auth.json'),
+    JSON.stringify({
+      version: 1,
+      username: 'legacy-admin',
+      salt: salt.toString('base64'),
+      password_hash: scryptSync(password, salt, 64, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }).toString(
+        'base64',
+      ),
+    }),
+  )
 
   const legacyLogin = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',
@@ -126,13 +144,16 @@ test('legacy scrypt credentials migrate to Argon2ID after successful login', asy
   rmSync(join(dataDir, 'auth.json'))
 })
 
-
 test('account setup, authenticated access, revocation, and login throttling work over HTTP', async () => {
-  const setups = await Promise.all(Array.from({ length: 2 }, () => fetch(`${baseUrl}/api/auth/setup`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'administrator', password: 'correct horse battery staple' }),
-  })))
+  const setups = await Promise.all(
+    Array.from({ length: 2 }, () =>
+      fetch(`${baseUrl}/api/auth/setup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'administrator', password: 'correct horse battery staple' }),
+      }),
+    ),
+  )
   assert.deepEqual(setups.map(response => response.status).sort(), [201, 409])
   const setup = setups.find(response => response.status === 201)!
   assert.equal(setup.status, 201)
@@ -158,62 +179,157 @@ test('account setup, authenticated access, revocation, and login throttling work
   assert.equal(login.status, 200)
   const secondCookie = cookie(login)
 
-  const [update, racingLogin] = await Promise.all([fetch(`${baseUrl}/api/auth/account`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Cookie: secondCookie },
-    body: JSON.stringify({ username: 'administrator', current_password: 'correct horse battery staple', new_password: 'new correct horse battery staple' }),
-  }), fetch(`${baseUrl}/api/auth/login`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'administrator', password: 'correct horse battery staple' }),
-  })])
+  const [update, racingLogin] = await Promise.all([
+    fetch(`${baseUrl}/api/auth/account`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: secondCookie },
+      body: JSON.stringify({
+        username: 'administrator',
+        current_password: 'correct horse battery staple',
+        new_password: 'new correct horse battery staple',
+      }),
+    }),
+    fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'administrator', password: 'correct horse battery staple' }),
+    }),
+  ])
   assert.equal(update.status, 200)
   assert.ok([200, 401].includes(racingLogin.status))
-  if (racingLogin.status === 200) assert.equal((await fetch(`${baseUrl}/api/config`, { headers: { Cookie: cookie(racingLogin) } })).status, 401)
+  if (racingLogin.status === 200)
+    assert.equal((await fetch(`${baseUrl}/api/config`, { headers: { Cookie: cookie(racingLogin) } })).status, 401)
   const updatedCookie = cookie(update)
   assert.equal((await fetch(`${baseUrl}/api/config`, { headers: { Cookie: setupCookie } })).status, 401)
   assert.equal((await fetch(`${baseUrl}/api/config`, { headers: { Cookie: updatedCookie } })).status, 200)
 
   const basic = `Basic ${Buffer.from('administrator:new correct horse battery staple').toString('base64')}`
   const wrongBasic = `Basic ${Buffer.from('administrator:incorrect password').toString('base64')}`
-  assert.equal((await fetch(`${baseUrl}/api/webhooks/sonarr`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventType: 'SeriesAdd', series: { id: 42 } }) })).status, 401)
-  assert.equal((await fetch(`${baseUrl}/api/webhooks/sonarr`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: wrongBasic }, body: JSON.stringify({ eventType: 'SeriesAdd', series: { id: 42 } }) })).status, 401)
-  assert.equal((await fetch(`${baseUrl}/api/webhooks/sonarr`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: basic }, body: JSON.stringify({ eventType: 'Download', series: { id: 42 } }) })).status, 204)
-  assert.equal((await fetch(`${baseUrl}/api/webhooks/sonarr`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: basic }, body: JSON.stringify({ eventType: 'SeriesAdd', series: { id: 42 } }) })).status, 202)
+  assert.equal(
+    (
+      await fetch(`${baseUrl}/api/webhooks/sonarr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventType: 'SeriesAdd', series: { id: 42 } }),
+      })
+    ).status,
+    401,
+  )
+  assert.equal(
+    (
+      await fetch(`${baseUrl}/api/webhooks/sonarr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: wrongBasic },
+        body: JSON.stringify({ eventType: 'SeriesAdd', series: { id: 42 } }),
+      })
+    ).status,
+    401,
+  )
+  assert.equal(
+    (
+      await fetch(`${baseUrl}/api/webhooks/sonarr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: basic },
+        body: JSON.stringify({ eventType: 'Download', series: { id: 42 } }),
+      })
+    ).status,
+    204,
+  )
+  assert.equal(
+    (
+      await fetch(`${baseUrl}/api/webhooks/sonarr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: basic },
+        body: JSON.stringify({ eventType: 'SeriesAdd', series: { id: 42 } }),
+      })
+    ).status,
+    202,
+  )
   const queuedStatus = await (await fetch(`${baseUrl}/api/status`, { headers: { Cookie: updatedCookie } })).json()
   assert.deepEqual(queuedStatus.webhook_scan.sources, ['sonarr'])
   assert.equal(queuedStatus.webhook_scan.queued, true)
   assert.equal(queuedStatus.last_run, null)
 
   const invalidSchedule = await fetch(`${baseUrl}/api/config`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: updatedCookie },
-    body: JSON.stringify({ scan_schedule: { enabled: true, mode: 'weekly', interval_minutes: 60, times: ['03:00'], weekdays: [], timezone: 'UTC', missed_run: 'run_once' } }),
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: updatedCookie },
+    body: JSON.stringify({
+      scan_schedule: {
+        enabled: true,
+        mode: 'weekly',
+        interval_minutes: 60,
+        times: ['03:00'],
+        weekdays: [],
+        timezone: 'UTC',
+        missed_run: 'run_once',
+      },
+    }),
   })
   assert.equal(invalidSchedule.status, 400)
   assert.match(String((await invalidSchedule.json()).error), /at least one day/)
-  assert.equal((await fetch(`${baseUrl}/api/scan/cancel`, { method: 'POST', headers: { Cookie: updatedCookie } })).status, 409)
+  assert.equal(
+    (await fetch(`${baseUrl}/api/scan/cancel`, { method: 'POST', headers: { Cookie: updatedCookie } })).status,
+    409,
+  )
 
-  writeFileSync(join(dataDir, 'last_results.json'), JSON.stringify({ results: [1, 2].map(season => ({
-    key: `Sonarr:10:${season}`, library_key: 'Sonarr:item10', arr: 'Sonarr', title: 'Anime', season, releases: [],
-  })) }))
+  writeFileSync(
+    join(dataDir, 'last_results.json'),
+    JSON.stringify({
+      results: [1, 2].map(season => ({
+        key: `Sonarr:10:${season}`,
+        library_key: 'Sonarr:item10',
+        arr: 'Sonarr',
+        title: 'Anime',
+        season,
+        releases: [],
+      })),
+    }),
+  )
   const changeKey = JSON.stringify(['Sonarr:item10', 1])
-  const change = { id: 'observed-change', kind: 'alternative', description: 'New alternative: Group B', detected_at: '2026-11-04T12:00:00.000Z' }
-  writeFileSync(join(dataDir, 'release_changes.json'), JSON.stringify({ [changeKey]: [change, { ...change, id: 'newer-change' }] }))
-  const readResults = async () => (await (await fetch(`${baseUrl}/api/results`, { headers: { Cookie: updatedCookie } })).json()).results
+  const change = {
+    id: 'observed-change',
+    kind: 'alternative',
+    description: 'New alternative: Group B',
+    detected_at: '2026-11-04T12:00:00.000Z',
+  }
+  writeFileSync(
+    join(dataDir, 'release_changes.json'),
+    JSON.stringify({ [changeKey]: [change, { ...change, id: 'newer-change' }] }),
+  )
+  const readResults = async () =>
+    (await (await fetch(`${baseUrl}/api/results`, { headers: { Cookie: updatedCookie } })).json()).results
   assert.equal((await readResults())[0].unseen_changes.length, 2)
-  const reviewChanges = (ids: unknown, authenticated = true) => fetch(`${baseUrl}/api/release-changes/review`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', ...(authenticated ? { Cookie: updatedCookie } : {}) }, body: JSON.stringify({ ids }),
-  })
+  const reviewChanges = (ids: unknown, authenticated = true) =>
+    fetch(`${baseUrl}/api/release-changes/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(authenticated ? { Cookie: updatedCookie } : {}) },
+      body: JSON.stringify({ ids }),
+    })
   assert.equal((await reviewChanges([change.id], false)).status, 401)
   assert.equal((await reviewChanges('all')).status, 400)
   assert.equal((await reviewChanges([null])).status, 400)
-  const revisionBeforeReview = (await (await fetch(`${baseUrl}/api/status`, { headers: { Cookie: updatedCookie } })).json()).results_revision
+  const revisionBeforeReview = (
+    await (await fetch(`${baseUrl}/api/status`, { headers: { Cookie: updatedCookie } })).json()
+  ).results_revision
   assert.deepEqual(await (await reviewChanges([change.id])).json(), { ok: true, reviewed: 1 })
-  assert.deepEqual((await readResults())[0].unseen_changes.map((entry: { id: string }) => entry.id), ['newer-change'])
-  const revisionAfterReview = (await (await fetch(`${baseUrl}/api/status`, { headers: { Cookie: updatedCookie } })).json()).results_revision
-  assert.notEqual(revisionBeforeReview, revisionAfterReview, 'Other sessions reload reviewed changes on their next status poll')
-  const match = (body: unknown, authenticated = true) => fetch(`${baseUrl}/api/mapping-overrides`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', ...(authenticated ? { Cookie: updatedCookie } : {}) }, body: JSON.stringify(body),
-  })
+  assert.deepEqual(
+    (await readResults())[0].unseen_changes.map((entry: { id: string }) => entry.id),
+    ['newer-change'],
+  )
+  const revisionAfterReview = (
+    await (await fetch(`${baseUrl}/api/status`, { headers: { Cookie: updatedCookie } })).json()
+  ).results_revision
+  assert.notEqual(
+    revisionBeforeReview,
+    revisionAfterReview,
+    'Other sessions reload reviewed changes on their next status poll',
+  )
+  const match = (body: unknown, authenticated = true) =>
+    fetch(`${baseUrl}/api/mapping-overrides`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(authenticated ? { Cookie: updatedCookie } : {}) },
+      body: JSON.stringify(body),
+    })
   assert.equal((await match({ library_key: 'Sonarr:item10', season: 2, anilist_ids: [200] }, false)).status, 401)
   assert.equal((await match({ library_key: 'Sonarr:item10', anilist_id: 100 })).status, 200)
   assert.equal((await match({ library_key: 'Sonarr:item10', season: 2, anilist_ids: [201, 200] })).status, 200)
@@ -231,13 +347,21 @@ test('account setup, authenticated access, revocation, and login throttling work
   assert.equal((await match({ library_key: 'Sonarr:item10', season: 2, anilist_ids: null })).status, 200)
   rules = JSON.parse(readFileSync(join(dataDir, 'user_rules.json'), 'utf8'))
   assert.deepEqual(rules.season_mappings, {})
-  assert.deepEqual(rules.mappings, { 'Sonarr:item10': 100 }, 'Restoring automatic matching only removes the selected season rule')
+  assert.deepEqual(
+    rules.mappings,
+    { 'Sonarr:item10': 100 },
+    'Restoring automatic matching only removes the selected season rule',
+  )
 
-  const failures = await Promise.all(Array.from({ length: 8 }, () => fetch(`${baseUrl}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'administrator', password: 'definitely incorrect' }),
-    })))
+  const failures = await Promise.all(
+    Array.from({ length: 8 }, () =>
+      fetch(`${baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'administrator', password: 'definitely incorrect' }),
+      }),
+    ),
+  )
   assert.deepEqual(failures.map(response => response.status).sort(), [401, 401, 401, 401, 401, 429, 429, 429])
   const limited = await fetch(`${baseUrl}/api/auth/login`, {
     method: 'POST',

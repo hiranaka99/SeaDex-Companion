@@ -44,8 +44,6 @@ export function formatDateTime(date: Date, pattern: string): string {
  */
 export function parseTimestamp(value: string | null | undefined): Date | null {
   if (!value) return null
-  const date = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
-    ? new Date(value.replace(' ', 'T'))
-    : new Date(value)
+  const date = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? new Date(value.replace(' ', 'T')) : new Date(value)
   return Number.isNaN(date.getTime()) ? null : date
 }
