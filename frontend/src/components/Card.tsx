@@ -2,8 +2,8 @@ import { errorMessage } from '../../../shared/errors.js'
 import { useCardDownloads, useSeasonAvailability } from '../useCardDownloads'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { GroupedCard, ResultItem, Config } from '../types'
-import { seasonLabel, STATUS_LABEL, cardSizeDelta, isSeasonUpgradable } from '../utils'
-import { displayDateTime } from '../datetime'
+import { seasonLabel, STATUS_LABEL, cardSizeDelta, formatBytes, isSeasonUpgradable } from '../utils'
+import { displayDateTimeMinutes } from '../datetime'
 import * as api from '../api'
 import { buttonBase, cx } from '../styles'
 import Icon, { IconName } from './Icons'
@@ -19,6 +19,7 @@ import SeasonBadge from './SeasonBadge'
 import LibrarySizeChange from './LibrarySizeChange'
 import DetailsSeason, { detailsSeasonName } from './DetailsSeason'
 import { QUALITY_ICONS } from './DetailsQuality'
+import type { IconName as QualityIconName } from './Icons'
 import { releaseOverview, releaseQuality } from '../release-status'
 import { groupReleaseChanges, presentReleaseChange } from '../release-changes'
 import ReleaseChangeLine from './ReleaseChangeLine'
@@ -310,56 +311,101 @@ function Card({
   )
 
   const overview = releaseOverview(group.seasons, group.arr)
-  const reviewIndex = group.seasons.findIndex(season => releaseQuality(season).kind === 'review')
-  const actionIndex = reviewIndex >= 0 ? reviewIndex : group.seasons.findIndex(isSeasonUpgradable)
+  const unit = group.arr === 'Radarr' ? 'movie' : 'season'
+  const qualities = group.seasons.map(season => releaseQuality(season))
+  const indexesWhere = (keep: (index: number) => boolean) => group.seasons.map((_, index) => index).filter(keep)
+  const reviewTargets = indexesWhere(index => qualities[index].kind === 'review')
+  const upgradeTargets = indexesWhere(
+    index => isSeasonUpgradable(group.seasons[index]) && qualities[index].kind !== 'review',
+  )
+  // The summary's button walks the seasons that explain it, in the order the summary names them.
+  const action: { targets: number[]; label: string; icon: QualityIconName } | null = reviewTargets.length
+    ? {
+        targets: reviewTargets,
+        label: reviewTargets.length === 1 ? 'Review match' : `Review ${reviewTargets.length} matches`,
+        icon: 'refresh',
+      }
+    : upgradeTargets.length
+      ? {
+          targets: upgradeTargets,
+          label: upgradeTargets.length === 1 ? 'Review upgrade' : `Review ${upgradeTargets.length} upgrades`,
+          icon: 'arrow-up',
+        }
+      : overview.kind === 'partial' || overview.kind === 'incomplete'
+        ? (() => {
+            const targets = indexesWhere(index => qualities[index].kind === overview.kind)
+            if (!targets.length) return null
+            return {
+              targets,
+              label:
+                overview.kind === 'incomplete'
+                  ? 'Show missing episodes'
+                  : `Check ${targets.length === 1 ? unit : `${targets.length} ${unit}s`}`,
+              icon: QUALITY_ICONS[overview.kind],
+            }
+          })()
+        : null
+  const sectionId = (index: number) => `${titleId}-season-${index}`
+  // Seasons waiting on a decision open with the modal, and so does a title's only season.
+  const decisionTargets = new Set([...reviewTargets, ...upgradeTargets])
+  const nextActionFor = (index: number) => {
+    if (!action) return null
+    const position = action.targets.indexOf(index)
+    const next = position >= 0 ? action.targets[position + 1] : undefined
+    return next === undefined ? null : { id: sectionId(next), label: detailsSeasonName(group.seasons[next]) }
+  }
+  const missingEpisodes = group.seasons.reduce((sum, season) => sum + (season.missing_episode_count || 0), 0)
+  const verdictFacts = [
+    delta > 0 && `+${formatBytes(delta)} if upgraded`,
+    missingEpisodes > 0 && overview.kind !== 'incomplete' && `${missingEpisodes} episodes missing`,
+    overview.kind === 'incomplete' && `${missingEpisodes} episode${missingEpisodes === 1 ? '' : 's'} missing`,
+    overview.description,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  const manualMatch = group.seasons.some(season => season.mapping_override)
+  const titleLink =
+    'touch-target inline-flex min-h-8 items-center gap-1 rounded-md px-1.5 text-xs font-semibold text-accent-bright hover:bg-panel-raised hover:no-underline'
   const managementLinks = detailsOpen ? (
-    <nav className="flex flex-wrap items-center gap-2 text-xs" aria-label="Anime links">
+    <nav className="anime-details-links" aria-label="Anime links">
       {group.arr_url && (
-        <a
-          className={cx(
-            buttonBase,
-            'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised hover:no-underline',
-          )}
-          href={group.arr_url}
-          target="_blank"
-          rel="noopener"
-        >
-          <Icon name="server" size={15} />
+        <a className={titleLink} href={group.arr_url} target="_blank" rel="noopener">
+          <Icon name="server" size={14} />
           Open in {group.source}
+          <span className="sr-only"> (new tab)</span>
         </a>
       )}
       {typeof group.anilist_id === 'number' && (
-        <a
-          className={cx(
-            buttonBase,
-            'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised hover:no-underline',
-          )}
-          href={`https://anilist.co/anime/${group.anilist_id}`}
-          target="_blank"
-          rel="noopener"
-        >
-          Open in AniList <Icon name="chevron-right" size={14} />
+        <a className={titleLink} href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">
+          AniList
+          <Icon name="chevron-right" size={14} />
+          <span className="sr-only"> (new tab)</span>
         </a>
       )}
       <button
         type="button"
         className={cx(
-          buttonBase,
-          'min-h-11 border-line bg-panel px-3 text-xs text-muted hover:bg-panel-raised hover:text-ink',
+          titleLink,
+          'cursor-pointer text-muted hover:text-ink disabled:cursor-not-allowed disabled:opacity-60',
         )}
         onClick={() => {
           setMappingSeason(null)
           setMappingOpen(true)
         }}
         disabled={!group.seasons[0]?.library_key}
-        title={!group.seasons[0]?.library_key ? 'Run a new scan to enable manual matching' : undefined}
+        aria-describedby={!group.seasons[0]?.library_key ? `${titleId}-match-hint` : undefined}
       >
         <Icon name="refresh" size={14} />
-        {group.seasons.some(season => season.mapping_override) ? 'Change manual match' : 'Correct match'}
+        {manualMatch ? 'Change manual match' : 'Correct match'}
       </button>
-      {group.seasons.some(season => season.mapping_override) && (
-        <span className="rounded-full border border-purple/35 bg-purple/10 px-2 py-1 text-xs font-bold text-ink">
+      {manualMatch && (
+        <span className="inline-flex items-center gap-1 rounded-md border border-line-strong bg-panel-raised px-2 py-0.5 text-xs font-semibold text-ink">
           Manual match
+        </span>
+      )}
+      {!group.seasons[0]?.library_key && (
+        <span id={`${titleId}-match-hint`} className="basis-full text-xs text-muted">
+          Run a new scan to enable manual matching.
         </span>
       )}
     </nav>
@@ -623,6 +669,7 @@ function Card({
                           ? 'season'
                           : 'seasons'}
                     </p>
+                    {managementLinks}
                   </div>
                   <button
                     ref={closeRef}
@@ -642,77 +689,71 @@ function Card({
                     data-quality={overview.kind}
                     aria-label="Release quality summary"
                   >
-                    <Icon name={QUALITY_ICONS[overview.kind]} size={26} className="shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <h3 className="m-0 text-lg font-extrabold tracking-tight wrap-anywhere">{overview.title}</h3>
-                      <p className="mt-1 mb-0 text-xs wrap-anywhere">{overview.description}</p>
+                    <Icon name={QUALITY_ICONS[overview.kind]} size={20} className="details-verdict-icon shrink-0" />
+                    <div className="details-verdict-copy min-w-0">
+                      <h3 className="m-0 text-base font-extrabold tracking-tight wrap-anywhere">{overview.title}</h3>
+                      {verdictFacts && (
+                        <p className="details-verdict-facts m-0 text-xs wrap-anywhere">{verdictFacts}</p>
+                      )}
                     </div>
-                    {actionIndex >= 0 && (
+                    {action && (
                       <div className="details-index">
                         <button
                           type="button"
                           className={cx(
                             buttonBase,
-                            'min-h-11 border-accent/40 bg-accent/10 px-3 text-xs text-accent-bright',
+                            'min-h-11 border-accent/40 bg-accent/10 px-3 text-xs text-accent-bright hover:bg-accent/16',
                           )}
-                          onClick={() => jumpToDetails(`${titleId}-season-${actionIndex}`)}
+                          onClick={() => jumpToDetails(sectionId(action.targets[0]))}
                         >
-                          <Icon name={reviewIndex >= 0 ? 'refresh' : 'arrow-up'} size={15} />
-                          {reviewIndex >= 0 ? 'Review match' : 'Review upgrade'}
+                          <Icon name={action.icon} size={15} />
+                          {action.label}
                         </button>
                       </div>
                     )}
                   </section>
                   {unseenChanges.length > 0 && (
-                    <details className="details-changes mb-5 border-b border-line pb-3" aria-label="What changed">
-                      <summary className="touch-target cursor-pointer py-2 text-sm font-semibold text-accent-bright">
+                    <details className="details-changes" aria-label="What changed">
+                      <summary className="touch-target flex cursor-pointer list-none items-center gap-1.5 py-2 text-sm font-semibold text-accent-bright">
+                        <Icon name="chevron-right" size={15} className="disclosure-chevron" />
                         What changed ({unseenChanges.length})
                       </summary>
-                      <section className="pt-1">
-                        <div className="mb-3 flex justify-end">
-                          <button
-                            type="button"
-                            className={cx(
-                              buttonBase,
-                              'border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised',
-                            )}
-                            disabled={reviewingChanges}
-                            onClick={() => void onReviewChanges(changeIds)}
-                          >
-                            {reviewingChanges ? 'Marking reviewed…' : 'Mark reviewed'}
-                          </button>
-                        </div>
+                      <section className="pt-1 pb-2">
                         <ul className="m-0 list-none divide-y divide-line p-0">
                           {unseenChanges.map(({ season, change }) => (
                             <li key={change.id} className="min-w-0 py-2 first:pt-0 last:pb-0">
-                              <ReleaseChangeLine detail={presentReleaseChange(change)} context={seasonLabel(season)} />
+                              <ReleaseChangeLine
+                                detail={presentReleaseChange(change)}
+                                context={detailsSeasonName(season)}
+                              />
                               <time className="block text-xs text-muted" dateTime={change.detected_at}>
-                                Detected {displayDateTime(change.detected_at)}
+                                Detected {displayDateTimeMinutes(change.detected_at)}
                               </time>
                             </li>
                           ))}
                         </ul>
+                        <button
+                          type="button"
+                          className={cx(
+                            buttonBase,
+                            'mt-3 min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised',
+                          )}
+                          disabled={reviewingChanges}
+                          onClick={() => void onReviewChanges(changeIds)}
+                        >
+                          <Icon name="check" size={15} />
+                          {reviewingChanges ? 'Marking reviewed…' : 'Mark reviewed'}
+                        </button>
                       </section>
                     </details>
                   )}
-                  {group.status === 'review' && <div className="details-review-links">{managementLinks}</div>}
-                  <div className="details-list-heading">
-                    <h3 className="m-0 text-sm font-bold">
-                      Your{' '}
-                      {group.arr === 'Radarr'
-                        ? seasonCount === 1
-                          ? 'movie'
-                          : 'movies'
-                        : seasonCount === 1
-                          ? 'season'
-                          : 'seasons'}
-                    </h3>
-                    <span className="text-xs text-muted">Expand for release details</span>
-                  </div>
                   {group.seasons.map((season, index) => (
                     <DetailsSeason
                       key={season.key}
-                      sectionId={`${titleId}-season-${index}`}
+                      sectionId={sectionId(index)}
+                      defaultOpen={seasonCount === 1 || decisionTargets.has(index)}
+                      nextAction={nextActionFor(index)}
+                      onJump={jumpToDetails}
                       r={season}
                       config={config}
                       dl={dlBySeason[season.key] || {}}
@@ -758,14 +799,6 @@ function Card({
                       }}
                     />
                   ))}
-                  {group.status !== 'review' && (
-                    <details className="details-management border-t border-line pt-3">
-                      <summary className="touch-target cursor-pointer py-2 text-sm font-semibold text-muted">
-                        Links & matching
-                      </summary>
-                      <div className="mt-2">{managementLinks}</div>
-                    </details>
-                  )}
                 </div>
               </div>
             </aside>

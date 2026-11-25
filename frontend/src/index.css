@@ -515,13 +515,14 @@ html.sidebar-resizing .app-shell {
 .anime-details-content {
   padding: 24px;
 }
+/* One compact line of verdict: what the title needs, the facts the title does not repeat, and the way in. */
 .details-verdict {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 12px;
-  margin-bottom: 24px;
-  padding: 20px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 12px;
+  margin-bottom: 16px;
+  padding: 12px 12px 12px 16px;
   border-radius: 12px;
   color: var(--color-warn);
   background: color-mix(in srgb, var(--color-warn) 8%, var(--color-canvas));
@@ -530,25 +531,22 @@ html.sidebar-resizing .app-shell {
   color: var(--color-good);
   background: color-mix(in srgb, var(--color-good) 9%, var(--color-canvas));
 }
+.details-verdict[data-quality='upgrade'] {
+  color: var(--color-accent-bright);
+  background: color-mix(in srgb, var(--color-accent) 9%, var(--color-canvas));
+}
 .details-verdict[data-quality='missing'] {
   color: var(--color-muted);
   background: var(--color-panel);
 }
-.details-verdict > svg {
+.details-verdict-facts {
   margin-top: 2px;
+  color: var(--color-ink);
+  opacity: 0.82;
 }
-.details-verdict > div:first-of-type {
-  flex-basis: 15rem;
-}
-.details-index {
-  margin-left: 38px;
-}
-.details-list-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
+.details-changes {
   margin-bottom: 8px;
+  border-bottom: 1px solid var(--color-line);
 }
 .details-season,
 .details-cour {
@@ -557,26 +555,57 @@ html.sidebar-resizing .app-shell {
 .details-season {
   border-top: 1px solid var(--color-line);
 }
+.anime-details-panel summary {
+  list-style: none;
+}
+.anime-details-panel summary::-webkit-details-marker {
+  display: none;
+}
+/* Every disclosure in Details uses one chevron that turns when its own section opens. */
+.disclosure-chevron {
+  flex-shrink: 0;
+  transition: transform 150ms ease-out;
+}
+details[open] > summary .disclosure-chevron {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .disclosure-chevron {
+    transition: none;
+  }
+}
 .details-summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) fit-content(40%) 16px;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  grid-template-areas:
+    'title chevron'
+    'body .';
   align-items: center;
-  gap: 16px;
-  min-height: 80px;
-  padding-block: 16px;
-  list-style: none;
+  column-gap: 12px;
+  margin-inline: -8px;
+  padding: 14px 8px;
   border-radius: 6px;
-}
-.details-summary::-webkit-details-marker,
-.details-season-actions > summary::-webkit-details-marker,
-.release-notes > summary::-webkit-details-marker {
-  display: none;
 }
 .details-summary:hover {
   background: var(--color-panel);
 }
+.details-summary-title {
+  grid-area: title;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  min-width: 0;
+}
+.details-summary-body {
+  grid-area: body;
+  min-width: 0;
+}
+.details-summary > .disclosure-chevron {
+  grid-area: chevron;
+}
 .details-season-name {
-  display: block;
   font-size: 0.875rem;
   font-weight: 700;
 }
@@ -592,22 +621,35 @@ html.sidebar-resizing .app-shell {
   font-size: 0.875rem;
   font-weight: 700;
 }
+/* Long group names stay to two lines in the overview; the release card below carries the full name. */
+.details-clamp,
+.details-owned-cour-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
 .details-owned-cours {
   display: flex;
   flex-wrap: wrap;
-  gap: 3px 14px;
+  gap: 3px 16px;
   margin-top: 3px;
 }
-.details-owned-cours > span {
+.details-owned-cour {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 5px;
   min-width: 0;
   max-width: 100%;
   overflow-wrap: anywhere;
 }
+.details-owned-cour-glyph {
+  margin-top: 0.2em;
+}
 .details-quality {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  max-width: 13em;
+  gap: 5px;
   min-width: 0;
   font-size: 0.75rem;
   font-weight: 700;
@@ -616,14 +658,6 @@ html.sidebar-resizing .app-shell {
 .details-quality > svg {
   flex-shrink: 0;
 }
-.details-disclosure-chevron {
-  flex-shrink: 0;
-  transition: transform 150ms ease-out;
-}
-.details-season-disclosure[open] > .details-summary > .details-disclosure-chevron,
-.details-cour[open] > .details-summary > .details-disclosure-chevron {
-  transform: rotate(90deg);
-}
 .details-summary-note {
   display: block;
   margin-top: 5px;
@@ -631,33 +665,31 @@ html.sidebar-resizing .app-shell {
   overflow-wrap: anywhere;
 }
 .details-season-content {
-  padding-bottom: 18px;
+  padding-bottom: 12px;
 }
 .details-cour {
   margin-left: 14px;
   border-top: 1px solid var(--color-line);
 }
 .details-cour-content {
-  padding-bottom: 16px;
+  padding-bottom: 12px;
 }
+/* Options sit under a rule of their own, apart from the download button above them. */
 .details-secondary-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 16px;
-  margin-top: 12px;
-}
-.details-season-actions {
-  margin-top: 10px;
-}
-.details-season-actions > summary {
-  width: fit-content;
-}
-.details-management {
+  gap: 4px 12px;
   margin-top: 16px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--color-line);
 }
-.details-review-links {
-  margin-bottom: 20px;
+.anime-details-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  margin: 6px 0 0 -6px;
 }
 .details-review-prompt {
   margin-bottom: 16px;
@@ -680,12 +712,27 @@ html.sidebar-resizing .app-shell {
   border-color: color-mix(in srgb, var(--color-bad) 40%, transparent);
   background: color-mix(in srgb, var(--color-bad) 7%, var(--color-canvas));
 }
+.release-alert-neutral {
+  border-color: var(--color-line-strong);
+  background: var(--color-panel-raised);
+}
 .anime-details-panel p {
   text-wrap: pretty;
 }
-/* Jump targets are landmarks, not controls: the landing tint shows where focus went, then fades. */
+/* Jump targets are landmarks, not controls: the landing tint shows where focus went, then fades. A keyboard
+   jump keeps a ring for as long as focus stays, since the tint alone is gone after a second. */
 .details-season:focus {
   outline: none;
+}
+.details-season:focus-visible {
+  outline: 2px solid var(--color-accent-bright);
+  outline-offset: 4px;
+  border-radius: 6px;
+}
+/* Icons follow the text size, so enlarged text does not leave them small. */
+.anime-details-panel svg[data-icon] {
+  width: calc(var(--icon-size) * 0.0625rem);
+  height: calc(var(--icon-size) * 0.0625rem);
 }
 .details-landing {
   animation: details-landing 1.4s cubic-bezier(0.16, 1, 0.3, 1);
@@ -754,23 +801,16 @@ html.sidebar-resizing .app-shell {
     width: 100%;
   }
   .details-verdict {
-    padding: 16px;
-    margin-bottom: 20px;
-    gap: 10px;
-  }
-  .details-verdict > div:first-of-type {
-    flex-basis: 8rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    padding: 12px;
+    gap: 4px 10px;
   }
   .details-index {
-    margin-left: 0;
+    grid-column: 1 / -1;
+    margin-top: 6px;
   }
-  .details-summary {
-    gap: 8px;
-    grid-template-columns: minmax(0, 1fr) fit-content(40%) 14px;
-  }
-  .details-quality {
-    justify-self: end;
-    gap: 4px;
+  .details-summary-title {
+    justify-content: flex-start;
   }
   .details-cour {
     margin-left: 10px;

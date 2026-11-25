@@ -127,8 +127,8 @@ export function scanTimes(
 }
 
 export const historyStatusLabel: Record<string, string> = {
-  upgrade: 'Upgradable',
-  best: 'Best quality',
+  upgrade: 'Upgrade available',
+  best: 'Best owned',
   missing: 'Not on SeaDex',
   uncovered: 'No releases',
   partial: 'Partially on SeaDex',

@@ -89,7 +89,7 @@ export function releaseOverview(seasons: ResultItem[], arr: string) {
   ).length
   const unit = arr === 'Radarr' ? 'movie' : 'season'
   const quantity = (n: number) => `${n} ${unit}${n === 1 ? '' : 's'}`
-  const description = [
+  const facts = [
     best && `${best} best owned`,
     upgrades && `${upgrades} upgradable`,
     review && `${review} ${review === 1 ? 'needs' : 'need'} a match review`,
@@ -98,30 +98,36 @@ export function releaseOverview(seasons: ResultItem[], arr: string) {
     missing > blocked && `${missing - blocked} not on SeaDex`,
     blocked && `${blocked} outside your preferences`,
     incomplete && `${incomplete} with missing episodes`,
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  ].filter((fact): fact is string => Boolean(fact))
+  // The title already states one of these facts; the description only adds what the title does not say.
+  const besides = (restated: string) => facts.filter(fact => !fact.includes(restated)).join(' · ')
   if (seasons.length > 0 && best === seasons.length)
     return {
       kind: 'best' as const,
-      title: `You have the best release${seasons.length === 1 ? '' : 's'}`,
-      description: `${seasons.length === 1 ? 'Your ' + unit + ' matches' : 'All ' + quantity(seasons.length) + ' match'} SeaDex recommendations.`,
+      title: seasons.length === 1 ? 'Best release owned' : `Best releases owned for all ${quantity(seasons.length)}`,
+      description: '',
     }
-  if (review) {
-    // The title already counts the reviews; the description says what else is known, or why the review matters.
-    const others = description.split(' · ').filter(part => part && !part.includes('match review'))
+  if (review)
     return {
       kind: 'review' as const,
       title: `${quantity(review)} ${review === 1 ? 'needs' : 'need'} a match review`,
-      description: others.length
-        ? others.join(' · ')
-        : 'SeaDex releases can be checked once the right AniList entry is chosen.',
+      description: besides('match review') || 'SeaDex releases can be checked once the right AniList entry is chosen.',
     }
-  }
-  if (upgrades) return { kind: 'upgrade' as const, title: `${quantity(upgrades)} can be upgraded`, description }
-  if (incomplete) return { kind: 'incomplete' as const, title: 'Your library has missing episodes', description }
+  if (upgrades)
+    return {
+      kind: 'upgrade' as const,
+      title: `${quantity(upgrades)} can be upgraded`,
+      description: besides('upgradable'),
+    }
+  if (incomplete)
+    return {
+      kind: 'incomplete' as const,
+      title: 'Your library has missing episodes',
+      description: besides('missing episodes'),
+    }
   if (missing === seasons.length && blocked === missing)
-    return { kind: 'missing' as const, title: 'No listed release fits your preferences', description }
-  if (missing === seasons.length) return { kind: 'missing' as const, title: 'No releases found on SeaDex', description }
-  return { kind: 'partial' as const, title: 'Some releases still need checking', description }
+    return { kind: 'missing' as const, title: 'No listed release fits your preferences', description: '' }
+  if (missing === seasons.length)
+    return { kind: 'missing' as const, title: 'No releases found on SeaDex', description: besides('not on SeaDex') }
+  return { kind: 'partial' as const, title: 'Some releases still need checking', description: facts.join(' · ') }
 }
