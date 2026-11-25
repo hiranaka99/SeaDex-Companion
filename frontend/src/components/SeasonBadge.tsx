@@ -40,6 +40,7 @@ const TONES: Record<string, { classes: string; color: string; label: string; ico
 }
 
 const PREFERENCE_BLOCKED = { ...TONES.missing, label: 'Outside your preferences' }
+const PRIVATE_ONLY = { ...TONES.missing, label: 'No public release' }
 
 export default function SeasonBadge({
   season,
@@ -57,7 +58,11 @@ export default function SeasonBadge({
   const releases = season.releases || []
   const status = season.status ? seasonStatus(season) : fallback
   const defaultTone =
-    status === 'missing' && season.preference_blocked ? PREFERENCE_BLOCKED : TONES[status] || TONES.upgrade
+    status === 'missing' && season.preference_blocked
+      ? PREFERENCE_BLOCKED
+      : status === 'missing' && season.private_only
+        ? PRIVATE_ONLY
+        : TONES[status] || TONES.upgrade
   const owns = (release: (typeof releases)[number]) => releaseOwned(season, release)
   const parts = [...new Set(releases.map(release => release.part || ''))].sort((a, b) =>
     a.localeCompare(b, undefined, { numeric: true }),

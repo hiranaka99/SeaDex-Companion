@@ -74,6 +74,7 @@ const TAG_FIELDS: [ArrTagKey, string, string][] = [
 const scanSettings = (config: Config) =>
   JSON.stringify([
     config.release_preferences,
+    config.tracker_mode,
     config.verify_release_files,
     config.sonarr_url,
     config.radarr_url,
@@ -984,16 +985,22 @@ export default function ConfigTab({
 
           <Section
             title="Release preferences"
-            summary={summarizePreferences(preferences, form.verify_release_files !== false).map(fact => (
+            summary={summarizePreferences(
+              preferences,
+              form.verify_release_files !== false,
+              form.tracker_mode || 'public',
+            ).map(fact => (
               <span key={fact}>{fact}</span>
             ))}
           >
             <ReleasePreferencesEditor
               preferences={preferences}
               verify={form.verify_release_files !== false}
+              trackerMode={form.tracker_mode || 'public'}
               knownTrackers={knownTrackers}
               onChange={next => set('release_preferences', next)}
               onVerifyChange={checked => set('verify_release_files', checked)}
+              onTrackerModeChange={mode => set('tracker_mode', mode)}
             />
           </Section>
 

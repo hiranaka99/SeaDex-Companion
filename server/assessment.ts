@@ -9,10 +9,12 @@ import type {
   SeaDexEntry,
   ResolvedPart,
 } from './types.js'
+import type { TrackerMode } from '../shared/contracts.js'
 import {
   effectiveSeasonParts,
   entryParts,
   exclusionReason,
+  isDownloadable,
   localPartOwnership,
   seadexSlot,
   pickBest,
@@ -25,7 +27,12 @@ import {
 import { verifyPart, type PartVerification } from './verification.js'
 import { sameRelease } from '../shared/releases.js'
 import { sourceKeyOf } from './arr-instances.js'
-import { DEFAULT_RELEASE_PREFERENCES, PREFERENCE_BLOCKED_REASON } from '../shared/settings.js'
+import {
+  DEFAULT_RELEASE_PREFERENCES,
+  DEFAULT_TRACKER_MODE,
+  PREFERENCE_BLOCKED_REASON,
+  PRIVATE_ONLY_REASON,
+} from '../shared/settings.js'
 
 export interface ResolvedSeasonChain {
   entry: ChainEntry | undefined
@@ -160,10 +167,16 @@ export interface AssessmentSettings {
   preferences: ReleasePreferences
   /** Compare library file sizes with the listed release before counting it as owned. */
   verify: boolean
+  /** In public mode, releases without a public torrent are treated as unlisted. */
+  trackers: TrackerMode
 }
 
-export const DEFAULT_ASSESSMENT: AssessmentSettings = { preferences: DEFAULT_RELEASE_PREFERENCES, verify: true }
-export { PREFERENCE_BLOCKED_REASON }
+export const DEFAULT_ASSESSMENT: AssessmentSettings = {
+  preferences: DEFAULT_RELEASE_PREFERENCES,
+  verify: true,
+  trackers: DEFAULT_TRACKER_MODE,
+}
+export { PREFERENCE_BLOCKED_REASON, PRIVATE_ONLY_REASON }
 
 const groupKey = (group: string) => group.trim().toLowerCase()
 
@@ -307,8 +320,15 @@ export function assessSeason({
           return scoped ? [scoped] : []
         })
       : slot.candidates
+    // Public-tracker mode treats a release nobody can fetch without a private-tracker account as unlisted.
+    const listedCandidates = settings.trackers === 'public' ? slotCandidates.filter(isDownloadable) : slotCandidates
+    if (slotCandidates.length && !listedCandidates.length) {
+      outcomes.push('uncovered')
+      unavailableParts.push({ label: partName(label), reason: PRIVATE_ONLY_REASON })
+      continue
+    }
     // The catalog is shared between library titles, so exclusions are noted on copies.
-    const eligibleCandidates = slotCandidates.map((candidate): ReleaseCandidate => {
+    const eligibleCandidates = listedCandidates.map((candidate): ReleaseCandidate => {
       const reason = exclusionReason(candidate, part.episodeCount, preferences)
       return reason ? { ...candidate, excluded_by: reason } : candidate
     })
@@ -344,6 +364,13 @@ export function assessSeason({
   common.urls = sources
   common.anilist_ids = parts.map(part => part.id)
   common.unavailable_parts = unavailableParts
+  // Flagged only while private trackers are the sole reason a part is unavailable.
+  const notePrivateOnly = () => {
+    if (unavailableParts.length && unavailableParts.every(part => part.reason === PRIVATE_ONLY_REASON))
+      common.private_only = true
+    else delete common.private_only
+  }
+  notePrivateOnly()
   common.notes_by_part = Object.fromEntries(resolved.map(part => [part.label || '', part.source.notes || '-']))
   if (sources.length) {
     common.url = sources[0].url
@@ -416,6 +443,7 @@ export function assessSeason({
     outcomes[resolvedOutcome[index]] = 'uncovered'
     unavailableParts.push({ label: partName(part.label), reason: PREFERENCE_BLOCKED_REASON })
   })
+  notePrivateOnly()
   const listReleases = (part: ResolvedPart, primary: ReleaseCandidate) => {
     const matches = verification[resolved.indexOf(part)].matches
     return orderedPartReleases(primary, part.alts).map(([, release]) => {

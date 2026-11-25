@@ -549,6 +549,8 @@ test('a failed metadata batch preserves the previous scan results and failure ou
 
 test('scan history records torrent replacements once and ignores private-tracker hash placeholders', async () => {
   const before = getState()
+  // Private-tracker listings only appear when private trackers are included.
+  const config = { ...DEFAULT_CONFIG, tracker_mode: 'private' as const }
   const history: ReturnType<typeof buildScanHistoryEntry>[] = []
   let hash = 'restricted',
     saved: JsonObject[] = []
@@ -592,24 +594,24 @@ test('scan history records torrent replacements once and ignores private-tracker
   })
   try {
     setState({ results: [], error: null })
-    await service.run(DEFAULT_CONFIG)
+    await service.run(config)
     assert.equal(getState().error, null)
     assert.equal(history[0].changes[0].type, 'new')
-    await service.run(DEFAULT_CONFIG)
+    await service.run(config)
     assert.deepEqual(history[1].changes, [], 'An unchanged private-tracker release must not report a new torrent')
     assert.deepEqual(saved, getState().results, 'Persistence and history must use the same results as scan state')
 
     hash = 'a'.repeat(40)
-    await service.run(DEFAULT_CONFIG)
+    await service.run(config)
     assert.match(history[2].changes[0].details!.join('; '), /Torrent changed/)
     hash = 'b'.repeat(40)
-    await service.run(DEFAULT_CONFIG)
+    await service.run(config)
     assert.match(history[3].changes[0].details!.join('; '), /Torrent changed/)
-    await service.run(DEFAULT_CONFIG)
+    await service.run(config)
     assert.deepEqual(history[4].changes, [])
 
     setState({ results: JSON.parse(JSON.stringify(saved)) })
-    await service.run(DEFAULT_CONFIG)
+    await service.run(config)
     assert.deepEqual(history[5].changes, [], 'Reloading the saved baseline must not repeat the replacement')
   } finally {
     setState(before)
