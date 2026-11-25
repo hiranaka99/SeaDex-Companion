@@ -373,6 +373,40 @@ export async function qbAddTorrent(
   })
 }
 
+/** Fresh reads of up to this many hashes ask qBittorrent for those torrents only; this keeps the URL short. */
+const QB_HASH_FILTER_LIMIT = 100
+
+async function qbTorrentList(config: Config, query = ''): Promise<JsonObject[]> {
+  const response = await qbRequest(config, `/api/v2/torrents/info${query}`)
+  const text = await response.text()
+  if (response.status !== 200) throw new Error(`qBittorrent error (HTTP ${response.status}: ${text.slice(0, 120)})`)
+  const parsed: unknown = JSON.parse(text)
+  if (
+    !Array.isArray(parsed) ||
+    parsed.some(
+      torrent =>
+        !torrent ||
+        typeof torrent !== 'object' ||
+        typeof torrent.hash !== 'string' ||
+        !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(torrent.hash),
+    )
+  )
+    throw new Error('qBittorrent returned an invalid torrent list')
+  return parsed as JsonObject[]
+}
+
+/**
+ * A fresh read of the named torrents. Progress polls track a few torrents, and a client seeding thousands would
+ * otherwise send its whole list every few seconds, so small sets are filtered by qBittorrent itself.
+ */
+export async function qbReadTorrents(config: Config, hashes: string[]): Promise<JsonObject[]> {
+  const wanted = new Set(hashes.map(hash => hash.toLowerCase()))
+  if (wanted.size > QB_HASH_FILTER_LIMIT) return qbGetTorrents(config, hashes, true)
+  if (!wanted.size) return []
+  const torrents = await qbTorrentList(config, `?hashes=${[...wanted].map(encodeURIComponent).join('|')}`)
+  return torrents.filter(torrent => wanted.has(String(torrent.hash || '').toLowerCase()))
+}
+
 export async function qbGetTorrents(config: Config, hashes?: string[], fresh = false): Promise<JsonObject[]> {
   if (fresh) invalidateQbCache(config)
   const connection = connectionFor(config)
@@ -381,24 +415,9 @@ export async function qbGetTorrents(config: Config, hashes?: string[], fresh = f
     if (!connection.pending) {
       const revision = connection.revision
       const pending = (async () => {
-        const response = await qbRequest(config, '/api/v2/torrents/info')
-        const text = await response.text()
-        if (response.status !== 200)
-          throw new Error(`qBittorrent error (HTTP ${response.status}: ${text.slice(0, 120)})`)
-        const parsed: unknown = JSON.parse(text)
-        if (
-          !Array.isArray(parsed) ||
-          parsed.some(
-            torrent =>
-              !torrent ||
-              typeof torrent !== 'object' ||
-              typeof torrent.hash !== 'string' ||
-              !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(torrent.hash),
-          )
-        )
-          throw new Error('qBittorrent returned an invalid torrent list')
+        const parsed = await qbTorrentList(config)
         if (revision === connection.revision) connection.cache = { data: parsed, timestamp: Date.now() }
-        return parsed as JsonObject[]
+        return parsed
       })().finally(() => {
         if (connection.pending === pending) connection.pending = null
       })

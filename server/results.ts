@@ -3,7 +3,7 @@ import { normalizeResults } from './result-model.js'
 import { recordReleaseChanges } from './release-changes.js'
 import type { ResultItem } from './types.js'
 import type { ScannedDataInfo } from '../shared/contracts.js'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { CACHE_FILE, RESULTS_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
 import { setState } from './scan-state.js'
@@ -29,17 +29,44 @@ export function saveLastResults(
 ): void {
   const previous = loadLastResults()?.results || []
   recordReleaseChanges(previous, results, undefined, undefined, { baseline: options.baseline })
+  savedResults = null
   writeJsonAtomic(RESULTS_FILE, {
     results,
     last_run: lastRun,
     ...(options.settings ? { settings: options.settings } : {}),
   })
 }
-export function loadLastResults(): {
+
+export interface SavedResults {
   results: ResultItem[]
   last_run: string | null
   settings?: ResultSettings
-} | null {
+}
+
+/**
+ * The parsed results file, kept until the file changes. Until a scan runs, status polls and every request that
+ * reads results fall back to this file, which can take tens of milliseconds to parse and normalize. Like the scan
+ * state's results, the returned value is shared and must not be modified.
+ */
+let savedResults: { stamp: string; value: SavedResults | null } | null = null
+
+function resultsFileStamp(): string {
+  try {
+    const stat = statSync(RESULTS_FILE)
+    return `${stat.ino}:${stat.mtimeMs}:${stat.size}`
+  } catch {
+    return ''
+  }
+}
+
+export function loadLastResults(): SavedResults | null {
+  // Stamped before reading, so a file replaced during the read is read again next time.
+  const stamp = resultsFileStamp()
+  if (savedResults?.stamp !== stamp) savedResults = { stamp, value: readLastResults() }
+  return savedResults.value
+}
+
+function readLastResults(): SavedResults | null {
   const saved = readJson<JsonObject | null>(RESULTS_FILE, null)
   if (!saved || typeof saved !== 'object' || !Array.isArray(saved.results)) return null
   const settings =
@@ -119,6 +146,7 @@ export function clearScannedData(
   resultsFile = RESULTS_FILE,
 ): { cacheEntries: number; results: number } {
   const info = scannedDataInfo(cacheFile, resultsFile)
+  savedResults = null
   writeJsonAtomic(cacheFile, {}, true)
   writeJsonAtomic(resultsFile, { results: [], last_run: null }, true)
   setState({ progress: 0, total: 0, message: 'Idle', results: [], error: null, last_run: null })
