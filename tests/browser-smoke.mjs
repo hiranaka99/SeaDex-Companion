@@ -2756,17 +2756,31 @@ try {
     await pause(300)
     assert.equal(singleRequests.length, afterExpiredSend, 'A failed send is never replayed automatically')
     await dismissToasts()
+    assert.ok(
+      await evaluate(
+        `[...document.querySelectorAll('dialog[open] .release-alert[role="alert"]')].some(alert => alert.textContent.includes('This review has expired'))`,
+      ),
+      'A failed send is explained in its release row',
+    )
     singleSendMode = 'transient'
     preflightMode = 'low'
+    const beforeLowSpace = singleRequests.length
     await sendFirstRelease()
+    await wait(`document.querySelector('dialog[open] .release-alert')?.textContent.includes('Not enough free space')`)
+    await pause(200)
+    assert.equal(singleRequests.length, beforeLowSpace, 'A client reporting too little space stops a single send')
+    await evaluate(
+      `[...document.querySelectorAll('dialog[open] .release-alert button')].find(button => button.textContent.trim() === 'Send anyway').click()`,
+    )
     await wait(`document.body.textContent.includes('Fixture client temporarily unavailable')`)
     assert.deepEqual(
       singleRequests.at(-1).acknowledge,
       { whole_source: true, disk_space: true },
-      'Low space no longer blocks a single send',
+      'Send anyway carries the low-space acknowledgement',
     )
     await dismissToasts()
     singleSendMode = 'unknown'
+    preflightMode = 'enough'
     await sendFirstRelease()
     await wait(`document.body.textContent.includes('Check qBittorrent before retrying')`)
     assert.ok(

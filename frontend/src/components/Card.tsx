@@ -56,10 +56,17 @@ function jumpToDetails(id: string) {
   }
   const disclosure = target.querySelector<HTMLDetailsElement>(':scope > .details-season-disclosure')
   if (disclosure) disclosure.open = true
+  // The cours that need a decision open too, so the jump lands on releases instead of more summaries.
+  for (const cour of target.querySelectorAll<HTMLDetailsElement>('.details-cour[data-needs-action]')) cour.open = true
   window.requestAnimationFrame(() => {
     const top = body.scrollTop + target.getBoundingClientRect().top - body.getBoundingClientRect().top
     body.scrollTo({ top, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
     target.focus({ preventScroll: true })
+    // A short tint marks where the jump landed, then fades instead of leaving a focus ring around the section.
+    target.classList.remove('details-landing')
+    void target.offsetWidth
+    target.classList.add('details-landing')
+    target.addEventListener('animationend', () => target.classList.remove('details-landing'), { once: true })
   })
 }
 
@@ -131,8 +138,20 @@ function Card({
       onOpened?.()
     }
   }, [active, openRequested])
-  const { dlBySeason, activeDownloads, busyDownload, sendingRelease, handleDownload, handleDownloadAction } =
-    useCardDownloads(group, toast.show)
+  const detailsShown = useRef(false)
+  detailsShown.current = detailsOpen && !closing.current
+  const {
+    dlBySeason,
+    activeDownloads,
+    busyDownload,
+    sendingRelease,
+    lowSpace,
+    sendErrors,
+    handleDownload,
+    cancelLowSpace,
+    dismissSendError,
+    handleDownloadAction,
+  } = useCardDownloads(group, toast.show, () => detailsShown.current)
   const usenetEnabled = Boolean(config) && config?.download_mode !== 'torrent_only'
   const configScope = JSON.stringify([
     config?.download_mode,
@@ -649,11 +668,8 @@ function Card({
                       <summary className="touch-target cursor-pointer py-2 text-sm font-semibold text-accent-bright">
                         What changed ({unseenChanges.length})
                       </summary>
-                      <section className="pt-3">
-                        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                          <h3 className="m-0 text-sm font-bold text-ink">
-                            What changed <span className="font-normal text-muted">({unseenChanges.length})</span>
-                          </h3>
+                      <section className="pt-1">
+                        <div className="mb-3 flex justify-end">
                           <button
                             type="button"
                             className={cx(
@@ -679,11 +695,20 @@ function Card({
                       </section>
                     </details>
                   )}
+                  {group.status === 'review' && <div className="details-review-links">{managementLinks}</div>}
                   <div className="details-list-heading">
-                    <h3 className="m-0 text-sm font-bold">Your {group.arr === 'Radarr' ? 'movies' : 'seasons'}</h3>
-                    <span className="text-xs text-muted max-[600px]:hidden">Expand for release details</span>
+                    <h3 className="m-0 text-sm font-bold">
+                      Your{' '}
+                      {group.arr === 'Radarr'
+                        ? seasonCount === 1
+                          ? 'movie'
+                          : 'movies'
+                        : seasonCount === 1
+                          ? 'season'
+                          : 'seasons'}
+                    </h3>
+                    <span className="text-xs text-muted">Expand for release details</span>
                   </div>
-                  {group.status === 'review' && managementLinks}
                   {group.seasons.map((season, index) => (
                     <DetailsSeason
                       key={season.key}
@@ -703,13 +728,18 @@ function Card({
                       }
                       onRefreshAvailability={() => void loadAvailability(season, true)}
                       onOpened={() => void loadAvailability(season)}
-                      onDownload={release =>
+                      onDownload={(release, sendAnyway) =>
                         void handleDownload(
                           season.key,
                           release,
                           config?.download_mode === 'usenet_only' ? 'usenet' : protocolFor(season, release),
+                          sendAnyway,
                         )
                       }
+                      lowSpace={lowSpace?.key === season.key ? lowSpace : null}
+                      sendErrors={sendErrors}
+                      onCancelLowSpace={cancelLowSpace}
+                      onDismissSendError={release => dismissSendError(season.key, release)}
                       onPause={entry => void handleDownloadAction(entry, 'pause')}
                       onResume={entry => void handleDownloadAction(entry, 'resume')}
                       onRemove={entry => {
@@ -720,6 +750,10 @@ function Card({
                       onToggleExclusion={(part, excluded) => void toggleExclusion(season, part, excluded)}
                       onCorrectMatch={() => {
                         setMappingSeason(season)
+                        setMappingOpen(true)
+                      }}
+                      onCorrectTitleMatch={() => {
+                        setMappingSeason(null)
                         setMappingOpen(true)
                       }}
                     />

@@ -14,7 +14,7 @@ import type { GroupedCard } from './types'
 import type { DownloadEntry } from './components/DownloadsPanel'
 import { toDownloadEntry, clientName, importUnsettled } from './components/DownloadsPanel'
 import { seasonLabel } from './utils'
-import type { DownloadProtocol, UsenetAvailabilityResult } from './api'
+import type { DiskSpaceCheck, DownloadProtocol, UsenetAvailabilityResult } from './api'
 import { availabilityKey, observeUsenetAvailability, type AvailabilitySnapshot } from './usenet-observation'
 
 export interface DetailsDownloadState {
@@ -24,14 +24,28 @@ export const IDLE_DOWNLOAD: DetailsDownloadState = { transfers: [] }
 
 type Notify = (message: string, tone: 'success' | 'error' | 'info') => void
 
+/** A one-click send that stopped because a download client reported too little free space. */
+export interface LowSpaceHold {
+  key: string
+  release: number
+  protocol: DownloadProtocol
+  checks: DiskSpaceCheck[]
+}
+
+/** Identifies one release of one season in per-release download state. */
+export const sendKey = (key: string, release: number) => `${key}\u0000${release}`
+
 /** Record controls and one-click sending for a canonical release intent. */
-export function useCardDownloads(group: GroupedCard, notify: Notify) {
+export function useCardDownloads(group: GroupedCard, notify: Notify, detailsShown: () => boolean) {
   const snapshot = useSyncExternalStore(subscribeDownloads, getDownloadSnapshot)
   const [busyDownload, setBusyDownload] = useState<string | null>(null)
   const controlling = useRef(false)
   const sending = useRef(false)
   /** The release whose one-click send is running, so its button can show progress and others stay locked. */
   const [sendingRelease, setSendingRelease] = useState<{ key: string; release: number } | null>(null)
+  const [lowSpace, setLowSpace] = useState<LowSpaceHold | null>(null)
+  /** The last failed send per release, shown in that release's row until it is retried or dismissed. */
+  const [sendErrors, setSendErrors] = useState<Record<string, string>>({})
   const aborter = useRef<AbortController | null>(null)
 
   useEffect(
@@ -55,7 +69,22 @@ export function useCardDownloads(group: GroupedCard, notify: Notify) {
     if (progress.phase !== 'complete' || !associations.length || importUnsettled(entry)) activeDownloads.push(entry)
   }
 
-  const handleDownload = async (key: string, index: number, protocol: DownloadProtocol) => {
+  const setSendError = (key: string, index: number, message: string | null) =>
+    setSendErrors(current => {
+      const id = sendKey(key, index)
+      if (message === null) {
+        if (!(id in current)) return current
+        const { [id]: _, ...rest } = current
+        return rest
+      }
+      return { ...current, [id]: message }
+    })
+
+  /**
+   * Sends one release with one click. The only pause is a client reporting less free space than the release needs:
+   * the release row then asks before sending. Unconfirmed space and whole Usenet sources send without asking.
+   */
+  const handleDownload = async (key: string, index: number, protocol: DownloadProtocol, sendAnyway = false) => {
     if (sending.current) return
     const season = group.seasons.find(item => item.key === key)
     const release: Release | undefined = season?.releases[index]
@@ -66,6 +95,13 @@ export function useCardDownloads(group: GroupedCard, notify: Notify) {
     aborter.current = controller
     sending.current = true
     setSendingRelease({ key, release: index })
+    setSendError(key, index, null)
+    setLowSpace(current => (current?.key === key && current.release === index ? null : current))
+    // A failure belongs to the release row while Details is open; a closed modal falls back to a notification.
+    const report = (message: string) => {
+      setSendError(key, index, message)
+      if (!detailsShown()) notify(`Could not send ${label}: ${message}`, 'error')
+    }
     try {
       const preflight = await api.preflightDownload(
         [{ key, release: index, identity, protocol }],
@@ -76,13 +112,14 @@ export function useCardDownloads(group: GroupedCard, notify: Notify) {
       const blocked = preflight.blocked.find(row => row.key === key && row.release === index)
       if (blocked) throw new Error(blocked.reason)
       if (!preflight.units.length) throw new Error('This release is already queued in the download client')
+      if (!sendAnyway && preflight.disk_space.some(check => check.sufficient === false)) {
+        setLowSpace({ key, release: index, protocol, checks: preflight.disk_space })
+        return
+      }
       const receipt = await api.submitDownload(preflight.plan_id, { whole_source: true, disk_space: true })
       const where = clientName(receipt.client)
       if (receipt.acceptance_unknown || receipt.failures?.some(failure => failure.code === 'acceptance_unknown')) {
-        notify(
-          `${where} was asked to start this download but did not confirm it. Check ${where} before retrying.`,
-          'error',
-        )
+        report(`${where} was asked to start this download but did not confirm it. Check ${where} before retrying.`)
       } else if (!receipt.ok) throw new Error(receipt.error || 'The download client rejected the submission')
       else notify(`Sent ${label} to ${where}`, 'success')
     } catch (error) {
@@ -100,14 +137,17 @@ export function useCardDownloads(group: GroupedCard, notify: Notify) {
               ? 'sabnzbd'
               : 'qbittorrent',
         )
-        notify(`${error.message} Check ${where} before retrying.`, 'error')
-      } else notify(`Could not send ${label}: ${errorMessage(error)}`, 'error')
+        report(`${error.message} Check ${where} before retrying.`)
+      } else report(errorMessage(error))
     } finally {
       sending.current = false
       setSendingRelease(null)
       await reloadDownloads()
     }
   }
+
+  const cancelLowSpace = () => setLowSpace(null)
+  const dismissSendError = (key: string, index: number) => setSendError(key, index, null)
 
   const handleDownloadAction = async (
     entry: DownloadEntry,
@@ -136,7 +176,18 @@ export function useCardDownloads(group: GroupedCard, notify: Notify) {
     }
   }
 
-  return { dlBySeason, activeDownloads, busyDownload, sendingRelease, handleDownload, handleDownloadAction }
+  return {
+    dlBySeason,
+    activeDownloads,
+    busyDownload,
+    sendingRelease,
+    lowSpace,
+    sendErrors,
+    handleDownload,
+    cancelLowSpace,
+    dismissSendError,
+    handleDownloadAction,
+  }
 }
 
 /** Last-known availability stays visible while an open season observes refresh work. */
