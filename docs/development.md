@@ -67,4 +67,28 @@ Before publishing:
 
 The release tag must match both package versions. A stable release such as `v2.6.1` publishes `:2.6.1`, `:2.6`, and `:latest`; prereleases publish only their full version tag. The workflow validates the package versions, runs the server tests, and builds the production Dockerfile before pushing images.
 
-To rerun publication, use **Actions → Publish Docker image → Run workflow** with an existing release tag and the prerelease option when appropriate. Publishing an image does not update running containers; users must pull the image and recreate their containers.
+To rerun publication, use **Actions → Publish Docker image → Run workflow** with an existing release tag and the prerelease option when appropriate. Publishing an image does not update running containers. Users either install the release in-app or pull the image and recreate their containers.
+
+### In-app update package
+
+After the images are pushed, the workflow attaches two assets to the GitHub release with the built-in `GITHUB_TOKEN` (the job has `contents: write`; no extra secret is needed):
+
+- `seadex-companion-app-<version>.tar.gz`: the compiled server and frontend.
+- `seadex-companion-update.json`: the package's size and SHA-256, and the container runtime it needs.
+
+Running installations read the manifest from the latest release. They offer **Install and restart** only when the runtime matches the image they run. Otherwise they warn that a new Docker image is required and list what changed. The runtime covers:
+
+- the `Dockerfile` and `docker-entrypoint.sh`, including the Node.js version and system packages;
+- `server/launcher.ts`;
+- every production package version in `package-lock.json`.
+
+A change to any of these makes the release an image-only update for every existing installation. Group such changes into one release where possible, and say so in its release notes. A release without the manifest, for example while the workflow is still running, is also reported as needing a new image; installations check again within five minutes.
+
+To build and inspect the package locally:
+
+```bash
+npm run build
+node scripts/release-bundle.mjs bundle release-assets
+```
+
+The first release that contains the launcher must be installed by pulling the image, because older images cannot install updates in-app.

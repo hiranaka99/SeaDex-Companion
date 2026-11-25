@@ -34,6 +34,7 @@ export type {
 } from '../../shared/download-contracts.js'
 import type { ArrScopeOptions, ConfigUpdate } from '../../shared/contracts.js'
 import type { AuthState, Config, ResultItem, ScanHistoryEntry, ScannedDataInfo, Status } from './types.js'
+import type { UpdateInfo, UpdateStatus } from '../../shared/update-contracts.js'
 
 export const DOWNLOAD_ACTIONS = ['pause', 'resume', 'remove'] as const
 export type DownloadAction = (typeof DOWNLOAD_ACTIONS)[number]
@@ -165,8 +166,13 @@ export const testConnection = (service: IntegrationService, config: ConfigUpdate
 
 export const getStatus = () => api<Status>('/api/status')
 
-export const checkForUpdates = () =>
-  api<{ current: string; latest: string | null; url: string | null }>('/api/update-check')
+export const checkForUpdates = () => api<UpdateInfo>('/api/update-check')
+
+export const getUpdateStatus = () => api<UpdateStatus>('/api/update/status', {}, 5_000)
+
+/** Downloads and verifies the update before answering; the server restarts afterwards. */
+export const installUpdate = () =>
+  api<{ ok: boolean; version: string; restarting: boolean }>('/api/update/install', { method: 'POST' }, 6 * 60_000)
 
 export const getResults = () =>
   api<{ results: ResultItem[]; last_run: string | null; hidden?: string[] }>('/api/results')

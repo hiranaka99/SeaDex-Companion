@@ -15,7 +15,8 @@ on:
         type: boolean
 
 permissions:
-  contents: read
+  # Write access attaches the in-app update package to the release.
+  contents: write
 
 # Serialize publishing so concurrent builds cannot race to update latest.
 concurrency:
@@ -79,6 +80,12 @@ jobs:
           npm ci
           npm test
 
+      - name: Build the in-app update package
+        run: |
+          npm --prefix frontend ci
+          npm run build
+          node scripts/release-bundle.mjs bundle release-assets
+
       - name: Set up ARM emulation
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
@@ -114,6 +121,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Attached after the images are pushed, so a release that needs a new image is
+      # never announced in-app before that image can be pulled. The description goes
+      # last: installations look for it, then download the package it names.
+      - name: Attach the in-app update package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release upload "$RELEASE_TAG" "release-assets/seadex-companion-app-$VERSION.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "$RELEASE_TAG" release-assets/seadex-companion-update.json --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Write publication summary
         env:
