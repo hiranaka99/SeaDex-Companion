@@ -77,13 +77,20 @@ interface Listing {
   info_hashes?: string[]
   source_files?: ListedFile[]
   torrent_files?: { files: ListedFile[] }[]
+  selected_files?: string[]
 }
 
-/** The sorted sizes of a listing's video files. Extras and subtitles never identify a release. */
+/**
+ * The sorted sizes of a listing's video files. Extras and subtitles never identify a release. A listing scoped to
+ * some of its torrent's files, such as one season of a whole-series batch, is identified by those files alone.
+ */
 function videoFingerprint(listing: Listing): string {
-  const files = listing.source_files?.length
+  const listed = listing.source_files?.length
     ? listing.source_files
     : (listing.torrent_files || []).flatMap(torrent => torrent.files)
+  const selected = new Set(listing.selected_files || [])
+  const scoped = selected.size ? listed.filter(file => selected.has(file.name)) : []
+  const files = scoped.length ? scoped : listed
   return files
     .filter(file => VIDEO_FILE.test(file.name) && Number.isSafeInteger(file.length) && file.length > 0)
     .map(file => file.length)
