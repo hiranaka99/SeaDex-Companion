@@ -75,14 +75,22 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
     }
   }
 
-  const scanBanner = {
+  const operations = {
     status,
     scanCompleted,
     scanCancelledDismissed,
+    bulk: bulk.operation,
     onCancelScan: () => void handleCancelScan(),
     onRetryScan: () => void handleScan(),
     onOpenConfig: openConfig,
     onDismissScan: library.dismissScan,
+    onDismissBulk: bulk.dismiss,
+    onReviewBulk: bulk.reviewAvailable
+      ? () => {
+          changeTab('anime')
+          bulk.requestReview()
+        }
+      : undefined,
   }
 
   return (
@@ -97,7 +105,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
         onLogout={onLogout}
         collapsed={sidebar.collapsed}
         onToggleCollapsed={sidebar.toggleCollapsed}
-        {...scanBanner}
+        {...operations}
       />
       <SidebarResizer sidebar={sidebar} />
       <main className="flex min-h-0 min-w-0 flex-col overflow-hidden">
@@ -105,20 +113,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
           className={`app-scroll-pane app-scrollbar relative min-h-0 flex-1 overflow-y-auto px-8 max-[1200px]:px-6 max-[900px]:px-4 ${tab === 'config' ? 'pb-4' : 'pb-14 mobile-content-clearance'} ${tab === 'log' ? 'log-main-pane' : ''}`}
         >
           <div className={`app-content pt-7 ${tab === 'log' ? 'flex h-full min-h-0 flex-col' : ''}`}>
-            <OperationCenter
-              {...scanBanner}
-              bulk={bulk.operation}
-              onOpenLibrary={() => changeTab('anime')}
-              onDismissBulk={bulk.dismiss}
-              onReviewBulk={
-                bulk.reviewAvailable
-                  ? () => {
-                      changeTab('anime')
-                      bulk.requestReview()
-                    }
-                  : undefined
-              }
-            />
+            <OperationCenter {...operations} onOpenLibrary={() => changeTab('anime')} />
             <div
               className="connection-status mb-4 hidden shrink-0 flex-wrap items-center gap-3 text-xs text-muted max-[900px]:flex"
               role={library.statusError ? 'alert' : undefined}
