@@ -1,0 +1,9 @@
+# Only source code is formatted; documentation, lockfiles and build output are left alone.
+node_modules/
+dist/
+static/
+frontend/public/
+*.md
+*.json
+*.yml
+*.html

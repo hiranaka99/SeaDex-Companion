@@ -1,33 +1,62 @@
 import assert from 'node:assert/strict'
-import { randomBytes } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
-import { anilistChain, applyUserRulesToResults, arrApiUrl, arrBaseUrl, arrItemUrl, autoNotifyNew, autocheckState, buildScanHistoryEntry, cancelScan, checkForUpdates, clearScannedData, commonBestRelease, decryptSecretValues, DEFAULT_CONFIG, effectiveSeasonParts, DATA_DIR, encryptSecretValues, getState, loadStringSet, localItems, localPartOwnership, normalizeScanSchedule, orderedPartReleases, pickAniListSearchResult, pickBest, publicConfig, qbAddTorrent, qbBulkAddTorrents, qbControlTorrents, releaseDict, scopeReleaseToPart, seadexBest, resetRuntimeForTests, resetUpdateCheck, runScan, scannedDataInfo, sendToDiscord, setState } from '../server/app.js'
-import { nextScheduledTime, processAutocheck, processWebhookScans, queueWebhookScan, refreshAutocheckSchedule, resetWebhookScanState, webhookScanState } from '../server/index.js'
-import { qbPhase } from '../server/download-progress.js'
-import { QbittorrentAmbiguousError } from '../server/qbittorrent.js'
-import { testIntegration } from '../server/integration-tests.js'
-import { upgradeParts, type RecommendationSeason } from '../shared/download-plan.js'
-import type { JsonObject, ReleaseCandidate, ScanTrigger } from '../server/types.js'
+import { anilistChain, pickAniListSearchResult } from '../server/anilist.js'
+import { DEFAULT_CONFIG } from '../server/config.js'
+import { cancelScan, getState, setState } from '../server/scan-state.js'
+import { checkForUpdates, resetUpdateCheck } from '../server/updates.js'
+import {
+  commonBestRelease,
+  effectiveSeasonParts,
+  localPartOwnership,
+  orderedPartReleases,
+  pickBest,
+  releaseDict,
+  scopeReleaseToPart,
+} from '../server/matching.js'
+import { DATA_DIR } from '../server/paths.js'
+import { resetRuntimeForTests } from './support/runtime.js'
+import { createScanService } from '../server/scan.js'
+import { resetWebhookScanState } from '../server/scheduler.js'
+import { upgradeParts } from '../shared/download-plan.js'
+import { JsonObject, ReleaseCandidate } from '../server/types.js'
 
-function node(id: number, title: string, year: number | null, season: string | null, episodes: number | null, options: JsonObject = {}): JsonObject {
+function node(
+  id: number,
+  title: string,
+  year: number | null,
+  season: string | null,
+  episodes: number | null,
+  options: JsonObject = {},
+): JsonObject {
   const edges: JsonObject[] = []
   if (options.sequel) edges.push({ relationType: 'SEQUEL', node: { id: options.sequel } })
   if (options.prequel) edges.push({ relationType: 'PREQUEL', node: { id: options.prequel } })
   if (options.sideStory) edges.push({ relationType: 'SIDE_STORY', node: { id: options.sideStory } })
   return {
-    id, format: options.format || 'TV', season, seasonYear: year, episodes,
-    title: { english: title, romaji: title }, coverImage: { large: `cover-${id}` },
-    bannerImage: `banner-${id}`, relations: { edges },
+    id,
+    format: options.format || 'TV',
+    season,
+    seasonYear: year,
+    episodes,
+    title: { english: title, romaji: title },
+    coverImage: { large: `cover-${id}` },
+    bannerImage: `banner-${id}`,
+    relations: { edges },
   }
 }
 
 function release(group: string, count: number, best = false, hashCharacter = 'a'): ReleaseCandidate {
   return {
-    releaseGroup: group, tracker: 'Nyaa', quality: '1080p Blu-ray', tags: [],
-    size: count * 100, file_count: count, info_hashes: [hashCharacter.repeat(40)], is_best: best,
+    releaseGroup: group,
+    tracker: 'Nyaa',
+    quality: '1080p Blu-ray',
+    tags: [],
+    size: count * 100,
+    file_count: count,
+    info_hashes: [hashCharacter.repeat(40)],
+    is_best: best,
   }
 }
 
@@ -37,819 +66,22 @@ function seadexEntry(alid: number, candidate: ReleaseCandidate, bucket = 0): Jso
 
 async function makeChain(nodes: Map<number, JsonObject>) {
   const baseId = nodes.keys().next().value as number
-  return anilistChain('Test Series', {}, {
-    lookup: (async () => ({ id: baseId, cover: `cover-${baseId}`, banner: `banner-${baseId}` })) as any,
-    media: (async (_query: string, variables: JsonObject) => nodes.get(variables.id) || {}) as any,
-    persist: (() => undefined) as any,
-  })
+  return anilistChain(
+    'Test Series',
+    {},
+    {
+      lookup: (async () => ({ id: baseId, cover: `cover-${baseId}`, banner: `banner-${baseId}` })) as any,
+      media: (async (_query: string, variables: JsonObject) => nodes.get(variables.id) || {}) as any,
+      persist: (() => undefined) as any,
+    },
+  )
 }
 
-beforeEach(() => { resetRuntimeForTests(); resetWebhookScanState(); if (existsSync(join(DATA_DIR, 'scan_schedule_state.json'))) rmSync(join(DATA_DIR, 'scan_schedule_state.json')); if (existsSync(join(DATA_DIR, 'scan_schedule_state.json.tmp'))) rmSync(join(DATA_DIR, 'scan_schedule_state.json.tmp')) })
-
-describe('configuration secret security', () => {
-  test('encrypts and authenticates configuration secrets', () => {
-    const key = randomBytes(32)
-    const secrets = {
-      sonarr_key: 'sonarr-secret',
-      radarr_key: 'radarr-secret',
-      qbittorrent_pass: 'qb-secret',
-      webhook: 'https://discord.example/secret',
-    }
-    const encrypted = encryptSecretValues(secrets, key)
-
-    assert.equal(encrypted.algorithm, 'aes-256-gcm')
-    assert.equal(JSON.stringify(encrypted).includes('sonarr-secret'), false)
-    assert.deepEqual(decryptSecretValues(encrypted, key), secrets)
-
-    const tampered = { ...encrypted, ciphertext: `${encrypted.ciphertext.slice(0, -2)}AA` }
-    assert.throws(() => decryptSecretValues(tampered, key), /Could not decrypt secrets/)
-  })
-
-  test('redacts secrets from the public configuration response', () => {
-    const response = publicConfig({
-      ...DEFAULT_CONFIG,
-      sonarr_key: 'sonarr-secret',
-      qbittorrent_pass: 'qb-secret',
-    })
-
-    assert.equal(response.sonarr_key, '')
-    assert.equal(response.sonarr_key_configured, true)
-    assert.equal(response.radarr_key_configured, false)
-    assert.equal(response.qbittorrent_pass, '')
-    assert.equal(response.qbittorrent_pass_configured, true)
-  })
-})
-describe('persisted collection validation', () => {
-  test('treats valid JSON with the wrong shape as an empty string set', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'seadex-string-set-'))
-    const file = join(directory, 'ledger.json')
-    try {
-      writeFileSync(file, '{}', 'utf8')
-      assert.deepEqual([...loadStringSet(file, 'Invalid ledger')], [])
-      writeFileSync(file, JSON.stringify(['valid', 3, '', 'also-valid']), 'utf8')
-      assert.deepEqual([...loadStringSet(file, 'Invalid ledger')], ['valid', 'also-valid'])
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-})
-
-describe('scanned data maintenance', () => {
-  test('replaces broken cache data and clears saved and in-memory results', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'seadex-clear-data-'))
-    const cacheFile = join(directory, 'anilist_cache.json')
-    const resultsFile = join(directory, 'last_results.json')
-    try {
-      writeFileSync(cacheFile, '{broken json', 'utf8')
-      writeFileSync(resultsFile, JSON.stringify({ results: [{ key: 'one' }, { key: 'two' }], last_run: 'yesterday' }), 'utf8')
-      setState({ results: [{ key: 'runtime' }], last_run: 'today', progress: 1, total: 1, message: 'Done', error: 'old error' })
-
-      assert.deepEqual(scannedDataInfo(cacheFile, resultsFile), {
-        cache_entries: 0, results: 2, last_run: 'yesterday', cache_valid: false, results_valid: true,
-      })
-
-      const cleared = clearScannedData(cacheFile, resultsFile)
-
-      assert.deepEqual(cleared, { cacheEntries: 0, results: 2 })
-      assert.deepEqual(JSON.parse(readFileSync(cacheFile, 'utf8')), {})
-      assert.deepEqual(JSON.parse(readFileSync(resultsFile, 'utf8')), { results: [], last_run: null })
-      assert.deepEqual(scannedDataInfo(cacheFile, resultsFile), {
-        cache_entries: 0, results: 0, last_run: null, cache_valid: true, results_valid: true,
-      })
-      assert.deepEqual(getState().results, [])
-      assert.equal(getState().last_run, null)
-      assert.equal(getState().error, null)
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-})
-
-describe('manual rules and scan history', () => {
-  test('applies season and cour exclusions to upgrade parts', () => {
-    const results = [{
-      key: 'series:1', library_key: 'Sonarr:item10', season: 1, status: 'upgrade', arr: 'Sonarr',
-      releases: [
-        { kind: 'best', part: 'Cour 1', torrent_available: true, releaseGroup: 'Best', info_hashes: ['a'.repeat(40)] },
-        { kind: 'best', part: 'Cour 2', torrent_available: true, releaseGroup: 'Best', info_hashes: ['b'.repeat(40)] },
-      ],
-    }]
-    const courRules = { mappings: {}, exclusions: ['Sonarr:item10:1:Cour 1'] }
-    const decorated = applyUserRulesToResults(results, courRules)
-    assert.deepEqual(decorated[0].excluded_parts, ['Cour 1'])
-    assert.deepEqual(upgradeParts(decorated[0] as unknown as RecommendationSeason).map(part => part.part), ['Cour 2'])
-
-    const seasonRules = { mappings: {}, exclusions: ['Sonarr:item10:1:*'] }
-    assert.deepEqual(upgradeParts(applyUserRulesToResults(results, seasonRules)[0] as unknown as RecommendationSeason), [])
-  })
-
-  test('summarizes new upgrades and resolved upgrades between scans', () => {
-    const previous = [
-      { library_key: 'Sonarr:item1', season: 1, title: 'Resolved', arr: 'Sonarr', status: 'upgrade', best_group: 'A' },
-      { library_key: 'Sonarr:item2', season: 1, title: 'Upgrade', arr: 'Sonarr', status: 'best', best_group: 'B' },
-    ]
-    const current = [
-      { library_key: 'Sonarr:item1', season: 1, title: 'Resolved', arr: 'Sonarr', status: 'best', best_group: 'A' },
-      { library_key: 'Sonarr:item2', season: 1, title: 'Upgrade', arr: 'Sonarr', status: 'upgrade', best_group: 'C' },
-    ]
-    const entry = buildScanHistoryEntry(previous, current, 'today')
-    assert.deepEqual(entry.changes.map((change) => [change.title, change.type]), [['Resolved', 'resolved'], ['Upgrade', 'upgrade']])
-    assert.deepEqual(entry.counts, { best: 1, upgrade: 1 })
-  })
-
-  test('records trigger, duration, scope size, and partial source failures', () => {
-    const entry = buildScanHistoryEntry([], [{ key: 'new', title: 'New', arr: 'Sonarr', status: 'missing' }], 'today', 'scheduled', {
-      durationSeconds: 4.2, scannedTitles: 1, sourceErrors: { Radarr: 'HTTP 503' },
-    })
-    assert.equal(entry.trigger, 'scheduled')
-    assert.equal(entry.duration_seconds, 4.2)
-    assert.equal(entry.scanned_titles, 1)
-    assert.equal(entry.outcome, 'partial')
-    assert.deepEqual(entry.source_errors, { Radarr: 'HTTP 503' })
-  })
-
-  test('passes a saved manual AniList ID into title resolution', async () => {
-    let receivedOverride: number | undefined
-    await runScan({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr/api/v3' }, {
-      seadexBest: (async () => new Map()) as any,
-      localItems: (async () => [{ arr: 'Sonarr', id: 10, title: 'Ambiguous', seasons: { 1: { groups: ['Local'], size: 100 } } }]) as any,
-      anilistChain: (async (_title: string, _cache: JsonObject, _dependencies: unknown, overrideId?: number) => {
-        receivedOverride = overrideId
-        return [{ season: 1, id: 999, ids: [999], parts: [{ id: 999, episodeCount: 1 }] }]
-      }) as any,
-      loadCache: () => ({}), loadUserRules: () => ({ mappings: { 'Sonarr:item10': 999 }, exclusions: [] }),
-      saveLastResults: () => undefined, autoNotifyNew: async () => 0,
-    })
-    assert.equal(receivedOverride, 999)
-    assert.equal(getState().results[0].library_key, 'Sonarr:item10')
-    assert.equal(getState().results[0].mapping_override, true)
-  })
-})
-
-describe('notifications and scheduling', () => {
-  test('does not count Discord HTTP errors as delivered', async () => {
-    const originalFetch = globalThis.fetch
-    globalThis.fetch = (async () => new Response('rejected', { status: 500 })) as typeof fetch
-    try {
-      assert.equal(await sendToDiscord('https://discord.example/webhook', [{ title: 'Example', releases: [] }]), 0)
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-
-  test('marks only successfully delivered notifications', async () => {
-    setState({ results: [
-      { key: 'sent', status: 'upgrade' },
-      { key: 'failed', status: 'upgrade' },
-    ] })
-    let saved = new Set<string>()
-    const sent = await autoNotifyNew({ ...DEFAULT_CONFIG, webhook: 'https://discord.example/webhook' }, {
-      load: () => new Set(),
-      save: (keys) => { saved = new Set(keys) },
-      send: async (_webhook, results, onSent) => { onSent?.(results[0]); return 1 },
-    })
-    assert.equal(sent, 1)
-    assert.deepEqual([...saved], ['sent'])
-  })
-
-  test('migrates legacy automatic scan intervals without changing behavior', () => {
-    assert.deepEqual(normalizeScanSchedule(undefined, 90), {
-      enabled: true, mode: 'interval', interval_minutes: 90, times: ['03:00'], weekdays: [0], timezone: 'UTC', missed_run: 'run_once',
-    })
-    assert.equal(normalizeScanSchedule(undefined, 0).enabled, false)
-    assert.equal(normalizeScanSchedule(undefined).enabled, true)
-  })
-
-  test('rejects invalid enabled scan schedules', () => {
-    assert.throws(() => normalizeScanSchedule({ ...DEFAULT_CONFIG.scan_schedule, interval_minutes: 1 }), /between 5/)
-    assert.throws(() => normalizeScanSchedule({ ...DEFAULT_CONFIG.scan_schedule, mode: 'daily', times: ['03:00', '03:00'] }), /duplicates/)
-    assert.throws(() => normalizeScanSchedule({ ...DEFAULT_CONFIG.scan_schedule, mode: 'weekly', weekdays: [] }), /at least one day/)
-    assert.throws(() => normalizeScanSchedule({ ...DEFAULT_CONFIG.scan_schedule, mode: 'daily', timezone: 'Not/AZone' }), /IANA timezone/)
-  })
-
-  test('calculates interval, daily, and weekly schedules in their configured timezone', () => {
-    const interval = { ...DEFAULT_CONFIG.scan_schedule, interval_minutes: 30 }
-    assert.equal(nextScheduledTime(interval, 1_000), 2_800)
-
-    const daily = { ...DEFAULT_CONFIG.scan_schedule, mode: 'daily' as const, times: ['03:00'], timezone: 'America/New_York' }
-    assert.equal(nextScheduledTime(daily, Date.parse('2026-07-01T06:59:00Z') / 1000), Date.parse('2026-07-01T07:00:00Z') / 1000)
-
-    const weekly = { ...daily, mode: 'weekly' as const, weekdays: [1] }
-    assert.equal(nextScheduledTime(weekly, Date.parse('2026-07-01T07:00:00Z') / 1000), Date.parse('2026-07-06T07:00:00Z') / 1000)
-  })
-
-  test('queues one due automatic scan while another scan is running', async () => {
-    const config = { ...DEFAULT_CONFIG, scan_schedule: { ...DEFAULT_CONFIG.scan_schedule, interval_minutes: 30 } }
-    refreshAutocheckSchedule(config, 1_000)
-    setState({ running: true })
-    let scans = 0
-    await processAutocheck(config, 2_800, async () => { scans += 1 })
-    await processAutocheck(config, 2_900, async () => { scans += 1 })
-    assert.equal(scans, 0)
-    assert.equal(autocheckState.pending, true)
-    setState({ running: false })
-    await processAutocheck(config, 3_000, async () => { scans += 1 })
-    assert.equal(scans, 1)
-    assert.equal(autocheckState.pending, false)
-  })
-
-  test('debounces only new Sonarr and Radarr entries and combines their trigger', async () => {
-    const config = { ...DEFAULT_CONFIG }
-    assert.deepEqual(queueWebhookScan('sonarr', 'Download', 10, 1_000), { accepted: false, dueAt: null })
-    assert.deepEqual(queueWebhookScan('sonarr', 'SeriesAdd', 10, 1_000), { accepted: true, dueAt: 1_010 })
-    assert.deepEqual(queueWebhookScan('radarr', 'MovieAdded', 20, 1_003), { accepted: true, dueAt: 1_013 })
-    const calls: Array<{ trigger: ScanTrigger; sonarrIds?: number[]; radarrIds?: number[] }> = []
-    await processWebhookScans(config, 1_012, async (_config, trigger, scope) => { calls.push({ trigger, ...scope }) })
-    assert.equal(calls.length, 0)
-    await processWebhookScans(config, 1_013, async (_config, trigger, scope) => { calls.push({ trigger, ...scope }) })
-    assert.deepEqual(calls, [{ trigger: 'sonarr+radarr', sonarrIds: [10], radarrIds: [20] }])
-    assert.equal(webhookScanState.dueAt, null)
-  })
-
-  test('starts a queued webhook scan after the fixed debounce', async () => {
-    const config = { ...DEFAULT_CONFIG }
-    queueWebhookScan('sonarr', 'SeriesAdd', 10, 2_000)
-    const triggers: ScanTrigger[] = []
-    await processWebhookScans(config, 2_009, async (_config, trigger) => { triggers.push(trigger) })
-    assert.equal(triggers.length, 0)
-    await processWebhookScans(config, 2_010, async (_config, trigger) => { triggers.push(trigger) })
-    assert.deepEqual(triggers, ['sonarr'])
-  })
-
-  test('allows an upgrade notification after the same result was resolved', async () => {
-    let saved = new Set<string>()
-    let deliveries = 0
-    const dependencies = {
-      load: () => new Set(saved),
-      save: (keys: Set<string>) => { saved = new Set(keys) },
-      send: async (_webhook: string, results: JsonObject[], onSent?: (result: JsonObject) => void) => {
-        deliveries += results.length
-        for (const result of results) onSent?.(result)
-        return results.length
-      },
-    }
-    const config = { ...DEFAULT_CONFIG, notify_enabled: true, webhook: 'https://discord.example/webhook' }
-    setState({ results: [{ key: 'same', status: 'upgrade', releases: [] }] })
-    await autoNotifyNew(config, dependencies)
-    setState({ results: [{ key: 'same', status: 'best', releases: [] }] })
-    await autoNotifyNew(config, dependencies)
-    setState({ results: [{ key: 'same', status: 'upgrade', releases: [] }] })
-    await autoNotifyNew(config, dependencies)
-    assert.equal(deliveries, 2)
-  })
-
-})
-
-describe('Sonarr and Radarr URL normalization', () => {
-  test('adds the API path to plain base URLs', () => {
-    assert.equal(arrApiUrl('https://sonarr.example.com/'), 'https://sonarr.example.com/api/v3')
-    assert.equal(arrApiUrl('https://host.example/radarr'), 'https://host.example/radarr/api/v3')
-  })
-
-  test('accepts and removes legacy API paths without duplicating them', () => {
-    assert.equal(arrBaseUrl('https://sonarr.example.com/api/v3/'), 'https://sonarr.example.com')
-    assert.equal(arrApiUrl('https://sonarr.example.com/api/v3'), 'https://sonarr.example.com/api/v3')
-    assert.equal(
-      arrItemUrl({ sonarr_url: 'https://host.example/sonarr/api/v3' }, { arr: 'Sonarr', slug: 'example' }),
-      'https://host.example/sonarr/series/example',
-    )
-  })
-
-
-  test('keeps TVDB episode numbers even when an episode has no file', async () => {
-    const originalFetch = globalThis.fetch
-    globalThis.fetch = (async (input: string | URL | Request) => {
-      const url = String(input)
-      if (url.endsWith('/api')) return Response.json({ current: 'v3', deprecated: [] })
-      let data: JsonObject[] = []
-      if (url.endsWith('/series')) data = [{
-        id: 10, title: 'Example', titleSlug: 'example',
-        seasons: [{ seasonNumber: 1, statistics: { releaseGroups: ['IK'], sizeOnDisk: 100 } }],
-      }]
-      else if (url.includes('/episode?')) data = [
-        { seasonNumber: 1, episodeNumber: 2, episodeFileId: 0, airDate: '2024-01-12T09:00:00Z' },
-        { seasonNumber: 1, episodeNumber: 1, episodeFileId: 20, airDate: '2024-01-05T09:00:00Z' },
-        { seasonNumber: 0, episodeNumber: 1, episodeFileId: 0 },
-      ]
-      else if (url.includes('/episodefile?')) data = [{ id: 20, releaseGroup: 'IK', size: 100 }]
-      return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }) as typeof fetch
-
-    try {
-      const items = await localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key' })
-      assert.deepEqual(items[0].seasons[1].episode_numbers, [1, 2])
-      assert.equal(items[0].seasons[1].episode_count, 2)
-      assert.deepEqual(items[0].seasons[1].groups_by_episode, { IK: [1] })
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-
-  test('includes newly added Sonarr series and Radarr movies before files exist', async () => {
-    const originalFetch = globalThis.fetch
-    globalThis.fetch = (async (input: string | URL | Request) => {
-      const url = String(input)
-      if (url.endsWith('/api')) return Response.json({ current: 'v3', deprecated: [] })
-      let data: JsonObject[] = []
-      if (url.includes('sonarr') && url.endsWith('/series')) data = [{
-        id: 11, title: 'New Series', titleSlug: 'new-series',
-        seasons: [{ seasonNumber: 0 }, { seasonNumber: 1, statistics: { episodeCount: 12, releaseGroups: [], sizeOnDisk: 0 } }],
-      }]
-      else if (url.includes('sonarr') && url.includes('/episode?')) data = Array.from({ length: 12 }, (_, index) => ({ seasonNumber: 1, episodeNumber: index + 1, episodeFileId: 0, airDate: '2024-01-05T09:00:00Z' }))
-      else if (url.includes('radarr') && url.endsWith('/movie')) data = [{ id: 12, title: 'New Movie', titleSlug: 'new-movie', inCinemas: '2024-03-01T00:00:00Z', statistics: { releaseGroups: [], sizeOnDisk: 0 } }]
-      return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }) as typeof fetch
-    try {
-      const items = await localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key', radarr_url: 'http://radarr', radarr_key: 'key' })
-      assert.equal(items.length, 2)
-      assert.deepEqual(items[0].seasons[1], { groups: [], size: 0, episode_numbers: Array.from({ length: 12 }, (_, index) => index + 1), episode_count: 12, missing_episode_count: 12, groups_by_episode: {}, sizes_by_episode: {} })
-      assert.deepEqual(items[1].seasons[0], { groups: [], size: 0 })
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-
-  test('hides unreleased Sonarr seasons and Radarr movies', async () => {
-    const originalFetch = globalThis.fetch
-    globalThis.fetch = (async (input: string | URL | Request) => {
-      const url = String(input)
-      if (url.endsWith('/api')) return Response.json({ current: 'v3', deprecated: [] })
-      let data: JsonObject[] = []
-      if (url.includes('sonarr') && url.endsWith('/series')) data = [{
-        id: 20, title: 'Future Show', titleSlug: 'future-show',
-        seasons: [
-          { seasonNumber: 1, statistics: { episodeCount: 2, releaseGroups: [], sizeOnDisk: 0 } },
-          { seasonNumber: 2, statistics: { episodeCount: 12, releaseGroups: [], sizeOnDisk: 0 } },
-          { seasonNumber: 3, statistics: { episodeCount: 8, releaseGroups: [], sizeOnDisk: 0 } },
-          { seasonNumber: 4, statistics: { episodeCount: 1, releaseGroups: ['IK'], sizeOnDisk: 5 } },
-        ],
-      }]
-      else if (url.includes('sonarr') && url.includes('/episode?')) data = [
-        { seasonNumber: 1, episodeNumber: 1, episodeFileId: 0, airDate: '2024-01-05T09:00:00Z' },
-        { seasonNumber: 1, episodeNumber: 2, episodeFileId: 0, airDate: '2024-01-12T09:00:00Z' },
-        { seasonNumber: 2, episodeNumber: 1, episodeFileId: 0, airDate: '2030-01-05T09:00:00Z' },
-        { seasonNumber: 2, episodeNumber: 2, episodeFileId: 0, airDate: '2030-01-12T09:00:00Z' },
-        { seasonNumber: 3, episodeNumber: 1, episodeFileId: 0 },
-        { seasonNumber: 4, episodeNumber: 1, episodeFileId: 30 },
-      ]
-      else if (url.includes('sonarr') && url.includes('/episodefile?')) data = [{ id: 30, releaseGroup: 'IK', size: 5 }]
-      else if (url.includes('radarr') && url.endsWith('/movie')) data = [
-        { id: 21, title: 'Old Movie', titleSlug: 'old-movie', inCinemas: '2024-03-01T00:00:00Z', statistics: { releaseGroups: [], sizeOnDisk: 0 } },
-        { id: 22, title: 'Upcoming Movie', titleSlug: 'upcoming-movie', inCinemas: '2030-03-01T00:00:00Z', statistics: { releaseGroups: [], sizeOnDisk: 0 } },
-        { id: 23, title: 'Unknown Movie', titleSlug: 'unknown-movie', statistics: { releaseGroups: [], sizeOnDisk: 0 } },
-      ]
-      return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }) as typeof fetch
-
-    try {
-      const items = await localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key', radarr_url: 'http://radarr', radarr_key: 'key' })
-      assert.equal(items.length, 2)
-      assert.deepEqual(Object.keys(items[0].seasons), ['1', '4'])
-      assert.equal(items[1].id, 21)
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-
-  test('fails the scan input when a configured library API is unavailable', async () => {
-    const originalFetch = globalThis.fetch
-    globalThis.fetch = (async () => new Response('unavailable', { status: 503 })) as typeof fetch
-    try {
-      await assert.rejects(
-        () => localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key' }),
-        /HTTP 503/,
-      )
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-})
-
-describe('SeaDex catalog aggregation', () => {
-  test('keeps distinct torrents from the same group and tracker separate', async () => {
-    const originalFetch = globalThis.fetch
-    globalThis.fetch = (async () => new Response(JSON.stringify({
-      items: [{
-        alID: 10,
-        expand: { trs: [
-          { releaseGroup: 'Group', tracker: 'Nyaa', isBest: true, infoHash: 'a'.repeat(40), files: [{ name: 'Show.S01E01.mkv', length: 100 }] },
-          { releaseGroup: 'Group', tracker: 'Nyaa', isBest: true, infoHash: 'b'.repeat(40), files: [{ name: 'Show.S01E01.v2.mkv', length: 110 }] },
-        ] },
-      }],
-      totalPages: 1,
-    }), { status: 200 })) as typeof fetch
-    try {
-      const catalog = await seadexBest()
-      const candidates = catalog.get(10)?.seasons[1].candidates as ReleaseCandidate[]
-      assert.equal(candidates.length, 2)
-      assert.deepEqual(candidates.map((candidate) => candidate.info_hashes), [['a'.repeat(40)], ['b'.repeat(40)]])
-      assert.deepEqual(candidates.map((candidate) => candidate.size), [100, 110])
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-
-  test('merges complementary per-episode torrents from the same group into one release', async () => {
-    const originalFetch = globalThis.fetch
-    const episode = (number: number, hashCharacter: string) => ({
-      releaseGroup: 'Unfucked', tracker: 'Nyaa', isBest: false, infoHash: hashCharacter.repeat(40),
-      files: [{ name: `Show.S01E${String(number).padStart(2, '0')}.mkv`, length: 100 }],
-    })
-    globalThis.fetch = (async () => new Response(JSON.stringify({
-      items: [{ alID: 10, expand: { trs: [episode(1, 'a'), episode(2, 'b'), episode(3, 'c')] } }],
-      totalPages: 1,
-    }), { status: 200 })) as typeof fetch
-    try {
-      const catalog = await seadexBest()
-      const candidates = catalog.get(10)?.seasons[1].candidates as ReleaseCandidate[]
-      assert.equal(candidates.length, 1)
-      assert.deepEqual(candidates[0].info_hashes, ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)])
-      assert.equal(candidates[0].size, 300)
-      assert.equal(candidates[0].file_count, 3)
-      assert.deepEqual(candidates[0].torrent_files?.map(torrent => [torrent.hash, torrent.files[0].length]), [['a'.repeat(40), 100], ['b'.repeat(40), 100], ['c'.repeat(40), 100]])
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-
-  test('keeps re-uploads of already covered episodes separate from complementary batches', async () => {
-    const originalFetch = globalThis.fetch
-    const batch = (first: number, last: number, hashCharacter: string) => ({
-      releaseGroup: 'Batched', tracker: 'Nyaa', isBest: false, infoHash: hashCharacter.repeat(40),
-      files: Array.from({ length: last - first + 1 }, (_, index) => ({
-        name: `Show.S01E${String(first + index).padStart(2, '0')}.mkv`, length: 100,
-      })),
-    })
-    globalThis.fetch = (async () => new Response(JSON.stringify({
-      items: [{ alID: 10, expand: { trs: [batch(1, 2, 'a'), batch(3, 4, 'b'), batch(1, 4, 'c')] } }],
-      totalPages: 1,
-    }), { status: 200 })) as typeof fetch
-    try {
-      const catalog = await seadexBest()
-      const candidates = catalog.get(10)?.seasons[1].candidates as ReleaseCandidate[]
-      assert.equal(candidates.length, 2)
-      assert.deepEqual(candidates[0].info_hashes, ['a'.repeat(40), 'b'.repeat(40)])
-      assert.equal(candidates[0].size, 400)
-      assert.deepEqual(candidates[1].info_hashes, ['c'.repeat(40)])
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-})
-
-describe('qBittorrent torrent controls', () => {
-  test('selects only downloadable best releases from upgradable seasons', () => {
-    const upgradeSeason: RecommendationSeason = {
-      key: 'upgrade-season', status: 'upgrade', releases: [
-        { kind: 'best', torrent_available: true, releaseGroup: 'Group', info_hashes: ['a'.repeat(40)], selected_files: ['Cour 1/episode.mkv'] },
-        { kind: 'alt', torrent_available: true, releaseGroup: 'Group', info_hashes: ['b'.repeat(40)] },
-        { kind: 'best', torrent_available: false, releaseGroup: 'Group', info_hashes: ['c'.repeat(40)] },
-      ],
-    }
-    const parts = upgradeParts(upgradeSeason)
-    assert.deepEqual(parts.map(part => [part.part, part.torrent_available]), [['', true]])
-    assert.deepEqual(parts[0].options.map(option => option.index), [0], 'Only the downloadable best release is offered for submission')
-    assert.deepEqual(upgradeParts({ key: 'owned-season', status: 'best', releases: [{ kind: 'best', torrent_available: true, releaseGroup: 'Group', info_hashes: ['d'.repeat(40)] }] }), [])
-    assert.deepEqual(upgradeParts({ key: 'missing-season', status: 'missing', releases: [] }), [])
-  })
-
-  test('normalizes qBittorrent states into download phases', () => {
-    assert.equal(qbPhase('pausedDL', 0.5), 'paused')
-    assert.equal(qbPhase('stoppedDL', 0.5), 'paused')
-    assert.equal(qbPhase('uploading', 1), 'seeding')
-    assert.equal(qbPhase('checkingDL', 0.5), 'verifying')
-    assert.equal(qbPhase('missingFiles', 0.5), 'error')
-    assert.equal(qbPhase('forcedDL', 0.5), 'downloading')
-    assert.equal(qbPhase('queuedDL', 0.5), 'queued')
-    assert.equal(qbPhase('metaDL', 0.5), 'queued')
-  })
-
-  test('pauses torrents and removes them with the selected file behavior', async () => {
-    const originalFetch = globalThis.fetch
-    const requests: { url: string; body: string }[] = []
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input)
-      requests.push({ url, body: String(init?.body || '') })
-      if (url.endsWith('/api/v2/auth/login')) {
-        return new Response('Ok.', { status: 200, headers: { 'Set-Cookie': 'SID=test; Path=/' } })
-      }
-      return new Response('', { status: 200 })
-    }) as typeof fetch
-    const config = { ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' }
-    try {
-      await qbControlTorrents(config, ['a'.repeat(40)], 'pause')
-      await qbControlTorrents(config, ['a'.repeat(40)], 'remove', true)
-      await qbControlTorrents(config, ['a'.repeat(40)], 'remove', false)
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-
-    assert.equal(requests[1].url, 'http://qb.example/api/v2/torrents/stop')
-    assert.equal(new URLSearchParams(requests[1].body).get('hashes'), 'a'.repeat(40))
-    assert.equal(requests[2].url, 'http://qb.example/api/v2/torrents/delete')
-    assert.equal(new URLSearchParams(requests[2].body).get('deleteFiles'), 'true')
-    assert.equal(new URLSearchParams(requests[3].body).get('deleteFiles'), 'false')
-  })
-
-  test('falls back to the legacy pause endpoint', async () => {
-    const originalFetch = globalThis.fetch
-    const paths: string[] = []
-    globalThis.fetch = (async (input: string | URL | Request) => {
-      const url = String(input)
-      paths.push(url)
-      if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.', { status: 200 })
-      if (url.endsWith('/api/v2/torrents/stop')) return new Response('Not Found', { status: 404 })
-      return new Response('', { status: 200 })
-    }) as typeof fetch
-    try {
-      await qbControlTorrents(
-        { ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' },
-        ['b'.repeat(40)],
-        'pause',
-      )
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-    assert.equal(paths.at(-1), 'http://qb.example/api/v2/torrents/pause')
-  })
-
-  test('downloads only selected cour files after magnet metadata arrives', async () => {
-    const originalFetch = globalThis.fetch
-    const requests: { url: string; body: string }[] = []
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input)
-      requests.push({ url, body: String(init?.body || '') })
-      if (url.endsWith('/api/v2/auth/login')) {
-        return new Response('Ok.', { status: 200, headers: { 'Set-Cookie': 'SID=test; Path=/' } })
-      }
-      if (url.endsWith('/api/v2/torrents/add')) return new Response('Ok.', { status: 200 })
-      if (url.includes('/api/v2/torrents/info')) return new Response('[]', { status: 200 })
-      if (url.includes('/api/v2/torrents/files?')) return new Response(JSON.stringify([
-        { index: 4, name: 'Root/Show.S01E01.mkv' },
-        { index: 9, name: 'Root/Show.S01E02.mkv' },
-      ]), { status: 200 })
-      return new Response('', { status: 200 })
-    }) as typeof fetch
-
-    try {
-      await qbAddTorrent(
-        { ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' },
-        `magnet:?xt=urn:btih:${'a'.repeat(40)}`,
-        'sonarr-anime',
-        ['Show.S01E02.mkv'],
-      )
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-
-    const add = requests.find((request) => request.url.endsWith('/api/v2/torrents/add'))!
-    assert.equal(new URLSearchParams(add.body).get('paused'), 'true')
-    assert.equal(new URLSearchParams(add.body).get('stopped'), 'true')
-    const metadataRequest = requests.findIndex((request) => request.url.includes('/api/v2/torrents/files?'))
-    const initialStart = requests.findIndex((request) => request.url.endsWith('/api/v2/torrents/start'))
-    assert.ok(initialStart > 0 && initialStart < metadataRequest, 'torrent must be started before requesting magnet metadata')
-    const priorities = requests.filter((request) => request.url.endsWith('/api/v2/torrents/filePrio'))
-    assert.deepEqual(priorities.map((request) => Object.fromEntries(new URLSearchParams(request.body))), [
-      { hash: 'a'.repeat(40), id: '4|9', priority: '0' },
-      { hash: 'a'.repeat(40), id: '9', priority: '1' },
-    ])
-    assert.equal(requests.at(-1)?.url, 'http://qb.example/api/v2/torrents/start')
-  })
-
-  test('removes the torrent and reports a metadata failure when metadata never arrives', async () => {
-    const originalFetch = globalThis.fetch
-    const requests: { url: string; body: string }[] = []
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input)
-      requests.push({ url, body: String(init?.body || '') })
-      if (url.endsWith('/api/v2/auth/login')) {
-        return new Response('Ok.', { status: 200, headers: { 'Set-Cookie': 'SID=test; Path=/' } })
-      }
-      if (url.endsWith('/api/v2/torrents/add')) return new Response('Ok.', { status: 200 })
-      if (url.includes('/api/v2/torrents/info')) return new Response('[]', { status: 200 })
-      if (url.includes('/api/v2/torrents/files?')) return new Response('[]', { status: 200 })
-      return new Response('', { status: 200 })
-    }) as typeof fetch
-    const config = { ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' }
-    try {
-      await assert.rejects(
-        () => qbAddTorrent(config, `magnet:?xt=urn:btih:${'a'.repeat(40)}`, 'sonarr-anime', ['Show.S01E01.mkv'], 400),
-        /metadata fetching failed/i,
-      )
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-
-    const removal = requests.find((request) => request.url.endsWith('/api/v2/torrents/delete'))
-    assert.ok(removal, 'the torrent must be removed after the metadata timeout')
-    assert.equal(new URLSearchParams(removal!.body).get('deleteFiles'), 'false')
-  })
-
-  test('keeps adding the remaining torrents when one fails to fetch metadata', async () => {
-    const originalFetch = globalThis.fetch
-    const requests: { url: string; body: string }[] = []
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input)
-      requests.push({ url, body: String(init?.body || '') })
-      if (url.endsWith('/api/v2/auth/login')) {
-        return new Response('Ok.', { status: 200, headers: { 'Set-Cookie': 'SID=test; Path=/' } })
-      }
-      if (url.endsWith('/api/v2/torrents/add')) return new Response('Ok.', { status: 200 })
-      if (url.includes('/api/v2/torrents/info')) return new Response('[]', { status: 200 })
-      if (url.includes('/api/v2/torrents/files?')) {
-        const hash = new URL(url).searchParams.get('hash')
-        // The first torrent never exchanges magnet metadata; the second one does.
-        if (hash === 'a'.repeat(40)) return new Response('[]', { status: 200 })
-        return new Response(JSON.stringify([{ index: 0, name: 'Root/Show.S01E01.mkv' }]), { status: 200 })
-      }
-      return new Response('', { status: 200 })
-    }) as typeof fetch
-    const config = { ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' }
-    const owned = new Set<string>()
-    try {
-      const outcome = await qbBulkAddTorrents(config, [
-        { hash: 'a'.repeat(40), label: 'Broken Torrent', selectedFiles: ['Show.S01E01.mkv'], timeoutMs: 400 },
-        { hash: 'b'.repeat(40), label: 'Working Torrent', selectedFiles: ['Show.S01E01.mkv'], timeoutMs: 4_000 },
-      ], { ownership: { record: (hash) => owned.add(hash), forget: (hash) => { owned.delete(hash) } } })
-
-      assert.deepEqual(outcome.added, ['b'.repeat(40)])
-      assert.equal(outcome.failures.length, 1)
-      assert.equal(outcome.failures[0].hash, 'a'.repeat(40))
-      assert.equal(outcome.failures[0].label, 'Broken Torrent')
-      assert.match(outcome.failures[0].error, /metadata fetching failed/i)
-      assert.deepEqual([...owned], ['b'.repeat(40)], 'only the successfully configured torrent remains app-owned')
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-
-    assert.ok(requests.some((request) => request.url.endsWith('/api/v2/torrents/add') && new URLSearchParams(request.body).get('urls')?.includes('b'.repeat(40))),
-      'the second torrent must still be added after the first one failed')
-    const removal = requests.find((request) => request.url.endsWith('/api/v2/torrents/delete'))
-    assert.ok(removal && new URLSearchParams(removal.body).get('hashes') === 'a'.repeat(40))
-  })
-
-  test('rejects a pre-existing torrent without claiming ownership', async () => {
-    const originalFetch = globalThis.fetch
-    let addRequested = false
-    const hash = 'd'.repeat(40)
-    globalThis.fetch = (async (input: string | URL | Request) => {
-      const url = String(input)
-      if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.', { status: 200 })
-      if (url.includes('/api/v2/torrents/info?')) return new Response(JSON.stringify([{ hash }]), { status: 200 })
-      if (url.endsWith('/api/v2/torrents/add')) addRequested = true
-      return new Response('', { status: 200 })
-    }) as typeof fetch
-    let recorded = false
-    try {
-      await assert.rejects(
-        () => qbAddTorrent(
-          { ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' },
-          `magnet:?xt=urn:btih:${hash}`,
-          '', [], undefined,
-          { record: () => { recorded = true }, forget: () => undefined },
-        ),
-        /already exists/,
-      )
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-    assert.equal(addRequested, false)
-    assert.equal(recorded, false)
-  })
-
-  test('removes a newly added torrent when ownership recording fails', async () => {
-    const originalFetch = globalThis.fetch
-    const requests: string[] = []
-    const hash = 'e'.repeat(40)
-    globalThis.fetch = (async (input: string | URL | Request) => {
-      const url = String(input); requests.push(url)
-      if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.', { status: 200 })
-      if (url.includes('/api/v2/torrents/info')) return new Response('[]', { status: 200 })
-      return new Response('Ok.', { status: 200 })
-    }) as typeof fetch
-    try {
-      await assert.rejects(() => qbAddTorrent(
-        { ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' },
-        `magnet:?xt=urn:btih:${hash}`, '', [], undefined,
-        { record: () => { throw new Error('disk full') }, forget: () => undefined },
-      ), /disk full/)
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-    assert.ok(requests.some((url) => url.endsWith('/api/v2/torrents/delete')))
-  })
-
-  test('forgets accepted torrent ownership only after fresh confirmed cleanup absence', async () => {
-    const originalFetch = globalThis.fetch
-    const config = { ...DEFAULT_CONFIG, qbittorrent_url: 'http://cleanup.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' }
-    const hash = 'f'.repeat(40)
-    try {
-      for (const read of ['absent', 'present', 'offline', 'malformed'] as const) {
-        let owned = false
-        let forgotten = 0
-        const deletions: URLSearchParams[] = []
-        globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-          const url = String(input)
-          if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.')
-          if (url.includes('/api/v2/torrents/info?')) return Response.json([])
-          if (url.endsWith('/api/v2/torrents/info')) {
-            if (read === 'offline') throw new TypeError('cleanup read offline')
-            if (read === 'malformed') return Response.json({ invalid: true })
-            return Response.json(read === 'present' ? [{ hash }] : [])
-          }
-          if (url.endsWith('/api/v2/torrents/delete')) deletions.push(new URLSearchParams(String(init?.body || '')))
-          return new Response('Ok.')
-        }) as typeof fetch
-        await assert.rejects(() => qbAddTorrent(config, `magnet:?xt=urn:btih:${hash}`, '', ['01.mkv'], 0, {
-          record: () => { owned = true },
-          forget: () => { owned = false; forgotten += 1 },
-        }), read === 'present' ? /torrent is still present/ : read === 'offline' ? /cleanup read offline/ : read === 'malformed' ? /invalid torrent list/ : /metadata fetching failed/i)
-        assert.equal(forgotten, read === 'absent' ? 1 : 0)
-        assert.equal(owned, read !== 'absent', 'Unproven cleanup must retain accepted ownership')
-        assert.equal(deletions.length, 1, 'One caller owns cleanup after metadata failure')
-        assert.equal(deletions[0].get('deleteFiles'), 'false')
-      }
-    } finally { globalThis.fetch = originalFetch }
-  })
-
-  test('retains accepted ownership when confirmed cleanup cannot persist its removal', async () => {
-    const originalFetch = globalThis.fetch
-    let owned = false
-    globalThis.fetch = (async (input: string | URL | Request) => {
-      const url = String(input)
-      if (url.includes('/api/v2/torrents/info')) return Response.json([])
-      return new Response('Ok.')
-    }) as typeof fetch
-    try {
-      await assert.rejects(() => qbAddTorrent(
-        { ...DEFAULT_CONFIG, qbittorrent_url: 'http://persist-cleanup.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' },
-        `magnet:?xt=urn:btih:${'c'.repeat(40)}`, '', ['01.mkv'], 0,
-        { record: () => { owned = true }, forget: () => { throw new Error('ledger write failed') } },
-      ), /ledger write failed/)
-      assert.equal(owned, true)
-    } finally { globalThis.fetch = originalFetch }
-  })
-
-  test('classifies ambiguous qBittorrent dispatch and body failures without claiming acceptance', async () => {
-    const originalFetch = globalThis.fetch
-    const hash = 'b'.repeat(40)
-    try {
-      for (const failure of ['dispatch', 'body', 'unknown-response', 'rejected', 'pre-add'] as const) {
-        let addCalled = false
-        let recorded = false
-        globalThis.fetch = (async (input: string | URL | Request) => {
-          const url = String(input)
-          if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.')
-          if (url.includes('/api/v2/torrents/info')) {
-            if (failure === 'pre-add') throw new TypeError('existing read offline')
-            return Response.json([])
-          }
-          if (url.endsWith('/api/v2/torrents/add')) {
-            addCalled = true
-            if (failure === 'dispatch') throw new TypeError('submission connection lost')
-            if (failure === 'body') return new Response(new ReadableStream({ start(controller) { controller.error(new Error('submission body lost')) } }))
-            return new Response(failure === 'rejected' ? 'Fails.' : 'Not Ok')
-          }
-          throw new Error(`Unexpected request: ${url}`)
-        }) as typeof fetch
-        await assert.rejects(() => qbAddTorrent(
-          { ...DEFAULT_CONFIG, qbittorrent_url: `http://${failure}.qb.example`, qbittorrent_user: 'admin', qbittorrent_pass: 'secret' },
-          `magnet:?xt=urn:btih:${hash}`, '', [], undefined,
-          { record: () => { recorded = true }, forget: () => undefined },
-        ), (error: unknown) => {
-          assert.equal(error instanceof QbittorrentAmbiguousError, failure !== 'rejected' && failure !== 'pre-add')
-          return true
-        })
-        assert.equal(addCalled, failure !== 'pre-add')
-        assert.equal(recorded, false, 'Unknown dispatch outcomes must not claim confirmed acceptance')
-      }
-    } finally { globalThis.fetch = originalFetch }
-  })
-
-  test('rejects misleading qBittorrent login responses', async () => {
-    const originalFetch = globalThis.fetch
-    globalThis.fetch = (async () => new Response('Not Ok', { status: 200 })) as typeof fetch
-    try {
-      await assert.rejects(() => testIntegration({ ...DEFAULT_CONFIG, qbittorrent_url: 'http://qb.example', qbittorrent_user: 'admin', qbittorrent_pass: 'secret' }, 'qbittorrent'), /login failed/)
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-
-  test('does not automatically follow credential-bearing redirects', async () => {
-    const originalFetch = globalThis.fetch
-    let redirect: RequestRedirect | undefined
-    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
-      redirect = init?.redirect
-      return new Response('', { status: 302, headers: { Location: 'https://attacker.example/' } })
-    }) as typeof fetch
-    try {
-      await assert.rejects(() => testIntegration({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr.example', sonarr_key: 'secret' }, 'sonarr'), /HTTP 302/)
-      assert.equal(redirect, 'manual')
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
+beforeEach(() => {
+  resetRuntimeForTests()
+  resetWebhookScanState()
+  if (existsSync(join(DATA_DIR, 'scan_schedule_state.json'))) rmSync(join(DATA_DIR, 'scan_schedule_state.json'))
+  if (existsSync(join(DATA_DIR, 'scan_schedule_state.json.tmp'))) rmSync(join(DATA_DIR, 'scan_schedule_state.json.tmp'))
 })
 
 describe('AniList season chains', () => {
@@ -861,8 +93,14 @@ describe('AniList season chains', () => {
       [177937, node(177937, 'SPY x FAMILY Season 3', 2025, 'FALL', 13, { prequel: 158927 })],
     ])
     const chain = await makeChain(nodes)
-    assert.deepEqual(chain.map((entry) => entry.ids), [[140960, 142838], [158927], [177937]])
-    assert.deepEqual(chain.map((entry) => entry.season), [1, 2, 3])
+    assert.deepEqual(
+      chain.map(entry => entry.ids),
+      [[140960, 142838], [158927], [177937]],
+    )
+    assert.deepEqual(
+      chain.map(entry => entry.season),
+      [1, 2, 3],
+    )
     assert.equal(chain[0].episodeCount, 25)
   })
 
@@ -872,7 +110,10 @@ describe('AniList season chains', () => {
       [2, node(2, 'Example Season 2', 2021, 'SPRING', 12, { sequel: 3, prequel: 1 })],
       [3, node(3, 'Example Season 3', 2022, 'SPRING', 12, { prequel: 2 })],
     ])
-    assert.deepEqual((await makeChain(nodes)).map((entry) => entry.ids), [[1], [2], [3]])
+    assert.deepEqual(
+      (await makeChain(nodes)).map(entry => entry.ids),
+      [[1], [2], [3]],
+    )
   })
 
   test('prefers canonical titles over side stories or sequels', () => {
@@ -891,48 +132,92 @@ describe('AniList season chains', () => {
   test('does not confuse Frieren TV seasons with side-story ONAs', async () => {
     const nodes = new Map([
       [154587, node(154587, 'Frieren: Beyond Journey’s End', 2023, 'FALL', 28, { sequel: 182255, sideStory: 170068 })],
-      [182255, node(182255, 'Frieren: Beyond Journey’s End Season 2', 2026, 'WINTER', 10, { prequel: 154587, sideStory: 206425 })],
+      [
+        182255,
+        node(182255, 'Frieren: Beyond Journey’s End Season 2', 2026, 'WINTER', 10, {
+          prequel: 154587,
+          sideStory: 206425,
+        }),
+      ],
       [170068, node(170068, 'Frieren: ●● no Mahou', 2023, 'FALL', 12, { format: 'ONA' })],
       [206425, node(206425, 'Frieren: ●● no Mahou Part 3', 2026, 'WINTER', null, { format: 'ONA' })],
     ])
-    assert.deepEqual((await makeChain(nodes)).map((entry) => entry.ids), [[154587], [182255]])
+    assert.deepEqual(
+      (await makeChain(nodes)).map(entry => entry.ids),
+      [[154587], [182255]],
+    )
   })
 
   test('keeps undated future seasons after earlier sequels', async () => {
     const nodes = new Map([
       [21202, node(21202, 'KONOSUBA S1', 2016, 'WINTER', 10, { sequel: 21699 })],
       [21699, node(21699, 'KONOSUBA S2', 2017, 'WINTER', 10, { sequel: 102976, prequel: 21202 })],
-      [102976, node(102976, 'KONOSUBA Legend of Crimson', 2019, 'FALL', 1, { format: 'MOVIE', sequel: 136804, prequel: 21699 })],
+      [
+        102976,
+        node(102976, 'KONOSUBA Legend of Crimson', 2019, 'FALL', 1, {
+          format: 'MOVIE',
+          sequel: 136804,
+          prequel: 21699,
+        }),
+      ],
       [136804, node(136804, 'KONOSUBA S3', 2024, 'SPRING', 11, { sequel: 187924, prequel: 102976 })],
       [187924, node(187924, 'KONOSUBA S4', null, null, null, { prequel: 136804 })],
     ])
-    assert.deepEqual((await makeChain(nodes)).map((entry) => entry.ids), [[21202], [21699], [136804], [187924]])
+    assert.deepEqual(
+      (await makeChain(nodes)).map(entry => entry.ids),
+      [[21202], [21699], [136804], [187924]],
+    )
   })
 
   test('starts Fate/kaleid at the original series', async () => {
     const nodes = new Map([
       [14829, node(14829, 'Fate/kaleid liner Prisma☆Illya', 2013, 'SUMMER', 10, { sequel: 20467 })],
-      [20467, node(20467, 'Fate/kaleid liner Prisma☆Illya 2wei!', 2014, 'SUMMER', 10, { sequel: 20845, prequel: 14829 })],
-      [20845, node(20845, 'Fate/kaleid liner Prisma☆Illya 2wei Herz!', 2015, 'SUMMER', 10, { sequel: 21379, prequel: 20467 })],
-      [21379, node(21379, 'Fate/kaleid liner Prisma☆Illya 3rei!!', 2016, 'SUMMER', 12, { prequel: 20845, sideStory: 87488 })],
+      [
+        20467,
+        node(20467, 'Fate/kaleid liner Prisma☆Illya 2wei!', 2014, 'SUMMER', 10, { sequel: 20845, prequel: 14829 }),
+      ],
+      [
+        20845,
+        node(20845, 'Fate/kaleid liner Prisma☆Illya 2wei Herz!', 2015, 'SUMMER', 10, { sequel: 21379, prequel: 20467 }),
+      ],
+      [
+        21379,
+        node(21379, 'Fate/kaleid liner Prisma☆Illya 3rei!!', 2016, 'SUMMER', 12, { prequel: 20845, sideStory: 87488 }),
+      ],
       [87488, node(87488, 'Short Anime', 2016, null, 6, { format: 'SPECIAL' })],
     ])
-    assert.deepEqual((await makeChain(nodes)).map((entry) => entry.ids), [[14829], [20467], [20845], [21379]])
+    assert.deepEqual(
+      (await makeChain(nodes)).map(entry => entry.ids),
+      [[14829], [20467], [20845], [21379]],
+    )
   })
 })
 
 describe('release selection and combined cours', () => {
   test('uses TVDB totals for a single-part season instead of AniList totals', async () => {
     const best = new Map([[400, seadexEntry(400, release('IK', 12, true, 'a'))]])
-    const chain = [{
-      season: 1, id: 400, ids: [400], parts: [{ id: 400, episodeCount: 13 }],
-      cover: 'cover-400', banner: 'banner-400',
-    }]
+    const chain = [
+      {
+        season: 1,
+        id: 400,
+        ids: [400],
+        parts: [{ id: 400, episodeCount: 13 }],
+        cover: 'cover-400',
+        banner: 'banner-400',
+      },
+    ]
     const episodeNumbers = Array.from({ length: 12 }, (_, index) => index + 1)
-    await scanWith(best, chain, [{
-      arr: 'Sonarr', id: 40, title: 'High School D×D Hero', slug: 'high-school-dxd-hero',
-      seasons: { 1: { groups: ['IK'], size: 1200, episode_numbers: episodeNumbers, groups_by_episode: { IK: episodeNumbers } } },
-    }])
+    await scanWith(best, chain, [
+      {
+        arr: 'Sonarr',
+        id: 40,
+        title: 'High School D×D Hero',
+        slug: 'high-school-dxd-hero',
+        seasons: {
+          1: { groups: ['IK'], size: 1200, episode_numbers: episodeNumbers, groups_by_episode: { IK: episodeNumbers } },
+        },
+      },
+    ])
 
     const result = getState().results[0]
     assert.equal(result.status, 'best')
@@ -941,26 +226,38 @@ describe('release selection and combined cours', () => {
 
   test('keeps AniList cour boundaries but gives the final cour the remaining TVDB episodes', () => {
     const tvdbEpisodes = Array.from({ length: 24 }, (_, index) => 24 - index)
-    const parts = effectiveSeasonParts(
-      { episode_numbers: [...tvdbEpisodes, 12] },
-      [{ id: 1, episodeCount: 12 }, { id: 2, episodeCount: 13 }],
-    )
+    const parts = effectiveSeasonParts({ episode_numbers: [...tvdbEpisodes, 12] }, [
+      { id: 1, episodeCount: 12 },
+      { id: 2, episodeCount: 13 },
+    ])
 
-    assert.deepEqual(parts.map((part) => part.episodeCount), [12, 12])
-    assert.deepEqual(parts[0].episodeNumbers, Array.from({ length: 12 }, (_, index) => index + 1))
-    assert.deepEqual(parts[1].episodeNumbers, Array.from({ length: 12 }, (_, index) => index + 13))
+    assert.deepEqual(
+      parts.map(part => part.episodeCount),
+      [12, 12],
+    )
+    assert.deepEqual(
+      parts[0].episodeNumbers,
+      Array.from({ length: 12 }, (_, index) => index + 1),
+    )
+    assert.deepEqual(
+      parts[1].episodeNumbers,
+      Array.from({ length: 12 }, (_, index) => index + 13),
+    )
   })
 
   test('maps owned release groups to their actual cours', () => {
-    const ownership = localPartOwnership({
-      groups: ['ABdex', 'LostYears', 'NAN0'],
-      groups_by_episode: {
-        ABdex: Array.from({ length: 12 }, (_, index) => index + 1),
-        LostYears: Array.from({ length: 13 }, (_, index) => index + 13),
-        NAN0: [13, 14, 15],
+    const ownership = localPartOwnership(
+      {
+        groups: ['ABdex', 'LostYears', 'NAN0'],
+        groups_by_episode: {
+          ABdex: Array.from({ length: 12 }, (_, index) => index + 1),
+          LostYears: Array.from({ length: 13 }, (_, index) => index + 13),
+          NAN0: [13, 14, 15],
+        },
+        sizes_by_episode: Object.fromEntries(Array.from({ length: 25 }, (_, index) => [index + 1, 10])),
       },
-      sizes_by_episode: Object.fromEntries(Array.from({ length: 25 }, (_, index) => [index + 1, 10])),
-    }, [{ episodeCount: 12 }, { episodeCount: 13 }])
+      [{ episodeCount: 12 }, { episodeCount: 13 }],
+    )
 
     assert.equal(ownership.precise, true)
     assert.deepEqual(ownership.have, { 'Cour 1': ['ABdex'], 'Cour 2': ['LostYears', 'NAN0'] })
@@ -969,7 +266,10 @@ describe('release selection and combined cours', () => {
   })
 
   test('estimates cour sizes from the season total when episode-file sizes are unavailable', () => {
-    const ownership = localPartOwnership({ groups: ['Group'], size: 2500 }, [{ episodeCount: 12 }, { episodeCount: 13 }])
+    const ownership = localPartOwnership({ groups: ['Group'], size: 2500 }, [
+      { episodeCount: 12 },
+      { episodeCount: 13 },
+    ])
     assert.deepEqual(ownership.sizes, { 'Cour 1': 1200, 'Cour 2': 1300 })
   })
 
@@ -992,17 +292,22 @@ describe('release selection and combined cours', () => {
   test('does not filter a normal season when all expected episodes cannot be identified', () => {
     const candidate = {
       ...release('Group', 2, true),
-      source_files: [{ name: 'Show.S01E01.mkv', length: 10 }, { name: 'Unrecognized episode.mkv', length: 10 }],
+      source_files: [
+        { name: 'Show.S01E01.mkv', length: 10 },
+        { name: 'Unrecognized episode.mkv', length: 10 },
+      ],
     }
     assert.equal(scopeReleaseToPart(candidate, 2, 0, 1), candidate)
   })
 
   test('shows selected SEV episode size without counting numbered extras', () => {
     const episodeFiles = Array.from({ length: 11 }, (_, index) => ({
-      name: `Demon Slayer - Episode ${index + 45} - Swordsmith Village.mkv`, length: 3_000_000_000,
+      name: `Demon Slayer - Episode ${index + 45} - Swordsmith Village.mkv`,
+      length: 3_000_000_000,
     }))
     const candidate = {
-      ...release('SEV', 11), size: 62_915_587_330,
+      ...release('SEV', 11),
+      size: 62_915_587_330,
       source_files: [
         ...episodeFiles,
         { name: 'Extras/[Disc 01] Demon Slayer - Season 03 - ITA BD Menu.mkv', length: 1_000_000_000 },
@@ -1014,12 +319,18 @@ describe('release selection and combined cours', () => {
 
     assert.equal(releaseDict('alt', season).size, 33_000_000_000)
     assert.equal(season.file_count, 11)
-    assert.deepEqual(season.selected_files, episodeFiles.map((file) => file.name))
+    assert.deepEqual(
+      season.selected_files,
+      episodeFiles.map(file => file.name),
+    )
   })
 
   test('scopes whole-season torrents to the current cour size', () => {
     const sourceFiles = [
-      ...Array.from({ length: 24 }, (_, index) => ({ name: `Show.S02E${String(index + 1).padStart(2, '0')}.mkv`, length: 10 })),
+      ...Array.from({ length: 24 }, (_, index) => ({
+        name: `Show.S02E${String(index + 1).padStart(2, '0')}.mkv`,
+        length: 10,
+      })),
       { name: 'Show.S00E07.Special.mkv', length: 100 },
       { name: 'Show.S02P01.NCOP.mkv', length: 3 },
       { name: 'Show.S02P02.NCOP.mkv', length: 5 },
@@ -1029,13 +340,19 @@ describe('release selection and combined cours', () => {
     assert.equal(courTwo.size, 125)
     assert.equal(courTwo.file_count, 12)
     assert.deepEqual(courTwo.info_hashes, candidate.info_hashes)
-    assert.deepEqual(courTwo.selected_files, sourceFiles.slice(12, 24).map((file) => file.name))
+    assert.deepEqual(
+      courTwo.selected_files,
+      sourceFiles.slice(12, 24).map(file => file.name),
+    )
     assert.deepEqual(releaseDict('best', courTwo).selected_files, courTwo.selected_files)
   })
 
   test('scopes torrents that use absolute episode numbers without SxxExx names', () => {
     const sourceFiles = [
-      ...Array.from({ length: 24 }, (_, index) => ({ name: `[Group] Show 2nd Season ${index + 25} [1080p].mkv`, length: 10 })),
+      ...Array.from({ length: 24 }, (_, index) => ({
+        name: `[Group] Show 2nd Season ${index + 25} [1080p].mkv`,
+        length: 10,
+      })),
       { name: '[Group] Show 2nd Season NCOP 01.mkv', length: 3 },
       { name: '[Group] Show 2nd Season NCOP 02.mkv', length: 5 },
     ]
@@ -1059,10 +376,14 @@ describe('release selection and combined cours', () => {
   test('publishes completed anime while the scan is still running', async () => {
     let releaseSecondItem!: () => void
     let secondItemStarted!: () => void
-    const secondItemIsRunning = new Promise<void>((resolve) => { secondItemStarted = resolve })
-    const secondItemCanFinish = new Promise<void>((resolve) => { releaseSecondItem = resolve })
+    const secondItemIsRunning = new Promise<void>(resolve => {
+      secondItemStarted = resolve
+    })
+    const secondItemCanFinish = new Promise<void>(resolve => {
+      releaseSecondItem = resolve
+    })
     let calls = 0
-    const scan = runScan({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr/api/v3' }, {
+    const scan = createScanService({
       seadexBest: (async () => new Map()) as any,
       localItems: (async () => [
         { arr: 'Sonarr', id: 1, title: 'First', seasons: { 1: { groups: ['A'], size: 100 } } },
@@ -1070,33 +391,50 @@ describe('release selection and combined cours', () => {
       ]) as any,
       anilistChain: (async () => {
         calls += 1
-        if (calls === 2) { secondItemStarted(); await secondItemCanFinish }
+        if (calls === 2) {
+          secondItemStarted()
+          await secondItemCanFinish
+        }
         return []
       }) as any,
-      loadCache: () => ({}), saveLastResults: () => undefined,
+      loadCache: () => ({}),
+      saveLastResults: () => undefined,
       autoNotifyNew: async () => 0,
-    })
+    }).run({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr/api/v3' })
 
     await secondItemIsRunning
     const partial = getState()
     assert.equal(partial.running, true)
     assert.equal(partial.progress, 1)
-    assert.deepEqual(partial.results.map((item) => item.title), ['First'])
+    assert.deepEqual(
+      partial.results.map(item => item.title),
+      ['First'],
+    )
 
     releaseSecondItem()
     await scan
-    assert.deepEqual(getState().results.map((item) => item.title), ['First', 'Second'])
+    assert.deepEqual(
+      getState().results.map(item => item.title),
+      ['First', 'Second'],
+    )
   })
 
   test('restores the previous complete results when a later scan fails', async () => {
-    await scanWith(new Map(), [], [{ arr: 'Sonarr', id: 1, title: 'Preserved', seasons: { 1: { groups: ['A'], size: 100 } } }])
+    await scanWith(
+      new Map(),
+      [],
+      [{ arr: 'Sonarr', id: 1, title: 'Preserved', seasons: { 1: { groups: ['A'], size: 100 } } }],
+    )
     const previous = getState().results
-    await runScan(DEFAULT_CONFIG, {
+    await createScanService({
       seadexBest: (async () => new Map()) as any,
-      localItems: (async () => { throw new Error('Sonarr unavailable') }) as any,
-      loadCache: () => ({}), saveLastResults: () => assert.fail('failed scans must not be saved'),
+      localItems: (async () => {
+        throw new Error('Sonarr unavailable')
+      }) as any,
+      loadCache: () => ({}),
+      saveLastResults: () => assert.fail('failed scans must not be saved'),
       autoNotifyNew: async () => 0,
-    })
+    }).run(DEFAULT_CONFIG)
     assert.deepEqual(getState().results, previous)
     assert.match(getState().error || '', /Sonarr unavailable/)
   })
@@ -1105,11 +443,19 @@ describe('release selection and combined cours', () => {
     setState({ results: [{ key: 'old', title: 'Preserved' }], last_run: 'before' })
     const previousResults = getState().results
     let releaseScan!: () => void
-    const blocked = new Promise<void>((resolve) => { releaseScan = resolve })
-    const scan = runScan(DEFAULT_CONFIG, {
-      seadexBest: async () => { await blocked; return new Map() },
-      localItems: async () => [], loadCache: () => ({}), saveLastResults: () => assert.fail('cancelled scans must not be saved'), autoNotifyNew: async () => 0,
+    const blocked = new Promise<void>(resolve => {
+      releaseScan = resolve
     })
+    const scan = createScanService({
+      seadexBest: async () => {
+        await blocked
+        return new Map()
+      },
+      localItems: async () => [],
+      loadCache: () => ({}),
+      saveLastResults: () => assert.fail('cancelled scans must not be saved'),
+      autoNotifyNew: async () => 0,
+    }).run(DEFAULT_CONFIG)
     assert.equal(cancelScan(), true)
     releaseScan()
     await scan
@@ -1119,15 +465,21 @@ describe('release selection and combined cours', () => {
 
   test('retains unscanned titles during an incremental webhook scan', async () => {
     setState({ results: [{ key: 'old', library_key: 'Sonarr:item1', title: 'Existing', arr: 'Sonarr' }] })
-    await runScan(DEFAULT_CONFIG, {
+    await createScanService({
       seadexBest: async () => new Map(),
       localItems: async (_config, scope) => {
         assert.deepEqual(scope?.sonarrIds, [2])
         return [{ arr: 'Sonarr', id: 2, title: 'New', seasons: { 1: { groups: [], size: 0 } } }]
       },
-      anilistChain: async () => [], loadCache: () => ({}), saveLastResults: () => undefined, autoNotifyNew: async () => 0,
-    }, 'sonarr', { sonarrIds: [2] })
-    assert.deepEqual(getState().results.map((item) => item.title), ['Existing', 'New'])
+      anilistChain: async () => [],
+      loadCache: () => ({}),
+      saveLastResults: () => undefined,
+      autoNotifyNew: async () => 0,
+    }).run(DEFAULT_CONFIG, 'sonarr', { sonarrIds: [2] })
+    assert.deepEqual(
+      getState().results.map(item => item.title),
+      ['Existing', 'New'],
+    )
   })
 
   test('preserves results from an unavailable integration', async () => {
@@ -1139,32 +491,58 @@ describe('release selection and combined cours', () => {
       return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }) as typeof fetch
     try {
-      await runScan({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key', radarr_url: 'http://radarr', radarr_key: 'key' }, {
-        seadexBest: async () => new Map(), loadCache: () => ({}), saveLastResults: () => undefined, autoNotifyNew: async () => 0,
+      await createScanService({
+        seadexBest: async () => new Map(),
+        loadCache: () => ({}),
+        saveLastResults: () => undefined,
+        autoNotifyNew: async () => 0,
+      }).run({
+        ...DEFAULT_CONFIG,
+        sonarr_url: 'http://sonarr',
+        sonarr_key: 'key',
+        radarr_url: 'http://radarr',
+        radarr_key: 'key',
       })
-      assert.deepEqual(getState().results.map((item) => item.title), ['Movie'])
+      assert.deepEqual(
+        getState().results.map(item => item.title),
+        ['Movie'],
+      )
       assert.match(getState().source_errors.Radarr, /HTTP 503/)
-    } finally { globalThis.fetch = originalFetch }
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 
   test('treats a filler SeaDex page with no releases as uncovered', async () => {
-    const best = new Map([[300, {
-      url: 'https://seadex.moe/300/',
-      notes: '-',
-      seasons: {},
-    }]])
-    const chain = [{
-      season: 1,
-      id: 300,
-      ids: [300],
-      parts: [{ id: 300, episodeCount: 12 }],
-      cover: 'cover-300',
-      banner: 'banner-300',
-    }]
-    await scanWith(best, chain, [{
-      arr: 'Sonarr', id: 30, title: 'Filler Page', slug: 'filler-page',
-      seasons: { 1: { groups: ['Local'], size: 1000 } },
-    }])
+    const best = new Map([
+      [
+        300,
+        {
+          url: 'https://seadex.moe/300/',
+          notes: '-',
+          seasons: {},
+        },
+      ],
+    ])
+    const chain = [
+      {
+        season: 1,
+        id: 300,
+        ids: [300],
+        parts: [{ id: 300, episodeCount: 12 }],
+        cover: 'cover-300',
+        banner: 'banner-300',
+      },
+    ]
+    await scanWith(best, chain, [
+      {
+        arr: 'Sonarr',
+        id: 30,
+        title: 'Filler Page',
+        slug: 'filler-page',
+        seasons: { 1: { groups: ['Local'], size: 1000 } },
+      },
+    ])
 
     const result = getState().results[0]
     assert.equal(result.status, 'uncovered')
@@ -1172,113 +550,244 @@ describe('release selection and combined cours', () => {
   })
 
   test('keeps downloadable cours when another cour is missing', async () => {
-    const chain = [{
-      season: 1, id: 101, ids: [101, 102],
-      parts: [{ id: 101, episodeCount: 12 }, { id: 102, episodeCount: 12 }],
-      cover: 'cover', banner: 'banner',
-    }]
-    await scanWith(
-      new Map([[101, seadexEntry(101, release('Available', 12, true, 'a'))]]),
-      chain,
-      [{ arr: 'Sonarr', id: 1, title: 'Split', seasons: { 1: { groups: ['Local'], size: 100 } } }],
-    )
+    const chain = [
+      {
+        season: 1,
+        id: 101,
+        ids: [101, 102],
+        parts: [
+          { id: 101, episodeCount: 12 },
+          { id: 102, episodeCount: 12 },
+        ],
+        cover: 'cover',
+        banner: 'banner',
+      },
+    ]
+    await scanWith(new Map([[101, seadexEntry(101, release('Available', 12, true, 'a'))]]), chain, [
+      { arr: 'Sonarr', id: 1, title: 'Split', seasons: { 1: { groups: ['Local'], size: 100 } } },
+    ])
     const result = getState().results[0]
     assert.equal(result.status, 'partial')
     assert.equal(result.releases.length, 1)
     assert.equal(result.releases[0].part, 'Cour 1')
     assert.equal(result.releases[0].torrent_available, true)
     assert.deepEqual(result.unavailable_parts, [{ label: 'Cour 2', reason: 'Not listed on SeaDex' }])
-    assert.deepEqual(upgradeParts(result).map(part => part.part), ['Cour 1'])
+    assert.deepEqual(
+      upgradeParts(result).map(part => part.part),
+      ['Cour 1'],
+    )
   })
 
   test('gives the best flag priority over episode count', () => {
-    const ttga = release('TTGA', 14, true, 'a'); const yurasuka = release('YURASUKA', 13, false, 'b')
+    const ttga = release('TTGA', 14, true, 'a')
+    const yurasuka = release('YURASUKA', 13, false, 'b')
     const [best, alternatives] = pickBest([ttga, yurasuka], 13)
     assert.equal(best?.releaseGroup, 'TTGA')
-    assert.deepEqual(orderedPartReleases(best!, alternatives).map(([kind, item]) => [kind, item.releaseGroup]), [['best', 'TTGA'], ['alt', 'YURASUKA']])
+    assert.deepEqual(
+      orderedPartReleases(best!, alternatives).map(([kind, item]) => [kind, item.releaseGroup]),
+      [
+        ['best', 'TTGA'],
+        ['alt', 'YURASUKA'],
+      ],
+    )
   })
 
   test('deduplicates release groups', () => {
     const best = release('Flugel', 12, true, 'a')
-    const alternateTracker = release('Flugel', 12, false, 'private'); alternateTracker.tracker = 'AB'
+    const alternateTracker = release('Flugel', 12, false, 'private')
+    alternateTracker.tracker = 'AB'
     const other = release('Okay-Subs', 12, false, 'c')
     const ordered = orderedPartReleases(best, [alternateTracker, other])
-    assert.deepEqual(ordered.map(([, item]) => item.releaseGroup), ['Flugel', 'Okay-Subs'])
+    assert.deepEqual(
+      ordered.map(([, item]) => item.releaseGroup),
+      ['Flugel', 'Okay-Subs'],
+    )
     assert.equal(ordered[0][1].tracker, 'Nyaa')
   })
 
   test('prefers a downloadable tracker for the same group', () => {
-    const privateBest = release('Bunny-Apocalypse', 12, true, 'private'); privateBest.tracker = 'AB'
+    const privateBest = release('Bunny-Apocalypse', 12, true, 'private')
+    privateBest.tracker = 'AB'
     const publicCopy = release('Bunny-Apocalypse', 12, false, 'b')
     const preferred = orderedPartReleases(privateBest, [publicCopy])
-    assert.equal(preferred.length, 1); assert.equal(preferred[0][0], 'best'); assert.equal(preferred[0][1].tracker, 'Nyaa')
+    assert.equal(preferred.length, 1)
+    assert.equal(preferred[0][0], 'best')
+    assert.equal(preferred[0][1].tracker, 'Nyaa')
   })
 
   test('requires exact hashes for a common best release', () => {
     const shared = 'a'.repeat(40)
-    const first = release('Group', 2, true); first.info_hashes = [shared, 'b'.repeat(40)]
-    const second = release('Group', 2, true); second.info_hashes = [shared, 'c'.repeat(40)]
-    assert.equal(commonBestRelease([{ best: first, alts: [] }, { best: second, alts: [] }], new Set(['group'])), null)
+    const first = release('Group', 2, true)
+    first.info_hashes = [shared, 'b'.repeat(40)]
+    const second = release('Group', 2, true)
+    second.info_hashes = [shared, 'c'.repeat(40)]
+    assert.equal(
+      commonBestRelease(
+        [
+          { best: first, alts: [] },
+          { best: second, alts: [] },
+        ],
+        new Set(['group']),
+      ),
+      null,
+    )
   })
 
   test('an owned common torrent satisfies both cours', async () => {
     const chain = [
       { season: 1, id: 1, ids: [1], parts: [{ id: 1, episodeCount: 12 }], cover: 'cover-1', banner: 'banner-1' },
-      { season: 2, id: 21, ids: [21, 22], parts: [{ id: 21, episodeCount: 13 }, { id: 22, episodeCount: 12 }], cover: 'cover-2', banner: 'banner-2' },
+      {
+        season: 2,
+        id: 21,
+        ids: [21, 22],
+        parts: [
+          { id: 21, episodeCount: 13 },
+          { id: 22, episodeCount: 12 },
+        ],
+        cover: 'cover-2',
+        banner: 'banner-2',
+      },
     ]
-    const mtbb1 = release('MTBB', 25, true, 'a'); const mtbb2 = release('MTBB', 25, true, 'a')
-    const diddy1 = release('Diddy', 24, true, 'b'); const diddy2 = release('Diddy', 24, true, 'b')
-    const private1 = release('MTBB', 13, true, 'private'); private1.tracker = 'AB'
-    const private2 = release('Diddy', 12, true, 'private'); private2.tracker = 'AB'
-    const entry = (id: number, candidates: ReleaseCandidate[]) => ({ url: `https://seadex.moe/${id}/`, notes: '-', seasons: { 2: { candidates } } })
-    const best = new Map([[21, entry(21, [mtbb1, private1, diddy1])], [22, entry(22, [mtbb2, diddy2, private2])]])
-    await scanWith(best, chain, [{ arr: 'Sonarr', id: 10, title: 'Combined Season', slug: 'combined-season', seasons: { 2: { groups: ['MTBB'], size: 2500 } } }])
+    const mtbb1 = release('MTBB', 25, true, 'a')
+    const mtbb2 = release('MTBB', 25, true, 'a')
+    const diddy1 = release('Diddy', 24, true, 'b')
+    const diddy2 = release('Diddy', 24, true, 'b')
+    const private1 = release('MTBB', 13, true, 'private')
+    private1.tracker = 'AB'
+    const private2 = release('Diddy', 12, true, 'private')
+    private2.tracker = 'AB'
+    const entry = (id: number, candidates: ReleaseCandidate[]) => ({
+      url: `https://seadex.moe/${id}/`,
+      notes: '-',
+      seasons: { 2: { candidates } },
+    })
+    const best = new Map([
+      [21, entry(21, [mtbb1, private1, diddy1])],
+      [22, entry(22, [mtbb2, diddy2, private2])],
+    ])
+    await scanWith(best, chain, [
+      {
+        arr: 'Sonarr',
+        id: 10,
+        title: 'Combined Season',
+        slug: 'combined-season',
+        seasons: { 2: { groups: ['MTBB'], size: 2500 } },
+      },
+    ])
     const result = getState().results[0]
-    assert.equal(result.status, 'best'); assert.equal(result.best_group, 'MTBB'); assert.equal(result.best_size, 2500)
-    assert.deepEqual(result.releases.map((item: JsonObject) => item.releaseGroup), ['MTBB', 'Diddy', 'MTBB', 'Diddy'])
-    assert.deepEqual(result.releases.map((item: JsonObject) => item.part), ['Cour 1', 'Cour 1', 'Cour 2', 'Cour 2'])
+    assert.equal(result.status, 'best')
+    assert.equal(result.best_group, 'MTBB')
+    assert.equal(result.best_size, 2500)
+    assert.deepEqual(
+      result.releases.map((item: JsonObject) => item.releaseGroup),
+      ['MTBB', 'Diddy', 'MTBB', 'Diddy'],
+    )
+    assert.deepEqual(
+      result.releases.map((item: JsonObject) => item.part),
+      ['Cour 1', 'Cour 1', 'Cour 2', 'Cour 2'],
+    )
   })
 
   test('checks both cours and maps the actual second season', async () => {
     const chain = [
-      { season: 1, id: 140960, ids: [140960, 142838], parts: [{ id: 140960, episodeCount: 12 }, { id: 142838, episodeCount: 13 }], cover: 'cover-1', banner: 'banner-1' },
-      { season: 2, id: 158927, ids: [158927], parts: [{ id: 158927, episodeCount: 12 }], cover: 'cover-2', banner: 'banner-2' },
+      {
+        season: 1,
+        id: 140960,
+        ids: [140960, 142838],
+        parts: [
+          { id: 140960, episodeCount: 12 },
+          { id: 142838, episodeCount: 13 },
+        ],
+        cover: 'cover-1',
+        banner: 'banner-1',
+      },
+      {
+        season: 2,
+        id: 158927,
+        ids: [158927],
+        parts: [{ id: 158927, episodeCount: 12 }],
+        cover: 'cover-2',
+        banner: 'banner-2',
+      },
     ]
-    const courOne = seadexEntry(140960, release('ABdex', 12, true, 'a')); courOne.notes = 'Cour one note'
-    const courTwo = seadexEntry(142838, release('NAN0', 13, true, 'b')); courTwo.notes = 'Cour two note'
+    const courOne = seadexEntry(140960, release('ABdex', 12, true, 'a'))
+    courOne.notes = 'Cour one note'
+    const courTwo = seadexEntry(142838, release('NAN0', 13, true, 'b'))
+    courTwo.notes = 'Cour two note'
     const best = new Map([
       [140960, courOne],
       [142838, courTwo],
       [158927, seadexEntry(158927, release('NAN0', 12, true, 'c'))],
     ])
-    await scanWith(best, chain, [{ arr: 'Sonarr', id: 10, title: 'SPY x FAMILY', slug: 'spy-x-family', seasons: { 1: { groups: ['ABdex'], size: 2500 }, 2: { groups: ['scoot'], size: 1200 } } }])
+    await scanWith(best, chain, [
+      {
+        arr: 'Sonarr',
+        id: 10,
+        title: 'SPY x FAMILY',
+        slug: 'spy-x-family',
+        seasons: { 1: { groups: ['ABdex'], size: 2500 }, 2: { groups: ['scoot'], size: 1200 } },
+      },
+    ])
     const [seasonOne, seasonTwo] = getState().results
-    assert.deepEqual(seasonOne.anilist_ids, [140960, 142838]); assert.equal(seasonOne.status, 'upgrade')
-    assert.equal(seasonOne.best_group, 'ABdex + NAN0'); assert.deepEqual(seasonOne.releases.map((item: JsonObject) => item.part), ['Cour 1', 'Cour 2'])
+    assert.deepEqual(seasonOne.anilist_ids, [140960, 142838])
+    assert.equal(seasonOne.status, 'upgrade')
+    assert.equal(seasonOne.best_group, 'ABdex + NAN0')
+    assert.deepEqual(
+      seasonOne.releases.map((item: JsonObject) => item.part),
+      ['Cour 1', 'Cour 2'],
+    )
     assert.deepEqual(seasonOne.notes_by_part, { 'Cour 1': 'Cour one note', 'Cour 2': 'Cour two note' })
     assert.equal(seasonTwo.anilist_id, 158927)
   })
 
   test('owning any best-flagged release is best quality', async () => {
-    const ntrx = release('NTRX', 13, true, 'a'); ntrx.size = 15300
-    const okay = release('Okay-Subs', 13, true, 'b'); okay.size = 14600
-    const best = new Map([[100, { url: 'https://seadex.moe/100/', notes: '-', seasons: { 1: { candidates: [ntrx, okay] } } }]])
-    const chain = [{ season: 1, id: 100, ids: [100], parts: [{ id: 100, episodeCount: 13 }], cover: 'cover-100', banner: 'banner-100' }]
-    await scanWith(best, chain, [{ arr: 'Sonarr', id: 10, title: 'Call of the Night', slug: 'call-of-the-night', seasons: { 1: { groups: ['Okay-Subs'], size: 14600 } } }])
+    const ntrx = release('NTRX', 13, true, 'a')
+    ntrx.size = 15300
+    const okay = release('Okay-Subs', 13, true, 'b')
+    okay.size = 14600
+    const best = new Map([
+      [100, { url: 'https://seadex.moe/100/', notes: '-', seasons: { 1: { candidates: [ntrx, okay] } } }],
+    ])
+    const chain = [
+      {
+        season: 1,
+        id: 100,
+        ids: [100],
+        parts: [{ id: 100, episodeCount: 13 }],
+        cover: 'cover-100',
+        banner: 'banner-100',
+      },
+    ]
+    await scanWith(best, chain, [
+      {
+        arr: 'Sonarr',
+        id: 10,
+        title: 'Call of the Night',
+        slug: 'call-of-the-night',
+        seasons: { 1: { groups: ['Okay-Subs'], size: 14600 } },
+      },
+    ])
     const result = getState().results[0]
     assert.equal(result.status, 'best')
-    assert.deepEqual(result.releases.map((item: JsonObject) => [item.kind, item.releaseGroup]), [['best', 'NTRX'], ['best', 'Okay-Subs']])
+    assert.deepEqual(
+      result.releases.map((item: JsonObject) => [item.kind, item.releaseGroup]),
+      [
+        ['best', 'NTRX'],
+        ['best', 'Okay-Subs'],
+      ],
+    )
   })
 })
 
 async function scanWith(best: Map<number, JsonObject>, chain: JsonObject[], items: JsonObject[]): Promise<void> {
-  await runScan({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr/api/v3' }, {
+  await createScanService({
     seadexBest: (async () => best) as any,
     localItems: (async () => items) as any,
     anilistChain: (async () => chain) as any,
-    loadCache: () => ({}), saveLastResults: () => undefined,
+    loadCache: () => ({}),
+    saveLastResults: () => undefined,
     autoNotifyNew: async () => 0,
-  })
+  }).run({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr/api/v3' })
 }
 
 describe('update checking', () => {
@@ -1287,7 +796,13 @@ describe('update checking', () => {
     let calls = 0
     globalThis.fetch = (async () => {
       calls += 1
-      return new Response(JSON.stringify({ tag_name: 'v9.9.9', html_url: 'https://github.com/hiranaka99/SeaDex-Companion/releases/tag/v9.9.9' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      return new Response(
+        JSON.stringify({
+          tag_name: 'v9.9.9',
+          html_url: 'https://github.com/hiranaka99/SeaDex-Companion/releases/tag/v9.9.9',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
     }) as typeof fetch
     try {
       resetUpdateCheck()
@@ -1307,7 +822,14 @@ describe('update checking', () => {
     const originalFetch = globalThis.fetch
     try {
       resetUpdateCheck()
-      globalThis.fetch = (async () => new Response(JSON.stringify({ tag_name: 'v1.0.0', html_url: 'https://github.com/hiranaka99/SeaDex-Companion/releases/tag/v1.0.0' }), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch
+      globalThis.fetch = (async () =>
+        new Response(
+          JSON.stringify({
+            tag_name: 'v1.0.0',
+            html_url: 'https://github.com/hiranaka99/SeaDex-Companion/releases/tag/v1.0.0',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )) as typeof fetch
       assert.equal((await checkForUpdates()).latest, null)
 
       resetUpdateCheck()

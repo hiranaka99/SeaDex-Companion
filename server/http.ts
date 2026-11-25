@@ -1,6 +1,7 @@
+import { errorMessage } from '../shared/errors.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { setTimeout as delay } from 'node:timers/promises'
-import { log, errorMessage } from './logging.js'
+import { log } from './logging.js'
 
 export const SEADEX = 'https://seadex.moe/api'
 export const ANILIST = 'https://graphql.anilist.co'
@@ -9,12 +10,19 @@ export const sleep = (milliseconds: number) => delay(milliseconds, undefined, { 
 
 export async function fetchWithTimeout(url: string, init: RequestInit = {}, timeout = 60_000): Promise<Response> {
   const timeoutSignal = AbortSignal.timeout(timeout)
-  const signals = [timeoutSignal, scanRequests.getStore(), init.signal].filter((signal): signal is AbortSignal => Boolean(signal))
+  const signals = [timeoutSignal, scanRequests.getStore(), init.signal].filter((signal): signal is AbortSignal =>
+    Boolean(signal),
+  )
   const signal = AbortSignal.any(signals)
   return fetch(url, { ...init, redirect: 'manual', signal })
 }
 
-export async function api(url: string, key?: string, init: RequestInit = {}, followSameOriginRedirects = false): Promise<any> {
+export async function api(
+  url: string,
+  key?: string,
+  init: RequestInit = {},
+  followSameOriginRedirects = false,
+): Promise<any> {
   try {
     const headers = new Headers(init.headers)
     if (key) headers.set('X-Api-Key', key)

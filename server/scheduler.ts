@@ -1,3 +1,4 @@
+import { errorMessage } from '../shared/errors.js'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { nextScanTime } from '../shared/scan-schedule.js'
@@ -15,7 +16,12 @@ const WEBHOOK_EVENTS: Record<'sonarr' | 'radarr', Set<string>> = {
   sonarr: new Set(['seriesadd']),
   radarr: new Set(['movieadded']),
 }
-export const webhookScanState: { dueAt: number | null; sources: Set<'sonarr' | 'radarr'>; sonarrIds: Set<number>; radarrIds: Set<number> } = { dueAt: null, sources: new Set(), sonarrIds: new Set(), radarrIds: new Set() }
+export const webhookScanState: {
+  dueAt: number | null
+  sources: Set<'sonarr' | 'radarr'>
+  sonarrIds: Set<number>
+  radarrIds: Set<number>
+} = { dueAt: null, sources: new Set(), sonarrIds: new Set(), radarrIds: new Set() }
 
 export function resetWebhookScanState(): void {
   webhookScanState.dueAt = null
@@ -24,30 +30,53 @@ export function resetWebhookScanState(): void {
   webhookScanState.radarrIds.clear()
 }
 
-export function queueWebhookScan(source: 'sonarr' | 'radarr', eventType: unknown, targetId?: unknown, now = Date.now() / 1000): { accepted: boolean; dueAt: number | null } {
+export function queueWebhookScan(
+  source: 'sonarr' | 'radarr',
+  eventType: unknown,
+  targetId?: unknown,
+  now = Date.now() / 1000,
+): { accepted: boolean; dueAt: number | null } {
   const normalizedEvent = String(eventType || '').toLowerCase()
   const id = Number(targetId)
-  if (!WEBHOOK_EVENTS[source].has(normalizedEvent) || !Number.isInteger(id) || id <= 0) return { accepted: false, dueAt: webhookScanState.dueAt }
+  if (!WEBHOOK_EVENTS[source].has(normalizedEvent) || !Number.isInteger(id) || id <= 0)
+    return { accepted: false, dueAt: webhookScanState.dueAt }
   webhookScanState.sources.add(source)
-  if (source === 'sonarr') webhookScanState.sonarrIds.add(id); else webhookScanState.radarrIds.add(id)
+  if (source === 'sonarr') webhookScanState.sonarrIds.add(id)
+  else webhookScanState.radarrIds.add(id)
   webhookScanState.dueAt = now + WEBHOOK_DEBOUNCE_SECONDS
   const dueTime = new Date(webhookScanState.dueAt * 1000).toISOString()
-  log('INFO', `${source === 'sonarr' ? 'Sonarr' : 'Radarr'} ${eventType} webhook queued an automatic scan for ${dueTime}`)
+  log(
+    'INFO',
+    `${source === 'sonarr' ? 'Sonarr' : 'Radarr'} ${eventType} webhook queued an automatic scan for ${dueTime}`,
+  )
   return { accepted: true, dueAt: webhookScanState.dueAt }
 }
 
 function webhookTrigger(): ScanTrigger {
-  return webhookScanState.sources.size > 1 ? 'sonarr+radarr' : webhookScanState.sources.has('sonarr') ? 'sonarr' : 'radarr'
+  return webhookScanState.sources.size > 1
+    ? 'sonarr+radarr'
+    : webhookScanState.sources.has('sonarr')
+      ? 'sonarr'
+      : 'radarr'
 }
-export async function processWebhookScans(config: Config, now = Date.now() / 1000, scan: (config: Config, trigger: ScanTrigger, scope: ScanScope) => Promise<void> = (scanConfig, trigger, scope) => runScan(scanConfig, {}, trigger, scope)): Promise<void> {
+export async function processWebhookScans(
+  config: Config,
+  now = Date.now() / 1000,
+  scan: (config: Config, trigger: ScanTrigger, scope: ScanScope) => Promise<void> = runScan,
+): Promise<void> {
   const scheduledPending = autocheckState.pending
   if (webhookScanState.dueAt === null || now < webhookScanState.dueAt || getState().running) return
   const trigger = scheduledPending ? 'scheduled' : webhookTrigger()
-  const scope: ScanScope = scheduledPending ? {} : { sonarrIds: [...webhookScanState.sonarrIds], radarrIds: [...webhookScanState.radarrIds] }
+  const scope: ScanScope = scheduledPending
+    ? {}
+    : { sonarrIds: [...webhookScanState.sonarrIds], radarrIds: [...webhookScanState.radarrIds] }
   resetWebhookScanState()
   autocheckState.pending = false
   if (scheduledPending) persistAutocheckState()
-  log('INFO', `Webhook debounce elapsed; starting ${scheduledPending ? 'full scheduled' : `incremental ${trigger}`} scan`)
+  log(
+    'INFO',
+    `Webhook debounce elapsed; starting ${scheduledPending ? 'full scheduled' : `incremental ${trigger}`} scan`,
+  )
   await scan(config, trigger, scope)
 }
 
@@ -63,7 +92,11 @@ export function nextScheduledTime(schedule: ScanSchedule, after: number): number
 }
 
 function persistAutocheckState(): void {
-  writeJsonAtomic(SCHEDULE_STATE_FILE, { signature: autocheckState.signature, next: autocheckState.next, pending: autocheckState.pending })
+  writeJsonAtomic(SCHEDULE_STATE_FILE, {
+    signature: autocheckState.signature,
+    next: autocheckState.next,
+    pending: autocheckState.pending,
+  })
 }
 
 function restoreAutocheckState(): void {
@@ -74,11 +107,16 @@ function restoreAutocheckState(): void {
       autocheckState.next = stored.next
       autocheckState.pending = stored.pending === true
     }
-  } catch { /* A missing or damaged state file starts a fresh schedule. */ }
+  } catch {
+    /* A missing or damaged state file starts a fresh schedule. */
+  }
 }
 
 function skipMissedAutocheck(config: Config, now: number): void {
-  if (config.scan_schedule.missed_run === 'skip' && autocheckState.pending) { autocheckState.pending = false; persistAutocheckState() }
+  if (config.scan_schedule.missed_run === 'skip' && autocheckState.pending) {
+    autocheckState.pending = false
+    persistAutocheckState()
+  }
   if (config.scan_schedule.missed_run !== 'skip' || autocheckState.next === null || autocheckState.next > now) return
   autocheckState.next = nextScheduledTime(config.scan_schedule, now)
   persistAutocheckState()
@@ -102,7 +140,11 @@ export function refreshAutocheckSchedule(config: Config, now = Date.now() / 1000
   }
 }
 
-export async function processAutocheck(config: Config, now = Date.now() / 1000, scan: (config: Config, trigger: ScanTrigger) => Promise<void> = (scanConfig, trigger) => runScan(scanConfig, {}, trigger)): Promise<void> {
+export async function processAutocheck(
+  config: Config,
+  now = Date.now() / 1000,
+  scan: (config: Config, trigger: ScanTrigger) => Promise<void> = runScan,
+): Promise<void> {
   refreshAutocheckSchedule(config, now)
   const schedule = config.scan_schedule
   if (!schedule.enabled) return
@@ -125,11 +167,22 @@ export async function processAutocheck(config: Config, now = Date.now() / 1000, 
 
 export function startScheduler(): NodeJS.Timeout {
   restoreAutocheckState()
-  try { const config = loadConfig(); refreshAutocheckSchedule(config); skipMissedAutocheck(config, Date.now() / 1000) } catch (error) { log('ERROR', `Scheduler initialization failed: ${error instanceof Error ? error.message : String(error)}`) }
+  try {
+    const config = loadConfig()
+    refreshAutocheckSchedule(config)
+    skipMissedAutocheck(config, Date.now() / 1000)
+  } catch (error) {
+    log('ERROR', `Scheduler initialization failed: ${errorMessage(error)}`)
+  }
   return setInterval(() => {
     void (async () => {
-      try { const config = loadConfig(); await processAutocheck(config); await processWebhookScans(config) }
-      catch (error) { log('ERROR', `Scheduler error: ${error instanceof Error ? error.message : String(error)}`) }
+      try {
+        const config = loadConfig()
+        await processAutocheck(config)
+        await processWebhookScans(config)
+      } catch (error) {
+        log('ERROR', `Scheduler error: ${errorMessage(error)}`)
+      }
     })()
   }, SCHEDULER_TICK_MS)
 }

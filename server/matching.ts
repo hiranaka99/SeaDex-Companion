@@ -1,22 +1,35 @@
+import { normalizeInfoHash } from '../shared/ids.js'
 import { normalizeTorrentPath, torrentHashes } from '../shared/download-plan.js'
-import type { ReleaseCandidate, Release, ChainPart, ChainEntry, LocalSeason, SeaDexEntry, SeaDexSlot, ResolvedPart } from './types.js'
+import type {
+  ReleaseCandidate,
+  Release,
+  ChainPart,
+  ChainEntry,
+  LocalSeason,
+  SeaDexEntry,
+  SeaDexSlot,
+  ResolvedPart,
+} from './types.js'
 
 export function isDownloadable(release: Pick<ReleaseCandidate, 'info_hashes'>): boolean {
   return torrentHashes(release).length > 0
 }
 
-export function pickBest(candidates: ReleaseCandidate[], episodeCount?: number | null): [ReleaseCandidate | null, ReleaseCandidate[]] {
+export function pickBest(
+  candidates: ReleaseCandidate[],
+  episodeCount?: number | null,
+): [ReleaseCandidate | null, ReleaseCandidate[]] {
   if (!candidates.length) return [null, []]
-  const flagged = candidates.filter((candidate) => candidate.is_best)
+  const flagged = candidates.filter(candidate => candidate.is_best)
   let pool = flagged.length ? flagged : [...candidates]
   if (episodeCount && episodeCount > 0) {
-    const matching = pool.filter((candidate) => candidate.file_count === episodeCount)
+    const matching = pool.filter(candidate => candidate.file_count === episodeCount)
     if (matching.length) pool = matching
   }
   const downloadable = pool.filter(isDownloadable)
   const selectedPool = downloadable.length ? downloadable : pool
-  const chosen = selectedPool.reduce((best, candidate) => (candidate.size || 0) > (best.size || 0) ? candidate : best)
-  return [chosen, candidates.filter((candidate) => candidate !== chosen)]
+  const chosen = selectedPool.reduce((best, candidate) => ((candidate.size || 0) > (best.size || 0) ? candidate : best))
+  return [chosen, candidates.filter(candidate => candidate !== chosen)]
 }
 
 export interface ParsedEpisode {
@@ -40,17 +53,28 @@ export function episodeFromFilename(name: string): ParsedEpisode | null {
 
 function extraBelongsToPart(name: string, partNumber: number): boolean {
   const padded = String(partNumber).padStart(2, '0')
-  return new RegExp(`(?:P(?:art)?[ ._-]*0?${partNumber}\\b.*(?:NCOP|NCED)|(?:NCOP|NCED)[ ._-]*${padded}\\b)`, 'i').test(name)
+  return new RegExp(`(?:P(?:art)?[ ._-]*0?${partNumber}\\b.*(?:NCOP|NCED)|(?:NCOP|NCED)[ ._-]*${padded}\\b)`, 'i').test(
+    name,
+  )
 }
 
 /** Continuous AniList entries need verified Sonarr-season or absolute coverage. */
-export function scopeReleaseToSeasonRange(release: ReleaseCandidate, episodes: number[], offset: number, season: number): ReleaseCandidate | null {
+export function scopeReleaseToSeasonRange(
+  release: ReleaseCandidate,
+  episodes: number[],
+  offset: number,
+  season: number,
+): ReleaseCandidate | null {
   const expected = [...new Set(episodes)]
   if (!expected.length) return null
-  const files = release.source_files?.length ? release.source_files : release.torrent_files?.flatMap(torrent => torrent.files) || []
+  const files = release.source_files?.length
+    ? release.source_files
+    : release.torrent_files?.flatMap(torrent => torrent.files) || []
   const parsedFiles = files.map(file => ({ file, episode: episodeFromFilename(file.name) }))
   const hasExplicit = parsedFiles.some(({ episode }) => episode?.explicit)
-  const parsed = parsedFiles.filter(({ episode }) => episode && Number.isInteger(episode.episode) && (!hasExplicit || episode.explicit))
+  const parsed = parsedFiles.filter(
+    ({ episode }) => episode && Number.isInteger(episode.episode) && (!hasExplicit || episode.explicit),
+  )
   const bySeason = parsed.filter(({ episode }) => episode!.season === season)
   const absolute = parsed.filter(({ episode }) => episode!.season === null)
   // Whole-series encodes sometimes put absolute numbers under S01E. Other
@@ -65,10 +89,17 @@ export function scopeReleaseToSeasonRange(release: ReleaseCandidate, episodes: n
     const available = new Set(range.files.map(({ episode }) => episode!.episode))
     if (!range.numbers.every(number => available.has(number))) continue
     const selected = new Set(range.numbers)
-    const chosen = [...new Map(range.files.filter(({ episode }) => selected.has(episode!.episode))
-      .map(({ file }) => [normalizeTorrentPath(file.name), file])).values()]
+    const chosen = [
+      ...new Map(
+        range.files
+          .filter(({ episode }) => selected.has(episode!.episode))
+          .map(({ file }) => [normalizeTorrentPath(file.name), file]),
+      ).values(),
+    ]
     return {
-      ...release, file_count: expected.length, size: chosen.reduce((sum, file) => sum + file.length, 0),
+      ...release,
+      file_count: expected.length,
+      size: chosen.reduce((sum, file) => sum + file.length, 0),
       selected_files: chosen.map(file => file.name),
     }
   }
@@ -91,48 +122,55 @@ export function scopeReleaseToPart(
   const files = release.source_files || []
   if (!episodeCount || episodeCount <= 0 || !files.length) return release
 
-  const parsedFiles = files.map((file) => ({ file, parsed: episodeFromFilename(file.name) }))
+  const parsedFiles = files.map(file => ({ file, parsed: episodeFromFilename(file.name) }))
   const hasExplicitEpisodes = parsedFiles.some(({ parsed }) => parsed?.explicit)
   const parsed = hasExplicitEpisodes
-    ? parsedFiles.map((item) => item.parsed?.explicit ? item : { ...item, parsed: null })
+    ? parsedFiles.map(item => (item.parsed?.explicit ? item : { ...item, parsed: null }))
     : parsedFiles
   const seasonFrequency = new Map<number, number>()
   for (const item of parsed) {
     const season = item.parsed?.season
-    if (season && season > 0 && Number.isInteger(item.parsed?.episode)) seasonFrequency.set(season, (seasonFrequency.get(season) || 0) + 1)
+    if (season && season > 0 && Number.isInteger(item.parsed?.episode))
+      seasonFrequency.set(season, (seasonFrequency.get(season) || 0) + 1)
   }
   // A positive SxxE season wins when present; otherwise the torrent uses absolute
   // numbering (season null) and we scope on those files, ignoring S00 specials.
-  const primarySeason = targetSeason !== undefined && seasonFrequency.has(targetSeason)
-    ? targetSeason
-    : [...seasonFrequency].sort((left, right) => right[1] - left[1])[0]?.[0] ?? null
-  const inScope = (season: number | null): boolean => primarySeason !== null ? season === primarySeason : season === null
-  const episodeNumbers = [...new Set(
-    parsed
-      .filter((item) => item.parsed && Number.isInteger(item.parsed.episode) && inScope(item.parsed.season))
-      .map((item) => item.parsed!.episode),
-  )].sort((left, right) => left - right)
+  const primarySeason =
+    targetSeason !== undefined && seasonFrequency.has(targetSeason)
+      ? targetSeason
+      : ([...seasonFrequency].sort((left, right) => right[1] - left[1])[0]?.[0] ?? null)
+  const inScope = (season: number | null): boolean =>
+    primarySeason !== null ? season === primarySeason : season === null
+  const episodeNumbers = [
+    ...new Set(
+      parsed
+        .filter(item => item.parsed && Number.isInteger(item.parsed.episode) && inScope(item.parsed.season))
+        .map(item => item.parsed!.episode),
+    ),
+  ].sort((left, right) => left - right)
   const splitSeason = partCount > 1
   if (episodeNumbers.length < episodeCount) return release
 
   // A part-sized upload is already scoped to its cour, even when its episode
   // numbering starts at one. Only apply the offset to larger season batches.
-  const start = (splitSeason || (episodeOffset ?? 0) > 0) && episodeNumbers.length > episodeCount
-    ? (episodeOffset ?? partIndex * episodeCount)
-    : 0
+  const start =
+    (splitSeason || (episodeOffset ?? 0) > 0) && episodeNumbers.length > episodeCount
+      ? (episodeOffset ?? partIndex * episodeCount)
+      : 0
   const selectedNumbers = episodeNumbers.slice(start, start + episodeCount)
   if (selectedNumbers.length < episodeCount) return release
   const selected = new Set(selectedNumbers)
   const partNumber = partIndex + 1
-  const selectedEpisodeFiles = parsed.filter(({ parsed: episode }) =>
-    episode && selected.has(episode.episode) && inScope(episode.season),
+  const selectedEpisodeFiles = parsed.filter(
+    ({ parsed: episode }) => episode && selected.has(episode.episode) && inScope(episode.season),
   )
   const selectedEpisodeFileSet = new Set(selectedEpisodeFiles.map(({ file }) => file))
   // The catalog may already have narrowed source_files to one season/cour while
   // the underlying torrent still contains other seasons or extras.
   const selectedPaths = new Set(selectedEpisodeFiles.map(({ file }) => normalizeTorrentPath(file.name)))
   const hasOtherTorrentFiles = release.torrent_files?.some(catalog =>
-    catalog.files.some(file => !selectedPaths.has(normalizeTorrentPath(file.name))))
+    catalog.files.some(file => !selectedPaths.has(normalizeTorrentPath(file.name))),
+  )
   if (selectedEpisodeFiles.length === files.length && !hasOtherTorrentFiles) return release
   if (!splitSeason) {
     return {
@@ -142,9 +180,9 @@ export function scopeReleaseToPart(
       selected_files: selectedEpisodeFiles.map(({ file }) => file.name),
     }
   }
-  const scopedFiles = parsed.filter(({ file, parsed: episode }) =>
-    selectedEpisodeFileSet.has(file) ||
-    (!episode && extraBelongsToPart(file.name, partNumber)),
+  const scopedFiles = parsed.filter(
+    ({ file, parsed: episode }) =>
+      selectedEpisodeFileSet.has(file) || (!episode && extraBelongsToPart(file.name, partNumber)),
   )
   if (!scopedFiles.length) return release
 
@@ -156,11 +194,22 @@ export function scopeReleaseToPart(
   }
 }
 
-export function releaseDict(kind: 'best' | 'alt', release: ReleaseCandidate, part?: string | null, url?: string): Release {
+export function releaseDict(
+  kind: 'best' | 'alt',
+  release: ReleaseCandidate,
+  part?: string | null,
+  url?: string,
+): Release {
   const result: Release = {
-    kind, releaseGroup: release.releaseGroup, tracker: release.tracker, quality: release.quality,
-    tags: release.tags || [], dual_audio: Boolean(release.dual_audio), size: release.size || 0,
-    info_hashes: [...(release.info_hashes || [])], torrent_available: isDownloadable(release),
+    kind,
+    releaseGroup: release.releaseGroup,
+    tracker: release.tracker,
+    quality: release.quality,
+    tags: release.tags || [],
+    dual_audio: Boolean(release.dual_audio),
+    size: release.size || 0,
+    info_hashes: [...(release.info_hashes || [])],
+    torrent_available: isDownloadable(release),
   }
   if (part) result.part = part
   if (url) result.url = url
@@ -188,11 +237,11 @@ export function entryParts(entry: ChainEntry): ChainPart[] {
  * list is sourced from TVDB and is authoritative for the episodes in it.
  */
 export function effectiveSeasonParts(local: Pick<LocalSeason, 'episode_numbers'>, parts: ChainPart[]): ChainPart[] {
-  const episodeNumbers = [...new Set<number>(
-    (local.episode_numbers || [])
-      .map(Number)
-      .filter((episode: number) => Number.isInteger(episode) && episode > 0),
-  )].sort((left, right) => left - right)
+  const episodeNumbers = [
+    ...new Set<number>(
+      (local.episode_numbers || []).map(Number).filter((episode: number) => Number.isInteger(episode) && episode > 0),
+    ),
+  ].sort((left, right) => left - right)
   if (!episodeNumbers.length || !parts.length) return parts
 
   if (parts.length === 1) {
@@ -205,15 +254,16 @@ export function effectiveSeasonParts(local: Pick<LocalSeason, 'episode_numbers'>
   return parts.map((part, index) => {
     const isLast = index === parts.length - 1
     const boundaryCount = Math.max(0, Number(part.episodeCount || 0))
-    const partEpisodes = isLast
-      ? episodeNumbers.slice(offset)
-      : episodeNumbers.slice(offset, offset + boundaryCount)
+    const partEpisodes = isLast ? episodeNumbers.slice(offset) : episodeNumbers.slice(offset, offset + boundaryCount)
     offset += partEpisodes.length
     return { ...part, episodeCount: partEpisodes.length, episodeNumbers: partEpisodes }
   })
 }
 
-export function orderedPartReleases(best: ReleaseCandidate, alternatives: ReleaseCandidate[]): Array<['best' | 'alt', ReleaseCandidate]> {
+export function orderedPartReleases(
+  best: ReleaseCandidate,
+  alternatives: ReleaseCandidate[],
+): Array<['best' | 'alt', ReleaseCandidate]> {
   const byGroup = new Map<string, ReleaseCandidate>()
   for (const release of [best, ...alternatives]) {
     const key = release.releaseGroup.trim().toLowerCase()
@@ -221,22 +271,27 @@ export function orderedPartReleases(best: ReleaseCandidate, alternatives: Releas
     if (!current || (isDownloadable(release) && !isDownloadable(current))) byGroup.set(key, release)
   }
   const bestKey = best.releaseGroup.trim().toLowerCase()
-  const ordered = [bestKey, ...[...byGroup.keys()].filter((key) => key !== bestKey)]
-  return ordered.map((key) => [key === bestKey || byGroup.get(key)!.is_best ? 'best' : 'alt', byGroup.get(key)!])
+  const ordered = [bestKey, ...[...byGroup.keys()].filter(key => key !== bestKey)]
+  return ordered.map(key => [key === bestKey || byGroup.get(key)!.is_best ? 'best' : 'alt', byGroup.get(key)!])
 }
 
-export function commonBestRelease(resolved: Pick<ResolvedPart, 'best' | 'alts'>[], localGroups: Set<string>): ReleaseCandidate | null {
+export function commonBestRelease(
+  resolved: Pick<ResolvedPart, 'best' | 'alts'>[],
+  localGroups: Set<string>,
+): ReleaseCandidate | null {
   if (resolved.length < 2) return null
   let common: Set<string> | null = null
   const releases = new Map<string, ReleaseCandidate>()
   for (const part of resolved) {
     const keys = new Set<string>()
     for (const release of [part.best, ...part.alts] as ReleaseCandidate[]) {
-      if (!release.is_best || !isDownloadable(release) || !localGroups.has(release.releaseGroup.trim().toLowerCase())) continue
-      const hashes = release.info_hashes.filter((hash) => /^[0-9a-f]{40}$/i.test(hash)).map((hash) => hash.toLowerCase()).sort()
+      if (!release.is_best || !isDownloadable(release) || !localGroups.has(release.releaseGroup.trim().toLowerCase()))
+        continue
+      const hashes = release.info_hashes.flatMap(hash => normalizeInfoHash(hash) ?? []).sort()
       if (!hashes.length) continue
       const key = `${release.releaseGroup.trim().toLowerCase()}\0${hashes.join('\0')}`
-      keys.add(key); if (!releases.has(key)) releases.set(key, release)
+      keys.add(key)
+      if (!releases.has(key)) releases.set(key, release)
     }
     if (common === null) common = keys
     else {
@@ -247,11 +302,17 @@ export function commonBestRelease(resolved: Pick<ResolvedPart, 'best' | 'alts'>[
     if (!common.size) return null
   }
   const commonKeys = common as Set<string>
-  return [...commonKeys].map((key) => releases.get(key)!).reduce<ReleaseCandidate | null>((best, release) => !best || release.size > best.size ? release : best, null)
+  return [...commonKeys]
+    .map(key => releases.get(key)!)
+    .reduce<ReleaseCandidate | null>((best, release) => (!best || release.size > best.size ? release : best), null)
 }
 
 export function partBestGroups(part: Pick<ResolvedPart, 'best' | 'alts'>): Set<string> {
-  return new Set(orderedPartReleases(part.best, part.alts).filter(([kind]) => kind === 'best').map(([, release]) => release.releaseGroup.trim().toLowerCase()))
+  return new Set(
+    orderedPartReleases(part.best, part.alts)
+      .filter(([kind]) => kind === 'best')
+      .map(([, release]) => release.releaseGroup.trim().toLowerCase()),
+  )
 }
 
 export interface PartOwnership {
@@ -261,10 +322,16 @@ export interface PartOwnership {
   precise: boolean
 }
 
-export function localPartOwnership(local: Omit<LocalSeason, 'size'> & { size?: number }, parts: Pick<ChainPart, 'episodeCount' | 'episodeNumbers'>[]): PartOwnership {
+export function localPartOwnership(
+  local: Omit<LocalSeason, 'size'> & { size?: number },
+  parts: Pick<ChainPart, 'episodeCount' | 'episodeNumbers'>[],
+): PartOwnership {
   const groups: string[] = [...(local.groups || [])]
   const episodeEntries = Object.entries(local.groups_by_episode || {})
-    .map(([group, episodes]) => [group, new Set((episodes as unknown[]).map(Number).filter((episode) => episode > 0))] as const)
+    .map(
+      ([group, episodes]) =>
+        [group, new Set((episodes as unknown[]).map(Number).filter(episode => episode > 0))] as const,
+    )
     .filter(([, episodes]) => episodes.size > 0)
   const precise = episodeEntries.length > 0
   const have: Record<string, string[]> = {}
@@ -291,11 +358,11 @@ export function localPartOwnership(local: Omit<LocalSeason, 'size'> & { size?: n
       continue
     }
     have[label] = episodeEntries
-      .filter(([, episodes]) => expected.some((episode) => episodes.has(episode)))
+      .filter(([, episodes]) => expected.some(episode => episodes.has(episode)))
       .map(([group]) => group)
       .sort()
     owned[label] = episodeEntries
-      .filter(([, episodes]) => expected.length > 0 && expected.every((episode) => episodes.has(episode)))
+      .filter(([, episodes]) => expected.length > 0 && expected.every(episode => episodes.has(episode)))
       .map(([group]) => group)
       .sort()
     sizes[label] = expected.reduce((total, episode) => total + (episodeSizes.get(episode) || 0), 0)
@@ -309,7 +376,7 @@ export function localPartOwnership(local: Omit<LocalSeason, 'size'> & { size?: n
   if (parts.length > 1 && localSize > 0 && totalExpectedEpisodes > 0 && !hasEpisodeSizes) {
     for (const [index, part] of parts.entries()) {
       const label = `Cour ${index + 1}`
-      if (!sizes[label]) sizes[label] = localSize * Number(part.episodeCount || 0) / totalExpectedEpisodes
+      if (!sizes[label]) sizes[label] = (localSize * Number(part.episodeCount || 0)) / totalExpectedEpisodes
     }
   }
   return { have, owned, sizes, precise }

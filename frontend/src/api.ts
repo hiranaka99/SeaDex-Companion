@@ -4,8 +4,8 @@ import type {
   DownloadCancelResult,
   DownloadJobStatus,
   DownloadPreflight,
-  DownloadProtocol,
   DownloadReceipt,
+  DownloadSelection,
   DownloadSubmission,
 } from '../../shared/download-contracts.js'
 
@@ -36,7 +36,7 @@ import type { ConfigUpdate } from '../../shared/contracts.js'
 import type { AuthState, Config, ResultItem, ScanHistoryEntry, ScannedDataInfo, Status } from './types.js'
 
 export const DOWNLOAD_ACTIONS = ['pause', 'resume', 'remove'] as const
-export type DownloadAction = typeof DOWNLOAD_ACTIONS[number]
+export type DownloadAction = (typeof DOWNLOAD_ACTIONS)[number]
 
 export type DownloadAcknowledge = NonNullable<DownloadSubmission['acknowledge']>
 
@@ -59,8 +59,10 @@ async function api<T = unknown>(path: string, opts: RequestInit = {}, timeoutMs:
       const j = await r.json()
       if (j && typeof j === 'object') detail = j
       if (typeof j?.error === 'string') msg = j.error
-      else if (typeof j?.error?.message === 'string') { msg = j.error.message; detail = j }
-      else if (typeof j?.message === 'string') msg = j.message
+      else if (typeof j?.error?.message === 'string') {
+        msg = j.error.message
+        detail = j
+      } else if (typeof j?.message === 'string') msg = j.message
     } catch {
       /* body was not JSON */
     }
@@ -106,7 +108,11 @@ export const updateAccount = (username: string, currentPassword: string, newPass
     body: JSON.stringify({ username, current_password: currentPassword, new_password: newPassword }),
   })
 
-export const getConfig = () => api<Config>('/api/config').then(config => { rememberAvailabilityConfig(config); return config })
+export const getConfig = () =>
+  api<Config>('/api/config').then(config => {
+    rememberAvailabilityConfig(config)
+    return config
+  })
 
 export const clearScannedData = () =>
   api<{ ok: boolean; cleared: { cacheEntries: number; results: number } }>('/api/scanned-data', { method: 'DELETE' })
@@ -119,7 +125,11 @@ export const saveConfig = (cfg: ConfigUpdate) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg),
   }).then(config => {
-    const credentialsChanged = Boolean(cfg.amenzb_key?.trim() || cfg.sabnzbd_key?.trim() || cfg.clear_secrets?.some(key => key === 'amenzb_key' || key === 'sabnzbd_key'))
+    const credentialsChanged = Boolean(
+      cfg.amenzb_key?.trim() ||
+        cfg.sabnzbd_key?.trim() ||
+        cfg.clear_secrets?.some(key => key === 'amenzb_key' || key === 'sabnzbd_key'),
+    )
     rememberAvailabilityConfig(config, credentialsChanged)
     return config
   })
@@ -135,7 +145,8 @@ export const testConnection = (service: IntegrationService, config: ConfigUpdate
 
 export const getStatus = () => api<Status>('/api/status')
 
-export const checkForUpdates = () => api<{ current: string; latest: string | null; url: string | null }>('/api/update-check')
+export const checkForUpdates = () =>
+  api<{ current: string; latest: string | null; url: string | null }>('/api/update-check')
 
 export const getResults = () =>
   api<{ results: ResultItem[]; last_run: string | null; hidden?: string[] }>('/api/results')
@@ -144,7 +155,9 @@ export const getScanHistory = () => api<{ scans: ScanHistoryEntry[] }>('/api/his
 
 export const reviewReleaseChanges = (ids: string[]) =>
   api<{ ok: boolean; reviewed: number }>('/api/release-changes/review', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }),
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
   })
 
 export interface AniListSearchResult {
@@ -162,47 +175,51 @@ export const searchAniList = (query: string) =>
 
 export const setMappingOverride = (libraryKey: string, anilistId: number | null) =>
   api<{ ok: boolean; anilist_id: number | null }>('/api/mapping-overrides', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ library_key: libraryKey, anilist_id: anilistId }),
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ library_key: libraryKey, anilist_id: anilistId }),
   })
 
 export const setSeasonMappingOverride = (libraryKey: string, season: number, anilistIds: number[] | null) =>
   api<{ ok: boolean; season: number; anilist_ids: number[] | null }>('/api/mapping-overrides', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ library_key: libraryKey, season, anilist_ids: anilistIds }),
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ library_key: libraryKey, season, anilist_ids: anilistIds }),
   })
 
 export const setExclusion = (libraryKey: string, season: number | null, part: string, excluded: boolean) =>
   api<{ ok: boolean; excluded: boolean }>('/api/exclusions', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ library_key: libraryKey, season, part, excluded }),
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ library_key: libraryKey, season, part, excluded }),
   })
 
-export const getLogs = (lines = 500) =>
-  api<{ lines: string[]; total: number }>(`/api/logs?lines=${lines}`)
+export const getLogs = (lines = 500) => api<{ lines: string[]; total: number }>(`/api/logs?lines=${lines}`)
 
-export const startScan = () =>
-  api<{ ok: boolean; error?: string }>('/api/scan', { method: 'POST' })
+export const startScan = () => api<{ ok: boolean; error?: string }>('/api/scan', { method: 'POST' })
 
-export const cancelScan = () =>
-  api<{ ok: boolean; error?: string }>('/api/scan/cancel', { method: 'POST' })
+export const cancelScan = () => api<{ ok: boolean; error?: string }>('/api/scan/cancel', { method: 'POST' })
 
 export const setHidden = (key: string, hidden: boolean) =>
   api<{ ok: boolean; hidden: string[] }>('/api/hidden', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, hidden }),
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, hidden }),
   })
 
 // ---------------------------------------------------------------------------
 // Downloads
 // ---------------------------------------------------------------------------
 
-/** Browser-side download selection: a result key + release index, with the
- * release identity (hash) and, in `choose` mode, the chosen protocol. */
-export interface SelectionInput {
-  key: string
-  release: number
-  identity?: string
-  protocol?: DownloadProtocol
-}
+/** One review row: a result key and release index, with the identity the browser saw and, in `choose` mode, the protocol. */
+export type SelectionInput = DownloadSelection
 
-export type { UsenetAvailabilityResponse, UsenetAvailabilityResult, UsenetHashAvailability, UsenetUnitState } from '../../shared/usenet-contracts.js'
+export type {
+  UsenetAvailabilityResponse,
+  UsenetAvailabilityResult,
+  UsenetHashAvailability,
+  UsenetUnitState,
+} from '../../shared/usenet-contracts.js'
 import type { UsenetAvailabilityResponse } from '../../shared/usenet-contracts.js'
 
 let allDownloadProgressRequest: Promise<AllDownloadProgress> | null = null
@@ -210,8 +227,9 @@ let allDownloadProgressRequest: Promise<AllDownloadProgress> | null = null
 /** Coalesce concurrent reads of the authoritative client snapshot. */
 export const getAllDownloadProgress = (): Promise<AllDownloadProgress> => {
   if (!allDownloadProgressRequest) {
-    const request = api<AllDownloadProgress>('/api/downloads')
-      .finally(() => { if (allDownloadProgressRequest === request) allDownloadProgressRequest = null })
+    const request = api<AllDownloadProgress>('/api/downloads').finally(() => {
+      if (allDownloadProgressRequest === request) allDownloadProgressRequest = null
+    })
     allDownloadProgressRequest = request
   }
   return allDownloadProgressRequest
@@ -234,21 +252,37 @@ export const controlDownload = (record_id: string, action: DownloadAction, delet
 export const DOWNLOADS_CHANGED_EVENT = 'seadex:downloads-changed'
 
 export const preflightDownload = (selections: SelectionInput[], refresh = false, signal?: AbortSignal) =>
-  api<DownloadPreflight>('/api/download_bulk/preflight', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections, refresh: refresh || undefined }), signal,
-  }, null)
+  api<DownloadPreflight>(
+    '/api/download_bulk/preflight',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selections, refresh: refresh || undefined }),
+      signal,
+    },
+    null,
+  )
 
 export const usenetAvailability = (selections: SelectionInput[], refresh = false, signal?: AbortSignal) =>
-  api<UsenetAvailabilityResponse>('/api/usenet/availability', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections, refresh: refresh || undefined }), signal,
-  }, null)
+  api<UsenetAvailabilityResponse>(
+    '/api/usenet/availability',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selections, refresh: refresh || undefined }),
+      signal,
+    },
+    null,
+  )
 
 let usenetAvailabilityRevision = 0
 const usenetAvailabilitySubscribers = new Set<() => void>()
 export const getUsenetAvailabilityRevision = () => usenetAvailabilityRevision
 export const subscribeUsenetAvailability = (listener: () => void) => {
   usenetAvailabilitySubscribers.add(listener)
-  return () => { usenetAvailabilitySubscribers.delete(listener) }
+  return () => {
+    usenetAvailabilitySubscribers.delete(listener)
+  }
 }
 export const invalidateUsenetAvailability = () => {
   usenetAvailabilityRevision += 1
@@ -257,7 +291,15 @@ export const invalidateUsenetAvailability = () => {
 
 let usenetConfigScope: string | null = null
 function rememberAvailabilityConfig(config: Config, credentialsChanged = false) {
-  const scope = JSON.stringify([config.animetosho_enabled, config.animetosho_url, config.amenzb_enabled, config.amenzb_url, config.amenzb_key_configured, config.sabnzbd_url, config.sabnzbd_key_configured])
+  const scope = JSON.stringify([
+    config.animetosho_enabled,
+    config.animetosho_url,
+    config.amenzb_enabled,
+    config.amenzb_url,
+    config.amenzb_key_configured,
+    config.sabnzbd_url,
+    config.sabnzbd_key_configured,
+  ])
   const changed = usenetConfigScope !== null && usenetConfigScope !== scope
   usenetConfigScope = scope
   if (changed || credentialsChanged) invalidateUsenetAvailability()
@@ -265,15 +307,27 @@ function rememberAvailabilityConfig(config: Config, credentialsChanged = false) 
 
 /** One-shot submission of a reviewed plan. Awaits the full client mutation. */
 export const submitDownload = (plan_id: string, acknowledge?: DownloadAcknowledge) =>
-  api<DownloadReceipt>('/api/download', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan_id, acknowledge }),
-  }, 120_000)
+  api<DownloadReceipt>(
+    '/api/download',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan_id, acknowledge }),
+    },
+    120_000,
+  )
 
 /** Background submission of a reviewed plan. */
 export const startDownloadJob = (plan_id: string, acknowledge?: DownloadAcknowledge) =>
-  api<{ ok: true; job_id: string }>('/api/download-jobs', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan_id, acknowledge }),
-  }, 60_000)
+  api<{ ok: true; job_id: string }>(
+    '/api/download-jobs',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan_id, acknowledge }),
+    },
+    60_000,
+  )
 
 export const getDownloadJobStatus = (id?: string) =>
   api<DownloadJobStatus>(`/api/download-jobs/${id ? encodeURIComponent(id) : 'latest'}`)
@@ -282,9 +336,15 @@ export const getCancelableDownloads = () =>
   api<{ ok: boolean; items: CancelableDownload[]; error?: string }>('/api/downloads/cancelable')
 
 export const cancelDownloads = (record_ids: string[], removeFiles: boolean) =>
-  api<DownloadCancelResult>('/api/downloads/cancel', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ record_ids, remove_files: removeFiles }),
-  }, 120_000)
+  api<DownloadCancelResult>(
+    '/api/downloads/cancel',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ record_ids, remove_files: removeFiles }),
+    },
+    120_000,
+  )
 
 /** Resume/await observation of a running bulk job by id. */
 export const followJob = followDownloadJob

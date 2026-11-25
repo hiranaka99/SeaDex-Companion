@@ -18,9 +18,14 @@ export function seasonsFromFiles(files: JsonObject[] = []): Set<number> {
 
 /** Episode numbers from the release's video files, preferring explicit episode labels over incidental numbers in extras. */
 function candidateEpisodes(candidate: ReleaseCandidate): number[] {
-  const parsed = (candidate.source_files || []).map((file) => episodeFromFilename(file.name)).filter((item): item is ParsedEpisode => item !== null)
-  const episodes = parsed.some((item) => item.explicit) ? parsed.filter((item) => item.explicit) : parsed
-  return episodes.map((item) => item.episode).filter(Number.isInteger).sort((left, right) => left - right)
+  const parsed = (candidate.source_files || [])
+    .map(file => episodeFromFilename(file.name))
+    .filter((item): item is ParsedEpisode => item !== null)
+  const episodes = parsed.some(item => item.explicit) ? parsed.filter(item => item.explicit) : parsed
+  return episodes
+    .map(item => item.episode)
+    .filter(Number.isInteger)
+    .sort((left, right) => left - right)
 }
 
 /**
@@ -34,36 +39,52 @@ function candidateEpisodes(candidate: ReleaseCandidate): number[] {
 export function mergeComplementaryCandidates(candidates: ReleaseCandidate[]): ReleaseCandidate[] {
   const sets = new Map<string, Array<{ members: ReleaseCandidate[]; coverage: Set<number> }>>()
   for (const candidate of candidates) {
-    const key = `${candidate.releaseGroup.trim().toLowerCase()}\0${String(candidate.tracker || '').trim().toLowerCase()}`
+    const key = `${candidate.releaseGroup.trim().toLowerCase()}\0${String(candidate.tracker || '')
+      .trim()
+      .toLowerCase()}`
     const episodes = candidateEpisodes(candidate)
     const groupSets = sets.get(key) || []
     // Without episode coverage, separate uploads may be alternate full batches.
-    let target = episodes.length ? groupSets.find((set) => set.coverage.size > 0 && !episodes.some((episode) => set.coverage.has(episode))) : undefined
-    if (!target) { target = { members: [], coverage: new Set<number>() }; groupSets.push(target); sets.set(key, groupSets) }
+    let target = episodes.length
+      ? groupSets.find(set => set.coverage.size > 0 && !episodes.some(episode => set.coverage.has(episode)))
+      : undefined
+    if (!target) {
+      target = { members: [], coverage: new Set<number>() }
+      groupSets.push(target)
+      sets.set(key, groupSets)
+    }
     target.members.push(candidate)
     for (const episode of episodes) target.coverage.add(episode)
   }
   const merged: ReleaseCandidate[] = []
   for (const groupSets of sets.values()) {
     for (const set of groupSets) {
-      if (set.members.length === 1) { merged.push(set.members[0]); continue }
-      const members = [...set.members].sort((left, right) =>
-        (candidateEpisodes(left)[0] ?? Number.POSITIVE_INFINITY) - (candidateEpisodes(right)[0] ?? Number.POSITIVE_INFINITY))
+      if (set.members.length === 1) {
+        merged.push(set.members[0])
+        continue
+      }
+      const members = [...set.members].sort(
+        (left, right) =>
+          (candidateEpisodes(left)[0] ?? Number.POSITIVE_INFINITY) -
+          (candidateEpisodes(right)[0] ?? Number.POSITIVE_INFINITY),
+      )
       merged.push({
         ...members[0],
         size: members.reduce((sum, member) => sum + (member.size || 0), 0),
         file_count: members.reduce((sum, member) => sum + (member.file_count || 0), 0),
-        info_hashes: members.flatMap((member) => member.info_hashes),
-        source_files: members.flatMap((member) => member.source_files || []),
-        torrent_files: members.flatMap((member) => member.torrent_files || []),
-        is_best: members.some((member) => member.is_best),
+        info_hashes: members.flatMap(member => member.info_hashes),
+        source_files: members.flatMap(member => member.source_files || []),
+        torrent_files: members.flatMap(member => member.torrent_files || []),
+        is_best: members.some(member => member.is_best),
       })
     }
   }
   return merged
 }
 
-export async function seadexBest(dependencies: { loadPage?: typeof loadCatalogPage } = {}): Promise<Map<number, SeaDexEntry>> {
+export async function seadexBest(
+  dependencies: { loadPage?: typeof loadCatalogPage } = {},
+): Promise<Map<number, SeaDexEntry>> {
   const loadPage = dependencies.loadPage ?? loadCatalogPage
   const best = new Map<number, SeaDexEntry>()
   let page = 1
@@ -87,8 +108,8 @@ export async function seadexBest(dependencies: { loadPage?: typeof loadCatalogPa
         torrentInfos.push([torrent, files, seasons])
       }
       for (const [torrent, files, detectedSeasons] of torrentInfos) {
-        const seasons = detectedSeasons.size ? detectedSeasons : (entrySeasons.size ? entrySeasons : new Set([0]))
-        const quality = guessQuality(files.map((file) => file.name || '').join(' '))
+        const seasons = detectedSeasons.size ? detectedSeasons : entrySeasons.size ? entrySeasons : new Set([0])
+        const quality = guessQuality(files.map(file => file.name || '').join(' '))
         const sizes = new Map<number, number>()
         const counts = new Map<number, number>()
         for (const file of files) {
@@ -102,9 +123,10 @@ export async function seadexBest(dependencies: { loadPage?: typeof loadCatalogPa
           let count = counts.get(season) || 0
           if (!size && season !== 0) size = sizes.get(0) || 0
           if (!count && season !== 0) count = counts.get(0) || 0
-          const seasonFiles = detectedSeasons.size > 1
-            ? files.filter((file) => Number(String(file.name || '').match(/S(\d{1,3})E/i)?.[1] || 0) === season)
-            : files
+          const seasonFiles =
+            detectedSeasons.size > 1
+              ? files.filter(file => Number(String(file.name || '').match(/S(\d{1,3})E/i)?.[1] || 0) === season)
+              : files
           const hash = String(torrent.infoHash || '')
           const release: ReleaseCandidate = {
             releaseGroup: torrent.releaseGroup,
@@ -116,8 +138,18 @@ export async function seadexBest(dependencies: { loadPage?: typeof loadCatalogPa
             file_count: count,
             info_hashes: hash ? [hash] : [],
             is_best: Boolean(torrent.isBest),
-            source_files: seasonFiles.map((file) => ({ name: String(file.name || ''), length: Number(file.length || 0) })),
-            torrent_files: hash ? [{ hash: hash.toLowerCase(), files: files.map((file) => ({ name: String(file.name || ''), length: Number(file.length || 0) })) }] : [],
+            source_files: seasonFiles.map(file => ({
+              name: String(file.name || ''),
+              length: Number(file.length || 0),
+            })),
+            torrent_files: hash
+              ? [
+                  {
+                    hash: hash.toLowerCase(),
+                    files: files.map(file => ({ name: String(file.name || ''), length: Number(file.length || 0) })),
+                  },
+                ]
+              : [],
           }
           ;(entry.seasons[season].candidates as ReleaseCandidate[]).push(release)
         }

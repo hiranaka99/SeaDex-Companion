@@ -3,10 +3,14 @@
 // Protocol specifics stay in each provider module. Nothing here logs or returns
 // credentials.
 
+import { isRecord } from '../shared/guards.js'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import type { UsenetFailureCode, UsenetProvider } from '../shared/usenet-contracts.js'
 
-export interface UsenetSourceFile { name: string; size: number }
+export interface UsenetSourceFile {
+  name: string
+  size: number
+}
 
 export interface UsenetMatch {
   provider: UsenetProvider
@@ -51,8 +55,6 @@ export const LOOKUP_MAX_BYTES = 512 * 1024
 export const ANIMETOSHO_LOOKUP_MAX_BYTES = 16 * 1024 * 1024
 export const NZB_MAX_BYTES = 16 * 1024 * 1024
 
-/** Normalized source hash shape (SHA-1 torrent info hash). */
-export const HASH_PATTERN = /^[0-9a-f]{40}$/
 /** AnimeTosho entry ids are numeric and never interpolated raw into a URL. */
 export const ANIMETOSHO_ENTRY_PATTERN = /^[0-9]+$/
 /** AmeNZB (Newznab) guid / t=get ids. */
@@ -61,7 +63,8 @@ export const AMENZB_ENTRY_PATTERN = /^[0-9A-Za-z_-]+$/
 const SAFE_MESSAGE_LIMIT = 200
 /** Provider XML rejects declarations; NZBs allow only the public standard DTD. */
 const DECLARATION_PATTERN = /<!DOCTYPE|<!ENTITY/i
-const STANDARD_NZB_DOCTYPE = /<!DOCTYPE\s+nzb\s+PUBLIC\s+(["'])-\/\/newzBin\/\/DTD NZB 1\.1\/\/EN\1\s+(["'])https?:\/\/www\.newzbin\.com\/DTD\/nzb\/nzb-1\.1\.dtd\2\s*>/
+const STANDARD_NZB_DOCTYPE =
+  /<!DOCTYPE\s+nzb\s+PUBLIC\s+(["'])-\/\/newzBin\/\/DTD NZB 1\.1\/\/EN\1\s+(["'])https?:\/\/www\.newzbin\.com\/DTD\/nzb\/nzb-1\.1\.dtd\2\s*>/
 /** Newznab XML is only ever inspected through the parser, never with regexes. */
 const XML_PARSER_OPTIONS = { ignoreAttributes: false, attributeNamePrefix: '@_', parseTagValue: false }
 const xmlParser = new XMLParser(XML_PARSER_OPTIONS)
@@ -71,14 +74,22 @@ const decoder = new TextDecoder('utf-8')
 export class ProviderConfigError extends Error {}
 /** A response body crossed its byte cap while being read. */
 export class ResponseTooLargeError extends Error {
-  constructor() { super('provider response exceeded the byte limit') }
+  constructor() {
+    super('provider response exceeded the byte limit')
+  }
 }
 /** Body was not XML the provider could have meant (malformed, empty, DTD). */
 export class ProviderProtocolError extends Error {}
 
-export interface NewznabError { code: number }
+export interface NewznabError {
+  code: number
+}
 /** Classified transport/HTTP failure: typed code plus safe text, no lookup kind. */
-export interface ProviderFailure { code: UsenetFailureCode; message: string; retryAfterMs?: number }
+export interface ProviderFailure {
+  code: UsenetFailureCode
+  message: string
+  retryAfterMs?: number
+}
 
 /** Upper bound for a provider-requested pause; a hostile or broken header cannot park lookups for days. */
 const RETRY_AFTER_LIMIT_MS = 60 * 60_000
@@ -90,10 +101,6 @@ export function retryAfterMs(response: Response, now = Date.now()): number | und
   const delay = /^\d+$/.test(value) ? Number(value) * 1000 : Date.parse(value) - now
   if (!Number.isFinite(delay) || delay <= 0) return undefined
   return Math.min(delay, RETRY_AFTER_LIMIT_MS)
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export function listOf(value: unknown): unknown[] {
@@ -114,7 +121,10 @@ export function safeByteSize(value: unknown): number | undefined {
 
 /** Collapse markup/control characters and bound the length of any failure text. */
 export function safeText(value: string, limit = SAFE_MESSAGE_LIMIT): string {
-  const collapsed = value.replace(/[\u0000-\u001f\u007f<>]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const collapsed = value
+    .replace(/[\u0000-\u001f\u007f<>]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
   if (collapsed.length <= limit) return collapsed
   return `${collapsed.slice(0, limit - 1)}…`
 }
@@ -131,14 +141,21 @@ export function decodeText(bytes: Uint8Array): string {
 export function providerEndpoint(baseUrl: string, path: string): string {
   const trimmed = baseUrl.replace(/\/+$/, '')
   let base: URL
-  try { base = new URL(`${trimmed}/`) }
-  catch { throw new ProviderConfigError('provider base URL is not a valid URL') }
-  if (base.protocol !== 'https:' && base.protocol !== 'http:') throw new ProviderConfigError('provider base URL must use http or https')
+  try {
+    base = new URL(`${trimmed}/`)
+  } catch {
+    throw new ProviderConfigError('provider base URL is not a valid URL')
+  }
+  if (base.protocol !== 'https:' && base.protocol !== 'http:')
+    throw new ProviderConfigError('provider base URL must use http or https')
   // Our own path segments are appended to the configured endpoint, so a base URL
   // served from a subdirectory still works and no segment can escape the origin.
   let url: URL
-  try { url = new URL(`${trimmed}${path}`) }
-  catch { throw new ProviderConfigError('provider request URL is not valid') }
+  try {
+    url = new URL(`${trimmed}${path}`)
+  } catch {
+    throw new ProviderConfigError('provider request URL is not valid')
+  }
   if (url.origin !== base.origin) throw new ProviderConfigError('provider request would leave the configured origin')
   return url.toString()
 }
@@ -149,16 +166,29 @@ export function providerEndpoint(baseUrl: string, path: string): string {
  * combined with the read timeout.
  */
 export async function providerRequest(
-  settings: ProviderSettings, path: string, accept: string, timeoutMs: number, fetchImpl: typeof fetch,
+  settings: ProviderSettings,
+  path: string,
+  accept: string,
+  timeoutMs: number,
+  fetchImpl: typeof fetch,
 ): Promise<Response> {
   const url = providerEndpoint(settings.baseUrl, path)
   const signals: AbortSignal[] = [AbortSignal.timeout(timeoutMs)]
   if (settings.signal) signals.push(settings.signal)
-  return await fetchImpl(url, { method: 'GET', headers: { accept }, signal: AbortSignal.any(signals), redirect: 'error' })
+  return await fetchImpl(url, {
+    method: 'GET',
+    headers: { accept },
+    signal: AbortSignal.any(signals),
+    redirect: 'error',
+  })
 }
 
 /** Map a transport/limit failure onto a typed code plus safe text. */
-export function classifyFailure(error: unknown, settings: ProviderSettings, operation: 'lookup' | 'NZB fetch'): ProviderFailure {
+export function classifyFailure(
+  error: unknown,
+  settings: ProviderSettings,
+  operation: 'lookup' | 'NZB fetch',
+): ProviderFailure {
   if (error instanceof ProviderConfigError) return { code: 'invalid_config', message: safeText(error.message) }
   if (error instanceof ResponseTooLargeError) return { code: 'invalid_response', message: safeText(error.message) }
   const name = isRecord(error) && typeof error.name === 'string' ? error.name : ''
@@ -169,7 +199,11 @@ export function classifyFailure(error: unknown, settings: ProviderSettings, oper
   return { code: 'network', message: `provider ${operation} failed` }
 }
 
-export function failedFrom(error: unknown, settings: ProviderSettings, operation: 'lookup' | 'NZB fetch'): ProviderLookup {
+export function failedFrom(
+  error: unknown,
+  settings: ProviderSettings,
+  operation: 'lookup' | 'NZB fetch',
+): ProviderLookup {
   const failure = classifyFailure(error, settings, operation)
   return failedLookup(failure.code, failure.message)
 }
@@ -178,10 +212,17 @@ export function failedFrom(error: unknown, settings: ProviderSettings, operation
 export function httpStatusFailure(response: Response, provider: string): ProviderFailure | null {
   if (response.ok) return null
   const detail = `${provider} returned HTTP ${response.status}`
-  if (response.status === 401 || response.status === 403) return { code: 'unauthorized', message: `${detail} — check the API key and pinned API IP` }
+  if (response.status === 401 || response.status === 403)
+    return { code: 'unauthorized', message: `${detail} — check the API key and pinned API IP` }
   const retryAfter = retryAfterMs(response)
-  if (response.status === 429) return { code: 'rate_limited', message: `${provider} rate limited the request`, ...(retryAfter ? { retryAfterMs: retryAfter } : {}) }
-  if (response.status >= 500) return { code: 'server', message: detail, ...(retryAfter ? { retryAfterMs: retryAfter } : {}) }
+  if (response.status === 429)
+    return {
+      code: 'rate_limited',
+      message: `${provider} rate limited the request`,
+      ...(retryAfter ? { retryAfterMs: retryAfter } : {}),
+    }
+  if (response.status >= 500)
+    return { code: 'server', message: detail, ...(retryAfter ? { retryAfterMs: retryAfter } : {}) }
   return { code: 'invalid_response', message: detail }
 }
 
@@ -199,17 +240,22 @@ async function readStreamCapped(stream: ReadableStream<Uint8Array>, maxBytes: nu
       if (total > maxBytes) throw new ResponseTooLargeError()
       chunks.push(value)
     }
-  }
-  catch (error) {
+  } catch (error) {
     await reader.cancel(error instanceof Error ? error : undefined).catch(() => undefined)
     throw error
-  }
-  finally {
-    try { reader.releaseLock() } catch { /* the cancel above already released it */ }
+  } finally {
+    try {
+      reader.releaseLock()
+    } catch {
+      /* the cancel above already released it */
+    }
   }
   const bytes = new Uint8Array(total)
   let offset = 0
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
   return bytes
 }
 
@@ -228,7 +274,10 @@ export async function readResponseCapped(response: Response, maxBytes: number): 
 export async function gunzipOnce(bytes: Uint8Array, maxBytes: number): Promise<Uint8Array> {
   if (!(bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b)) return bytes
   const source = new ReadableStream<Uint8Array>({
-    start(controller) { controller.enqueue(bytes); controller.close() },
+    start(controller) {
+      controller.enqueue(bytes)
+      controller.close()
+    },
   })
   // The DOM lib types the gzip sink as BufferSource rather than Uint8Array.
   const gzip = new DecompressionStream('gzip') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>
@@ -238,13 +287,17 @@ export async function gunzipOnce(bytes: Uint8Array, maxBytes: number): Promise<U
 /** Read an NZB body under the byte cap with one round of file-decompression. */
 export async function readNzbBody(settings: ProviderSettings, response: Response): Promise<Uint8Array> {
   let bytes: Uint8Array
-  try { bytes = await readResponseCapped(response, NZB_MAX_BYTES) }
-  catch (error) {
+  try {
+    bytes = await readResponseCapped(response, NZB_MAX_BYTES)
+  } catch (error) {
     if (error instanceof ResponseTooLargeError) throw new Error(error.message)
     throw new Error(classifyFailure(error, settings, 'NZB fetch').message)
   }
-  try { return await gunzipOnce(bytes, NZB_MAX_BYTES) }
-  catch { throw new Error('compressed NZB response could not be decompressed') }
+  try {
+    return await gunzipOnce(bytes, NZB_MAX_BYTES)
+  } catch {
+    throw new Error('compressed NZB response could not be decompressed')
+  }
 }
 
 /**
@@ -259,8 +312,11 @@ export function parseProviderXml(text: string): unknown {
   if (!text.trim()) throw new ProviderProtocolError('provider response was empty')
   if (DECLARATION_PATTERN.test(text)) throw new ProviderProtocolError('provider response declared a DTD or entity')
   assertWellFormedXml(text)
-  try { return xmlParser.parse(text) }
-  catch { throw new ProviderProtocolError('provider response was not valid XML') }
+  try {
+    return xmlParser.parse(text)
+  } catch {
+    throw new ProviderProtocolError('provider response was not valid XML')
+  }
 }
 
 function newznabErrorFrom(value: unknown): NewznabError | null {
@@ -299,7 +355,11 @@ export function findNewznabError(document: unknown): NewznabError | null {
 export function detectXmlError(bytes: Uint8Array): NewznabError | null {
   if (bytes.length === 0 || bytes.length > LOOKUP_MAX_BYTES || bytes[0] !== 0x3c) return null
   let document: unknown
-  try { document = parseProviderXml(decodeText(bytes)) } catch { return null }
+  try {
+    document = parseProviderXml(decodeText(bytes))
+  } catch {
+    return null
+  }
   return findNewznabError(document)
 }
 
@@ -312,7 +372,10 @@ export function classifyNewznabError(code: number): ProviderFailure {
     case 100:
       return { code: 'unauthorized', message: 'Invalid API key or IP mismatch — check the key and pinned API IP' }
     case 500:
-      return { code: 'rate_limited', message: 'AmeNZB API limit reached (code 500) — retry later or check the account allowance' }
+      return {
+        code: 'rate_limited',
+        message: 'AmeNZB API limit reached (code 500) — retry later or check the account allowance',
+      }
     case 200:
     case 201:
     case 202:
@@ -336,11 +399,15 @@ export function validateNzbBytes(bytes: Uint8Array): void {
   if (DECLARATION_PATTERN.test(xml)) throw new Error('NZB response declared an unsupported DTD or entity')
   assertWellFormedXml(xml)
   let document: unknown
-  try { document = xmlParser.parse(xml) }
-  catch { throw new Error('NZB response was not valid XML') }
+  try {
+    document = xmlParser.parse(xml)
+  } catch {
+    throw new Error('NZB response was not valid XML')
+  }
   const roots = isRecord(document) ? Object.keys(document).filter(key => !key.startsWith('?')) : []
   const nzb = isRecord(document) ? document.nzb : undefined
-  if (roots.length !== 1 || roots[0] !== 'nzb' || !isRecord(nzb)) throw new Error('NZB response had the wrong root element')
+  if (roots.length !== 1 || roots[0] !== 'nzb' || !isRecord(nzb))
+    throw new Error('NZB response had the wrong root element')
   const files = listOf(nzb.file)
   if (!files.length) throw new Error('NZB response contained no segments')
   for (const file of files) {
@@ -348,8 +415,13 @@ export function validateNzbBytes(bytes: Uint8Array): void {
     const segments = listOf(container?.segment)
     if (!segments.length) throw new Error('NZB response contained no segments')
     for (const segment of segments) {
-      if (!isRecord(segment) || !text(segment['#text']) || safeByteSize(segment['@_bytes']) === undefined
-        || !Number.isSafeInteger(Number(segment['@_number'])) || Number(segment['@_number']) <= 0) {
+      if (
+        !isRecord(segment) ||
+        !text(segment['#text']) ||
+        safeByteSize(segment['@_bytes']) === undefined ||
+        !Number.isSafeInteger(Number(segment['@_number'])) ||
+        Number(segment['@_number']) <= 0
+      ) {
         throw new Error('NZB response contained an invalid segment')
       }
     }
