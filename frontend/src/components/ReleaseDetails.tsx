@@ -4,7 +4,7 @@ import type { Config, Release, ResultItem } from '../types'
 import { formatBytes, formatEta, providerNames, seasonLabel, sizeDelta } from '../utils'
 import { buttonBase, cx, downloadTextTone } from '../styles'
 import Icon from './Icons'
-import { DownloadActions, clientName, phaseLabel, type DownloadEntry } from './DownloadsPanel'
+import { DownloadActions, ImportStatusLine, clientName, phaseLabel, type DownloadEntry } from './DownloadsPanel'
 import { estimateDownloads } from '../../../shared/download-estimate'
 import type { DownloadProtocol, UsenetAvailabilityResult } from '../api'
 import type { DetailsDownloadState } from '../useCardDownloads'
@@ -132,6 +132,12 @@ export default function ReleaseDetails({ result: r, release: rel, config, state,
     : fileScope.selected ? `Download ${fileScope.files.length} file${fileScope.files.length === 1 ? '' : 's'}` : 'Download release'
 
   const tags = [...new Set([...(rel.dual_audio ? ['Dual Audio'] : []), ...(rel.tags || [])])]
+  const sameGroup = (group: string) => group.trim().toLowerCase() === rel.releaseGroup.trim().toLowerCase()
+  const verified = Boolean(r.verified_by_part?.[rel.part || '']?.some(sameGroup))
+  const mismatched = !verified && Boolean(r.mismatched_by_part?.[rel.part || '']?.some(sameGroup))
+  // Naming the target only helps where several releases compete for the same season or cour.
+  const competing = r.releases.filter(other => (other.part || '') === (rel.part || '')).length > 1
+  const targeted = Boolean(rel.target) && competing && !verified && !complete && !inClient
   const statusCopy = complete ? `Download completed in ${clientName(transfers[0].client)}` : ''
   const usenetCategory = r.arr === 'Sonarr' ? config?.sabnzbd_sonarr_category : config?.sabnzbd_radarr_category
 
@@ -141,9 +147,13 @@ export default function ReleaseDetails({ result: r, release: rel, config, state,
         <span className={cx('shrink-0 text-xs font-bold', isBest ? 'text-good' : 'text-muted')}>{isBest ? 'BEST' : 'ALTERNATIVE'}</span>
         <div className="release-identity flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
           <span className="max-w-full text-sm font-semibold text-ink wrap-anywhere">{rel.releaseGroup}</span>
+          {targeted && <span className="shrink-0 rounded-md border border-accent/40 bg-accent/12 px-2 py-0.5 text-xs font-semibold text-ink" title="Your release preferences pick this release for bulk downloads">Your target</span>}
           {tags.length > 0 && <div className="flex min-w-0 flex-wrap gap-1.5">{tags.map(tag => <span key={tag} className={cx('max-w-full rounded-md border px-2 py-0.5 text-xs font-semibold text-ink wrap-anywhere', tag === 'Dual Audio' ? 'border-sky/40 bg-sky/12' : 'border-purple/40 bg-purple/12')}>{tag}</span>)}</div>}
         </div>
       </div>
+      {verified && <p className="m-0 mb-3 flex items-start gap-1.5 text-xs font-semibold text-good"><Icon name="check" size={14} className="mt-0.5 shrink-0"/><span>Your files match this release exactly.</span></p>}
+      {mismatched && <p className="m-0 mb-3 flex items-start gap-1.5 text-xs text-warn" role="note"><Icon name="alert" size={14} className="mt-0.5 shrink-0"/><span className="min-w-0"><span className="font-semibold">Your {rel.releaseGroup} files differ from this release.</span><span className="mt-0.5 block text-ink">Their sizes do not match the files SeaDex lists, so they are an earlier version or a different release by the same group.</span></span></p>}
+      {rel.excluded_by && <p className="m-0 mb-3 flex items-start gap-1.5 text-xs text-muted" role="note"><Icon name="ban" size={14} className="mt-0.5 shrink-0"/><span className="min-w-0"><span className="font-semibold text-ink">Excluded by your release preferences: {rel.excluded_by}.</span><span className="mt-0.5 block">Bulk download skips it. You can still download it here.</span></span></p>}
       <dl className="release-sizes m-0 mb-3 flex flex-wrap gap-x-6 gap-y-2 text-xs wrap-anywhere">
         <div><dt className="mb-1 text-muted">Current files</dt><dd className="m-0 font-semibold tabular-nums text-ink">{bytesOrUnknown(localSize)}</dd></div>
         <div><dt className="mb-1 text-muted">{rel.part ? 'Cour release' : r.arr === 'Radarr' || r.season === 0 ? 'Movie release' : r.season !== null ? 'Season release' : 'Release'}</dt><dd className="m-0 font-semibold tabular-nums text-ink">{bytesOrUnknown(rel.size)}</dd></div>
@@ -191,6 +201,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, state,
           {transfer.phase === 'acceptance_unknown' && <p className="mt-2 mb-0 text-xs text-warn">{client} was asked to start this download but did not confirm it. It is picked up automatically if it appears in {client}. If it is not there, stop tracking it to send it again.</p>}
           {transfer.phase === 'missing' && <p className="mt-2 mb-0 text-xs text-bad">This download is no longer in {client}. Remove the entry and send it again if you still want it.</p>}
           {transfer.unbound && <p className="mt-2 mb-0 text-xs text-warn">This download belongs to a different client URL and cannot be controlled from here.</p>}
+          {transfer.import && transfer.import.state !== 'waiting' && <div className="mt-2"><ImportStatusLine entry={transfer}/></div>}
           <div className="mt-2 flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-muted wrap-anywhere">{transfer.phase === 'downloading' ? [transfer.speed > 0 && transfer.client === 'qbittorrent' ? `${formatBytes(transfer.speed)}/s` : '', transfer.client === 'qbittorrent' ? formatEta(Math.max(0, transfer.total_size - transfer.downloaded), transfer.speed) : ''].filter(Boolean).join(' · ') : transfer.phase === 'post_processing' || transfer.phase === 'unpacking' ? `${client} is preparing the files…` : ''}</span><span className="ml-auto inline-flex gap-2"><DownloadActions entry={transfer} busy={busy} onPause={() => onPause(transfer)} onResume={() => onResume(transfer)} onRemove={() => onRemove(transfer)}/></span></div>
         </div>
       })}

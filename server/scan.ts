@@ -1,4 +1,4 @@
-import { assessSeason, resolveSeasonChainEntry } from './assessment.js'
+import { assessSeason, resolveSeasonChainEntry, type AssessmentSettings } from './assessment.js'
 import { beginScan, endScan, getState, setState } from './scan-state.js'
 import { scanRequests } from './http.js'
 import { log, timestamp, errorMessage } from './logging.js'
@@ -6,15 +6,53 @@ import { HISTORY_FILE } from './paths.js'
 import { loadCache, loadLastResults, saveLastResults } from './results.js'
 import { normalizeResults } from './result-model.js'
 import { loadUserRules, libraryItemKey, seasonMappingKey, applyUserRulesToResults } from './user-rules.js'
-import { recordScanHistory, type ScanHistoryEntry } from './history.js'
+import { matchPreviousResult, recordScanHistory, type ScanHistoryEntry, type ScanHistoryMetadata } from './history.js'
 import { seadexBest } from './catalog.js'
-import { loadLocalLibrary, arrItemUrl } from './library.js'
+import { loadLocalLibrary, arrItemUrl, isScopedScan, scopeIds, type LibraryLoad } from './library.js'
 import { anilistChain, anilistSeason } from './anilist.js'
 
 import { autoNotifyNew } from './notifications.js'
 import { unhideNewBestReleases } from './hidden.js'
 import { prefetchAfterScan } from './usenet-prefetch.js'
-import type { Config, JsonObject, ScanScope, ScanTrigger, LocalItem, LocalSeason, ResultItem } from './types.js'
+import { syncArrTags } from './arr-tags.js'
+import { settleImports } from './import-follow.js'
+import { arrInstances, configuredArrInstances, instanceSourceKey, sourceNameOf } from './arr-instances.js'
+import { describeRegression } from '../shared/release-changes.js'
+import { DEFAULT_RELEASE_PREFERENCES, normalizeReleasePreferences } from '../shared/settings.js'
+import type { Config, JsonObject, ScanScope, ScanTrigger, LocalItem, LocalSeason, ResultItem, SeaDexEntry } from './types.js'
+
+/** Identifies the settings a season is judged under; results computed under another signature are not comparable. */
+export function assessmentSignature(config: Pick<Config, 'release_preferences' | 'verify_release_files'>): string {
+  return JSON.stringify([normalizeReleasePreferences(config.release_preferences), config.verify_release_files !== false])
+}
+const DEFAULT_ASSESSMENT_SIGNATURE = assessmentSignature({ release_preferences: DEFAULT_RELEASE_PREFERENCES, verify_release_files: true })
+
+/** Identifies which libraries, and which part of each, a scan covers. */
+export function librarySignature(config: Config): string {
+  return JSON.stringify(configuredArrInstances(config).map(instance => [instance.id, instance.url, instance.scope]))
+}
+
+/** True when scope, preference, or verification settings changed since the saved results were computed. */
+export function resultSettingsChanged(config: Config, saved: { count: number; settings?: { assessment?: string; library?: string } }): boolean {
+  if (!saved.count) return false
+  if ((saved.settings?.assessment ?? DEFAULT_ASSESSMENT_SIGNATURE) !== assessmentSignature(config)) return true
+  return saved.settings?.library !== undefined && saved.settings.library !== librarySignature(config)
+}
+
+// Scans of single titles (webhooks, import checks) reuse a recent catalog instead of downloading it again.
+const CATALOG_REUSE_MS = 15 * 60_000
+let recentCatalog: { loadedAt: number; catalog: Map<number, SeaDexEntry> } | null = null
+let catalogExpiry: NodeJS.Timeout | undefined
+async function loadCatalog(load: typeof seadexBest, reuse: boolean): Promise<Map<number, SeaDexEntry>> {
+  if (load !== seadexBest) return load()
+  if (reuse && recentCatalog && Date.now() - recentCatalog.loadedAt < CATALOG_REUSE_MS) return recentCatalog.catalog
+  const catalog = await load()
+  recentCatalog = { loadedAt: Date.now(), catalog }
+  clearTimeout(catalogExpiry)
+  catalogExpiry = setTimeout(() => { recentCatalog = null }, CATALOG_REUSE_MS)
+  catalogExpiry.unref?.()
+  return catalog
+}
 
 export interface ScanDependencies {
   seadexBest?: typeof seadexBest
@@ -27,15 +65,20 @@ export interface ScanDependencies {
   unhideNewBestReleases?: typeof unhideNewBestReleases
   loadUserRules?: typeof loadUserRules
   onScanFinished?: (config: Config, results: ResultItem[]) => void
-  recordScanHistory?: (previous: JsonObject[], current: JsonObject[], runAt: string, file?: string, trigger?: ScanTrigger, metadata?: { durationSeconds?: number; scannedTitles?: number; sourceErrors?: Record<string, string>; outcome?: ScanHistoryEntry['outcome']; error?: string }) => ScanHistoryEntry
+  /** Writes status tags back to Sonarr and Radarr when that is enabled. */
+  syncArrTags?: typeof syncArrTags
+  /** Lets finished downloads learn from the new results whether they were imported. */
+  settleImports?: typeof settleImports
+  recordScanHistory?: (previous: JsonObject[], current: JsonObject[], runAt: string, file?: string, trigger?: ScanTrigger, metadata?: ScanHistoryMetadata) => ScanHistoryEntry
 }
 
 /** Resolve dependencies once; overrides never disable another subsystem. */
 export function createScanService(overrides: ScanDependencies = {}) {
   const dependencies = {
     seadexBest, anilistChain, anilistSeason, loadCache, saveLastResults, autoNotifyNew, unhideNewBestReleases, loadUserRules, recordScanHistory, onScanFinished: prefetchAfterScan,
+    syncArrTags, settleImports,
     ...overrides,
-    loadLibrary: overrides.localItems ? async (config: Config, scope: ScanScope = {}) => ({ items: await overrides.localItems!(config, scope), sourceErrors: {} }) : loadLocalLibrary,
+    loadLibrary: overrides.localItems ? async (config: Config, scope: ScanScope = {}): Promise<LibraryLoad> => ({ items: await overrides.localItems!(config, scope), sourceErrors: {}, outOfScope: [] }) : loadLocalLibrary,
   }
   return {
     async run(config: Config, trigger: ScanTrigger = 'manual', scope: ScanScope = {}): Promise<void> {
@@ -55,11 +98,13 @@ async function performScan(config: Config, dependencies: Required<Omit<ScanDepen
   const previousState = getState()
   let stage = 'initializing'
   try {
-    const enabledSources = [config.sonarr_url && config.sonarr_key ? 'Sonarr' : '', config.radarr_url && config.radarr_key ? 'Radarr' : ''].filter(Boolean)
+    const instances = configuredArrInstances(config)
+    const enabledSources = instances.map(instance => instance.name)
+    const scoped = isScopedScan(scope)
     log('INFO', `Scan started (trigger: ${trigger}; sources: ${enabledSources.join(', ') || 'none configured'}; Discord notifications: ${config.notify_enabled && config.webhook ? 'enabled' : 'disabled'})`)
     setState({ running: true, cancelled: false, trigger, source_errors: {}, error: null, progress: 0, total: 0, message: 'Loading SeaDex best releases…' })
     stage = 'loading the SeaDex catalog'
-    const best = await dependencies.seadexBest()
+    const best = await loadCatalog(dependencies.seadexBest, scoped)
     log('INFO', `SeaDex catalog loaded: ${best.size} best-release entr${best.size === 1 ? 'y' : 'ies'}`)
     setState({ message: 'Loading local library…' })
     stage = 'loading the Sonarr/Radarr library'
@@ -75,8 +120,13 @@ async function performScan(config: Config, dependencies: Required<Omit<ScanDepen
     log('INFO', `Local library loaded: ${items.length} item${items.length === 1 ? '' : 's'}${sourceDetails ? ` (${sourceDetails})` : ''}`)
     setState({ total: items.length })
     const cache = dependencies.loadCache()
-    const previousResults = (previousState.results.length ? previousState.results : loadLastResults()?.results || [])
+    const saved = loadLastResults()
+    const previousResults = (previousState.results.length ? previousState.results : saved?.results || [])
     const rules = dependencies.loadUserRules()
+    const settings: AssessmentSettings = { preferences: normalizeReleasePreferences(config.release_preferences), verify: config.verify_release_files !== false }
+    const signatures = { assessment: assessmentSignature(config), library: librarySignature(config) }
+    // Results judged under other preferences are a new baseline: their differences are neither SeaDex changes nor regressions.
+    const settingsChanged = previousResults.length > 0 && (saved?.settings?.assessment ?? DEFAULT_ASSESSMENT_SIGNATURE) !== signatures.assessment
     // Reuse saved title matches and sequel IDs to refresh the library in batches.
     // Unknown titles still go through the normal title matching rules.
     const prefetchIds: number[] = []
@@ -95,12 +145,12 @@ async function performScan(config: Config, dependencies: Required<Omit<ScanDepen
       const chain = cache[`chain:v8:${id}`]?.chain
       if (Array.isArray(chain)) for (const entry of chain) prefetchIds.push(...(entry.ids || [entry.id]))
     }
-    const scopedKeys = new Set([...(scope.sonarrIds || []).map((id) => `Sonarr:item${id}`), ...(scope.radarrIds || []).map((id) => `Radarr:item${id}`)])
+    // Scope IDs name an instance whether or not it is configured in this process.
+    const scopedKeys = new Set(arrInstances(config).flatMap(instance => (scopeIds(scope, instance) || []).map(id => `${instanceSourceKey(instance)}:item${id}`)))
     const retainedResults = previousResults.filter((result) => {
-      const source = String(result.arr || '')
-      if (sourceErrors[source]) return true
+      if (sourceErrors[sourceNameOf(result)]) return true
       if (scopedKeys.size > 0) return !scopedKeys.has(String(result.library_key || ''))
-      return !['Sonarr', 'Radarr'].includes(source)
+      return !['Sonarr', 'Radarr'].includes(String(result.arr || ''))
     })
     const results: ResultItem[] = []
     stage = 'resolving library titles'
@@ -139,7 +189,7 @@ async function performScan(config: Config, dependencies: Required<Omit<ScanDepen
       for (const [season, local] of seasonEntries) {
         setState({ message: `Resolving: ${item.title} (${season ? `S${String(season).padStart(2, '0')}` : 'Movie'})` })
         const override = overrides.has(season) ? { entry: overrides.get(season)!, groupId, ids: rules.season_mappings![seasonMappingKey(libraryKey, season)] } : undefined
-        const result = assessSeason(item, season, local, chain, best, libraryKey, mappingId, arrUrl, override)
+        const result = assessSeason(item, season, local, chain, best, libraryKey, mappingId, arrUrl, override, settings)
         result.group_id = groupId
         results.push(result)
       }
@@ -152,20 +202,33 @@ async function performScan(config: Config, dependencies: Required<Omit<ScanDepen
     const finalResults = normalizeResults(applyUserRulesToResults([...retainedResults, ...results], rules))
     setState({ progress: items.length, message: Object.keys(sourceErrors).length ? 'Done with integration errors' : 'Done', results: finalResults, last_run: lastRun, source_errors: sourceErrors })
     stage = 'saving scan results'
-    dependencies.saveLastResults(finalResults, lastRun)
+    // A scan of single titles leaves the other results as they were judged, so the saved signatures stay.
+    const resultSettings = scoped ? saved?.settings : signatures
+    dependencies.saveLastResults(finalResults, lastRun, { baseline: settingsChanged, ...(resultSettings ? { settings: resultSettings } : {}) })
     try { dependencies.onScanFinished(config, finalResults) }
     catch (error) { log('WARNING', `Usenet prefetch after scan could not start: ${errorMessage(error)}`) }
-    try { dependencies.unhideNewBestReleases(previousResults, finalResults) }
+    try { dependencies.settleImports(finalResults) }
+    catch (error) { log('WARNING', `Could not update import tracking: ${errorMessage(error)}`) }
+    try { dependencies.unhideNewBestReleases(settingsChanged ? [] : previousResults, finalResults) }
     catch (error) { log('WARNING', `Could not restore hidden anime with new best releases: ${errorMessage(error)}`) }
     try {
-      const metadata = { durationSeconds: Math.round((Date.now() - started) / 100) / 10, scannedTitles: items.length, sourceErrors }
+      const metadata = { durationSeconds: Math.round((Date.now() - started) / 100) / 10, scannedTitles: items.length, sourceErrors, settingsChanged }
       dependencies.recordScanHistory(previousResults, finalResults, lastRun, HISTORY_FILE, trigger, metadata)
     } catch (error) {
       log('WARNING', `Could not save scan history: ${errorMessage(error)}`)
     }
+    stage = 'writing status tags'
+    try { await dependencies.syncArrTags(config, { items, outOfScope: loaded.outOfScope, results: finalResults, sourceErrors }) }
+    catch (error) { log('WARNING', `Status tags ${controller.signal.aborted ? 'were cancelled' : `could not be written: ${errorMessage(error)}`}`) }
     stage = 'sending notifications'
     if (!Object.keys(sourceErrors).length) {
-      try { await dependencies.autoNotifyNew(config, { previous: previousResults }) }
+      const regressions: Record<string, string> = {}
+      if (!settingsChanged) for (const result of finalResults) {
+        const old = matchPreviousResult(previousResults, result) as ResultItem | null
+        const regression = old ? describeRegression(old, result) : null
+        if (regression) regressions[result.key] = regression.description
+      }
+      try { await dependencies.autoNotifyNew(config, { previous: previousResults, regressions }) }
       catch (error) { log('WARNING', `Scan results were saved, but notifications ${controller.signal.aborted ? 'were cancelled' : `failed: ${errorMessage(error)}`}`) }
     }
     else log('WARNING', `Notifications skipped after partial scan: ${Object.keys(sourceErrors).join(', ')} unavailable`)

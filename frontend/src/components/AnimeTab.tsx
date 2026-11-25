@@ -16,6 +16,8 @@ import LibrarySizeChange from './LibrarySizeChange'
 import BulkScopeSelector, { BulkScope } from './BulkScopeSelector'
 import { useLibraryMotion } from '../useLibraryMotion'
 import { groupReleaseChanges, latestReleaseChange } from '../release-changes'
+import { preferencesAreDefault } from '../../../shared/settings'
+import { upgradeParts } from '../../../shared/download-plan'
 
 interface Props {
   active: boolean
@@ -44,7 +46,7 @@ const SIZE_TITLE_ORDER = new Intl.Collator()
 const STATUS_RANK: Record<string, number> = { review: 0, upgrade: 1, partial: 2, missing: 3, best: 4 }
 
 function cardKey(group: GroupedCard): string {
-  return group.anilist_id !== null ? String(group.anilist_id) : `${group.arr}:${group.title}`
+  return group.key
 }
 
 function SkeletonCards() {
@@ -110,6 +112,12 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   }, [config?.hidden])
 
   const allGroups = useMemo(() => groupResults(results), [results])
+  // One Sonarr and one Radarr keep the familiar two choices; additional instances are listed by name.
+  const sources = useMemo(() => {
+    const named = [...new Set(allGroups.map(group => group.source))].sort((left, right) => left.localeCompare(right))
+    return named.some(name => name !== 'Sonarr' && name !== 'Radarr') ? named : ['Sonarr', 'Radarr']
+  }, [allGroups])
+  useEffect(() => { if (arr && !sources.includes(arr)) setArr('') }, [arr, sources])
   // Filtering preserves this order, so typing never sorts the collection again.
   const orderedGroups = useMemo(() => {
     const ordered = [...allGroups]
@@ -126,7 +134,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   ])), [allGroups])
   const searchQuery = search.trim().toLowerCase()
   const scopeGroups = useMemo(() => orderedGroups.filter(group => {
-    if (hiddenKeys.has(cardKey(group)) !== showHidden || (arr && group.arr !== arr)) return false
+    if (hiddenKeys.has(cardKey(group)) !== showHidden || (arr && group.source !== arr)) return false
     return !searchQuery || searchText.get(group)!.includes(searchQuery)
   }), [orderedGroups, hiddenKeys, showHidden, arr, searchText, searchQuery])
   const coverageGroups = useMemo(() => scopeGroups.filter(group => !coverageFilter || group.status === coverageFilter), [scopeGroups, coverageFilter])
@@ -216,15 +224,8 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
 
 
   const totalDelta = useMemo(() => groups.reduce((sum, group) => sum + cardSizeDelta(group), 0), [groups])
-  const upgradeSeasonCount = useMemo(() => new Set(
-    results
-      .filter((result) => {
-        if (result.excluded || (result.status !== 'upgrade' && !(result.status === 'partial' && result.upgrade_available))) return false
-        const excludedParts = new Set(result.excluded_parts || [])
-        return result.releases.some((release) => release.kind === 'best' && !excludedParts.has(release.part || ''))
-      })
-      .map((result) => result.key),
-  ).size, [results])
+  // The same rule bulk review applies, so the button is offered exactly when the review has something to show.
+  const upgradeSeasonCount = useMemo(() => new Set(results.filter((result) => upgradeParts(result).length > 0).map((result) => result.key)).size, [results])
   const libraryConfigured = Boolean(
     (config?.sonarr_url && config.sonarr_key_configured) ||
     (config?.radarr_url && config.radarr_key_configured),
@@ -340,7 +341,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
   return (
     <section>
       <header className="app-page-header mb-5 flex flex-wrap items-start justify-between gap-4 max-[600px]:mb-4 max-[600px]:gap-3">
-        <div><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted max-[600px]:hidden"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${displayDateTime(lastRun)}` : 'No completed scan'}</span>{autoCheckLabel !== null && <span title={scheduleDescription || undefined}>{scheduleDescription} · next in ~{autoCheckLabel}</span>}{status.webhook_scan.queued && <span className="text-accent-bright">Webhook scan queued</span>}</div></div>
+        <div><h1 className="m-0 text-3xl font-extrabold tracking-tight max-[600px]:text-2xl">Anime library</h1><div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted max-[600px]:hidden"><span className="inline-flex items-center gap-1.5"><Icon name="clock" size={15}/>{lastRun ? `Last scan ${displayDateTime(lastRun)}` : 'No completed scan'}</span>{autoCheckLabel !== null && <span title={scheduleDescription || undefined}>{scheduleDescription} · next in ~{autoCheckLabel}</span>}{status.webhook_scan.queued && <span className="text-accent-bright">{status.webhook_scan.sources.length ? 'Webhook scan queued' : 'Library check queued'}</span>}</div></div>
         <div className="library-actions flex flex-wrap items-center gap-2 max-[600px]:w-full">
           <button type="button" className={cx(buttonBase, 'library-scan-button justify-center wrap-anywhere max-[600px]:text-xs')} onClick={onScan} disabled={!libraryConfigured || status.running || bulkBusy !== null || bulkOperationActive}>{status.running ? <span className="size-4 animate-spin rounded-full border-2 border-current/30 border-t-current"/> : <Icon name="play" size={17}/>}<span>{status.running ? 'Scanning…' : 'Scan library'}</span></button>
           <button type="button" className={cx(buttonBase, 'library-bulk-button justify-center wrap-anywhere border-line bg-panel text-ink hover:bg-panel-raised max-[600px]:text-xs')} onClick={() => openBulkReview('start')} disabled={status.running || bulkBusy !== null || bulkOperationActive || upgradeSeasonCount === 0}><Icon name="download" size={17}/><span>Bulk download</span></button>
@@ -358,7 +359,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
           <button type="button" className={cx(buttonBase, 'justify-center border-line bg-panel px-3 text-xs text-ink max-[600px]:order-2 min-[601px]:hidden')} aria-expanded={optionsOpen} aria-controls="library-options" onClick={() => setOptionsOpen(value => !value)}><Icon name="filter" size={16}/><span>Filters & sort{activeOptions.length > 0 && ` (${activeOptions.length})`}</span></button>
           <div id="library-options" className={cx('w-full min-w-0 flex-wrap items-center gap-2.5 [&>select]:min-w-0 [&>select]:max-w-full min-[601px]:contents', optionsOpen ? 'flex' : 'hidden', 'max-[600px]:order-3')}>
           {autoCheckLabel !== null && <p className="m-0 w-full text-xs text-muted min-[601px]:hidden">{scheduleDescription} · next in ~{autoCheckLabel}</p>}
-          <select aria-label="Source" className={cx(control, 'min-w-36 shrink-0 cursor-pointer')} value={arr} onChange={(event) => setArr(event.target.value)}><option value="">All sources</option><option value="Sonarr">Sonarr</option><option value="Radarr">Radarr</option></select>
+          <select aria-label="Source" className={cx(control, 'min-w-36 shrink-0 cursor-pointer')} value={arr} onChange={(event) => setArr(event.target.value)}><option value="">All sources</option>{sources.map(source => <option key={source} value={source}>{source}</option>)}</select>
           <select aria-label="SeaDex coverage" className={cx(control, 'min-w-44 shrink-0 cursor-pointer')} value={coverageFilter} onChange={event => setCoverageFilter(event.target.value)}>{coverageFilters.map(filter => <option key={filter.value} value={filter.value}>{filter.label}</option>)}</select>
           <select aria-label="Sort library" title={showUnseen ? 'Sorted by latest changes while Unseen changes is on' : undefined} className={cx(control, 'min-w-48 shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-60')} value={showUnseen ? 'changed' : sort} disabled={showUnseen} onChange={(event) => setSort(event.target.value)}><option value="recommended">Recommended order</option><option value="title">Title A–Z</option><option value="size">Largest size change</option><option value="changed">Latest release change</option></select>
           <button type="button" className={cx('touch-target inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors', showHidden ? 'bg-warn/10 text-warn' : 'text-muted hover:bg-panel hover:text-ink')} aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}><Icon name="eye-off" size={17}/>{showHidden ? 'Hidden only' : 'Show hidden only'}</button>
@@ -380,6 +381,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
       </div>
 
 
+      {!loading && results.length > 0 && status.settings_changed && !status.running && <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-warn/30 bg-warn/8 px-4 py-3 text-sm text-ink" role="status"><Icon name="info" size={18} className="shrink-0 text-warn"/><span className="min-w-0 flex-1 basis-56">Library scope or release preferences changed since the last scan. These results still reflect the earlier settings.</span><button type="button" className={cx(buttonBase, 'border-warn/35 bg-warn/10 text-ink hover:bg-warn/18')} onClick={onScan} disabled={!libraryConfigured || bulkBusy !== null || bulkOperationActive}><Icon name="play" size={16}/>Scan library</button></div>}
       {!loading && results.length > 0 && <p className="library-summary" aria-label="Library summary">{shownUpgrades > 0 ? <span><strong>{shownUpgrades}</strong> {shownUpgrades === 1 ? 'title' : 'titles'} can be upgraded{totalDelta > 0 && <> · <LibrarySizeChange delta={totalDelta} note="if all are downloaded"/></>}</span> : <span>No upgrades available</span>}{shownReviews > 0 && <span className="max-[600px]:hidden"><strong>{shownReviews}</strong> {shownReviews === 1 ? 'match needs' : 'matches need'} review</span>}<span className="library-summary-count">{groups.length} shown</span><span className="library-scan-freshness min-[601px]:hidden">{lastRun ? `Last scan ${displayDateTime(lastRun)}` : 'No completed scan'}</span></p>}
       {(loading || (status.running && results.length === 0)) && <SkeletonCards/>}
       {!loading && results.length > 0 && groups.length > 0 && <div ref={resultsRef} className="library-results" tabIndex={-1} role="region" aria-label="Library results">
@@ -396,6 +398,7 @@ export default function AnimeTab({ active, openResultKey, onResultOpened, bulkOp
         busy={bulkBusy === 'start'}
         job={bulkJob}
         downloadMode={config?.download_mode || 'torrent_only'}
+        preferTarget={Boolean(config?.release_preferences && !preferencesAreDefault(config.release_preferences))}
         sabEnabled={Boolean(config?.sabnzbd_url && config?.sabnzbd_key_configured)}
         onConfirm={(plan_id, acknowledge) => void handleBulkStart(plan_id, acknowledge)}
         onClose={() => setBulkConfirm(null)}

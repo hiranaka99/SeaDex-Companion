@@ -4,7 +4,7 @@ import { currentGeneration } from './config-generation.js'
 import type { StoredPlan } from './download-plans.js'
 import { buildDownloadPlan, type SubmissionUnit } from './download-preflight.js'
 import { downloadJobs, jobResult } from './download-jobs.js'
-import { addDownloadRecord, markDownloadRemoved, setDownloadNative } from './download-store.js'
+import { addDownloadRecord, markDownloadRemoved, setDownloadNative, type LibraryTarget } from './download-store.js'
 import { qbAddTorrent, QbittorrentAmbiguousError } from './qbittorrent.js'
 import { sabAddNzb, SabnzbdAmbiguousError, sabSubmissionName } from './sabnzbd.js'
 import { qbEndpointId, sabEndpoint } from './client-identity.js'
@@ -35,6 +35,19 @@ function cardFor(selections: DownloadSelectionRef[], resultsById: Map<string, Re
   const release: Release | undefined = result?.releases?.[first?.release ?? -1]
   if (!result || !release) return undefined
   return { title: result.title || result.key, season: result.season ?? null, part: release.part || '', release_group: release.releaseGroup, tracker: release.tracker, size: release.size ?? 0 }
+}
+
+/** The library seasons a source is downloaded for, so its import can be confirmed against later scans. */
+function libraryTargets(selections: DownloadSelectionRef[], resultsById: Map<string, ResultItem>): LibraryTarget[] {
+  const targets = new Map<string, LibraryTarget>()
+  for (const selection of selections) {
+    const result = resultsById.get(selection.key)
+    const release = result?.releases?.[selection.release]
+    if (!result?.library_key || !release) continue
+    const target = { key: result.library_key, season: result.season ?? null, part: release.part || '', group: release.releaseGroup }
+    targets.set(JSON.stringify(target), target)
+  }
+  return [...targets.values()]
 }
 
 /**
@@ -118,10 +131,11 @@ export async function acceptDownloadPlan(
 async function submitUnit(config: Config, jobId: string, unit: SubmissionUnit, resultsById: Map<string, ResultItem>) {
   const label = unit.labels.join(' / ') || unit.source_hash
   const card = cardFor(unit.selections, resultsById)
+  const library = libraryTargets(unit.selections, resultsById)
   if (unit.protocol === 'torrent') {
     const record = addDownloadRecord({
       protocol: 'torrent', client: 'qbittorrent', endpoint: qbEndpointId(config), native_id: unit.source_hash,
-      state: 'acceptance_unknown', source_hash: unit.source_hash, category: unit.category, card, labels: unit.labels, rows: unit.selections,
+      state: 'acceptance_unknown', source_hash: unit.source_hash, category: unit.category, card, labels: unit.labels, rows: unit.selections, library,
       scope: unit.requestedPaths.length ? unit.requestedPaths : undefined,
     })
     let accepted = false
@@ -155,7 +169,7 @@ async function submitUnit(config: Config, jobId: string, unit: SubmissionUnit, r
   const record = addDownloadRecord({
     protocol: 'usenet', client: 'sabnzbd', endpoint: endpointId, native_id: '',
     state: 'acceptance_unknown', source_hash: unit.source_hash, category: unit.category,
-    provider: unit.provider, entry_id: unit.entryId, nzb_name: unit.nzb_name, card, labels: unit.labels, rows: unit.selections,
+    provider: unit.provider, entry_id: unit.entryId, nzb_name: unit.nzb_name, card, labels: unit.labels, rows: unit.selections, library,
   })
   let accepted = false
   try {

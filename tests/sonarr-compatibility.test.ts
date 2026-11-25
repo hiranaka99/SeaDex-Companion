@@ -63,7 +63,7 @@ for (const version of [4, 5]) {
       const items = await localItems(config)
       assert.deepEqual(items, [{ arr: 'Sonarr', id: 10, title: 'Example', slug: 'example', seasons: {
         1: { groups: [], size: 300, episode_numbers: [1, 2], episode_count: 2, missing_episode_count: 1,
-          groups_by_episode: { IK: [1] }, sizes_by_episode: { 1: 300 } },
+          groups_by_episode: { IK: [1] }, sizes_by_episode: { 1: 300 }, files: [{ size: 300, episodes: [1], group: 'IK' }] },
       } }])
     } finally { await fixture.close() }
   })

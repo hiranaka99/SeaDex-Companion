@@ -1,4 +1,4 @@
-import { releaseOwned } from '../../../shared/download-plan'
+import { releaseOwned, releaseSatisfies } from '../../../shared/download-plan'
 import type { ResultItem } from '../types'
 import { seasonLabel } from '../utils'
 import { cx } from '../styles'
@@ -22,8 +22,10 @@ export default function SeasonBadge({ season, fallback, className, animeTitle = 
   const split = parts.length > 1
   const tones = parts.map(part => {
     const owned = releases.filter(release => (release.part || '') === part && owns(release))
-    if (split && owned.some(release => release.kind === 'best')) return TONES.best
-    if (owned.some(release => release.kind === 'alt')) return TONES.alt
+    // An owned alternative only reads as a shortfall when it does not settle the season.
+    const settles = owned.some(releaseSatisfies)
+    if (split && settles) return TONES.best
+    if (!settles && owned.some(release => release.kind === 'alt')) return TONES.alt
     return defaultTone
   })
   const tone = tones[0] || defaultTone

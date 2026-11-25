@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import TopBar from './components/TopBar'
 import AnimeTab from './components/AnimeTab'
 import ConfigTab from './components/ConfigTab'
@@ -159,6 +159,8 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   }, [])
 
   const handleResultOpened = useCallback(() => setOpenResultKey(null), [])
+  // Trackers named by the current results, offered as one-click choices in the release preferences.
+  const knownTrackers = useMemo(() => [...new Set(results.flatMap(result => result.releases.map(release => release.tracker.trim()).filter(Boolean)))].sort((left, right) => left.localeCompare(right)), [results])
   const handleResultsChanged = useCallback(async () => { await loadResults() }, [loadResults])
 
   const pollStatus = useCallback(async (generation: number): Promise<void> => {
@@ -367,7 +369,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
           />
         </div>
         {historyVisited.current && <div hidden={tab !== 'history'}><HistoryTab active={tab === 'history'} results={results} onOpenResult={openHistoryResult} /></div>}
-        {configVisited.current && <div hidden={tab !== 'config'}><ConfigTab active={tab === 'config'} scanDisabled={status.running || bulkOperation?.phase === 'running'} footerTarget={configFooterTarget} loadError={configError} onRetry={() => void loadConfig()} config={config} status={status} username={username} onRunScan={handleScan} onAccountUpdated={onAccountUpdated} onSaved={saved => { api.invalidateDownloadProgress(); setDateTimeFormat(saved.datetime_format); setConfig(saved) }} onScannedDataCleared={handleScannedDataCleared} /></div>}
+        {configVisited.current && <div hidden={tab !== 'config'}><ConfigTab active={tab === 'config'} scanDisabled={status.running || bulkOperation?.phase === 'running'} footerTarget={configFooterTarget} loadError={configError} onRetry={() => void loadConfig()} config={config} status={status} username={username} knownTrackers={knownTrackers} onRunScan={handleScan} onAccountUpdated={onAccountUpdated} onSaved={saved => { api.invalidateDownloadProgress(); setDateTimeFormat(saved.datetime_format); setConfig(saved) }} onScannedDataCleared={handleScannedDataCleared} /></div>}
         {tab === 'log' && <LogTab active={tab === 'log'} />}
         </div>
         </div>

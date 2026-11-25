@@ -1,21 +1,49 @@
-import type { Config } from './types.js'
-import { arrApiUrl, sabnzbdApiUrl, sonarrApiUrl } from './config.js'
+import type { Config, JsonObject } from './types.js'
+import type { ArrScopeOptions } from '../shared/contracts.js'
+import { arrApiUrl, sabnzbdApiUrl, sabnzbdCategories } from './config.js'
 import { api, fetchWithTimeout } from './http.js'
+import { ARR_NAMES, findArrInstance, type ArrInstance } from './arr-instances.js'
+import { arrApiBase } from './library.js'
 import { qbTestConnection } from './qbittorrent.js'
 import { testAnimeTosho } from './animetosho.js'
 import { testAmeNZB } from './amenzb.js'
 import { sabMissingCategories, sabTestConnection } from './sabnzbd.js'
 
+/** `sonarr`, `radarr`, or `arr:<id>` for an additional instance. */
+export function isArrService(service: string): boolean {
+  return service === 'sonarr' || service === 'radarr' || service.startsWith('arr:')
+}
+
+function arrInstanceFor(config: Config, service: string): ArrInstance {
+  const instance = findArrInstance(config, service.startsWith('arr:') ? service.slice(4) : service)
+  if (!instance) throw new Error('Unknown Sonarr or Radarr instance')
+  if (!arrApiUrl(instance.url) || !instance.key) throw new Error(`${instance.name} URL and API key are required`)
+  return instance
+}
+
+/** Tags and root folders an instance offers, for choosing a library scope. Read-only. */
+export async function arrScopeOptions(config: Config, service: string): Promise<ArrScopeOptions> {
+  const instance = arrInstanceFor(config, service)
+  const base = await arrApiBase(instance)
+  const followRedirects = instance.kind === 'sonarr'
+  const [tags, folders] = await Promise.all([
+    api(`${base}/tag`, instance.key, {}, followRedirects) as Promise<JsonObject[]>,
+    api(`${base}/rootfolder`, instance.key, {}, followRedirects) as Promise<JsonObject[]>,
+  ])
+  const texts = (items: unknown, field: string) => [...new Set((Array.isArray(items) ? items : []).map(item => String(item?.[field] || '').trim()).filter(Boolean))]
+  return {
+    tags: texts(tags, 'label').map(label => label.toLowerCase()).sort((left, right) => left.localeCompare(right)),
+    root_folders: texts(folders, 'path').sort((left, right) => left.localeCompare(right)),
+  }
+}
+
 /** Connection previews for configured integrations. Every check is read-only or a declared single test message; nothing is ever enqueued. */
 export async function testIntegration(config: Config, service: string): Promise<string> {
-  if (service === 'sonarr' || service === 'radarr') {
-    const url = config[`${service}_url`]
-    let base = arrApiUrl(url)
-    const key = String(config[`${service}_key`] || '')
-    if (!base || !key) throw new Error(`${service === 'sonarr' ? 'Sonarr' : 'Radarr'} URL and API key are required`)
-    if (service === 'sonarr') base = await sonarrApiUrl(url, key)
-    const status = await api(`${base}/system/status`, key, {}, service === 'sonarr')
-    const name = String(status.appName || status.instanceName || (service === 'sonarr' ? 'Sonarr' : 'Radarr'))
+  if (isArrService(service)) {
+    const instance = arrInstanceFor(config, service)
+    const base = await arrApiBase(instance)
+    const status = await api(`${base}/system/status`, instance.key, {}, instance.kind === 'sonarr')
+    const name = String(status.appName || status.instanceName || ARR_NAMES[instance.kind])
     const version = status.version ? ` ${status.version}` : ''
     return `Connected to ${name}${version}`
   }
@@ -29,7 +57,7 @@ export async function testIntegration(config: Config, service: string): Promise<
     const settings = { apiUrl, apiKey: config.sabnzbd_key }
     const { version } = await sabTestConnection(settings, globalThis.fetch)
     // SABnzbd silently files NZBs with an unknown category under its default one, where Sonarr/Radarr never import them.
-    const missing = await sabMissingCategories(settings, [config.sabnzbd_sonarr_category, config.sabnzbd_radarr_category], globalThis.fetch)
+    const missing = await sabMissingCategories(settings, sabnzbdCategories(config), globalThis.fetch)
     if (missing === null) throw new Error(`Connected to SABnzbd ${version}, but its category list could not be read to check the configured categories`)
     if (missing.length) throw new Error(`Connected to SABnzbd ${version}, but it has no ${missing.length === 1 ? 'category' : 'categories'} named ${missing.map(name => `"${name}"`).join(' and ')}. Create ${missing.length === 1 ? 'it' : 'them'} in SABnzbd under Config → Categories, or enter the categories Sonarr and Radarr use.`)
     return `Connected to SABnzbd ${version}`

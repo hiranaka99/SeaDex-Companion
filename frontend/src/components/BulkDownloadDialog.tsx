@@ -55,6 +55,8 @@ interface Props {
   /** Live/last bulk submission state while the dialog stays open. */
   job: DownloadJobStatus | null
   downloadMode: DownloadMode
+  /** Release preferences are set, so their target is chosen where several releases are offered. */
+  preferTarget?: boolean
   sabEnabled: boolean
   onConfirm: (plan_id: string, acknowledge: { whole_source?: boolean; disk_space?: boolean }) => void
   onClose: () => void
@@ -103,7 +105,7 @@ function UsenetStatus({ row, loading }: { row: api.UsenetAvailabilityResult | un
   </span>
 }
 
-export default function BulkDownloadDialog({ open, results, scopeControl, hiddenKeys, busy, job, downloadMode, sabEnabled, onConfirm, onClose }: Props) {
+export default function BulkDownloadDialog({ open, results, scopeControl, hiddenKeys, busy, job, downloadMode, preferTarget = false, sabEnabled, onConfirm, onClose }: Props) {
   // The review keeps its selected snapshot; the server validates identities against current results.
   const usenetEnabled = downloadMode !== 'torrent_only' && sabEnabled
   const reviewCandidates = useMemo(() => buildReview(results, (_result, { release }) => usenetEnabled && (release.info_hashes?.length || 0) > 0, downloadMode !== 'usenet_only'), [results, usenetEnabled, downloadMode])
@@ -188,14 +190,16 @@ export default function BulkDownloadDialog({ open, results, scopeControl, hidden
   useEffect(() => {
     if (!open || busy || job) return
     // Only single-option groups get an automatic pick. Multi-option groups stay
-    // pending (collapsed + highlighted) until the user actively chooses one.
-    setSelected(Object.fromEntries(reviewCandidates.ready.filter((group) => group.options.length === 1).map((group) => [group.id, group.options[0].index])))
+    // pending (collapsed + highlighted) until the user actively chooses one,
+    // unless saved release preferences already name their target.
+    const preferred = (group: ReviewGroup) => group.options.length === 1 ? group.options[0] : preferTarget ? group.options.find(option => option.release.target) : undefined
+    setSelected(Object.fromEntries(reviewCandidates.ready.flatMap((group) => { const option = preferred(group); return option ? [[group.id, option.index]] : [] })))
     setEnabled(Object.fromEntries(reviewCandidates.ready.map((group) => [group.id, !hiddenKeys.has(hiddenKey(group.result))])))
     setProtocols({})
     setExpanded({})
     setView(reviewCandidates.ready.length || !reviewCandidates.blocked.length ? 'ready' : 'unavailable')
     cancelRef.current?.focus()
-  }, [open, reviewCandidates])
+  }, [open, reviewCandidates, preferTarget])
 
   if (!open) return null
   const locked = busy || Boolean(job)

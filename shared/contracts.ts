@@ -6,6 +6,56 @@ export interface AuthState {
   username: string | null
 }
 
+export type ArrKind = 'sonarr' | 'radarr'
+
+/** Which titles of one Sonarr or Radarr instance a scan considers. Empty lists mean no restriction. */
+export interface LibraryScope {
+  /** Sonarr only: keep series whose type is Anime. */
+  anime_only: boolean
+  /** Keep only titles carrying at least one of these tag labels. */
+  include_tags: string[]
+  /** Skip titles carrying any of these tag labels. */
+  exclude_tags: string[]
+  /** Keep only titles stored under one of these root folders. */
+  root_folders: string[]
+}
+
+/** An additional Sonarr or Radarr instance. The first of each kind keeps its dedicated settings. */
+export interface ArrInstanceConfig {
+  /** Immutable identifier; part of result and rule keys. */
+  id: string
+  kind: ArrKind
+  /** Unique display name, also used for scan errors. */
+  name: string
+  url: string
+  key: string
+  /** qBittorrent category this instance imports from. */
+  category: string
+  /** SABnzbd category this instance imports from. */
+  sabnzbd_category: string
+  scope: LibraryScope
+}
+
+export interface PublicArrInstance extends ArrInstanceConfig {
+  key_configured: boolean
+}
+
+/** How a download target is chosen among the releases SeaDex lists for one season or cour. */
+export interface ReleasePreferences {
+  /** Which release to target when several qualify. */
+  size: 'largest' | 'smallest'
+  /** Target a dual-audio release whenever SeaDex lists one. */
+  dual_audio: boolean
+  /** Releases above this size per episode are never targeted. 0 disables the limit. */
+  max_episode_gb: number
+  ignored_groups: string[]
+  ignored_trackers: string[]
+  /** Owning a listed alternative counts as having the best release, and alternatives may be targeted. */
+  accept_alternatives: boolean
+  /** Only the targeted release counts as best; any other owned release stays upgradable. */
+  strict: boolean
+}
+
 export interface Release {
   kind: 'best' | 'alt'
   part?: string
@@ -21,6 +71,12 @@ export interface Release {
   torrent_available: boolean
   selected_files?: string[]
   torrent_files?: import('./download-estimate.js').TorrentFiles[]
+  /** The release the saved preferences pick as the download target for its season or cour. */
+  target?: boolean
+  /** Owning this release makes its season or cour count as best. Absent means the release kind decides. */
+  satisfies?: boolean
+  /** Why the saved preferences never offer this release for download. */
+  excluded_by?: string
 }
 
 export interface ResultItem {
@@ -28,6 +84,10 @@ export interface ResultItem {
   key: string
   group_id: number | null
   arr: string
+  /** Identifier of an additional Sonarr/Radarr instance; absent for the first instance of each kind. */
+  instance?: string
+  /** Display name of that additional instance. */
+  instance_name?: string
   title: string
   season: number | null
   status: 'upgrade' | 'best' | 'missing' | 'partial' | 'uncovered'
@@ -37,6 +97,12 @@ export interface ResultItem {
   have: string[]
   have_by_part?: Record<string, string[]>
   owned_by_part?: Record<string, string[]>
+  /** Release groups whose listed files match the local files byte for byte, by part. */
+  verified_by_part?: Record<string, string[]>
+  /** Release groups named in the local files whose sizes differ from the listed release, by part. */
+  mismatched_by_part?: Record<string, string[]>
+  /** SeaDex lists releases for this season, but the saved preferences accept none of them. */
+  preference_blocked?: boolean
   local_size_by_part?: Record<string, number>
   precise_part_ownership?: boolean
   local_size: number
@@ -61,7 +127,7 @@ export interface ResultItem {
 }
 
 export interface ReleaseChangeDetail {
-  kind: 'best' | 'alternative' | 'updated' | 'removed'
+  kind: 'best' | 'alternative' | 'updated' | 'removed' | 'regression'
   description: string
   part?: string
   release_replacement?: { previous: string; next: string; torrent_changed: boolean }
@@ -75,7 +141,7 @@ export interface ReleaseChange extends ReleaseChangeDetail {
 
 export interface ScanHistoryChange {
   library_key?: string
-  type: 'new' | 'upgrade' | 'resolved' | 'changed' | 'removed'
+  type: 'new' | 'upgrade' | 'resolved' | 'changed' | 'removed' | 'regression'
   key: string
   title: string
   arr: string
@@ -87,10 +153,12 @@ export interface ScanHistoryChange {
   release_changes?: ReleaseChangeDetail[]
 }
 
+export type ScanTriggerName = 'manual' | 'scheduled' | 'sonarr' | 'radarr' | 'sonarr+radarr' | 'import'
+
 export interface ScanHistoryEntry {
   id: string
   run_at: string
-  trigger?: 'manual' | 'scheduled' | 'sonarr' | 'radarr' | 'sonarr+radarr'
+  trigger?: ScanTriggerName
   duration_seconds?: number
   outcome?: 'success' | 'partial' | 'cancelled' | 'failed'
   scanned_titles?: number
@@ -125,6 +193,19 @@ export interface Config {
   radarr_key: string
   sonarr_category: string
   radarr_category: string
+  sonarr_scope: LibraryScope
+  radarr_scope: LibraryScope
+  /** Sonarr and Radarr instances beyond the first of each kind. */
+  arr_instances: ArrInstanceConfig[]
+  release_preferences: ReleasePreferences
+  /** Compare local file sizes with the listed release before counting it as owned. */
+  verify_release_files: boolean
+  /** Maintain SeaDex status tags on series and movies in Sonarr and Radarr. */
+  arr_tags_enabled: boolean
+  arr_tag_best: string
+  arr_tag_upgrade: string
+  arr_tag_unlisted: string
+  arr_tag_review: string
   qbittorrent_url: string
   qbittorrent_user: string
   qbittorrent_pass: string
@@ -140,6 +221,8 @@ export interface Config {
   amenzb_key: string
   webhook: string
   notify_enabled: boolean
+  /** Also notify when a finished download is not imported by Sonarr or Radarr. */
+  notify_import_problems: boolean
   unhide_on_new_best: boolean
   datetime_format: string
   scan_schedule: ScanSchedule
@@ -147,6 +230,7 @@ export interface Config {
 }
 
 export interface PublicConfig extends Config {
+  arr_instances: PublicArrInstance[]
   sonarr_key_configured: boolean
   radarr_key_configured: boolean
   qbittorrent_pass_configured: boolean
@@ -158,15 +242,23 @@ export interface PublicConfig extends Config {
 export type SecretConfigKey = 'sonarr_key' | 'radarr_key' | 'qbittorrent_pass' | 'sabnzbd_key' | 'amenzb_key' | 'webhook'
 export type ConfigUpdate = Partial<Config> & { clear_secrets?: SecretConfigKey[] }
 
+/** Tags and root folders one Sonarr or Radarr instance offers for a library scope. */
+export interface ArrScopeOptions {
+  tags: string[]
+  root_folders: string[]
+}
+
 export interface Status {
   results_revision?: string
+  /** Scope, preference, or verification settings changed since the saved results were computed. */
+  settings_changed?: boolean
   running: boolean
   progress: number
   total: number
   message: string
   error: string | null
   cancelled: boolean
-  trigger: 'manual' | 'scheduled' | 'sonarr' | 'radarr' | 'sonarr+radarr' | null
+  trigger: ScanTriggerName | null
   source_errors: Record<string, string>
   last_run: string | null
   next_check: number | null

@@ -28,6 +28,32 @@ Successful provider observations are appended to `DATA_DIR/usenet_cache.journal.
 Bulk review retains its selected result snapshot. Acceptance checks current identities, client presence, and acknowledgements again before writing intents. Provider-backed reviews are cancellable and rely on bounded provider requests rather than a fixed aggregate frontend deadline. Expired or consumed single plans require an explicit fresh review with acknowledgements reset.
 
 
+## Library instances and scope
+
+`server/arr-instances.ts` presents the first Sonarr and Radarr (saved in their dedicated settings) and every additional instance (`arr_instances`) as one list. The first instance of each kind keeps the bare application name as its key prefix, so existing library keys (`Sonarr:item10`), result keys, user rules, and hidden-card keys stay valid. An additional instance prefixes them with its immutable identifier (`Sonarr@<id>:item10`, card key `<id>:<group>`), and its results carry `instance` and `instance_name`. Scan errors are keyed by instance name, which is why names are unique and cannot be `Sonarr` or `Radarr`. Download categories are resolved from the instance of the result, never from the application kind alone.
+
+API keys of additional instances live in the same encrypted payload as the other credentials, under `arr_instance_keys`. The public configuration returns each instance with an empty key and a `key_configured` flag; a blank key in an update keeps the stored one.
+
+A library scope is applied while loading an instance, before any per-title request. Tag labels are resolved to IDs once per load; a scope whose tags cannot be read fails that source rather than scanning everything. Titles outside the scope are returned separately with their tags, only so stale status tags can be removed from them.
+
+## Assessment settings
+
+`assessSeason` receives the release preferences and the file-check switch. Preferences choose the download target (`pickBest`) and decide which owned releases settle a part; they never remove a release from the result. Each listed release keeps SeaDex's own `kind` and may carry `target`, `excluded_by`, and `satisfies` (stored only where it departs from the kind, which is what results saved earlier imply). `shared/download-plan.ts` remains the single eligibility policy: `releaseOwned`, `releaseSatisfies`, `releaseOffered`, and `upgradeParts` are used by the scan, preflight, bulk review, tags, and the interface alike. A part whose releases are all excluded and which the library does not already settle reports `uncovered` with `preference_blocked`, while its releases stay listed for an explicit single download.
+
+File verification (`server/verification.ts`) compares exact library file sizes (`LocalSeason.files`) with the video files a release lists. A match proves ownership whatever the files are named (`verified_by_part`); a release group named in the library whose files differ is recorded in `mismatched_by_part`, and `releaseOwned` then denies ownership. A group's best-flagged uploads are compared separately from its other uploads. Nothing is concluded when either side has no sizes.
+
+Saved results record the signatures of the settings they were computed under. A full scan stores new signatures; a scan of single titles keeps the saved ones, because the other results were not re-judged. When the assessment signature differs from the saved one, the scan is a baseline: it records no unseen release changes, restores no hidden titles, and reports no regressions. `/api/status` exposes `settings_changed` from these signatures, cached per results revision and configuration generation.
+
+A regression (`describeRegression`) is a season that was best and is now upgradable while the catalog facts are unchanged apart from notes and the library's groups or size changed. It is recorded as its own scan-history type, as an unseen change of kind `regression`, and replaces the wording of the upgrade notification for that season.
+
+## Import follow-through and status tags
+
+Records in `owned_downloads.json` created with known library seasons carry `library` targets and an `import` state. `setDownloadPhase` moves `waiting` to `pending` on the first sight of a finished download, whoever read the client. The scheduler runs `followImports` once a minute while any record needs it: it reads the download clients, reads each involved instance's queue once, and matches entries by download ID. A queue entry with a problem becomes `blocked` with the app's messages. A download absent from the queue after a two-minute grace period triggers a rescan of its title (trigger `import`); after twenty minutes, one more rescan, and then `not_imported`. Only `settleImports`, called with every new set of scan results, confirms an import, by `releaseOwned` on the season the download was sent for. The follower never writes to Sonarr, Radarr, or a download client. Queue read failures back off for five minutes per instance.
+
+Import webhook events are accepted only for titles already present in the results; add events are always accepted. Scans of single titles reuse a catalog loaded within the last fifteen minutes.
+
+`server/arr-tags.ts` is the only code that writes to Sonarr or Radarr, and only when `arr_tags_enabled` is set. After a scan it derives one state per title, compares it with the tag IDs loaded during that scan, and uses the series or movie editor endpoints to add or remove only the configured tags. Tag definitions are created on first use. Failures are logged and never fail the scan.
+
 # Persistence and compatibility
 
 AniList metadata is persisted under `media:v1:<id>` and shared by automatic chains and explicit season matches. Known IDs from the active scan's saved title matches, chains, and manual selections are loaded through `Page.media(id_in: ...)` in batches of up to 25. All batches use the same serialized transport and 2.1-second pacing as interactive searches. Batch errors must propagate rather than being cached as missing titles; successfully omitted IDs are cached as missing for 24 hours.
