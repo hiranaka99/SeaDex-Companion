@@ -426,10 +426,11 @@ export default function ReleaseDetails({
   /** A release SeaDex lists without a public magnet: it can only be fetched by hand from its tracker. */
   const manualOnly = chosen === 'torrent' && !rel.torrent_available && !inClient && !complete && !usenetUsable
   const tracker = rel.tracker.trim()
-  const manualSource = rel.url
-    ? { href: rel.url, label: `Open on ${tracker || 'the tracker'}` }
+  // `rel.url` is the SeaDex page listing the release; only `tracker_url` leads to the tracker itself.
+  const manualSource = rel.tracker_url
+    ? { href: rel.tracker_url, label: `Open on ${tracker || 'the tracker'}` }
     : (() => {
-        const href = (r.urls || []).find(source => source.label === (rel.part || 'seadex.moe'))?.url || r.url
+        const href = rel.url || (r.urls || []).find(source => source.label === (rel.part || 'seadex.moe'))?.url || r.url
         return href ? { href, label: 'Open on SeaDex' } : null
       })()
   const lowSpaceChecks = lowSpace

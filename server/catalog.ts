@@ -2,6 +2,22 @@ import { loadCatalogPage } from './catalog-client.js'
 import { episodeFromFilename, type ParsedEpisode } from './matching.js'
 import type { JsonObject, ReleaseCandidate, SeaDexEntry } from './types.js'
 
+/** Trackers SeaDex links with a site-relative path instead of a full address. */
+const TRACKER_ORIGINS: Record<string, string> = { AB: 'https://animebytes.tv' }
+
+/** The release's page on its tracker as an absolute web address, or undefined when SeaDex gives none. */
+export function trackerPage(torrent: JsonObject): string | undefined {
+  const url = String(torrent.url || '').trim()
+  if (!url) return undefined
+  try {
+    const origin = TRACKER_ORIGINS[String(torrent.tracker || '')]
+    const page = origin ? new URL(url, origin) : new URL(url)
+    return page.protocol === 'https:' || page.protocol === 'http:' ? page.href : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export function guessQuality(filename: string): string {
   const resolution = filename.match(/(2160p|1080p|720p)/i)?.[1] || '?'
   const source = filename.match(/(Blu-ray|Web-DL|WebRip|BD-Remux)/i)?.[1] || ''
@@ -131,6 +147,7 @@ export async function seadexBest(
           const release: ReleaseCandidate = {
             releaseGroup: torrent.releaseGroup,
             tracker: torrent.tracker,
+            ...(trackerPage(torrent) ? { tracker_url: trackerPage(torrent) } : {}),
             quality,
             tags: torrent.tags || [],
             dual_audio: Boolean(torrent.dualAudio),
