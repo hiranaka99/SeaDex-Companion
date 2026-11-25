@@ -1,6 +1,6 @@
 import { releaseOwned, releaseSatisfies } from '../../../shared/download-plan'
 import type { ResultItem } from '../types'
-import { seasonLabel } from '../utils'
+import { seasonLabel, seasonStatus } from '../utils'
 import { cx } from '../styles'
 import Icon, { IconName } from './Icons'
 
@@ -30,7 +30,16 @@ const TONES: Record<string, { classes: string; color: string; label: string; ico
     label: 'Partially on SeaDex',
     icon: 'alert',
   },
+  // The match itself is in doubt, so the chip says that instead of reporting SeaDex coverage.
+  review: {
+    classes: 'border-warn/45 bg-canvas-soft',
+    color: 'var(--color-warn)',
+    label: 'Match unconfirmed',
+    icon: 'search',
+  },
 }
+
+const PREFERENCE_BLOCKED = { ...TONES.missing, label: 'Outside your preferences' }
 
 export default function SeasonBadge({
   season,
@@ -46,14 +55,17 @@ export default function SeasonBadge({
   onSelect?: () => void
 }) {
   const releases = season.releases || []
-  const status = season.status === 'uncovered' ? 'partial' : season.status || fallback
-  const defaultTone = TONES[status] || TONES.upgrade
+  const status = season.status ? seasonStatus(season) : fallback
+  const defaultTone =
+    status === 'missing' && season.preference_blocked ? PREFERENCE_BLOCKED : TONES[status] || TONES.upgrade
   const owns = (release: (typeof releases)[number]) => releaseOwned(season, release)
   const parts = [...new Set(releases.map(release => release.part || ''))].sort((a, b) =>
     a.localeCompare(b, undefined, { numeric: true }),
   )
   const split = parts.length > 1
   const tones = parts.map(part => {
+    // Ownership against an unconfirmed match proves nothing, so every cour keeps the review tone.
+    if (status === 'review') return defaultTone
     const owned = releases.filter(release => (release.part || '') === part && owns(release))
     // An owned alternative only reads as a shortfall when it does not settle the season.
     const settles = owned.some(releaseSatisfies)

@@ -3,10 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { test } from 'node:test'
-import { describeReleaseChanges } from '../shared/release-changes.js'
+import { describeReleaseChanges, releaseResultIdentity } from '../shared/release-changes.js'
 import {
   loadReleaseChanges,
   recordReleaseChanges,
+  restoreReleaseChanges,
   reviewReleaseChanges,
   withReleaseChanges,
 } from '../server/release-changes.js'
@@ -225,6 +226,29 @@ test('reviewing a snapshot never clears events from a later scan, and unchanged 
     )
     recordReleaseChanges([newest], [newest], file)
     assert.deepEqual(withReleaseChanges([newest], file)[0].unseen_changes, [])
+  }))
+
+test('undoing a review restores exactly the reviewed changes, once, beside newer ones', () =>
+  fixture(file => {
+    const old = result(),
+      next = result({ releases: [release(), alternative] })
+    recordReleaseChanges([old], [next], file)
+    const reviewed = withReleaseChanges([next], file)[0].unseen_changes!
+    const newest = result({ releases: [release({ quality: '2160p' }), alternative] })
+    recordReleaseChanges([next], [newest], file)
+    assert.equal(
+      reviewReleaseChanges(
+        reviewed.map(change => change.id),
+        file,
+      ),
+      1,
+    )
+    const entries = reviewed.map(change => ({ key: releaseResultIdentity(newest), change }))
+    assert.equal(restoreReleaseChanges(entries, file), 1)
+    assert.equal(restoreReleaseChanges(entries, file), 0, 'A repeated undo adds nothing twice')
+    const unseen = withReleaseChanges([newest], file)[0].unseen_changes!
+    assert.equal(unseen.length, 2, 'The newer change stays and the reviewed one comes back')
+    assert.ok(unseen.some(change => change.id === reviewed[0].id))
   }))
 
 test('removed titles and cleared scan baselines prune stale events; malformed storage recovers', () =>

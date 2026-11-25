@@ -33,3 +33,18 @@ export function displayDateTimeMinutes(value: string | null | undefined): string
   const format = activeFormat.replace(/[:.]?s{1,2}/g, '')
   return formatDateTime(date, format || activeFormat)
 }
+
+/** "5 min ago", "3 h ago", "2 days ago"; falls back to the configured format beyond a week. */
+export function displayTimeAgo(value: string | null | undefined, now = Date.now()): string {
+  const date = parseTimestamp(value)
+  if (!date) return value ?? ''
+  const minutes = Math.round((now - date.getTime()) / 60_000)
+  if (minutes < 0) return displayDateTimeMinutes(value)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes} min ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours} h ago`
+  const days = Math.round(hours / 24)
+  if (days <= 7) return `${days} ${days === 1 ? 'day' : 'days'} ago`
+  return displayDateTimeMinutes(value)
+}

@@ -914,31 +914,37 @@ details[open] > summary .disclosure-chevron {
 /* Search keeps useful reading space before the desktop controls wrap. Query
    the pane width so the collapsed sidebar and enlarged text work naturally. */
 @media (min-width: 601px) {
-  @container library-tools (max-width: 60rem) {
-    .toolbar-controls {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-    }
-    .toolbar-controls > label {
-      grid-column: 1 / -1;
-    }
-    .toolbar-controls > [role='group'] {
-      grid-column: 1 / -1;
-    }
-    .toolbar-controls select {
-      width: 100%;
-    }
-    .toolbar-controls button {
-      justify-content: center;
-    }
-  }
-  @container library-tools (max-width: 40rem) {
-    .toolbar-controls {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+  @container library-tools (max-width: 48rem) {
+    .toolbar-controls > .toolbar-search {
+      flex-basis: 100%;
     }
   }
 }
-.library-scan-button {
+.library-popover[hidden] {
+  display: none;
+}
+.library-popover {
+  box-shadow:
+    0 18px 40px rgb(0 0 0 / 0.45),
+    0 2px 6px rgb(0 0 0 / 0.3);
+}
+@media (max-width: 600px) {
+  /* The phone row is: status, Unseen, Source & sort; the panel opens from the right edge. */
+  .toolbar-controls > .toolbar-view {
+    position: static;
+  }
+  /* Icon-only on phones so the status picker keeps its width; the label stays for screen readers. */
+  .toolbar-controls > .toolbar-view > button > svg:last-child {
+    display: none;
+  }
+  .toolbar-controls > .toolbar-view > .library-popover {
+    left: 10px;
+    right: 10px;
+    width: auto;
+    top: calc(100% - 4px);
+  }
+}
+.library-action-emphasis {
   min-height: 44px;
   padding: 10px 16px;
   gap: 8px;
@@ -947,13 +953,13 @@ details[open] > summary .disclosure-chevron {
   color: var(--color-accent-bright);
   box-shadow: none;
 }
-.library-scan-button:enabled:hover {
+.library-action-emphasis:enabled:hover {
   background: var(--color-canvas-soft);
   border-color: var(--color-ink);
   color: var(--color-ink);
   transform: none;
 }
-.library-scan-button:enabled:active {
+.library-action-emphasis:enabled:active {
   background: var(--color-panel-raised);
 }
 
@@ -1189,13 +1195,11 @@ details[open] > summary .disclosure-chevron {
   .library-actions > button span {
     min-width: 0;
   }
-  .library-more-actions {
+  .library-actions > .library-cancel-downloads {
     flex: 0 0 44px;
+    padding-inline: 0;
   }
   .connection-status:not([role]) {
-    display: none;
-  }
-  .library-more-actions > summary::-webkit-details-marker {
     display: none;
   }
   .bulk-dialog-footer {
@@ -1530,10 +1534,42 @@ details[open] > summary .disclosure-chevron {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px 16px;
+  gap: 4px 20px;
   margin: 0 0 14px;
   font-size: 0.875rem;
   color: var(--color-muted);
+}
+.library-summary > p {
+  margin: 0;
+}
+.library-summary-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 0;
+}
+.library-summary-facts > span + span::before {
+  content: '·';
+  margin-inline: 8px;
+  color: var(--color-muted-dim);
+}
+@media (max-width: 600px) {
+  /* Wrapped lines would start with a separator, so phones space the facts instead. */
+  .library-summary-facts {
+    column-gap: 12px;
+  }
+  .library-summary-facts > span + span::before {
+    content: none;
+  }
+}
+.library-summary-review {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.library-summary .library-summary-warn,
+.library-summary .library-summary-warn strong {
+  color: var(--color-warn);
 }
 .library-summary strong {
   color: var(--color-ink);
@@ -1549,7 +1585,7 @@ details[open] > summary .disclosure-chevron {
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   margin: 10px 0 0;
   font-size: 0.8125rem;
   font-weight: 700;
@@ -1579,24 +1615,8 @@ details[open] > summary .disclosure-chevron {
   .library-summary-count {
     margin-left: 0;
   }
-  /* The summary already names what leads the list; save the row on phones. */
-  .library-section-label:first-child {
-    display: none;
-  }
 }
 .library-grid {
-  align-items: start;
-}
-@media (min-width: 601px) {
-  @container library-tools (max-width: 60rem) and (min-width: 40.01rem) {
-    .toolbar-controls {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1.3fr) auto;
-    }
-    .toolbar-controls select {
-      min-width: 0;
-    }
-    .toolbar-controls button {
-      white-space: nowrap;
-    }
-  }
+  /* Cards in one row share a height, so their footers line up. */
+  align-items: stretch;
 }

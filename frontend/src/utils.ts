@@ -1,6 +1,7 @@
 import { baseGroupKey, resultGroupKey } from '../../shared/ids.js'
 import { seasonTag } from '../../shared/ids.js'
-import { isSeasonUpgradable } from '../../shared/download-plan.js'
+import { isSeasonUpgradable, upgradeParts } from '../../shared/download-plan.js'
+import { estimateDownloads } from '../../shared/download-estimate.js'
 import type { CardStatus, GroupedCard, ResultItem } from './types.js'
 
 const USENET_PROVIDER_NAMES = { animetosho: 'AnimeTosho', amenzb: 'AmeNZB' } as const
@@ -27,16 +28,41 @@ export const STATUS_LABEL: Record<CardStatus, string> = {
   review: 'Match needs review',
 }
 
-/** Glyph and tone for each status, shared by library cards and scan history so a status never relies on color alone. */
-export const STATUS_GLYPH: Record<CardStatus, { icon: 'arrow-up' | 'check' | 'minus' | 'alert'; color: string }> = {
-  upgrade: { icon: 'arrow-up', color: 'text-accent-bright' },
-  best: { icon: 'check', color: 'text-good' },
-  missing: { icon: 'minus', color: 'text-muted' },
-  partial: { icon: 'alert', color: 'text-warn' },
-  review: { icon: 'alert', color: 'text-warn' },
+export { isSeasonUpgradable } from '../../shared/download-plan.js'
+
+/** The AniList match behind this season is uncertain, so nothing said about its SeaDex coverage is confirmed. */
+export function isUnconfirmedMatch(season: Pick<ResultItem, 'match_status' | 'anilist_id' | 'status'>): boolean {
+  return season.match_status === 'unmatched' || (!season.anilist_id && season.status === 'missing')
 }
 
-export { isSeasonUpgradable } from '../../shared/download-plan.js'
+export type SeasonStatus = 'upgrade' | 'best' | 'partial' | 'missing' | 'review'
+
+/**
+ * How one season reads on its chip. It follows the same rules as the card status and the Details
+ * view: an unconfirmed match is never shown as a SeaDex result, and a season SeaDex lists without
+ * any release candidates (`uncovered`) reads as not on SeaDex.
+ */
+export function seasonStatus(season: ResultItem): SeasonStatus {
+  if (isUnconfirmedMatch(season)) return 'review'
+  if (season.status === 'missing' || season.status === 'uncovered') return 'missing'
+  return season.status
+}
+
+/**
+ * Roughly what Bulk download would fetch for these results: the default release of every
+ * upgradable season or cour, with shared torrents counted once. `unknown` counts torrents
+ * whose size the saved results do not reveal.
+ */
+export function upgradeDownloadEstimate(results: ResultItem[]): { bytes: number; unknown: number } {
+  const estimate = estimateDownloads(
+    results.flatMap(result =>
+      upgradeParts(result).flatMap(part =>
+        part.options[0] ? [{ release: part.options[0].release, category: '' }] : [],
+      ),
+    ),
+  )
+  return { bytes: estimate.new_bytes, unknown: estimate.unknown_torrents }
+}
 
 /** Display names for Usenet indexers, in lookup order. */
 export const PROVIDER_LABEL: Record<string, string> = { animetosho: 'AnimeTosho', amenzb: 'AmeNZB' }
@@ -152,12 +178,7 @@ export function groupResults(results: ResultItem[]): GroupedCard[] {
     const st = g.seasons.map(r => r.status || 'upgrade')
     const hasUnresolved = st.some(status => status === 'missing' || status === 'uncovered' || status === 'partial')
     const hasResolved = st.some(status => status === 'upgrade' || status === 'best')
-    if (
-      g.seasons.some(
-        season => season.match_status === 'unmatched' || (!season.anilist_id && season.status === 'missing'),
-      )
-    )
-      g.status = 'review'
+    if (g.seasons.some(isUnconfirmedMatch)) g.status = 'review'
     else if (st.includes('partial') || (hasUnresolved && hasResolved)) g.status = 'partial'
     else if (hasUnresolved) g.status = 'missing'
     else if (st.includes('upgrade')) g.status = 'upgrade'
