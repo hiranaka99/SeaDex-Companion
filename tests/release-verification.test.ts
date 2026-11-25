@@ -137,7 +137,95 @@ test("a group's other upload does not stand in for its best release", () => {
   ]
   const result = assess(localSeason('Group', web), candidates)
   assert.equal(result.status, 'upgrade', 'Owning the WEB release is not owning the listed Blu-ray release')
-  assert.deepEqual(result.mismatched_by_part, { '': ['Group'] })
+  assert.equal(result.mismatched_by_part, undefined, 'The WEB release is listed, so the files do not differ from it')
+  const [bluRayRelease, webRelease] = result.releases
+  assert.equal(releaseOwned(result, bluRayRelease), false)
+  assert.equal(releaseOwned(result, webRelease), true)
+  assert.equal(webRelease.files_match, true)
+  assert.deepEqual(
+    upgradeParts(result).map(part => part.options.map(option => option.release.info_hashes)),
+    [[[hash('a')]]],
+    'The Blu-ray release is still offered',
+  )
+})
+
+test('a movie lists every release of a group, and the one the library holds is matched', () => {
+  // SeaDex lists two BlackRose encodes of one movie: the library holds the smaller, alternative one.
+  const movieFile = (name: string, length: number) => ({ name, length })
+  const megaMTBB = candidate('MegaMTBB', [], {
+    info_hashes: [hash('a')],
+    size: 14_373_209_872,
+    source_files: [movieFile('[MegaMTBB] Movie (2016) (BD 1080p).mkv', 14_373_209_872)],
+  })
+  const large = candidate('BlackRose', [], {
+    info_hashes: [hash('b')],
+    size: 13_456_862_370,
+    dual_audio: true,
+    source_files: [movieFile('Movie.2016.1080p.BluRay.Dual-Audio.x265-BlackRose.mkv', 13_456_862_370)],
+  })
+  const small = candidate('BlackRose', [], {
+    info_hashes: [hash('c')],
+    size: 7_222_972_083,
+    dual_audio: true,
+    is_best: false,
+    source_files: [movieFile('Movie.2016.1080p.BluRay.Dual-Audio.x265-BlackRose.mkv', 7_222_972_083)],
+  })
+  const local: LocalSeason = {
+    groups: ['BlackRose'],
+    size: 7_222_972_083,
+    files: [{ size: 7_222_972_083, episodes: [], group: 'BlackRose' }],
+  }
+  const assessMovie = (accept_alternatives: boolean) =>
+    assessSeason({
+      item: { arr: 'Radarr', id: 7, title: 'Movie', seasons: { 0: local } },
+      season: 0,
+      local,
+      chain: [{ season: 1, id: 42, ids: [42], parts: [{ id: 42, episodeCount: 1 }] }],
+      best: catalog({ 42: [megaMTBB, large, small] }, 0),
+      libraryKey: 'Radarr:item7',
+      arrUrl: null,
+      settings: { preferences: { ...DEFAULT_RELEASE_PREFERENCES, accept_alternatives }, verify: true },
+    })
+
+  const result = assessMovie(false)
+  assert.deepEqual(
+    result.releases.map(release => [release.kind, release.releaseGroup, release.size, release.files_match === true]),
+    [
+      ['best', 'MegaMTBB', 14_373_209_872, false],
+      ['best', 'BlackRose', 13_456_862_370, false],
+      ['alt', 'BlackRose', 7_222_972_083, true],
+    ],
+  )
+  assert.equal(result.status, 'upgrade', 'The alternative release does not settle the movie by default')
+  assert.equal(result.mismatched_by_part, undefined)
+  assert.equal(result.verified_by_part, undefined)
+  assert.deepEqual(
+    result.releases.map(release => releaseOwned(result, release)),
+    [false, false, true],
+  )
+  assert.deepEqual(
+    upgradeParts(result).map(part => part.options.map(option => option.release.size)),
+    [[14_373_209_872, 13_456_862_370]],
+  )
+  const [saved] = normalizeResults(JSON.parse(JSON.stringify([result])))
+  assert.equal(saved.releases.length, 3, 'Reloading keeps both BlackRose releases')
+  assert.equal(saved.releases[2].files_match, true)
+
+  const accepting = assessMovie(true)
+  assert.equal(accepting.status, 'best', 'Accepting alternatives lets the held release settle the movie')
+  assert.deepEqual(upgradeParts(accepting), [])
+})
+
+test("a group's copies of one release on two trackers are listed once", () => {
+  const sizes = [gb(1.5), gb(1.6)]
+  const privateCopy = candidate('Group', sizes, { tracker: 'AB', info_hashes: ['<redacted>'] })
+  const publicCopy = candidate('Group', sizes, { info_hashes: [hash('b')] })
+  const result = assess(localSeason('Group', sizes), [privateCopy, publicCopy])
+  assert.deepEqual(
+    result.releases.map(release => release.tracker),
+    ['Nyaa'],
+  )
+  assert.equal(result.status, 'best')
 })
 
 test('extras and subtitles in a release never count as episode files', () => {
@@ -150,11 +238,15 @@ test('extras and subtitles in a release never count as episode files', () => {
   assert.deepEqual(verifyPart(localSeason('Best', sizes), [1, 2], ['Best'], [release]), {
     verified: ['Best'],
     mismatched: [],
+    other: [],
+    matches: [release],
   })
   // A subtitle file with a coincidentally equal size is not evidence for a video file.
   assert.deepEqual(verifyPart(localSeason('Best', [gb(2), gb(2) + 2]), [1, 2], ['Best'], [release]), {
     verified: [],
     mismatched: ['Best'],
+    other: [],
+    matches: [],
   })
 })
 

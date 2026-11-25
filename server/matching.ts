@@ -1,6 +1,7 @@
 import { normalizeInfoHash } from '../shared/ids.js'
 import { normalizeTorrentPath, torrentHashes } from '../shared/download-plan.js'
 import { DEFAULT_RELEASE_PREFERENCES } from '../shared/settings.js'
+import { VIDEO_FILE, sameRelease } from '../shared/releases.js'
 import type {
   ReleaseCandidate,
   Release,
@@ -17,7 +18,7 @@ export function isDownloadable(release: Pick<ReleaseCandidate, 'info_hashes'>): 
   return torrentHashes(release).length > 0
 }
 
-export const VIDEO_FILE = /\.(?:mkv|mp4|avi|m4v|ts|webm)$/i
+export { VIDEO_FILE }
 const sameText = (left: unknown, right: unknown) =>
   String(left || '')
     .trim()
@@ -257,7 +258,7 @@ export function releaseDict(
   release: ReleaseCandidate,
   part?: string | null,
   url?: string,
-  flags: { target?: boolean; satisfies?: boolean } = {},
+  flags: { target?: boolean; satisfies?: boolean; files_match?: boolean } = {},
 ): Release {
   const result: Release = {
     kind,
@@ -276,6 +277,7 @@ export function releaseDict(
   if (release.torrent_files?.length) result.torrent_files = release.torrent_files
   if (flags.target) result.target = true
   if (flags.satisfies !== undefined) result.satisfies = flags.satisfies
+  if (flags.files_match) result.files_match = true
   if (release.excluded_by) result.excluded_by = release.excluded_by
   return result
 }
@@ -322,19 +324,21 @@ export function effectiveSeasonParts(local: Pick<LocalSeason, 'episode_numbers'>
   })
 }
 
+/**
+ * The distinct releases of one season or cour, the chosen one first. Copies of one release on
+ * several trackers collapse into the downloadable copy; a group's other releases stay listed.
+ */
 export function orderedPartReleases(
   best: ReleaseCandidate,
   alternatives: ReleaseCandidate[],
 ): Array<['best' | 'alt', ReleaseCandidate]> {
-  const byGroup = new Map<string, ReleaseCandidate>()
+  const listings: ReleaseCandidate[] = []
   for (const release of [best, ...alternatives]) {
-    const key = release.releaseGroup.trim().toLowerCase()
-    const current = byGroup.get(key)
-    if (!current || (isDownloadable(release) && !isDownloadable(current))) byGroup.set(key, release)
+    const index = listings.findIndex(listing => sameRelease(listing, release, true))
+    if (index < 0) listings.push(release)
+    else if (isDownloadable(release) && !isDownloadable(listings[index])) listings[index] = release
   }
-  const bestKey = best.releaseGroup.trim().toLowerCase()
-  const ordered = [bestKey, ...[...byGroup.keys()].filter(key => key !== bestKey)]
-  return ordered.map(key => [key === bestKey || byGroup.get(key)!.is_best ? 'best' : 'alt', byGroup.get(key)!])
+  return listings.map((release, index) => [index === 0 || release.is_best ? 'best' : 'alt', release])
 }
 
 export function commonBestRelease(

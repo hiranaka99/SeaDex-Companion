@@ -72,6 +72,22 @@ test('alternative-only additions, updates, and removals are detected with unchan
   assert.equal(buildScanHistoryEntry([old], [added], 'today').changes[0].type, 'changed')
 })
 
+test("a group's second release on the same tracker is a new listing, not an edit of the first", () => {
+  const large = release({ releaseGroup: 'Group A', info_hashes: ['a'.repeat(40)], size: 200 })
+  const small = release({ kind: 'alt', releaseGroup: 'Group A', info_hashes: ['b'.repeat(40)], size: 100 })
+  const before = result({ releases: [large] })
+  const after = result({ releases: [small, large] })
+  assert.deepEqual(
+    describeReleaseChanges(before, after).map(change => [change.kind, change.description]),
+    [['alternative', 'New alternative: Group A (Nyaa) · 1080p']],
+  )
+  assert.deepEqual(describeReleaseChanges(after, after), [], 'Listing both releases again changes nothing')
+  assert.deepEqual(
+    describeReleaseChanges(after, before).map(change => [change.kind, change.description]),
+    [['removed', 'Alternative removed: Group A (Nyaa)']],
+  )
+})
+
 test('best replacement shows before and after, while a same-group replacement still records its new torrent', () => {
   const old = result()
   const next = result({ key: 'new-key', best_group: 'Group B', releases: [release({ releaseGroup: 'Group B' })] })
