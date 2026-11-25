@@ -1,6 +1,6 @@
 import { errorMessage } from '../../../shared/errors.js'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ResultItem, Config, Status, GroupedCard } from '../types'
+import { ResultItem, Config, Status, GroupedCard, LibraryFilterRequest } from '../types'
 import { groupResults, seasonLabel, cardSizeDelta, hasCardUpgrade, STATUS_LABEL } from '../utils'
 import { Fragment } from 'react'
 import { displayDateTime } from '../datetime'
@@ -41,6 +41,8 @@ interface Props {
   onBulkOperationChange: (operation: BulkOperationState) => void
   operationsVisible: boolean
   onResultsChanged: () => Promise<void>
+  /** Opens the library with one status or coverage filter, e.g. from a scan history total. */
+  filterRequest?: (LibraryFilterRequest & { id: number }) | null
 }
 
 const PAGE_SIZE = 60
@@ -102,6 +104,7 @@ export default function AnimeTab({
   onBulkOperationChange,
   operationsVisible,
   onResultsChanged,
+  filterRequest,
 }: Props) {
   const [search, setSearch] = useState('')
   const [arr, setArr] = useState('')
@@ -139,6 +142,17 @@ export default function AnimeTab({
     document.addEventListener('pointerdown', closeOutside)
     return () => document.removeEventListener('pointerdown', closeOutside)
   }, [])
+
+  useEffect(() => {
+    if (!filterRequest) return
+    setSearch('')
+    setArr('')
+    setSort('recommended')
+    setShowHidden(false)
+    setShowUnseen(false)
+    setStatusFilter(filterRequest.status)
+    setCoverageFilter(filterRequest.coverage)
+  }, [filterRequest])
 
   useEffect(() => {
     if (!openResultKey) return

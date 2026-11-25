@@ -2,11 +2,11 @@ import { errorMessage } from '../../../shared/errors.js'
 import { useCardDownloads, useSeasonAvailability } from '../useCardDownloads'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { GroupedCard, ResultItem, Config } from '../types'
-import { seasonLabel, STATUS_LABEL, cardSizeDelta, formatBytes, isSeasonUpgradable } from '../utils'
+import { seasonLabel, STATUS_GLYPH, STATUS_LABEL, cardSizeDelta, formatBytes, isSeasonUpgradable } from '../utils'
 import { displayDateTimeMinutes } from '../datetime'
 import * as api from '../api'
 import { buttonBase, cx } from '../styles'
-import Icon, { IconName } from './Icons'
+import Icon from './Icons'
 import BrandLogo from './BrandLogo'
 import { useToast } from './Toast'
 import DownloadsPanel, { clientName, DownloadEntry } from './DownloadsPanel'
@@ -73,13 +73,6 @@ function jumpToDetails(id: string) {
 
 const CARD_BASE =
   'group/card relative flex flex-col overflow-hidden rounded-card border border-line bg-panel transition-opacity duration-200'
-const CARD_STATUS: Record<string, { icon: IconName; color: string }> = {
-  upgrade: { icon: 'arrow-up', color: 'text-accent-bright' },
-  best: { icon: 'check', color: 'text-good' },
-  missing: { icon: 'minus', color: 'text-muted' },
-  partial: { icon: 'alert', color: 'text-warn' },
-  review: { icon: 'alert', color: 'text-warn' },
-}
 const ICON_BUTTON =
   'grid size-9 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-panel-raised hover:text-ink'
 function Card({
@@ -288,7 +281,7 @@ function Card({
   const statusBadge = (
     <div className="library-status-badge" data-library-status={group.status}>
       <span className="library-status-label">
-        <Icon name={CARD_STATUS[group.status].icon} size={14} className="shrink-0" />
+        <Icon name={STATUS_GLYPH[group.status].icon} size={14} className="shrink-0" />
         <span>{outsidePreferences ? 'Outside your preferences' : STATUS_LABEL[group.status]}</span>
       </span>
       {group.status === 'partial' && upgradableSeasonCount > 0 && (
