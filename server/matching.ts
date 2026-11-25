@@ -254,6 +254,7 @@ export function releaseDict(
   }
   if (part) result.part = part
   if (url) result.url = url
+  if (release.tracker_url) result.tracker_url = release.tracker_url
   if (release.selected_files?.length) result.selected_files = [...release.selected_files]
   if (release.torrent_files?.length) result.torrent_files = release.torrent_files
   if (flags.target) result.target = true
