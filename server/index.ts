@@ -11,13 +11,16 @@ import { downloadRoutes } from './download-routes.js'
 import { downloadRecords, migrateOwnedDownloads } from './download-store.js'
 import { HttpError } from './http-error.js'
 import { clientAddress, sendJson } from './http-response.js'
+import { LAUNCHER_ENV, READY_MESSAGE, RESTART_EXIT_CODE } from './launcher.js'
 import { libraryRoutes } from './library-routes.js'
+import { onRestartRequest } from './lifecycle.js'
 import { log } from './logging.js'
 import { DATA_DIR, STATIC_DIR } from './paths.js'
 import { loadLastResults } from './results.js'
 import { matchRoute, type Route } from './router.js'
 import { scanRoutes } from './scan-routes.js'
 import { startScheduler } from './scheduler.js'
+import { APP_VERSION, reportUpdateState } from './updates.js'
 import { serveStatic } from './static-files.js'
 import { flushUsenetCache, invalidateUsenetLookups } from './usenet.js'
 import { enableUsenetPrefetch, prefetchUsenetAvailability, stopUsenetPrefetch } from './usenet-prefetch.js'
@@ -90,15 +93,17 @@ function main(): void {
   const scheduler = startScheduler()
   const server = makeServer()
   let shuttingDown = false
-  const shutdown = (signal: string) => {
+  // A restart exits with the launcher's restart code whatever else fails, so the
+  // launcher starts the newly installed version instead of stopping the container.
+  const shutdown = (signal: string, restart = false) => {
     if (shuttingDown) return
     shuttingDown = true
-    log('INFO', `${signal} received; shutting down`)
+    log('INFO', restart ? 'Restarting to apply an update' : `${signal} received; shutting down`)
     clearInterval(scheduler)
     stopUsenetPrefetch()
     const deadline = setTimeout(() => {
       log('ERROR', 'Graceful shutdown timed out')
-      process.exit(1)
+      process.exit(restart ? RESTART_EXIT_CODE : 1)
     }, 10_000)
     deadline.unref()
     server.close(error => {
@@ -106,9 +111,10 @@ function main(): void {
       if (error) log('ERROR', `Shutdown failed: ${error.message}`)
       else log('INFO', 'Server stopped')
       const cacheSaved = flushUsenetCache()
-      process.exit(error || !cacheSaved ? 1 : 0)
+      process.exit(restart ? RESTART_EXIT_CODE : error || !cacheSaved ? 1 : 0)
     })
   }
+  if (process.env[LAUNCHER_ENV] === '1') onRestartRequest(() => shutdown('restart', true))
   process.once('SIGINT', () => shutdown('SIGINT'))
   process.once('SIGTERM', () => shutdown('SIGTERM'))
   server.listen(port, '0.0.0.0', () => {
@@ -116,8 +122,11 @@ function main(): void {
       'INFO',
       `Server listening on 0.0.0.0:${port} (Node ${process.version}; data: ${DATA_DIR}; static: ${STATIC_DIR})`,
     )
+    // Tells the launcher this version started, so it is kept instead of rolled back.
+    process.send?.({ type: READY_MESSAGE, version: APP_VERSION })
     try {
       reportRestoredState()
+      reportUpdateState()
     } catch (error) {
       log('ERROR', `Runtime configuration could not be restored: ${errorMessage(error)}`)
     }

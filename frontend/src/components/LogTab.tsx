@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import * as api from '../api'
+import { copyText } from '../clipboard'
 import Icon from './Icons'
 import { buttonBase, control, cx } from '../styles'
 import {
@@ -63,25 +64,6 @@ function LogRow({ entry, search }: { entry: LogEntry; search: string }) {
       ))}
     </span>
   )
-}
-
-/** The Clipboard API needs a secure context; self-hosted installs are often plain HTTP on a LAN address. */
-async function copyText(text: string) {
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text)
-    return
-  }
-  const field = document.createElement('textarea')
-  field.value = text
-  field.setAttribute('readonly', '')
-  field.style.cssText = 'position:fixed;top:0;left:0;opacity:0'
-  document.body.appendChild(field)
-  field.select()
-  try {
-    if (!document.execCommand('copy')) throw new Error('Copy was blocked')
-  } finally {
-    document.body.removeChild(field)
-  }
 }
 
 function downloadText(text: string) {

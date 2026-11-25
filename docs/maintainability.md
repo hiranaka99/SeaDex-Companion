@@ -60,6 +60,16 @@ Import webhook events are accepted only for titles already present in the result
 
 `server/arr-tags.ts` is the only code that writes to Sonarr or Radarr, and only when `arr_tags_enabled` is set. After a scan it derives one state per title, compares it with the tag IDs loaded during that scan, and uses the series or movie editor endpoints to add or remove only the configured tags. Tag definitions are created on first use. Failures are logged and never fail the scan.
 
+## In-app updates
+
+The image starts `dist/server/launcher.js`, not the server. The launcher runs the app built into the image or, when `DATA_DIR/app-updates/active.json` names a bundle that is newer than the image and carries the same `runtime.json`, that bundle's `dist/server/index.js`. A bundle holds `package.json`, `runtime.json`, `dist/server`, `dist/shared`, and `static`; it has no packages of its own and resolves the image's through a `node_modules` link the launcher creates. The launcher sets `DATA_DIR`, `SEADEX_LAUNCHER=1`, `SEADEX_IMAGE_ROOT`, and, for a bundle, `STATIC_DIR`. On start it deletes the pointer when its bundle cannot run on this image (older or equal version, missing files, other runtime) and removes every bundle directory other than the active one and its `previous`.
+
+`runtime.json` is the `RuntimeIdentity` from `server/runtime-identity.ts`: the Node.js major, a hash of the `Dockerfile` and entrypoint, a hash of `server/launcher.ts`, and every production package version from `package-lock.json`. The image computes it during the build, and the release workflow computes the same value for the bundle. Any difference means the release needs a new image, and `runtimeDifferences` turns the difference into the reasons the update dialog shows. The launcher must import only Node built-ins, because only its own source is hashed.
+
+`server/updates.ts` reads the latest GitHub release, the `seadex-companion-update.json` manifest asset, and decides `in_app`, `image_required` (incompatible runtime or no manifest), or `unavailable` (not under the launcher, or an unreadable or invalid manifest). `POST /api/update/install` refuses during a scan or an unfinished download job, downloads the bundle named by the manifest (64 MiB limit), checks its size and SHA-256, unpacks it with the regular-files-only reader in `server/tar.ts`, verifies its version and runtime, stages it, and writes `active.json` with `pending: true`. After the response it asks `server/lifecycle.ts` for a restart: the server shuts down gracefully and exits with code 75, and the launcher starts the new copy.
+
+The server sends `seadex:ready` over IPC once it listens; the launcher then clears `pending`. A pending bundle that exits before that message is rolled back: the launcher returns to `previous` (or the image's app), deletes the failed bundle, and records `last-failure.json`, which `/api/update-check` and `/api/update/status` report while the failed version is newer than the running one. A bundle that started once is never rolled back automatically. Exit code 75 more than five times in a minute stops the launcher.
+
 # Persistence and compatibility
 
 AniList metadata is persisted under `media:v1:<id>` and shared by automatic chains and explicit season matches. Known IDs from the active scan's saved title matches, chains, and manual selections are loaded through `Page.media(id_in: ...)` in batches of up to 25. All batches use the same serialized transport and 2.1-second pacing as interactive searches. Batch errors must propagate rather than being cached as missing titles; successfully omitted IDs are cached as missing for 24 hours.
@@ -74,4 +84,4 @@ Job updates also write before publishing in-memory state. Readers receive copies
 
 # Verification
 
-Run `npm test`, `npm run build`, and `npm run test:browser`. `npm run test:docker` builds a fresh image and checks startup, health, assets, authentication, encrypted persistence, job IDs, restart recovery, and graceful shutdown using an isolated container without mounting host data.
+Run `npm test`, `npm run build`, and `npm run test:browser`. `npm run test:docker` builds a fresh image and checks startup, health, assets, authentication, encrypted persistence, job IDs, starting an in-app update bundle through the launcher, restart recovery, and graceful shutdown using an isolated container without mounting host data.
