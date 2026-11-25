@@ -25,6 +25,10 @@ export interface ParsedEpisode {
   explicit: boolean
 }
 
+/** An audio codec followed by its channel layout, such as "E-AC3 5.1", "DDP7.1" or "FLAC 2.0". */
+const AUDIO_CHANNELS =
+  /\b(?:E-?AC-?3|AC-?3|DDP?\+?|DD\+|AAC(?:-LC)?|FLAC|Opus|DTS(?:-HD)?(?:[ .-]?(?:MA|HRA|X))?|TrueHD|Atmos|L?PCM|MP3|Vorbis)[ ._-]?\d\.\d\b/gi
+
 export function episodeFromFilename(name: string): ParsedEpisode | null {
   const filename = name.split(/[\\/]/).pop() || ''
   if (!VIDEO_FILE.test(filename) || /NCOP|NCED/i.test(filename)) return null
@@ -34,7 +38,11 @@ export function episodeFromFilename(name: string): ParsedEpisode | null {
   if (named) return { season: null, episode: Number(named[1]), explicit: true }
   // Unlabelled absolute episode numbers are common in whole-season encodes.
   // Only use these when no explicitly numbered episodes exist in the torrent.
-  const absolute = filename.match(/(?:^|[\s_-])(\d{1,3}(?:\.\d+)?)(?=[\s(.\]]|$)/)
+  // Audio channel layouts such as "E-AC3 5.1" or "AAC 2.0" are not episode numbers, and a number never
+  // matches as just the whole part of a decimal, so "5.1)" cannot read as episode 5.
+  const absolute = filename
+    .replace(AUDIO_CHANNELS, ' ')
+    .match(/(?:^|[\s_-])(\d{1,3}(?:\.\d+)?)(?!\.?\d)(?=[\s(.\]]|$)/)
   return absolute ? { season: null, episode: Number(absolute[1]), explicit: false } : null
 }
 

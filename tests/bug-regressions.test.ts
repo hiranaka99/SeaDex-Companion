@@ -950,3 +950,13 @@ test('assessSeason aligns continuous multi-season TVDB splits and multi-cour seq
     ['Cour 1', 'Cour 2'],
   )
 })
+
+test('audio channel layouts in filenames are never read as episode numbers', async () => {
+  const { episodeFromFilename, episodeRangeLabel } = await import('../shared/releases.js')
+  const movie = '[Buggy] Cosmic Princess Kaguya! (2026) v2 (WEBrip 1080p HEVC x265 E-AC3 5.1) [Dual Audio].mkv'
+  assert.equal(episodeFromFilename(movie), null)
+  assert.equal(episodeRangeLabel([movie]), null)
+  assert.equal(episodeFromFilename('[Group] Show - 07 (1080p AAC 2.0).mkv')?.episode, 7)
+  assert.equal(episodeFromFilename('[Group] Show - 13.5 [1080p].mkv')?.episode, 13.5)
+  assert.equal(episodeFromFilename('Show S01 1080p BluRay FLAC 2.0 x264 - 03.mkv')?.episode, 3)
+})
