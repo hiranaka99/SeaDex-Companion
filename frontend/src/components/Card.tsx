@@ -636,7 +636,7 @@ function Card({
               if (event.target === event.currentTarget) requestClose()
             }}
           >
-            <aside className="anime-details-panel flex min-h-0 min-w-0 w-full max-w-[736px] flex-col overflow-hidden rounded-2xl bg-canvas shadow-[0_24px_60px_rgba(0,0,0,.45)]">
+            <aside className="anime-details-panel flex min-h-0 min-w-0 w-full flex-col overflow-hidden rounded-2xl bg-canvas shadow-[0_24px_60px_rgba(0,0,0,.45)]">
               <div
                 className={cx(
                   'anime-details-hero relative shrink-0 border-b border-line',

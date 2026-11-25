@@ -478,7 +478,33 @@ html.sidebar-resizing .app-shell {
   padding: 12px;
 }
 .anime-details-panel {
+  max-width: 736px;
   max-height: calc(100dvh - 24px);
+}
+/* Desktop screens give Details more room, so release facts sit side by side instead of stacking. */
+@media (width >= 1024px) and (height >= 640px) {
+  .anime-details-frame {
+    padding: 32px;
+  }
+  .anime-details-panel {
+    max-width: min(1040px, 82vw);
+    max-height: calc(100dvh - 64px);
+  }
+  .anime-details-header {
+    padding: 20px 24px;
+  }
+  .anime-details-cover {
+    width: 112px;
+    height: 168px;
+  }
+  .anime-details-content {
+    padding: 28px 32px 32px;
+  }
+}
+@media (width >= 1600px) and (height >= 800px) {
+  .anime-details-panel {
+    max-width: 1200px;
+  }
 }
 .anime-details-header {
   gap: 12px;
