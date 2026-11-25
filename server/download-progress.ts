@@ -51,6 +51,7 @@ function baseProgress(record: OwnedDownloadRecord): DownloadProgress {
     protocol: record.protocol,
     client: record.client,
     source_hash: record.source_hash,
+    ...(record.source_alias ? { source_alias: record.source_alias } : {}),
     native_id: record.native_id,
     phase: record.last_phase || 'unavailable',
     state: '',

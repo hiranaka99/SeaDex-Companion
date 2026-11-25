@@ -24,6 +24,13 @@ export interface SubmissionUnit extends PlannedUnit {
   requiresAck: boolean
   /** Provider entry the NZB is fetched from. */
   entryId?: string
+  /** The checked .torrent file of a private-tracker release; qBittorrent receives it instead of a magnet. */
+  torrentFile?: Uint8Array
+  /**
+   * Identity of the release behind the unit, when it differs from `source_hash`: a private-tracker torrent and
+   * its Usenet copy are the same source, so one review must not send both.
+   */
+  sourceAlias?: string
 }
 
 /** What a fresh client read says about one owned download. */

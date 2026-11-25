@@ -1,6 +1,6 @@
 import { rowKey } from '../../../shared/ids.js'
 import { ReactNode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import type { ResultItem } from '../types'
+import type { Release, ResultItem } from '../types'
 import { formatBytes, seasonLabel } from '../utils'
 import { cx } from '../styles'
 import Icon from './Icons'
@@ -29,9 +29,15 @@ interface Props {
   /** Release preferences are set, so their target is chosen where several releases are offered. */
   preferTarget?: boolean
   sabEnabled: boolean
+  /** Whether Prowlarr can find this private-tracker release's torrent (it has an indexer for its tracker). */
+  privateTorrent?: (release: Release) => boolean
+  /** Prowlarr can look for Usenet copies of private-tracker releases. */
+  privateUsenet?: boolean
   onConfirm: (plan_id: string, acknowledge: { whole_source?: boolean; disk_space?: boolean }) => void
   onClose: () => void
 }
+
+const NO_PRIVATE_TORRENTS = () => false
 
 export default function BulkDownloadDialog({
   open,
@@ -43,19 +49,27 @@ export default function BulkDownloadDialog({
   downloadMode,
   preferTarget = false,
   sabEnabled,
+  privateTorrent = NO_PRIVATE_TORRENTS,
+  privateUsenet = false,
   onConfirm,
   onClose,
 }: Props) {
+  /** A public magnet, or a private-tracker torrent Prowlarr can find. */
+  const sendsTorrent = (release: Release) => release.torrent_available || privateTorrent(release)
+  /** Private-tracker releases have no hash, but Prowlarr may have found a Usenet copy earlier. */
+  const usenetSearchable = (release: Release) =>
+    (release.info_hashes?.length || 0) > 0 || (privateUsenet && Boolean(release.private_sources?.length))
   // The review keeps its selected snapshot; the server validates identities against current results.
   const usenetEnabled = downloadMode !== 'torrent_only' && sabEnabled
   const reviewCandidates = useMemo(
     () =>
       buildReview(
         results,
-        (_result, { release }) => usenetEnabled && (release.info_hashes?.length || 0) > 0,
+        (_result, { release }) => usenetEnabled && usenetSearchable(release),
         downloadMode !== 'usenet_only',
+        sendsTorrent,
       ),
-    [results, usenetEnabled, downloadMode],
+    [results, usenetEnabled, downloadMode, privateTorrent, privateUsenet],
   )
   const usenetSelections = useMemo(
     () =>
@@ -65,7 +79,7 @@ export default function BulkDownloadDialog({
               reviewCandidates.ready
                 .flatMap(group =>
                   group.options
-                    .filter(({ release }) => (release.info_hashes?.length || 0) > 0)
+                    .filter(({ release }) => usenetSearchable(release))
                     .map(option => ({
                       key: group.result.key,
                       release: option.index,
@@ -101,8 +115,8 @@ export default function BulkDownloadDialog({
     [usenetEnabled, currentAvailability],
   )
   const review = useMemo(
-    () => buildReview(results, usenetEligible, downloadMode !== 'usenet_only'),
-    [results, usenetEligible, downloadMode],
+    () => buildReview(results, usenetEligible, downloadMode !== 'usenet_only', sendsTorrent),
+    [results, usenetEligible, downloadMode, privateTorrent],
   )
   const [selected, setSelected] = useState<Record<string, number>>({})
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})
@@ -126,7 +140,7 @@ export default function BulkDownloadDialog({
     if (downloadMode === 'usenet_only') return 'usenet'
     const chosen = protocols[group.id]
     if (chosen) return chosen
-    if (!option.release.torrent_available && usenetEligible(group.result, option)) return 'usenet'
+    if (!sendsTorrent(option.release) && usenetEligible(group.result, option)) return 'usenet'
     return 'torrent'
   }
   const unavailableChoices = reviewCandidates.ready.filter(group => {
@@ -430,11 +444,13 @@ export default function BulkDownloadDialog({
                             type="button"
                             role="radio"
                             aria-checked={protocolFor(group, option) === 'torrent'}
-                            disabled={locked || !option.release.torrent_available}
+                            disabled={locked || !sendsTorrent(option.release)}
                             title={
                               option.release.torrent_available
                                 ? 'Send to qBittorrent'
-                                : 'No magnet available (private tracker)'
+                                : sendsTorrent(option.release)
+                                  ? 'Find on the private tracker through Prowlarr and send to qBittorrent'
+                                  : 'No magnet available (private tracker)'
                             }
                             onClick={() => setProtocols(current => ({ ...current, [group.id]: 'torrent' }))}
                             className={cx(
@@ -442,7 +458,7 @@ export default function BulkDownloadDialog({
                               protocolFor(group, option) === 'torrent'
                                 ? 'border-accent bg-accent/15 text-accent-bright'
                                 : 'border-line text-muted hover:text-ink',
-                              (!option.release.torrent_available || locked) && 'cursor-not-allowed opacity-50',
+                              (!sendsTorrent(option.release) || locked) && 'cursor-not-allowed opacity-50',
                             )}
                           >
                             Torrent

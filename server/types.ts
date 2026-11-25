@@ -11,6 +11,7 @@ export type {
   LibraryScope,
   ArrInstanceConfig,
   ReleasePreferences,
+  PrivateSource,
 } from '../shared/contracts.js'
 import type { ResultItem, ScanTrigger } from '../shared/contracts.js'
 
@@ -49,6 +50,8 @@ export interface ReleaseCandidate {
   is_best: boolean
   source_files?: { name: string; length: number }[]
   torrent_files?: import('../shared/download-estimate.js').TorrentFiles[]
+  /** Torrents SeaDex lists without a public info hash, identified by their files. */
+  private_sources?: import('../shared/contracts.js').PrivateSource[]
   selected_files?: string[]
   /** Why the saved preferences never target this candidate. */
   excluded_by?: string
@@ -100,6 +103,8 @@ export interface LocalItem {
   slug?: string
   /** Tag IDs the title carries in Sonarr or Radarr. */
   tags?: number[]
+  /** Sonarr's alternate (scene) titles; `season` is null when a title applies to every season. */
+  alternate_titles?: { title: string; season: number | null }[]
   seasons: Record<number, LocalSeason>
 }
 export interface SeaDexSlot {

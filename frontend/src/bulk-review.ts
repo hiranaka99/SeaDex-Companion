@@ -2,6 +2,8 @@ import { upgradeParts } from '../../shared/download-plan.js'
 import { resultGroupKey } from '../../shared/ids.js'
 import type { Release, ResultItem } from './types'
 
+const hasMagnet = (release: Release) => release.torrent_available
+
 export interface IndexedRelease {
   index: number
   release: Release
@@ -25,6 +27,8 @@ export function buildReview(
   results: ResultItem[],
   usenetEligible: (result: ResultItem, option: IndexedRelease) => boolean,
   torrentEnabled = true,
+  /** Whether qBittorrent can receive a release; private-tracker releases need Prowlarr. */
+  torrentSendable: (release: Release) => boolean = hasMagnet,
 ): Review {
   const ready: ReviewGroup[] = []
   const blocked: ReviewGroup[] = []
@@ -32,8 +36,8 @@ export function buildReview(
   for (const result of results)
     for (const part of upgradeParts(result)) {
       const group = { id: `${result.key}::${part.part || 'all'}`, result, part: part.part, options: part.options }
-      if ((torrentEnabled && part.torrent_available) || group.options.some(option => usenetEligible(result, option)))
-        ready.push(group)
+      const torrent = torrentEnabled && group.options.some(option => torrentSendable(option.release))
+      if (torrent || group.options.some(option => usenetEligible(result, option))) ready.push(group)
       else blocked.push(group)
     }
 

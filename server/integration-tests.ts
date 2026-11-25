@@ -9,6 +9,7 @@ import { ARR_NAMES, findArrInstance, type ArrInstance } from './arr-instances.js
 import { arrApiBase } from './library.js'
 import { qbTestConnection } from './qbittorrent.js'
 import { sabMissingCategories, sabTestConnection } from './sabnzbd.js'
+import { testProwlarr } from './prowlarr.js'
 
 /** `sonarr`, `radarr`, or `arr:<id>` for an additional instance. */
 export function isArrService(service: string): boolean {
@@ -81,6 +82,10 @@ export async function testIntegration(config: Config, service: string): Promise<
     if (!config.amenzb_url || !config.amenzb_key) throw new Error('AmeNZB URL and API key are required')
     await USENET_PROVIDERS.amenzb.test(USENET_PROVIDERS.amenzb.connection(config))
     return 'AmeNZB accepted the API key'
+  }
+  if (service === 'prowlarr') {
+    if (!config.prowlarr_url || !config.prowlarr_key) throw new Error('Prowlarr URL and API key are required')
+    return await testProwlarr({ baseUrl: config.prowlarr_url, apiKey: config.prowlarr_key })
   }
   if (service === 'discord') {
     if (!config.webhook) throw new Error('Discord webhook URL is required')

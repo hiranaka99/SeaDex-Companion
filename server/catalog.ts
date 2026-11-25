@@ -1,6 +1,8 @@
 import { loadCatalogPage } from './catalog-client.js'
 import { episodeFromFilename, type ParsedEpisode } from './matching.js'
 import type { JsonObject, ReleaseCandidate, SeaDexEntry } from './types.js'
+import { normalizeInfoHash } from '../shared/ids.js'
+import { filesSourceId } from './source-files.js'
 
 /** Trackers SeaDex links with a site-relative path instead of a full address. */
 const TRACKER_ORIGINS: Record<string, string> = { AB: 'https://animebytes.tv' }
@@ -89,6 +91,7 @@ export function mergeComplementaryCandidates(candidates: ReleaseCandidate[]): Re
         size: members.reduce((sum, member) => sum + (member.size || 0), 0),
         file_count: members.reduce((sum, member) => sum + (member.file_count || 0), 0),
         info_hashes: members.flatMap(member => member.info_hashes),
+        private_sources: members.flatMap(member => member.private_sources || []),
         source_files: members.flatMap(member => member.source_files || []),
         torrent_files: members.flatMap(member => member.torrent_files || []),
         is_best: members.some(member => member.is_best),
@@ -144,6 +147,18 @@ export async function seadexBest(
               ? files.filter(file => Number(String(file.name || '').match(/S(\d{1,3})E/i)?.[1] || 0) === season)
               : files
           const hash = String(torrent.infoHash || '')
+          const allFiles = files.map(file => ({ name: String(file.name || ''), length: Number(file.length || 0) }))
+          // SeaDex withholds a private tracker's info hash ("<redacted>") but still lists the torrent's files.
+          const privateSource =
+            !normalizeInfoHash(hash) &&
+            allFiles.length &&
+            allFiles.every(file => file.name && Number.isSafeInteger(file.length))
+              ? {
+                  id: filesSourceId(allFiles),
+                  ...(trackerPage(torrent) ? { page: trackerPage(torrent) } : {}),
+                  files: allFiles,
+                }
+              : undefined
           const release: ReleaseCandidate = {
             releaseGroup: torrent.releaseGroup,
             tracker: torrent.tracker,
@@ -154,6 +169,7 @@ export async function seadexBest(
             size,
             file_count: count,
             info_hashes: hash ? [hash] : [],
+            ...(privateSource ? { private_sources: [privateSource] } : {}),
             is_best: Boolean(torrent.isBest),
             source_files: seasonFiles.map(file => ({
               name: String(file.name || ''),

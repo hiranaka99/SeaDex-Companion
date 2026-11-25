@@ -12,6 +12,7 @@ import { readJson, sendJson } from './http-response.js'
 import { log } from './logging.js'
 import { route, type Route } from './router.js'
 import { sabnzbdConfigured, usenetAvailability } from './usenet.js'
+import { privateSearchSettings, prowlarrCoverage, prowlarrSettings } from './prowlarr.js'
 import { applyUserRulesToResults } from './user-rules.js'
 import { errorMessage } from '../shared/errors.js'
 import { asRecord } from '../shared/guards.js'
@@ -92,8 +93,12 @@ export const downloadRoutes: Route[] = [
       ok: true,
       config_generation: currentGeneration(),
       providers_enabled: { animetosho: config.animetosho_enabled, amenzb: config.amenzb_enabled },
+      prowlarr_configured: privateSearchSettings(config) !== null,
       sabnzbd_configured: sabnzbdConfigured(config),
-      results: await usenetAvailability(config, selections, currentResults(), { refresh: body.refresh === true }),
+      results: await usenetAvailability(config, selections, currentResults(), {
+        refresh: body.refresh === true,
+        search: Array.isArray(body.search) && body.search.length ? parseSelections(body.search) : [],
+      }),
     })
   }),
   // One reviewed release, answered once every source it needs has settled.
@@ -143,6 +148,21 @@ export const downloadRoutes: Route[] = [
     } catch (error) {
       release()
       throw error
+    }
+  }),
+  // What Prowlarr's indexers can find, so private-tracker downloads are only offered where they can work.
+  route('GET', '/api/prowlarr/coverage', async ({ url, response }) => {
+    const settings = prowlarrSettings(loadConfig())
+    if (!settings) return sendJson(response, 200, { ok: true, coverage: { trackers: [], usenet: false } })
+    const trackers = (url.searchParams.get('trackers') || '')
+      .split(',')
+      .map(tracker => tracker.trim())
+      .filter(Boolean)
+      .slice(0, 50)
+    try {
+      sendJson(response, 200, { ok: true, coverage: await prowlarrCoverage(settings, trackers) })
+    } catch (error) {
+      throw new HttpError(502, errorMessage(error), { ok: false })
     }
   }),
   route('GET', '/api/download_bulk/status', sendJob(undefined)),

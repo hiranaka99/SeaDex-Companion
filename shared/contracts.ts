@@ -1,6 +1,27 @@
 import type { DownloadMode } from './download-contracts.js'
 import type { UsenetProvider } from './usenet-contracts.js'
 
+/**
+ * A torrent SeaDex lists on a private tracker, without a public info hash. Its file list identifies it, so a
+ * copy found through Prowlarr can be checked file by file before it is downloaded.
+ */
+/** What the indexers configured in Prowlarr can find, so the UI only offers what will work. */
+export interface ProwlarrCoverage {
+  /** The asked-for tracker names (as SeaDex writes them) that Prowlarr has a private torrent indexer for. */
+  trackers: string[]
+  /** Prowlarr has at least one enabled Usenet indexer. */
+  usenet: boolean
+}
+
+export interface PrivateSource {
+  /** `files:<sha1>` of the sorted file names and sizes. */
+  id: string
+  /** The torrent's page on its tracker, when SeaDex links one. */
+  page?: string
+  /** Every file of the torrent, with exact sizes. */
+  files: { name: string; length: number }[]
+}
+
 export interface AuthState {
   setup_required: boolean
   authenticated: boolean
@@ -81,6 +102,8 @@ export interface Release {
   torrent_available: boolean
   selected_files?: string[]
   torrent_files?: import('./download-estimate.js').TorrentFiles[]
+  /** Private-tracker torrents behind this release, which only Prowlarr can find. Empty for public releases. */
+  private_sources?: PrivateSource[]
   /** The release the saved preferences pick as the download target for its season or cour. */
   target?: boolean
   /** Owning this release makes its season or cour count as best. Absent means the release kind decides. */
@@ -132,6 +155,8 @@ export interface ResultItem {
   banner: string | null
   anilist_id: number | null
   anilist_ids?: number[]
+  /** Sonarr's alternate (scene) titles that apply to this season, used as Prowlarr search terms. */
+  search_titles?: string[]
   arr_url: string | null
   library_key?: string
   mapping_override?: boolean
@@ -234,6 +259,10 @@ export interface Config {
   amenzb_enabled: boolean
   amenzb_url: string
   amenzb_key: string
+  /** Search the indexers configured in Prowlarr for releases SeaDex lists on private trackers. */
+  prowlarr_enabled: boolean
+  prowlarr_url: string
+  prowlarr_key: string
   webhook: string
   notify_enabled: boolean
   /** Also notify when a finished download is not imported by Sonarr or Radarr. */
@@ -250,6 +279,7 @@ export const SECRET_CONFIG_KEYS = [
   'qbittorrent_pass',
   'sabnzbd_key',
   'amenzb_key',
+  'prowlarr_key',
   'webhook',
 ] as const
 export type SecretConfigKey = (typeof SECRET_CONFIG_KEYS)[number]

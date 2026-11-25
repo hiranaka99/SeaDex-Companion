@@ -220,6 +220,7 @@ async function submitUnit(
     endpoint: client.endpointId,
     state: 'acceptance_unknown',
     source_hash: unit.source_hash,
+    ...(unit.sourceAlias ? { source_alias: unit.sourceAlias } : {}),
     category: unit.category,
     scope: unit.whole_source ? undefined : unit.requestedPaths,
     provider: unit.provider,

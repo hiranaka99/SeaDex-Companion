@@ -32,7 +32,7 @@ export type {
   PreflightBlocked,
   SubmissionRow,
 } from '../../shared/download-contracts.js'
-import type { ArrScopeOptions, ConfigUpdate, ReleaseChange } from '../../shared/contracts.js'
+import type { ArrScopeOptions, ConfigUpdate, ProwlarrCoverage, ReleaseChange } from '../../shared/contracts.js'
 import type { AuthState, Config, ResultItem, ScanHistoryEntry, ScannedDataInfo, Status } from './types.js'
 import type { UpdateInfo, UpdateStatus } from '../../shared/update-contracts.js'
 
@@ -109,6 +109,12 @@ export const updateAccount = (username: string, currentPassword: string, newPass
     body: JSON.stringify({ username, current_password: currentPassword, new_password: newPassword }),
   })
 
+/** Which of these trackers Prowlarr has a private indexer for, and whether it has Usenet indexers. */
+export const getProwlarrCoverage = (trackers: string[]) =>
+  api<{ ok: boolean; coverage: ProwlarrCoverage }>(
+    `/api/prowlarr/coverage?trackers=${encodeURIComponent(trackers.join(','))}`,
+  ).then(response => response.coverage)
+
 export const getConfig = () =>
   api<Config>('/api/config').then(config => {
     rememberAvailabilityConfig(config)
@@ -129,7 +135,8 @@ export const saveConfig = (cfg: ConfigUpdate) =>
     const credentialsChanged = Boolean(
       cfg.amenzb_key?.trim() ||
       cfg.sabnzbd_key?.trim() ||
-      cfg.clear_secrets?.some(key => key === 'amenzb_key' || key === 'sabnzbd_key'),
+      cfg.prowlarr_key?.trim() ||
+      cfg.clear_secrets?.some(key => key === 'amenzb_key' || key === 'sabnzbd_key' || key === 'prowlarr_key'),
     )
     rememberAvailabilityConfig(config, credentialsChanged)
     return config
@@ -137,7 +144,7 @@ export const saveConfig = (cfg: ConfigUpdate) =>
 
 /** `arr:<id>` addresses an additional Sonarr or Radarr instance. */
 export type IntegrationService =
-  'sonarr' | 'radarr' | 'qbittorrent' | 'discord' | 'sabnzbd' | 'animetosho' | 'amenzb' | `arr:${string}`
+  'sonarr' | 'radarr' | 'qbittorrent' | 'discord' | 'sabnzbd' | 'animetosho' | 'amenzb' | 'prowlarr' | `arr:${string}`
 
 /** Tags and root folders an instance offers for its library scope, read with the unsaved draft. */
 export const getArrOptions = (service: IntegrationService, config: ConfigUpdate) =>
@@ -300,13 +307,19 @@ export const preflightDownload = (selections: SelectionInput[], refresh = false,
     null,
   )
 
-export const usenetAvailability = (selections: SelectionInput[], refresh = false, signal?: AbortSignal) =>
+export const usenetAvailability = (
+  selections: SelectionInput[],
+  refresh = false,
+  signal?: AbortSignal,
+  /** Rows to search Prowlarr for now; each checked NZB counts toward an indexer's download limit. */
+  search?: { key: string; release: number }[],
+) =>
   api<UsenetAvailabilityResponse>(
     '/api/usenet/availability',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ selections, refresh: refresh || undefined }),
+      body: JSON.stringify({ selections, refresh: refresh || undefined, search: search?.length ? search : undefined }),
       signal,
     },
     null,
@@ -334,6 +347,10 @@ function rememberAvailabilityConfig(config: Config, credentialsChanged = false) 
     config.amenzb_enabled,
     config.amenzb_url,
     config.amenzb_key_configured,
+    config.prowlarr_enabled,
+    config.prowlarr_url,
+    config.prowlarr_key_configured,
+    config.tracker_mode,
     config.sabnzbd_url,
     config.sabnzbd_key_configured,
   ])

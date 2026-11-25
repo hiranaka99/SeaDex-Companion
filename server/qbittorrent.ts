@@ -191,13 +191,15 @@ async function qbSelectTorrentFiles(
   hash: string,
   selectedFiles: string[],
   timeoutMs = QB_METADATA_TIMEOUT_MS,
+  metadataKnown = false,
 ): Promise<void> {
   const stateBody = new URLSearchParams({ hashes: hash })
   // Magnet metadata is exchanged only while the torrent is running. Start it,
   // poll for the file list until the per-torrent metadata budget runs out,
   // then stop it before changing any priorities so the final download
-  // contains only the requested cour.
-  await qbPostWithFallback(config, ['/api/v2/torrents/start', '/api/v2/torrents/resume'], stateBody)
+  // contains only the requested cour. A torrent added from its .torrent file
+  // already has its file list, so it stays stopped until the priorities are set.
+  if (!metadataKnown) await qbPostWithFallback(config, ['/api/v2/torrents/start', '/api/v2/torrents/resume'], stateBody)
   let files: JsonObject[] | null = null
   const metadataDeadline = Date.now() + timeoutMs
   try {
@@ -244,7 +246,7 @@ async function qbSelectTorrentFiles(
     throw new Error(
       `Metadata fetching failed: qBittorrent did not load the torrent metadata within ${Math.ceil(timeoutMs / 1000)} seconds`,
     )
-  await qbPostWithFallback(config, ['/api/v2/torrents/stop', '/api/v2/torrents/pause'], stateBody)
+  if (!metadataKnown) await qbPostWithFallback(config, ['/api/v2/torrents/stop', '/api/v2/torrents/pause'], stateBody)
 
   const wanted = new Set(selectedFiles.map(normalizedTorrentPath).filter(Boolean))
   const indexedFiles = files.map((file, index) => ({ file, index }))
@@ -279,38 +281,53 @@ export interface QbOwnershipHooks {
 
 export class QbittorrentAmbiguousError extends Error {}
 
+/** A torrent to add: a magnet link, or a .torrent file (a private tracker's) with the info hash read from it. */
+export type QbTorrentSource = string | { hash: string; file: Uint8Array }
+
 export async function qbAddTorrent(
   config: Config,
-  magnet: string,
+  source: QbTorrentSource,
   category?: string,
   selectedFiles: string[] = [],
   timeoutMs = QB_METADATA_TIMEOUT_MS,
   ownership?: QbOwnershipHooks,
 ): Promise<void> {
-  return withTorrentLocks(config, [magnetInfoHash(magnet) || magnet], async () => {
-    const hash = magnetInfoHash(magnet)
+  const fromFile = typeof source === 'string' ? null : source
+  const magnet = typeof source === 'string' ? source : ''
+  const lockKey = fromFile?.hash || magnetInfoHash(magnet) || magnet
+  return withTorrentLocks(config, [lockKey], async () => {
+    const hash = fromFile ? fromFile.hash.toLowerCase() : magnetInfoHash(magnet)
     if (selectedFiles.length && !hash) throw new Error('Cannot select torrent files without a v1 info hash')
     if (hash && (await qbTorrentExists(config, hash)))
       throw new Error('Torrent already exists in qBittorrent and was not marked as app-owned')
-    const body = new URLSearchParams({ urls: magnet })
-    if (category) body.set('category', category)
+    const fields: Record<string, string> = {}
+    if (category) fields.category = category
     if (selectedFiles.length) {
-      body.set('paused', 'true')
-      body.set('stopped', 'true')
+      fields.paused = 'true'
+      fields.stopped = 'true'
+    }
+    let init: RequestInit
+    if (fromFile) {
+      const form = new FormData()
+      form.set(
+        'torrents',
+        new Blob([new Uint8Array(fromFile.file)], { type: 'application/x-bittorrent' }),
+        `${fromFile.hash}.torrent`,
+      )
+      for (const [name, value] of Object.entries(fields)) form.set(name, value)
+      init = { method: 'POST', body: form }
+    } else {
+      const body = new URLSearchParams({ urls: magnet, ...fields })
+      init = { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body }
     }
     let dispatched = false
     let response: Response
     try {
-      response = await qbRequest(
-        config,
-        '/api/v2/torrents/add',
-        { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body },
-        {
-          onDispatch: () => {
-            dispatched = true
-          },
+      response = await qbRequest(config, '/api/v2/torrents/add', init, {
+        onDispatch: () => {
+          dispatched = true
         },
-      )
+      })
     } catch (error) {
       if (dispatched)
         throw new QbittorrentAmbiguousError(`qBittorrent submission status is unknown: ${errorMessage(error)}`)
@@ -344,7 +361,8 @@ export async function qbAddTorrent(
       if (accepted) {
         try {
           if (hash) ownership?.record(hash)
-          if (selectedFiles.length) await qbSelectTorrentFiles(config, hash!, selectedFiles, timeoutMs)
+          if (selectedFiles.length)
+            await qbSelectTorrentFiles(config, hash!, selectedFiles, timeoutMs, Boolean(fromFile))
         } catch (error) {
           if (!hash) throw error
           try {
