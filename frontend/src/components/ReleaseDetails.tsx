@@ -172,6 +172,7 @@ export default function ReleaseDetails({
   const complete = transfers.length > 0 && active.length === 0
   const inClient = active.length > 0
   const mode = config?.download_mode || 'torrent_only'
+  const publicOnly = (config?.tracker_mode || 'public') === 'public'
   const category = (r.arr === 'Sonarr' ? config?.sonarr_category : config?.radarr_category)?.trim() || r.arr
   const usenetEnabled = mode !== 'torrent_only'
   const sabReady = sabnzbdConfigured || Boolean(config?.sabnzbd_url && config?.sabnzbd_key_configured)
@@ -426,6 +427,8 @@ export default function ReleaseDetails({
   /** A release SeaDex lists without a public magnet: it can only be fetched by hand from its tracker. */
   const manualOnly = chosen === 'torrent' && !rel.torrent_available && !inClient && !complete && !usenetUsable
   const tracker = rel.tracker.trim()
+  /** No public magnet means the release sits on a private tracker. */
+  const privateTracker = !rel.torrent_available
   // `rel.url` is the SeaDex page listing the release; only `tracker_url` leads to the tracker itself.
   const manualSource = rel.tracker_url
     ? { href: rel.tracker_url, label: `Open on ${tracker || 'the tracker'}` }
@@ -469,6 +472,15 @@ export default function ReleaseDetails({
         </span>
         <div className="release-identity flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
           <span className="max-w-full text-sm font-semibold text-ink wrap-anywhere">{rel.releaseGroup}</span>
+          {privateTracker && (
+            <span
+              className="release-private inline-flex shrink-0 items-center gap-1 rounded-md border border-line bg-canvas-soft px-2 py-0.5 text-xs font-semibold text-muted"
+              title={tracker ? `${tracker} is a private tracker` : 'This release is on a private tracker'}
+            >
+              <Icon name="lock" size={12} />
+              Private tracker{tracker ? ` · ${tracker}` : ''}
+            </span>
+          )}
           {owned && !verified && (
             <span className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-good">
               <Icon name="check" size={13} />
@@ -639,6 +651,16 @@ export default function ReleaseDetails({
             <p className="m-0 text-sm font-semibold text-ink wrap-anywhere">
               {complete ? statusCopy : `${phaseLabel(active[0].phase)} in ${clientName(active[0].client)}`}
             </p>
+          ) : manualOnly && publicOnly ? (
+            <div className="release-manual">
+              <p className="m-0 text-sm font-semibold text-ink">Not offered in public-tracker mode</p>
+              <p className="mt-1 mb-0 max-w-[60ch] text-xs text-muted wrap-anywhere">
+                {owned
+                  ? 'You own this private-tracker release, so it is listed here and counts toward your library. '
+                  : ''}
+                Private-tracker releases are never downloaded or targeted while only public trackers are used.
+              </p>
+            </div>
           ) : manualOnly ? (
             <div className="release-manual">
               <p className="m-0 text-sm font-semibold text-ink">Manual download only</p>
@@ -700,7 +722,9 @@ export default function ReleaseDetails({
           )}
         </div>
         {manualOnly && !usenetEnabled
-          ? manualSource && (
+          ? // Public-tracker mode never points to a private tracker.
+            !publicOnly &&
+            manualSource && (
               <a
                 className={cx(
                   buttonBase,
