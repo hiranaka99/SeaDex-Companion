@@ -277,6 +277,32 @@ test('a season SeaDex lists only on private trackers has no public release in pu
   )
 })
 
+test('public-tracker mode keeps a private release the library owns, marked but never targeted', () => {
+  // SeaDex lists a private best, a public alternative, and a private alternative you already own.
+  const vaultBest = candidate('Vault', 7, { tracker: 'AB', info_hashes: ['<redacted>'] })
+  const raws = candidate('Raws', 1.4, { is_best: false })
+  const ownedPrivate = candidate('-ZR-', 1.5, { is_best: false, tracker: 'AB', info_hashes: ['<redacted>'] })
+  const result = assess([vaultBest, raws, ownedPrivate], prefs(), ['-ZR-'])
+  assert.deepEqual(
+    result.releases.map(release => [release.releaseGroup, release.torrent_available, release.target === true]),
+    [
+      ['Raws', true, true],
+      ['-ZR-', false, false],
+    ],
+    'The unowned private best stays out; the owned private release is listed without a magnet',
+  )
+  assert.ok(releaseOwned(result, result.releases[1]))
+  // Owning SeaDex's private best release still settles the season, though the public release stays the target.
+  const ownsBest = assess([vaultBest, raws], prefs(), ['Vault'])
+  assert.equal(ownsBest.status, 'best')
+  assert.equal(targetOf(ownsBest), 'Raws')
+  // With nothing public listed, the owned private release is what the season resolves to, still without a target.
+  const onlyPrivate = assess([vaultBest], prefs(), ['Vault'])
+  assert.equal(onlyPrivate.status, 'best')
+  assert.equal(onlyPrivate.private_only, undefined)
+  assert.equal(targetOf(onlyPrivate), undefined)
+})
+
 test('owning any best release settles a season unless only the target counts', () => {
   const relaxed = assess([remux, encode], prefs({ size: 'smallest' }), ['Remux'])
   assert.equal(relaxed.status, 'best', 'Preferences only choose what to download')

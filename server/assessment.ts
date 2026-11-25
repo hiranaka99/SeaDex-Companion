@@ -320,22 +320,32 @@ export function assessSeason({
           return scoped ? [scoped] : []
         })
       : slot.candidates
-    // Public-tracker mode treats a release nobody can fetch without a private-tracker account as unlisted.
-    const listedCandidates = settings.trackers === 'public' ? slotCandidates.filter(isDownloadable) : slotCandidates
-    if (slotCandidates.length && !listedCandidates.length) {
+    // Public-tracker mode treats a release nobody can fetch without a private-tracker account as unlisted,
+    // unless the library already holds it: then it stays listed, so your own release is recognized, but never targeted.
+    const publicOnly = settings.trackers === 'public'
+    const ownedGroups = new Set((partOwnership.owned[label || ''] || []).map(groupKey))
+    const publicCandidates = publicOnly ? slotCandidates.filter(isDownloadable) : slotCandidates
+    const ownedPrivate = publicOnly
+      ? slotCandidates.filter(
+          candidate => !isDownloadable(candidate) && ownedGroups.has(groupKey(candidate.releaseGroup)),
+        )
+      : []
+    if (slotCandidates.length && !publicCandidates.length && !ownedPrivate.length) {
       outcomes.push('uncovered')
       unavailableParts.push({ label: partName(label), reason: PRIVATE_ONLY_REASON })
       continue
     }
     // The catalog is shared between library titles, so exclusions are noted on copies.
-    const eligibleCandidates = listedCandidates.map((candidate): ReleaseCandidate => {
+    const noteExclusion = (candidate: ReleaseCandidate): ReleaseCandidate => {
       const reason = exclusionReason(candidate, part.episodeCount, preferences)
       return reason ? { ...candidate, excluded_by: reason } : candidate
-    })
+    }
+    const eligibleCandidates = (publicCandidates.length ? publicCandidates : ownedPrivate).map(noteExclusion)
     let [selected, alternatives] = pickBest(eligibleCandidates, part.episodeCount, preferences)
     // When the preferences exclude every release, SeaDex's own pick still shows what the library holds.
     const blocked = !selected && eligibleCandidates.length > 0
     if (blocked) [selected, alternatives] = pickBest(eligibleCandidates, part.episodeCount)
+    if (publicCandidates.length) alternatives = [...alternatives, ...ownedPrivate.map(noteExclusion)]
     if (!selected) {
       outcomes.push('uncovered')
       unavailableParts.push({
@@ -450,7 +460,11 @@ export function assessSeason({
       const kind = isBestKind(part, release) ? 'best' : 'alt'
       const satisfies = releaseSettles(part, release)
       return releaseDict(kind, release, part.label, part.source.url, {
-        target: !part.blocked && sameRelease(release, part.best, true),
+        // A private-tracker release is never a public-tracker mode target, even when it is all the library holds.
+        target:
+          !part.blocked &&
+          sameRelease(release, part.best, true) &&
+          (settings.trackers !== 'public' || isDownloadable(release)),
         // Stored only where it departs from the kind, which is what older results imply.
         ...(satisfies !== (kind === 'best') ? { satisfies } : {}),
         ...(matches.some(match => sameRelease(match, release)) ? { files_match: true } : {}),
