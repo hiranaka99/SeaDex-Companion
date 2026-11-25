@@ -16,13 +16,7 @@ export type UsenetUnitState =
   | 'lookup_failed'
 
 export type UsenetFailureCode =
-  | 'network'
-  | 'timeout'
-  | 'invalid_response'
-  | 'unauthorized'
-  | 'rate_limited'
-  | 'server'
-  | 'invalid_config'
+  'network' | 'timeout' | 'invalid_response' | 'unauthorized' | 'rate_limited' | 'server' | 'invalid_config'
 
 export interface UsenetHashAvailability {
   hash: string

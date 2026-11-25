@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1: Build the TypeScript backend
 # ---------------------------------------------------------------------------
-FROM node:24-alpine AS backend
+FROM node:26-alpine AS backend
 
 WORKDIR /app
 
@@ -24,7 +24,7 @@ RUN npm prune --omit=dev
 # ---------------------------------------------------------------------------
 # Stage 2: Build the React + TypeScript frontend (Vite)
 # ---------------------------------------------------------------------------
-FROM node:24-alpine AS frontend
+FROM node:26-alpine AS frontend
 
 WORKDIR /app/frontend
 
@@ -44,7 +44,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Stage 3: Runtime — Node.js backend + the compiled frontend
 # ---------------------------------------------------------------------------
-FROM node:24-alpine
+FROM node:26-alpine
 
 WORKDIR /app
 

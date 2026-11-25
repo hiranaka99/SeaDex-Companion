@@ -37,10 +37,10 @@ const validEntry = (value: unknown): value is DownloadUnitEntry => {
   const entry = object(value)
   return Boolean(
     entry &&
-      typeof entry.unit_id === 'string' &&
-      validProtocol(entry.protocol) &&
-      typeof entry.source_hash === 'string' &&
-      Array.isArray(entry.selections),
+    typeof entry.unit_id === 'string' &&
+    validProtocol(entry.protocol) &&
+    typeof entry.source_hash === 'string' &&
+    Array.isArray(entry.selections),
   )
 }
 
@@ -48,10 +48,10 @@ const validFailure = (value: unknown): value is DownloadUnitFailure => {
   const failure = object(value)
   return Boolean(
     failure &&
-      validProtocol(failure.protocol) &&
-      typeof failure.label === 'string' &&
-      typeof failure.error === 'string' &&
-      Array.isArray(failure.selections),
+    validProtocol(failure.protocol) &&
+    typeof failure.label === 'string' &&
+    typeof failure.error === 'string' &&
+    Array.isArray(failure.selections),
   )
 }
 
