@@ -7,6 +7,7 @@ import type { Config } from './types.js'
 import type { UsenetFailureCode } from '../shared/usenet-contracts.js'
 import type { ProwlarrCoverage } from '../shared/contracts.js'
 import { isRecord } from '../shared/guards.js'
+import { normalizeTrackerMode } from '../shared/settings.js'
 import {
   ProviderConfigError,
   ResponseTooLargeError,
@@ -75,7 +76,7 @@ export function prowlarrSettings(config: Config): ProwlarrSettings | null {
  * Prowlarr is only used while Release preferences include private trackers.
  */
 export function privateSearchSettings(config: Config): ProwlarrSettings | null {
-  return config.tracker_mode === 'private' ? prowlarrSettings(config) : null
+  return normalizeTrackerMode(config.tracker_mode) === 'private' ? prowlarrSettings(config) : null
 }
 
 /** Credential-free identity of a Prowlarr connection, for cache keys. */

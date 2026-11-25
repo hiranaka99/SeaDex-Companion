@@ -17,40 +17,17 @@ interface Props {
 
 const TRACKER_MODES: [TrackerMode, string, string][] = [
   [
-    'public',
-    'Public trackers only',
-    'Releases that need a private-tracker account are left out. This is SeaDex Companion’s default.',
-  ],
-  [
     'private',
     'Include private trackers',
-    'Releases from private trackers are listed too. You download those from the tracker yourself.',
+    'Releases from private trackers are listed too. You download those from the tracker yourself. This is SeaDex Companion’s default.',
   ],
+  ['public', 'Public trackers only', 'Releases that need a private-tracker account are left out.'],
 ]
 
 const TARGETS: [ReleasePreferences['size'], string, string][] = [
   ['largest', 'Largest release', 'Usually the remux or highest-bitrate encode. This is SeaDex Companion’s default.'],
   ['smallest', 'Smallest release', 'Usually the encode, when SeaDex lists it beside a remux.'],
 ]
-
-/** Short facts about the saved preferences for the collapsed section header. */
-export function summarizePreferences(
-  preferences: ReleasePreferences,
-  verify: boolean,
-  trackerMode: TrackerMode = 'public',
-): string[] {
-  const ignored = preferences.ignored_groups.length + preferences.ignored_trackers.length
-  return [
-    trackerMode === 'private' ? 'Private trackers included' : 'Public trackers only',
-    preferences.size === 'smallest' ? 'Smallest release' : 'Largest release',
-    preferences.dual_audio ? 'Dual audio preferred' : '',
-    preferences.max_episode_gb > 0 ? `Up to ${preferences.max_episode_gb} GB per episode` : '',
-    ignored ? `${ignored} ignored` : '',
-    preferences.accept_alternatives ? 'Alternatives accepted' : '',
-    preferences.strict ? 'Only the target counts' : '',
-    verify ? '' : 'File check off',
-  ].filter(Boolean)
-}
 
 /**
  * Chooses the download target among the releases SeaDex lists, and what counts as already

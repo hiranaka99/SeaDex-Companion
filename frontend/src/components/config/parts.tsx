@@ -1,6 +1,6 @@
 import type { DownloadMode } from '../../../../shared/download-contracts'
 import type { ArrTagKey } from '../../../../shared/settings'
-import { useEffect, useState, useId, ReactNode, RefObject } from 'react'
+import { useEffect, useState, useId, ReactNode } from 'react'
 import type { ConfigDraft } from '../../config-services'
 import Icon from '../Icons'
 import BrandLogo, { BrandName } from '../BrandLogo'
@@ -45,20 +45,6 @@ export type StatusTone = 'good' | 'bad' | 'busy' | 'muted' | 'dim'
 export interface ServiceStatus {
   word: string
   tone: StatusTone
-}
-export const statusDot: Record<StatusTone, string> = {
-  good: 'bg-good',
-  bad: 'bg-bad',
-  busy: 'animate-pulse bg-accent',
-  muted: 'bg-muted',
-  dim: 'bg-line-strong',
-}
-export const statusText: Record<StatusTone, string> = {
-  good: 'text-good',
-  bad: 'text-bad',
-  busy: 'text-accent-bright',
-  muted: 'text-muted',
-  dim: 'text-muted-dim',
 }
 export const downloadModes: [DownloadMode, string][] = [
   ['torrent_only', 'Torrents only (qBittorrent)'],
@@ -342,68 +328,6 @@ export function ToggleRow({
         />
       </button>
     </label>
-  )
-}
-
-/** One service and its state in words as well as colour, so a collapsed section still reports what is wrong. */
-export function StatusChip({ label, status }: { label: string; status: ServiceStatus }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 text-xs">
-      <span aria-hidden="true" className={cx('size-2 shrink-0 rounded-full', statusDot[status.tone])} />
-      <span className="font-semibold text-ink">{label}</span>
-      <span className={statusText[status.tone]}>{status.word}</span>
-    </span>
-  )
-}
-
-/** A collapsible settings group. Its title is a real heading, and it reopens itself when something inside needs attention. */
-export function Section({
-  title,
-  summary,
-  attention,
-  expand,
-  detailsRef,
-  children,
-}: {
-  title: string
-  summary?: ReactNode
-  attention?: boolean
-  expand?: boolean
-  detailsRef?: RefObject<HTMLDetailsElement | null>
-  children: ReactNode
-}) {
-  const [open, setOpen] = useState(false)
-  useEffect(() => {
-    if (attention || expand) setOpen(true)
-  }, [attention, expand])
-  return (
-    <details
-      ref={detailsRef}
-      open={open}
-      // Disclosures nested inside a section toggle too; only the section's own toggle opens or closes it.
-      onToggle={event => {
-        if (event.target === event.currentTarget) setOpen(event.currentTarget.open)
-      }}
-      className="group mt-3"
-    >
-      <summary className="touch-target flex cursor-pointer list-none flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border border-line bg-panel px-4 py-3 transition-colors hover:border-line-strong hover:bg-panel-raised group-open:border-line-strong group-open:bg-panel-raised [&::-webkit-details-marker]:hidden">
-        <h2 className="m-0 text-lg font-extrabold tracking-tight">{title}</h2>
-        {summary && (
-          <span className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">{summary}</span>
-        )}
-        <span
-          aria-hidden="true"
-          className="ml-auto grid size-8 shrink-0 place-items-center rounded-lg border border-line bg-canvas-soft text-ink"
-        >
-          <Icon
-            name="chevron-down"
-            size={17}
-            className="transition-transform duration-150 group-open:rotate-180 motion-reduce:transition-none"
-          />
-        </span>
-      </summary>
-      <div className="space-y-6 px-1 pt-5 pb-3">{children}</div>
-    </details>
   )
 }
 

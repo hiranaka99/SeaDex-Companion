@@ -230,10 +230,10 @@ test('when the preferences exclude every release the season offers nothing, but 
   assert.equal(owned.preference_blocked, undefined)
 })
 
-test('public-tracker mode is the default and the only other mode includes private trackers', () => {
-  assert.equal(DEFAULT_CONFIG.tracker_mode, 'public')
-  assert.equal(applyConfigUpdate(DEFAULT_CONFIG, { tracker_mode: 'private' }).tracker_mode, 'private')
-  assert.equal(applyConfigUpdate(DEFAULT_CONFIG, { tracker_mode: null }).tracker_mode, 'public')
+test('including private trackers is the default and the only other mode is public trackers only', () => {
+  assert.equal(DEFAULT_CONFIG.tracker_mode, 'private')
+  assert.equal(applyConfigUpdate(DEFAULT_CONFIG, { tracker_mode: 'public' }).tracker_mode, 'public')
+  assert.equal(applyConfigUpdate(DEFAULT_CONFIG, { tracker_mode: null }).tracker_mode, 'private')
   assert.throws(
     () => applyConfigUpdate(DEFAULT_CONFIG, { tracker_mode: 'all' }),
     /tracker_mode must be public or private/,
