@@ -233,15 +233,28 @@ test('a season of a public batch and its private season copy are listed once', (
   const privateCopy = candidate('Group', sizes, { tracker: 'AB', info_hashes: ['<redacted>'] })
   // The public upload is a whole-series batch; only this season's files are selected from it.
   const batch = candidate('Group', sizes, { info_hashes: [hash('b')], is_best: false })
-  batch.source_files!.push(
-    { name: episodeName(1, 2), length: gb(1.7) },
-    { name: episodeName(2, 2), length: gb(1.8) },
-  )
+  batch.source_files!.push({ name: episodeName(1, 2), length: gb(1.7) }, { name: episodeName(2, 2), length: gb(1.8) })
   batch.size += gb(3.5)
   const result = assess(localSeason('Group', sizes), [privateCopy, batch])
   assert.deepEqual(
     result.releases.map(release => [release.tracker, release.selected_files?.length]),
     [['Nyaa', 2]],
+  )
+  assert.equal(result.releases[0].files_match, true)
+  const [saved] = normalizeResults(JSON.parse(JSON.stringify([result])))
+  assert.equal(saved.releases.length, 1)
+})
+
+test('a private copy without the bonus episode of a public upload is listed once', () => {
+  const sizes = [gb(2.8), gb(2.9)]
+  const privateCopy = candidate('Group', sizes, { tracker: 'AB', info_hashes: ['<redacted>'] })
+  const publicUpload = candidate('Group', sizes, { info_hashes: [hash('b')] })
+  publicUpload.source_files!.push({ name: 'Show - OVA.mkv', length: gb(0.8) })
+  publicUpload.size += gb(0.8)
+  const result = assess(localSeason('Group', sizes), [privateCopy, publicUpload])
+  assert.deepEqual(
+    result.releases.map(release => release.tracker),
+    ['Nyaa'],
   )
   assert.equal(result.releases[0].files_match, true)
   const [saved] = normalizeResults(JSON.parse(JSON.stringify([result])))

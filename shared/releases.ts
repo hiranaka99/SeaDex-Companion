@@ -40,9 +40,7 @@ export function episodeFromFilename(name: string): ParsedEpisode | null {
   // Only use these when no explicitly numbered episodes exist in the torrent.
   // Audio channel layouts such as "E-AC3 5.1" or "AAC 2.0" are not episode numbers, and a number never
   // matches as just the whole part of a decimal, so "5.1)" cannot read as episode 5.
-  const absolute = filename
-    .replace(AUDIO_CHANNELS, ' ')
-    .match(/(?:^|[\s_-])(\d{1,3}(?:\.\d+)?)(?!\.?\d)(?=[\s(.\]]|$)/)
+  const absolute = filename.replace(AUDIO_CHANNELS, ' ').match(/(?:^|[\s_-])(\d{1,3}(?:\.\d+)?)(?!\.?\d)(?=[\s(.\]]|$)/)
   return absolute ? { season: null, episode: Number(absolute[1]), explicit: false } : null
 }
 
@@ -81,10 +79,10 @@ interface Listing {
 }
 
 /**
- * The sorted sizes of a listing's video files. Extras and subtitles never identify a release. A listing scoped to
+ * The sizes of a listing's video files. Extras and subtitles never identify a release. A listing scoped to
  * some of its torrent's files, such as one season of a whole-series batch, is identified by those files alone.
  */
-function videoFingerprint(listing: Listing): string {
+function videoSizes(listing: Listing): number[] {
   const listed = listing.source_files?.length
     ? listing.source_files
     : (listing.torrent_files || []).flatMap(torrent => torrent.files)
@@ -94,15 +92,25 @@ function videoFingerprint(listing: Listing): string {
   return files
     .filter(file => VIDEO_FILE.test(file.name) && Number.isSafeInteger(file.length) && file.length > 0)
     .map(file => file.length)
-    .sort((left, right) => left - right)
-    .join(',')
+}
+
+/** Whether every size in `inner` has its own byte-identical counterpart in `outer`. */
+function containsAll(outer: number[], inner: number[]): boolean {
+  const remaining = new Map<number, number>()
+  for (const size of outer) remaining.set(size, (remaining.get(size) || 0) + 1)
+  return inner.every(size => {
+    const count = remaining.get(size) || 0
+    remaining.set(size, count - 1)
+    return count > 0
+  })
 }
 
 /**
  * Whether two SeaDex listings are the same release, such as one encode uploaded to two trackers.
  * A group often has several listed releases (a BD and a WEB release, or two encodes of a movie),
- * so the group name alone never decides. Without file sizes, two different torrents are two releases;
- * `lenient` lets the group name decide only for a listing without a torrent, such as a private-tracker copy.
+ * so the group name alone never decides. Two listings are the same release when one's video files all appear,
+ * byte for byte, in the other, which covers a copy that leaves out a bonus episode. Without file sizes, two
+ * different torrents are two releases; `lenient` lets the group name decide only for a listing without a torrent, such as a private-tracker copy.
  */
 export function sameRelease(left: Listing, right: Listing, lenient = false): boolean {
   if (left.releaseGroup.trim().toLowerCase() !== right.releaseGroup.trim().toLowerCase()) return false
@@ -111,8 +119,13 @@ export function sameRelease(left: Listing, right: Listing, lenient = false): boo
   const leftTorrents = torrents(left)
   const rightTorrents = torrents(right)
   if (rightTorrents.some(hash => leftTorrents.includes(hash))) return true
-  const leftFiles = videoFingerprint(left)
-  const rightFiles = videoFingerprint(right)
-  if (leftFiles && rightFiles) return leftFiles === rightFiles
+  const leftFiles = videoSizes(left)
+  const rightFiles = videoSizes(right)
+  // One upload can add extras to the same encode, such as an OVA beside the season's episodes.
+  if (leftFiles.length && rightFiles.length) {
+    return leftFiles.length <= rightFiles.length
+      ? containsAll(rightFiles, leftFiles)
+      : containsAll(leftFiles, rightFiles)
+  }
   return lenient && (!leftTorrents.length || !rightTorrents.length)
 }
