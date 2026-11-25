@@ -79,8 +79,16 @@ test('Radarr includes non-theatrical releases and reads legacy movie-file owners
       items.map(item => item.id),
       [1, 2, 3, 6],
     )
-    assert.deepEqual(items.find(item => item.id === 3)?.seasons[0], { groups: ['Best group'], size: 123 })
-    assert.deepEqual(items.find(item => item.id === 6)?.seasons[0], { groups: ['Another group'], size: 456 })
+    assert.deepEqual(items.find(item => item.id === 3)?.seasons[0], {
+      groups: ['Best group'],
+      size: 123,
+      files: [{ size: 123, episodes: [], group: 'Best group' }],
+    })
+    assert.deepEqual(items.find(item => item.id === 6)?.seasons[0], {
+      groups: ['Another group'],
+      size: 456,
+      files: [{ size: 456, episodes: [], group: 'Another group' }],
+    })
   } finally {
     globalThis.fetch = original
   }
@@ -104,7 +112,11 @@ test('empty Radarr statistics cannot hide an already-owned best movie file', asy
       radarr_url: 'http://radarr.test',
       radarr_key: 'fixture',
     })
-    assert.deepEqual(items[0].seasons[0], { groups: ['Best group'], size: 123 })
+    assert.deepEqual(items[0].seasons[0], {
+      groups: ['Best group'],
+      size: 123,
+      files: [{ size: 123, episodes: [], group: 'Best group' }],
+    })
     const result = assessSeason({
       item: items[0],
       season: 0,

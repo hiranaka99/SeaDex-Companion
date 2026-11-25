@@ -212,6 +212,7 @@ let bulkOutcome = 'added'
 let finishBulk = null
 let bulkState = { id: null, ok: true, existing: [], targets: [], finished: true, pending: [], added: [], failures: [] }
 const bulkRequests = []
+const optionRequests = []
 const scanRequests = []
 const controlRequests = []
 const capabilities = { pause: true, resume: true, remove: true, remove_files: true }
@@ -420,6 +421,12 @@ const server = createServer(async (req, res) => {
           await new Promise(resolve => setTimeout(resolve, saveDelay))
           saved.push(body)
           config = { ...config, ...body }
+          if (body.arr_instances)
+            config.arr_instances = body.arr_instances.map(instance => ({
+              ...instance,
+              key: '',
+              key_configured: Boolean(instance.key || instance.key_configured),
+            }))
           for (const name of ['sonarr_key', 'radarr_key', 'qbittorrent_pass', 'sabnzbd_key', 'amenzb_key', 'webhook']) {
             if (body[name]) config[name + '_configured'] = true
             if (body.clear_secrets?.includes(name)) config[name + '_configured'] = false
@@ -712,6 +719,10 @@ const server = createServer(async (req, res) => {
       }
       response = { ok: true }
     } else if (path === '/api/config/test') response = { ok: true, message: 'Fixture connection successful' }
+    else if (path === '/api/arr/options') {
+      optionRequests.push(body)
+      response = { ok: true, tags: ['fixture-anime', 'fixture-skip'], root_folders: ['/fixture/anime'] }
+    } else if (path === '/api/arr-tags/remove') response = { ok: true, removed: 3 }
     else if (path === '/api/scan') {
       scanRequests.push(body)
       response = { ok: true }
@@ -2285,6 +2296,170 @@ try {
       'Restoring the saved download method leaves no unsaved draft',
     )
     console.log('PASS download method radios, SABnzbd and Usenet source cards, and the Usenet-only warning')
+
+    // Library scope, an additional instance, release preferences, and status tags.
+    const configBefore = structuredClone(config)
+    const overridesBefore = statusOverrides
+    const savedBefore = saved.length
+    const settingsSection = title =>
+      `[...document.querySelectorAll('.configuration-disclosures > details')].find(details => details.querySelector('h2')?.textContent === '${title}')`
+    const sonarrScope = `[...document.querySelectorAll('section')].find(section => section.querySelector('h3')?.textContent === 'Sonarr').querySelector('details')`
+    assert.ok(
+      await evaluate(`${sonarrScope}.querySelector('summary').textContent.includes('All series')`),
+      'An empty scope scans every series',
+    )
+    await evaluate(`${sonarrScope}.querySelector('summary').click()`)
+    await wait(
+      `[...${sonarrScope}.querySelectorAll('button[aria-pressed]')].some(button => button.textContent === 'fixture-anime')`,
+    )
+    assert.equal(
+      optionRequests.at(-1).service,
+      'sonarr',
+      'Opening a scope reads the tags and root folders of that instance',
+    )
+    assert.equal(
+      optionRequests.at(-1).config.sonarr_url,
+      'http://next.local',
+      'The unsaved draft decides which instance is read',
+    )
+    await evaluate(`${sonarrScope}.querySelector('[role=switch]').click()`)
+    await evaluate(
+      `[...${sonarrScope}.querySelectorAll('button[aria-pressed]')].find(button => button.textContent === 'fixture-anime').click()`,
+    )
+    await wait(
+      `${sonarrScope}.querySelector('summary').textContent.includes('Only anime series, tagged fixture-anime')`,
+    )
+    assert.equal(
+      await evaluate(`${sonarrScope}.querySelector('input[type=text]').value`),
+      'fixture-anime',
+      'A picked tag is written into its list',
+    )
+    assert.equal(
+      await evaluate(`[...${sonarrScope}.querySelectorAll('button[aria-pressed=true]')].length`),
+      1,
+      'The picked tag is marked in the list it was picked for only',
+    )
+    await click('Add Sonarr instance')
+    await wait(`document.querySelector('[id^="instance-"] input')`)
+    await pause(100)
+    assert.equal(
+      await evaluate(
+        `document.activeElement === document.querySelector('[id^="instance-"] input') && document.activeElement.value`,
+      ),
+      'Sonarr 2',
+      'A new instance is named and focused',
+    )
+    await fill('[id^="instance-"] input[type=url]', 'http://sonarr-4k.local')
+    await fill('[id^="instance-"] input[type=password]', 'instance-key')
+    await wait(
+      `[...document.querySelectorAll('input[readonly]')].some(input => input.value.includes('/api/webhooks/sonarr/'))`,
+    )
+    assert.ok(
+      await evaluate(
+        `[...document.querySelectorAll('.configuration-disclosures > section span')].some(chip => chip.textContent === 'Sonarr 2Not tested')`,
+      ),
+      'The new instance reports its connection state with the library',
+    )
+    await evaluate(`${settingsSection('Release preferences')}.querySelector('summary').click()`)
+    await wait(`document.querySelector('input[name=release_target_size]')?.getClientRects().length`)
+    assert.deepEqual(
+      await evaluate(`[...document.querySelectorAll('input[name=release_target_size]')].map(input => input.checked)`),
+      [true, false],
+      'The largest release is the default target',
+    )
+    await evaluate(`document.querySelectorAll('input[name=release_target_size]')[1].click()`)
+    await fill('input[placeholder="No limit"]', '4')
+    await fill('input[placeholder="Group A, Group B"]', 'BadGroup, Other')
+    await wait(
+      `['Smallest release', 'Up to 4 GB per episode', '2 ignored'].every(fact => ${settingsSection('Release preferences')}.querySelector('summary').textContent.includes(fact))`,
+    )
+    assert.equal(
+      await evaluate(`document.querySelector('input[placeholder="Group A, Group B"]').value`),
+      'BadGroup, Other',
+      'A typed list keeps its commas while it is edited',
+    )
+    await evaluate(
+      `${settingsSection('Automation')}.open || ${settingsSection('Automation')}.querySelector('summary').click()`,
+    )
+    await evaluate(`document.querySelector('[aria-labelledby="arr-status-tags-label"]').click()`)
+    await wait(`document.querySelector('input[name=arr_tag_best]')`)
+    assert.equal(await evaluate(`document.querySelector('input[name=arr_tag_best]').placeholder`), 'seadex-best')
+    await fill('input[name=arr_tag_best]', 'Bad Tag')
+    await wait(`document.body.textContent.includes('Use lowercase letters, digits, and hyphens only')`)
+    await click('Save configuration')
+    await wait(`document.body.textContent.includes('Fix the status tag names before saving')`)
+    assert.equal(saved.length, savedBefore, 'An invalid tag name is not saved')
+    await fill('input[name=arr_tag_best]', 'top-release')
+    await click('Save configuration')
+    await wait(`document.body.textContent.includes('All configuration changes saved')`)
+    assert.ok(
+      await evaluate(`document.body.textContent.includes('Scan the library to apply the new scope and preferences')`),
+      'Saving scan settings says that a scan applies them',
+    )
+    const scanSettings = saved.at(-1)
+    assert.deepEqual(scanSettings.sonarr_scope, {
+      anime_only: true,
+      include_tags: ['fixture-anime'],
+      exclude_tags: [],
+      root_folders: [],
+    })
+    assert.deepEqual(
+      scanSettings.arr_instances.map(({ id, ...instance }) => [/^[a-f0-9]{8}$/.test(id), instance]),
+      [
+        [
+          true,
+          {
+            kind: 'sonarr',
+            name: 'Sonarr 2',
+            url: 'http://sonarr-4k.local',
+            key: 'instance-key',
+            key_configured: false,
+            category: 'sonarr-anime',
+            sabnzbd_category: 'sonarr-anime',
+            scope: { anime_only: false, include_tags: [], exclude_tags: [], root_folders: [] },
+          },
+        ],
+      ],
+    )
+    assert.deepEqual(scanSettings.release_preferences, {
+      size: 'smallest',
+      dual_audio: false,
+      max_episode_gb: 4,
+      ignored_groups: ['BadGroup', 'Other'],
+      ignored_trackers: [],
+      accept_alternatives: false,
+      strict: false,
+    })
+    assert.deepEqual([scanSettings.arr_tags_enabled, scanSettings.arr_tag_best], [true, 'top-release'])
+    assert.equal(
+      await evaluate(`document.querySelector('[id^="instance-"] input[type=password]').value`),
+      '',
+      'A saved instance key is not shown again',
+    )
+    await evaluate(`document.querySelector('[aria-label="Remove Sonarr 2"]').click()`)
+    await wait(
+      `!document.querySelector('[id^="instance-"]') && document.body.textContent.includes('Sonarr 2 removed') && document.body.textContent.includes('Unsaved changes')`,
+    )
+    await click('Undo')
+    await wait(`document.querySelector('[id^="instance-"]') && !document.body.textContent.includes('Unsaved changes')`)
+    await capture('settings-instances-desktop')
+    // The library says when its results predate the saved scope or preferences.
+    config = configBefore
+    statusOverrides = { ...overridesBefore, settings_changed: true }
+    await evaluate('location.reload()')
+    await wait(`document.querySelector('input[name=sonarr_url]')`)
+    await click('Library')
+    await wait(
+      `[...document.querySelectorAll('[role=status]')].some(notice => notice.getClientRects().length && notice.textContent.includes('These results still reflect the earlier settings'))`,
+    )
+    statusOverrides = overridesBefore
+    await evaluate('location.reload()')
+    await wait(`document.querySelector('.library-grid')`)
+    await click('Configuration')
+    await wait(`document.querySelector('input[name=sonarr_url]') && !document.querySelector('[id^="instance-"]')`)
+    console.log(
+      'PASS library scope picking, additional instance, release preferences, status tag validation, and the stale-results notice',
+    )
 
     fixtureHistory = readableHistory()
     await click('Scan history')

@@ -17,6 +17,7 @@ export const rowKey = (ref: DownloadSelectionRef): string => `${ref.key}\u0000${
 export const seasonTag = (season: number): string => `S${String(season).padStart(2, '0')}`
 
 interface GroupedResult {
+  instance?: string | null
   group_id?: number | null
   anilist_id?: number | null
   key?: string
@@ -24,8 +25,17 @@ interface GroupedResult {
   title: string
 }
 
-/** Results sharing this value form one library card; titles without an AniList match group by library item. */
+/**
+ * Results sharing this value form one library card; titles without an AniList match group by library item.
+ * The same anime in an additional Sonarr or Radarr instance is a separate card.
+ */
 export function resultGroupKey(result: GroupedResult): number | string {
+  const base = baseGroupKey(result)
+  return result.instance ? `${result.instance}:${base}` : base
+}
+
+/** The card identity before an additional instance is told apart: the AniList group, or the library item. */
+export function baseGroupKey(result: GroupedResult): number | string {
   if (result.group_id != null) return result.group_id
   if (result.anilist_id != null) return result.anilist_id
   const parts = String(result.key || '').split(':')

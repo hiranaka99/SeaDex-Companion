@@ -1,6 +1,7 @@
 import { isRecord } from '../shared/guards.js'
 import { USER_RULES_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
+import { sourceKeyOf } from './arr-instances.js'
 import type { LocalItem, ResultItem } from './types.js'
 
 export interface UserRules {
@@ -61,8 +62,8 @@ export function seasonMappingKey(libraryKey: string, season: number): string {
   return `${libraryKey}:${season}`
 }
 
-export function libraryItemKey(item: Pick<LocalItem, 'arr' | 'id'>): string {
-  return `${item.arr}:item${item.id}`
+export function libraryItemKey(item: Pick<LocalItem, 'arr' | 'id' | 'instance'>): string {
+  return `${sourceKeyOf(item)}:item${item.id}`
 }
 
 export function exclusionRuleKey(libraryKey: string, season: number | null, part = ''): string {

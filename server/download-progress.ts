@@ -6,9 +6,11 @@ import type {
   DownloadCancelResult,
   DownloadCapabilities,
   DownloadClient,
+  DownloadImport,
   DownloadPhase,
   DownloadProgress,
 } from '../shared/download-contracts.js'
+import { arrInstances, parseLibraryKey } from './arr-instances.js'
 import {
   downloadRecords,
   downloadRows,
@@ -68,6 +70,32 @@ function baseProgress(record: OwnedDownloadRecord): DownloadProgress {
     speed: 0,
     capabilities: { pause: false, resume: false, remove: false, remove_files: false },
     updated_at: record.updated_at,
+  }
+}
+
+const IMPORT_ATTENTION_MS = 14 * 24 * 60 * 60_000
+
+/** Import follow-through of a record, naming the Sonarr or Radarr instance that should import it. */
+function importView(config: Config, record: OwnedDownloadRecord): DownloadImport | undefined {
+  if (!record.import) return undefined
+  // An import nobody resolved for two weeks is no longer checked by scans, so it stops asking for attention.
+  const since = Date.parse(record.import.completed_at || record.import.since)
+  if (
+    record.import.state !== 'waiting' &&
+    record.import.state !== 'imported' &&
+    Number.isFinite(since) &&
+    Date.now() - since > IMPORT_ATTENTION_MS
+  )
+    return undefined
+  const target = parseLibraryKey(record.library?.[0]?.key || '')
+  const app = target
+    ? arrInstances(config).find(instance => instance.id === target.instanceId)?.name || target.arr
+    : 'Sonarr or Radarr'
+  return {
+    state: record.import.state,
+    app,
+    ...(record.import.message ? { message: record.import.message } : {}),
+    ...(record.import.completed_at ? { completed_at: record.import.completed_at } : {}),
   }
 }
 
@@ -225,6 +253,12 @@ async function readDownloadProgress(config: Config, records: OwnedDownloadRecord
       live,
     )
     if (!complete) unavailable.push(client.client)
+  }
+  // Read last, so a download seen finishing in this pass already reports that it awaits import.
+  for (const view of Object.values(downloads)) {
+    const tracked = findDownloadRecord(view.record_id)
+    const state = tracked && importView(config, tracked)
+    if (state) view.import = state
   }
   return {
     progress: { ok: true, downloads, ...(unavailable.length ? { unavailable_clients: unavailable } : {}) },

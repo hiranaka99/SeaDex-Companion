@@ -4,6 +4,7 @@ import {
   isSeasonUpgradable,
   normalizeTorrentPath,
   planTorrents,
+  releaseOffered,
   releaseOwned,
   torrentHashes,
 } from '../shared/download-plan.js'
@@ -37,6 +38,9 @@ export interface PlannedDownloads {
 }
 
 const EXTRA_FILE_LIMIT = 10
+
+/** Why a release the user's preferences exclude is blocked; it keeps the `invalid` code. */
+const EXCLUDED_RELEASE_COPY = 'Your release preferences exclude this release.'
 
 const BLOCK_COPY: Record<PreflightBlocked['code'], string> = {
   invalid: 'A selected release is unavailable.',
@@ -73,14 +77,15 @@ class BlockedRows {
   readonly entries: PreflightBlocked[] = []
   private readonly rows = new Set<string>()
 
-  add(row: DownloadSelectionRef, code: PreflightBlocked['code'], detail?: string): void {
+  /** `detail` is appended to the code's standard copy; `{ reason }` replaces that copy outright. */
+  add(row: DownloadSelectionRef, code: PreflightBlocked['code'], detail?: string | { reason: string }): void {
     if (this.has(row)) return
     this.rows.add(rowKey(row))
     this.entries.push({
       key: row.key,
       release: row.release,
       code,
-      reason: detail ? `${BLOCK_COPY[code]} ${detail}` : BLOCK_COPY[code],
+      reason: typeof detail === 'object' ? detail.reason : detail ? `${BLOCK_COPY[code]} ${detail}` : BLOCK_COPY[code],
     })
   }
 
@@ -203,8 +208,10 @@ function resolveRows(
         blocks.add(selection, 'not_upgradable')
         continue
       }
-      if (release.kind !== 'best') {
-        blocks.add(selection, 'invalid')
+      if (!releaseOffered(release)) {
+        if (release.excluded_by)
+          blocks.add(selection, 'invalid', { reason: `${EXCLUDED_RELEASE_COPY} (${release.excluded_by})` })
+        else blocks.add(selection, 'invalid')
         continue
       }
       const part = `${selection.key}\u0000${release.part || ''}`
@@ -234,7 +241,7 @@ function resolveRows(
       identity: releaseIdentity(release),
       protocol,
       source: release,
-      category: downloadCategory(config, result.arr, protocol),
+      category: downloadCategory(config, result, protocol),
       label: selectionLabel(result, release),
     })
   }

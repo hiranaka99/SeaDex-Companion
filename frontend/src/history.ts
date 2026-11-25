@@ -3,8 +3,9 @@ import { parseTimestamp } from '../../shared/datetime-format.js'
 import { presentReleaseChange, releaseChangeDetail, type ChangePresentation } from './release-changes.js'
 
 /** Change types in the order a reader cares about them: actionable first, bookkeeping last. */
-export const changeTypeOrder = ['upgrade', 'resolved', 'changed', 'new', 'removed'] as const
+export const changeTypeOrder = ['regression', 'upgrade', 'resolved', 'changed', 'new', 'removed'] as const
 export const changeTypeLabel: Record<string, string> = {
+  regression: 'No longer best',
   upgrade: 'Now upgradable',
   resolved: 'Resolved',
   new: 'New title',
@@ -13,6 +14,7 @@ export const changeTypeLabel: Record<string, string> = {
 }
 /** Short noun phrases for the per-scan summary line, e.g. "3 upgradable · 170 removed". */
 const changeTypeSummary: Record<string, string> = {
+  regression: 'no longer best',
   upgrade: 'upgradable',
   resolved: 'resolved',
   changed: 'updated',
@@ -159,6 +161,7 @@ export function historyDetails(change: ScanHistoryChange): ChangePresentation[] 
   if (details.length) return details.map(releaseChangeDetail)
   if (change.type === 'new') return [{ summary: 'Added to your library' }]
   if (change.type === 'removed') return [{ summary: 'Removed from your library' }]
+  if (change.type === 'regression') return [{ summary: 'No longer on the best release' }]
   if (change.type === 'upgrade')
     return [{ summary: 'An upgrade is now available', ...(change.best_group ? { release: change.best_group } : {}) }]
   if (change.to === 'best' && change.from !== 'best') return [{ summary: 'You now have the best release' }]

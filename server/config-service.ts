@@ -35,6 +35,7 @@ function describeSave(config: Config, data: JsonObject): string {
     `Radarr=${state(config.radarr_url && config.radarr_key)}`,
     `qBittorrent=${state(config.qbittorrent_url && config.qbittorrent_user && config.qbittorrent_pass)}`,
     `Discord=${state(config.webhook)}`,
+    ...config.arr_instances.map(instance => `${instance.name}=${state(instance.url && instance.key)}`),
   ].join(', ')
   const cleared: unknown[] = Array.isArray(data.clear_secrets) ? data.clear_secrets : []
   const credentials = [

@@ -16,6 +16,12 @@ export interface RecommendationRelease extends EstimatableRelease {
   part?: string
   releaseGroup: string
   torrent_available: boolean
+  /** The download target the saved preferences pick for the part. */
+  target?: boolean
+  /** Owning this release makes its part count as best; absent means the kind decides. */
+  satisfies?: boolean
+  /** Set when the saved preferences never offer this release for download. */
+  excluded_by?: string
 }
 
 export interface RecommendationSeason<R extends RecommendationRelease = RecommendationRelease> {
@@ -26,6 +32,8 @@ export interface RecommendationSeason<R extends RecommendationRelease = Recommen
   excluded_parts?: string[]
   precise_part_ownership?: boolean
   owned_by_part?: Record<string, string[]>
+  verified_by_part?: Record<string, string[]>
+  mismatched_by_part?: Record<string, string[]>
   have?: string[]
   releases: R[]
 }
@@ -33,13 +41,34 @@ export interface RecommendationSeason<R extends RecommendationRelease = Recommen
 export const isSeasonUpgradable = (season: Pick<RecommendationSeason, 'status' | 'upgrade_available'>): boolean =>
   season.status === 'upgrade' || (season.status === 'partial' && season.upgrade_available === true)
 
+type OwnershipFacts = Pick<
+  RecommendationSeason,
+  'precise_part_ownership' | 'owned_by_part' | 'verified_by_part' | 'mismatched_by_part' | 'have'
+>
+
+/**
+ * Whether the library holds this release. A file-size match proves ownership whatever the
+ * files are named; a size mismatch disproves it even when the release group name matches.
+ */
 export function releaseOwned(
-  season: Pick<RecommendationSeason, 'precise_part_ownership' | 'owned_by_part' | 'have'>,
-  release: RecommendationRelease,
+  season: OwnershipFacts,
+  release: Pick<RecommendationRelease, 'part' | 'releaseGroup'>,
 ): boolean {
-  const groups = season.precise_part_ownership ? season.owned_by_part?.[release.part || ''] || [] : season.have || []
-  return groups.some(group => group.trim().toLowerCase() === release.releaseGroup.trim().toLowerCase())
+  const part = release.part || ''
+  const wanted = release.releaseGroup.trim().toLowerCase()
+  const named = (groups: string[] | undefined) => Boolean(groups?.some(group => group.trim().toLowerCase() === wanted))
+  if (named(season.verified_by_part?.[part])) return true
+  if (named(season.mismatched_by_part?.[part])) return false
+  return named(season.precise_part_ownership ? season.owned_by_part?.[part] : season.have)
 }
+
+/** Whether owning this release settles its season or cour. Results saved before preferences existed rely on the kind. */
+export const releaseSatisfies = (release: Pick<RecommendationRelease, 'kind' | 'satisfies'>): boolean =>
+  release.satisfies ?? release.kind === 'best'
+
+/** Whether bulk download may offer this release: SeaDex's best releases and the preferred target, minus exclusions. */
+export const releaseOffered = (release: Pick<RecommendationRelease, 'kind' | 'target' | 'excluded_by'>): boolean =>
+  !release.excluded_by && (release.kind === 'best' || release.target === true)
 
 /** One eligibility policy for review, preflight validation, and submission. Torrent availability only. */
 export function upgradeParts<R extends RecommendationRelease>(
@@ -47,14 +76,23 @@ export function upgradeParts<R extends RecommendationRelease>(
 ): { part: string; options: { index: number; release: R }[]; torrent_available: boolean }[] {
   if (!isSeasonUpgradable(season) || season.excluded) return []
   const parts = new Map<string, { index: number; release: R }[]>()
+  const settled = new Set<string>()
   season.releases.forEach((release, index) => {
-    if (release.kind !== 'best' || season.excluded_parts?.includes(release.part || '')) return
     const part = release.part || ''
+    if (releaseOwned(season, release)) {
+      if (releaseSatisfies(release)) settled.add(part)
+      return
+    }
+    if (!releaseOffered(release) || season.excluded_parts?.includes(part)) return
     parts.set(part, [...(parts.get(part) || []), { index, release }])
   })
   return [...parts]
-    .filter(([, options]) => !options.some(({ release }) => releaseOwned(season, release)))
-    .map(([part, options]) => {
+    .filter(([part]) => !settled.has(part))
+    .map(([part, offered]) => {
+      // The preferred target leads, so it is the default choice wherever several releases are offered.
+      const options = [...offered].sort(
+        (left, right) => Number(right.release.target === true) - Number(left.release.target === true),
+      )
       const available = options.filter(({ release }) => release.torrent_available && torrentHashes(release).length > 0)
       return { part, options: available.length ? available : options, torrent_available: available.length > 0 }
     })

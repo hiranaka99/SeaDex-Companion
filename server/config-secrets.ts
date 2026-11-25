@@ -9,6 +9,9 @@ import type { JsonObject } from './types.js'
 
 // Credentials are stored AES-256-GCM encrypted under a key file kept next to the data.
 
+/** Everything kept in the encrypted payload: the named credentials plus the API keys of additional instances. */
+export type SecretValues = Partial<Record<SecretConfigKey, string>> & { arr_instance_keys?: Record<string, string> }
+
 export interface EncryptedSecretsPayload {
   version: 1
   algorithm: 'aes-256-gcm'
@@ -47,10 +50,7 @@ export function loadSecretKey(createIfMissing = false): Buffer {
   )
 }
 
-export function encryptSecretValues(
-  secrets: Partial<Record<SecretConfigKey, string>>,
-  key: Buffer,
-): EncryptedSecretsPayload {
+export function encryptSecretValues(secrets: SecretValues, key: Buffer): EncryptedSecretsPayload {
   if (key.length !== 32) throw new Error('AES-256-GCM requires a 32-byte encryption key')
   const iv = randomBytes(12)
   const cipher = createCipheriv('aes-256-gcm', key, iv)
@@ -65,10 +65,7 @@ export function encryptSecretValues(
   }
 }
 
-export function decryptSecretValues(
-  payload: EncryptedSecretsPayload,
-  key: Buffer,
-): Partial<Record<SecretConfigKey, string>> {
+export function decryptSecretValues(payload: EncryptedSecretsPayload, key: Buffer): SecretValues {
   if (payload.version !== 1 || payload.algorithm !== 'aes-256-gcm')
     throw new Error('Unsupported encrypted secrets format')
   if (key.length !== 32) throw new Error('AES-256-GCM requires a 32-byte encryption key')
@@ -81,9 +78,18 @@ export function decryptSecretValues(
       decipher.final(),
     ]).toString('utf8')
     const parsed = JSON.parse(plaintext) as JsonObject
-    const secrets: Partial<Record<SecretConfigKey, string>> = {}
+    const secrets: SecretValues = {}
     for (const keyName of SECRET_CONFIG_KEYS)
       if (typeof parsed[keyName] === 'string') secrets[keyName] = parsed[keyName]
+    const instanceKeys = parsed.arr_instance_keys
+    if (instanceKeys && typeof instanceKeys === 'object' && !Array.isArray(instanceKeys)) {
+      const keys = Object.fromEntries(
+        Object.entries(instanceKeys).filter(
+          (entry): entry is [string, string] => typeof entry[1] === 'string' && Boolean(entry[1]),
+        ),
+      )
+      if (Object.keys(keys).length) secrets.arr_instance_keys = keys
+    }
     return secrets
   } catch {
     throw new Error('Could not decrypt secrets: the key is incorrect or the encrypted file is damaged')
@@ -91,7 +97,7 @@ export function decryptSecretValues(
 }
 
 /** Credentials from the separate file older versions wrote; read only until the configuration is migrated. */
-export function loadEncryptedSecrets(): Partial<Record<SecretConfigKey, string>> {
+export function loadEncryptedSecrets(): SecretValues {
   if (!existsSync(ENCRYPTED_SECRETS_FILE)) return {}
   const payload = readJson<EncryptedSecretsPayload | null>(ENCRYPTED_SECRETS_FILE, null)
   if (!payload) throw new Error(`Could not read encrypted secrets file: ${ENCRYPTED_SECRETS_FILE}`)

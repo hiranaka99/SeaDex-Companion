@@ -28,6 +28,7 @@ type ScanView = 'all' | 'changes' | 'attention'
 const SCAN_PAGE = 10
 const ROW_PAGE = 40
 const summaryTone: Record<string, string> = {
+  regression: 'text-bad',
   upgrade: 'text-warn',
   resolved: 'text-good',
   changed: 'text-ink',
@@ -43,9 +44,11 @@ const needsAttention = (scan: ScanHistoryEntry) =>
 const triggerLabel = (scan: ScanHistoryEntry) =>
   scan.trigger === 'scheduled'
     ? 'Scheduled'
-    : scan.trigger && scan.trigger !== 'manual'
-      ? scan.trigger.replace(/^./, letter => letter.toUpperCase()) + ' webhook'
-      : 'Manual'
+    : scan.trigger === 'import'
+      ? 'Import check'
+      : scan.trigger && scan.trigger !== 'manual'
+        ? scan.trigger.replace(/^./, letter => letter.toUpperCase()) + ' webhook'
+        : 'Manual'
 
 interface ScanEntry {
   scan: ScanHistoryEntry

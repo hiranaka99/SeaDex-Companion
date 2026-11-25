@@ -2,6 +2,7 @@ import { formatBytes, formatEta } from '../utils'
 import Icon from './Icons'
 import { cx, downloadTextTone } from '../styles'
 import type { DownloadCapabilities, DownloadPhase, DownloadProtocol, DownloadProgress } from '../api'
+import type { DownloadImport } from '../../../shared/download-contracts'
 
 /** One owned acquisition as reported by its download client. */
 export interface DownloadEntry {
@@ -22,6 +23,8 @@ export interface DownloadEntry {
   error?: string
   /** The client at a different URL no longer serves this record. */
   unbound?: boolean
+  /** Whether Sonarr or Radarr imported the finished download; absent for downloads that are not followed. */
+  import?: DownloadImport
 }
 
 export function toDownloadEntry(p: DownloadProgress): DownloadEntry {
@@ -43,7 +46,52 @@ export function toDownloadEntry(p: DownloadProgress): DownloadEntry {
     size: p.size,
     error: p.error,
     unbound: p.state === 'unbound',
+    ...(p.import ? { import: p.import } : {}),
   }
+}
+
+/** A finished download that still needs the person's attention or is waiting on Sonarr or Radarr. */
+export const importUnsettled = (entry: Pick<DownloadEntry, 'import'>) =>
+  entry.import?.state === 'pending' || entry.import?.state === 'blocked' || entry.import?.state === 'not_imported'
+
+/** What happened to a finished download in Sonarr or Radarr, in words and a tone; null while it is still downloading. */
+export function importStatus(
+  entry: Pick<DownloadEntry, 'import'>,
+): { text: string; detail?: string; tone: string; alert: boolean } | null {
+  const state = entry.import
+  if (!state || state.state === 'waiting') return null
+  if (state.state === 'pending') return { text: `Waiting for ${state.app} to import`, tone: 'text-muted', alert: false }
+  if (state.state === 'imported') return { text: `Imported by ${state.app}`, tone: 'text-good', alert: false }
+  if (state.state === 'blocked')
+    return {
+      text: `${state.app} has not imported this download`,
+      detail: state.message,
+      tone: 'text-warn',
+      alert: true,
+    }
+  return { text: `Not imported by ${state.app}`, detail: state.message, tone: 'text-bad', alert: true }
+}
+
+/** One line under a finished download saying whether it reached the library, with the app's own reason when it did not. */
+export function ImportStatusLine({ entry }: { entry: Pick<DownloadEntry, 'import'> }) {
+  const status = importStatus(entry)
+  if (!status) return null
+  return (
+    <p
+      className={cx('m-0 flex items-start gap-1.5 text-xs leading-snug wrap-anywhere', status.tone)}
+      role={status.alert ? 'alert' : undefined}
+    >
+      <Icon
+        name={entry.import?.state === 'imported' ? 'check' : status.alert ? 'alert' : 'clock'}
+        size={13}
+        className="mt-0.5 shrink-0"
+      />
+      <span className="min-w-0">
+        <span className="font-semibold">{status.text}</span>
+        {status.detail && <span className="mt-0.5 block text-ink">{status.detail}</span>}
+      </span>
+    </p>
+  )
 }
 
 const PHASE_LABEL: Record<DownloadPhase, string> = {
@@ -233,6 +281,7 @@ function EntryRow({
           {hint}
         </p>
       )}
+      <ImportStatusLine entry={entry} />
     </li>
   )
 }

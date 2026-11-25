@@ -1,29 +1,68 @@
 import { authenticateBasic } from './auth-routes.js'
+import { findArrInstance, instanceSourceKey } from './arr-instances.js'
 import { loadConfig } from './config.js'
+import { currentGeneration } from './config-generation.js'
+import { resultsForRequest } from './downloads.js'
 import { HttpError } from './http-error.js'
 import { readJson, sendEmpty, sendJson } from './http-response.js'
 import { log } from './logging.js'
-import { loadLastResults } from './results.js'
+import { loadLastResults, loadResultSettings } from './results.js'
 import { route, type Route } from './router.js'
-import { runScan } from './scan.js'
+import { resultSettingsChanged, runScan } from './scan.js'
 import { autocheckState, cancelScan, getState, resultsRevision, setState } from './scan-state.js'
-import { queueWebhookScan, resetWebhookScanState, webhookScanState } from './scheduler.js'
+import {
+  isImportAttentionEvent,
+  isLibraryImportEvent,
+  queueWebhookScan,
+  requestImportFollow,
+  resetWebhookScanState,
+  webhookScanState,
+} from './scheduler.js'
 import { usenetPrefetchProgress } from './usenet-prefetch.js'
 import { errorMessage } from '../shared/errors.js'
 import type { Status } from '../shared/contracts.js'
 import type { Config } from './types.js'
+
+// Reading the saved results on every status poll would be wasteful; the answer only changes with results or settings.
+let settingsFlag: { key: string; changed: boolean } | null = null
+function settingsChangedSinceScan(): boolean {
+  const key = `${resultsRevision()}:${currentGeneration()}`
+  if (settingsFlag?.key !== key) {
+    let changed = false
+    try {
+      changed = resultSettingsChanged(loadConfig(), loadResultSettings())
+    } catch {
+      /* an unreadable configuration is reported by its own endpoints */
+    }
+    settingsFlag = { key, changed }
+  }
+  return settingsFlag.changed
+}
 
 export const scanRoutes: Route[] = [
   route('GET', '/healthz', ({ response }) => sendJson(response, 200, { status: 'ok' }), 'public'),
   route('HEAD', '/healthz', ({ response }) => sendEmpty(response, 200), 'public'),
   route(
     'POST',
-    /^\/api\/webhooks\/(sonarr|radarr)$/,
+    /^\/api\/webhooks\/(sonarr|radarr)(?:\/([a-z0-9]+))?$/,
     async ({ request, response, params }) => {
       const source = params[0] as 'sonarr' | 'radarr'
       await authenticateBasic(request)
       const data = await readJson(request)
-      const queued = queueWebhookScan(source, data.eventType, source === 'sonarr' ? data.series?.id : data.movie?.id)
+      // An additional instance has its own webhook address, so its item IDs are never confused with another library's.
+      const instance = findArrInstance(params[1] ? loadConfig() : {}, params[1] || source)
+      if (!instance || instance.kind !== source) throw new HttpError(404, 'Unknown instance')
+      if (isImportAttentionEvent(data.eventType)) {
+        requestImportFollow()
+        return sendJson(response, 202, { accepted: true, action: 'import_check' })
+      }
+      const itemId = source === 'sonarr' ? data.series?.id : data.movie?.id
+      const libraryKey = `${instanceSourceKey(instance)}:item${itemId}`
+      // Only import events depend on the results, and Sonarr sends one per imported file of every show.
+      const known =
+        isLibraryImportEvent(source, data.eventType) &&
+        resultsForRequest().some(result => result.library_key === libraryKey)
+      const queued = queueWebhookScan(source, data.eventType, itemId, undefined, { instanceId: instance.id, known })
       if (!queued.accepted) return sendEmpty(response, 204)
       sendJson(response, 202, { accepted: true, action: 'scan_queued', due_at: queued.dueAt })
     },
@@ -44,6 +83,7 @@ export const scanRoutes: Route[] = [
       next_check: autocheckState.next,
       usenet_prefetch: usenetPrefetchProgress(),
       results_revision: resultsRevision(),
+      settings_changed: !state.running && settingsChangedSinceScan(),
       webhook_scan: {
         queued: webhookScanState.dueAt !== null,
         due_at: webhookScanState.dueAt,

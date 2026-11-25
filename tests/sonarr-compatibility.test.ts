@@ -95,6 +95,7 @@ for (const version of [4, 5]) {
               missing_episode_count: 1,
               groups_by_episode: { IK: [1] },
               sizes_by_episode: { 1: 300 },
+              files: [{ size: 300, episodes: [1], group: 'IK' }],
             },
           },
         },

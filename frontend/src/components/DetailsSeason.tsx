@@ -11,6 +11,7 @@ import type { DetailsDownloadState } from '../useCardDownloads'
 import DetailsQuality from './DetailsQuality'
 import type { DownloadProtocol } from '../api'
 import { releaseIdentity } from '../../../shared/releases'
+import { PREFERENCE_BLOCKED_REASON } from '../../../shared/settings'
 
 export function detailsSeasonName(season: ResultItem): string {
   return season.arr === 'Radarr' || season.season === 0
@@ -95,6 +96,8 @@ export default function DetailsSeason({
   const seasonName = detailsSeasonName(r)
   const quality = releaseQuality(r)
   const ignored = Boolean(r.excluded)
+  const mismatchedGroups = [...new Set(Object.values(r.mismatched_by_part || {}).flat())]
+  const blockedByPreferences = Boolean(r.preference_blocked) && (r.status === 'missing' || r.status === 'uncovered')
   const sources = (r.urls?.length ? r.urls : r.url ? [{ label: 'seadex.moe', url: r.url }] : []).filter(
     source => source.label === 'seadex.moe',
   )
@@ -222,6 +225,11 @@ export default function DetailsSeason({
                 {r.missing_episode_count} episode{r.missing_episode_count === 1 ? '' : 's'} missing
               </span>
             )}
+            {mismatchedGroups.length > 0 && (
+              <span className="details-summary-note text-warn">
+                Your {mismatchedGroups.join(', ')} files differ from the listed release
+              </span>
+            )}
             {r.season_mapping_override && <span className="details-summary-note text-muted">Manual season match</span>}
             {ignored && <span className="details-summary-note text-warn">Ignored for bulk</span>}
             {!ignored && !!r.excluded_parts?.length && (
@@ -245,9 +253,11 @@ export default function DetailsSeason({
             <p className="mb-3 text-sm text-muted">
               {quality.kind === 'review'
                 ? 'Confirm the AniList match to check this release.'
-                : r.status === 'uncovered'
-                  ? 'This season has no releases on SeaDex.'
-                  : 'Not listed on seadex.moe.'}
+                : blockedByPreferences
+                  ? 'SeaDex lists releases for this season, but your release preferences exclude all of them. Each release below says why.'
+                  : r.status === 'uncovered'
+                    ? 'This season has no releases on SeaDex.'
+                    : 'Not listed on seadex.moe.'}
             </p>
           )}
           {!split && <RecommendationNotes notes={r.notes} />}
@@ -278,7 +288,13 @@ export default function DetailsSeason({
                   <Icon name="chevron-right" size={16} className="details-disclosure-chevron text-muted" />
                 </summary>
                 <div className="details-cour-content">
-                  {cour.unavailable && <p className="mb-3 text-sm text-muted wrap-anywhere">{cour.unavailable}</p>}
+                  {cour.unavailable && (
+                    <p className="mb-3 text-sm text-muted wrap-anywhere">
+                      {cour.unavailable === PREFERENCE_BLOCKED_REASON
+                        ? 'SeaDex lists releases for this cour, but your release preferences exclude all of them. Each release below says why.'
+                        : cour.unavailable}
+                    </p>
+                  )}
                   {cour.items.length === 0 && !cour.unavailable && (
                     <p className="mb-3 text-sm text-muted">No release details are available for this cour.</p>
                   )}
@@ -360,6 +376,7 @@ export default function DetailsSeason({
               rel =>
                 rel.kind === 'best' &&
                 !releaseOwned(r, rel) &&
+                !mismatchedGroups.some(group => group.toLowerCase() === rel.releaseGroup.toLowerCase()) &&
                 r.have.some(group => group.toLowerCase() === rel.releaseGroup.toLowerCase()),
             ) && (
               <p className="mt-3 text-xs text-muted">

@@ -34,6 +34,7 @@ export type IconName =
   | 'minus'
   | 'info'
   | 'more'
+  | 'plus'
 
 const paths: Record<IconName, ReactElement> = {
   more: (
@@ -50,6 +51,12 @@ const paths: Record<IconName, ReactElement> = {
     </>
   ),
   minus: <path d="M5 12h14" />,
+  plus: (
+    <>
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </>
+  ),
   info: (
     <>
       <circle cx="12" cy="12" r="9" />

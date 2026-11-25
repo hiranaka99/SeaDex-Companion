@@ -1,4 +1,5 @@
 import type { DownloadMode } from '../../../../shared/download-contracts'
+import type { ArrTagKey } from '../../../../shared/settings'
 import { useEffect, useState, useId, ReactNode, RefObject } from 'react'
 import type { ConfigDraft } from '../../config-services'
 import Icon from '../Icons'
@@ -24,6 +25,7 @@ export type StringField =
   | 'amenzb_url'
   | 'amenzb_key'
   | 'webhook'
+  | ArrTagKey
 export interface FieldProps {
   name: StringField
   type: string
@@ -104,6 +106,185 @@ export function Field({ name, type, label, hint, placeholder, required, configur
           {hint}
         </span>
       ) : null}
+    </div>
+  )
+}
+
+interface InputFieldProps {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  type?: string
+  name?: string
+  hint?: string
+  placeholder?: string
+  required?: boolean
+  /** A stored secret exists; the input stays empty and keeps it unless a new value is typed. */
+  configured?: boolean
+  onClear?: () => void
+  clearLabel?: string
+  inputMode?: 'decimal' | 'numeric'
+  className?: string
+}
+
+/** A labelled text input with its hint, shared by every settings field. */
+export function InputField({
+  label,
+  value,
+  onChange,
+  type = 'text',
+  name,
+  hint,
+  placeholder,
+  required,
+  configured,
+  onClear,
+  clearLabel,
+  inputMode,
+  className,
+}: InputFieldProps) {
+  const fieldId = useId()
+  const hintId = fieldId + '-hint'
+  return (
+    <div className={cx('flex flex-col gap-1.5', className)}>
+      <label htmlFor={fieldId} className="text-xs font-semibold text-ink">
+        {label}
+      </label>
+      <input
+        id={fieldId}
+        aria-describedby={configured || hint ? hintId : undefined}
+        className={cx(control, 'w-full bg-canvas-soft')}
+        type={type}
+        name={name}
+        inputMode={inputMode}
+        placeholder={configured ? '••••••••  Configured' : placeholder}
+        required={required}
+        value={value}
+        onChange={event => onChange(event.target.value)}
+      />
+      {configured ? (
+        <div id={hintId} className="flex items-center justify-between gap-3 text-xs text-muted">
+          <span className="inline-flex items-start gap-1">
+            <Icon name="check" size={12} className="mt-0.5 shrink-0 text-good" />
+            Stored securely; blank keeps the current value
+          </span>
+          {onClear && (
+            <button
+              className="touch-target shrink-0 cursor-pointer rounded-lg px-2 py-1 font-bold text-bad hover:bg-bad/10 hover:underline"
+              type="button"
+              aria-label={clearLabel || `Clear stored ${label}`}
+              onClick={onClear}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      ) : hint ? (
+        <span id={hintId} className="text-xs text-muted-dim">
+          {hint}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+const parseList = (text: string) => {
+  const seen = new Set<string>()
+  return text
+    .split(/[,\n]/)
+    .map(item => item.trim())
+    .filter(item => item && !seen.has(item.toLowerCase()) && Boolean(seen.add(item.toLowerCase())))
+}
+const sameList = (left: string[], right: string[]) =>
+  left.length === right.length && left.every((item, index) => item.toLowerCase() === right[index].toLowerCase())
+
+interface ListFieldProps {
+  label: string
+  values: string[]
+  onChange: (values: string[]) => void
+  hint?: string
+  placeholder?: string
+  /** Known values offered as one-click choices. */
+  suggestions?: string[]
+  suggestionsLabel?: string
+}
+
+/**
+ * A list of names typed with commas between them. Known names appear as toggles below,
+ * so a list can be filled without typing and a name cannot be misspelled.
+ */
+export function ListField({
+  label,
+  values,
+  onChange,
+  hint,
+  placeholder,
+  suggestions = [],
+  suggestionsLabel,
+}: ListFieldProps) {
+  const fieldId = useId()
+  const hintId = fieldId + '-hint'
+  // The text is kept as typed; reformatting on every keystroke would swallow the comma just entered.
+  const [text, setText] = useState(values.join(', '))
+  useEffect(() => {
+    setText(current => (sameList(parseList(current), values) ? current : values.join(', ')))
+  }, [values])
+  const selected = new Set(values.map(value => value.toLowerCase()))
+  const offered = suggestions.filter(
+    (suggestion, index) => suggestions.findIndex(other => other.toLowerCase() === suggestion.toLowerCase()) === index,
+  )
+  const toggle = (name: string) =>
+    onChange(
+      selected.has(name.toLowerCase())
+        ? values.filter(value => value.toLowerCase() !== name.toLowerCase())
+        : [...values, name],
+    )
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={fieldId} className="text-xs font-semibold text-ink">
+        {label}
+      </label>
+      <input
+        id={fieldId}
+        aria-describedby={hint ? hintId : undefined}
+        className={cx(control, 'w-full bg-canvas-soft')}
+        type="text"
+        placeholder={placeholder}
+        value={text}
+        onChange={event => {
+          setText(event.target.value)
+          onChange(parseList(event.target.value))
+        }}
+      />
+      {hint && (
+        <span id={hintId} className="text-xs text-muted-dim">
+          {hint}
+        </span>
+      )}
+      {offered.length > 0 && (
+        <div
+          className="mt-1 flex flex-wrap gap-1.5"
+          role="group"
+          aria-label={suggestionsLabel || `${label}: known values`}
+        >
+          {offered.map(name => (
+            <button
+              key={name}
+              type="button"
+              aria-pressed={selected.has(name.toLowerCase())}
+              className={cx(
+                'touch-target max-w-full cursor-pointer rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors wrap-anywhere',
+                selected.has(name.toLowerCase())
+                  ? 'border-accent bg-accent/14 text-ink'
+                  : 'border-line bg-canvas-soft text-muted hover:border-line-strong hover:text-ink',
+              )}
+              onClick={() => toggle(name)}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -194,7 +375,15 @@ export function Section({
     if (attention || expand) setOpen(true)
   }, [attention, expand])
   return (
-    <details ref={detailsRef} open={open} onToggle={event => setOpen(event.currentTarget.open)} className="group mt-3">
+    <details
+      ref={detailsRef}
+      open={open}
+      // Disclosures nested inside a section toggle too; only the section's own toggle opens or closes it.
+      onToggle={event => {
+        if (event.target === event.currentTarget) setOpen(event.currentTarget.open)
+      }}
+      className="group mt-3"
+    >
       <summary className="touch-target flex cursor-pointer list-none flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl border border-line bg-panel px-4 py-3 transition-colors hover:border-line-strong hover:bg-panel-raised group-open:border-line-strong group-open:bg-panel-raised [&::-webkit-details-marker]:hidden">
         <h2 className="m-0 text-lg font-extrabold tracking-tight">{title}</h2>
         {summary && (
@@ -225,6 +414,8 @@ export function IntegrationCard({
   disabled,
   connection,
   onTest,
+  testLabel = 'Test connection',
+  footerAction,
   children,
 }: {
   brand?: BrandName
@@ -235,6 +426,9 @@ export function IntegrationCard({
   disabled?: boolean
   connection: ConnectionState
   onTest: () => void
+  testLabel?: string
+  /** A secondary action shown beside the connection test, such as removing the service. */
+  footerAction?: ReactNode
   children: ReactNode
 }) {
   const badge =
@@ -254,7 +448,7 @@ export function IntegrationCard({
           {brand ? <BrandLogo name={brand} size={22} tile /> : icon}
         </span>
         <div className="min-w-0 flex-1">
-          <h3 className={subheading}>{title}</h3>
+          <h3 className={cx(subheading, 'wrap-anywhere')}>{title}</h3>
           <p className="mt-1 mb-0 text-xs leading-relaxed text-muted">{description}</p>
         </div>
         <span
@@ -269,26 +463,25 @@ export function IntegrationCard({
       </header>
       <div className="flex flex-1 flex-col gap-4">{children}</div>
       <div className="mt-5 border-t border-line pt-4">
-        <button
-          type="button"
-          className={cx(
-            buttonBase,
-            'w-full justify-center border-line bg-canvas-soft text-ink hover:border-line-strong hover:text-white',
-          )}
-          onClick={onTest}
-          disabled={connection.phase === 'testing'}
-        >
-          {connection.phase === 'testing' ? (
-            <span className="size-3.5 animate-spin rounded-full border-2 border-muted/30 border-t-accent" />
-          ) : (
-            <Icon name="refresh" size={15} />
-          )}{' '}
-          {connection.phase === 'testing'
-            ? 'Testing connection…'
-            : title === 'Discord'
-              ? 'Send test message'
-              : 'Test connection'}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className={cx(
+              buttonBase,
+              'min-w-0 flex-1 justify-center border-line bg-canvas-soft text-ink hover:border-line-strong hover:text-white',
+            )}
+            onClick={onTest}
+            disabled={connection.phase === 'testing'}
+          >
+            {connection.phase === 'testing' ? (
+              <span className="size-3.5 animate-spin rounded-full border-2 border-muted/30 border-t-accent" />
+            ) : (
+              <Icon name="refresh" size={15} />
+            )}{' '}
+            {connection.phase === 'testing' ? 'Testing connection…' : testLabel}
+          </button>
+          {footerAction}
+        </div>
         {connection.phase === 'error' && <p className="mt-2 mb-0 text-center text-xs text-bad">{connection.message}</p>}
       </div>
     </section>
@@ -308,7 +501,11 @@ export function CopyRow({ label, value }: { label: string; value: string }) {
   }
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <label htmlFor={inputId} className="w-16 shrink-0 text-xs font-semibold text-ink max-[600px]:w-full">
+      <label
+        htmlFor={inputId}
+        className="w-24 shrink-0 truncate text-xs font-semibold text-ink max-[600px]:w-full"
+        title={label}
+      >
         {label}
       </label>
       <input

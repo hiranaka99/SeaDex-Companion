@@ -4,7 +4,7 @@ import type { Config, Release, ResultItem } from '../types'
 import { formatBytes, formatEta, providerNames, seasonLabel, sizeDelta } from '../utils'
 import { buttonBase, cx, downloadTextTone } from '../styles'
 import Icon from './Icons'
-import { DownloadActions, clientName, phaseLabel, type DownloadEntry } from './DownloadsPanel'
+import { DownloadActions, ImportStatusLine, clientName, phaseLabel, type DownloadEntry } from './DownloadsPanel'
 import { estimateDownloads } from '../../../shared/download-estimate'
 import type { DownloadProtocol, UsenetAvailabilityResult } from '../api'
 import type { DetailsDownloadState } from '../useCardDownloads'
@@ -215,6 +215,12 @@ export default function ReleaseDetails({
             : 'Download release'
 
   const tags = [...new Set([...(rel.dual_audio ? ['Dual Audio'] : []), ...(rel.tags || [])])]
+  const sameGroup = (group: string) => group.trim().toLowerCase() === rel.releaseGroup.trim().toLowerCase()
+  const verified = Boolean(r.verified_by_part?.[rel.part || '']?.some(sameGroup))
+  const mismatched = !verified && Boolean(r.mismatched_by_part?.[rel.part || '']?.some(sameGroup))
+  // Naming the target only helps where several releases compete for the same season or cour.
+  const competing = r.releases.filter(other => (other.part || '') === (rel.part || '')).length > 1
+  const targeted = Boolean(rel.target) && competing && !verified && !complete && !inClient
   const statusCopy = complete ? `Download completed in ${clientName(transfers[0].client)}` : ''
   const usenetCategory = r.arr === 'Sonarr' ? config?.sabnzbd_sonarr_category : config?.sabnzbd_radarr_category
 
@@ -231,6 +237,14 @@ export default function ReleaseDetails({
         </span>
         <div className="release-identity flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
           <span className="max-w-full text-sm font-semibold text-ink wrap-anywhere">{rel.releaseGroup}</span>
+          {targeted && (
+            <span
+              className="shrink-0 rounded-md border border-accent/40 bg-accent/12 px-2 py-0.5 text-xs font-semibold text-ink"
+              title="Your release preferences pick this release for bulk downloads"
+            >
+              Your target
+            </span>
+          )}
           {tags.length > 0 && (
             <div className="flex min-w-0 flex-wrap gap-1.5">
               {tags.map(tag => (
@@ -248,6 +262,33 @@ export default function ReleaseDetails({
           )}
         </div>
       </div>
+      {verified && (
+        <p className="m-0 mb-3 flex items-start gap-1.5 text-xs font-semibold text-good">
+          <Icon name="check" size={14} className="mt-0.5 shrink-0" />
+          <span>Your files match this release exactly.</span>
+        </p>
+      )}
+      {mismatched && (
+        <p className="m-0 mb-3 flex items-start gap-1.5 text-xs text-warn" role="note">
+          <Icon name="alert" size={14} className="mt-0.5 shrink-0" />
+          <span className="min-w-0">
+            <span className="font-semibold">Your {rel.releaseGroup} files differ from this release.</span>
+            <span className="mt-0.5 block text-ink">
+              Their sizes do not match the files SeaDex lists, so they are an earlier version or a different release by
+              the same group.
+            </span>
+          </span>
+        </p>
+      )}
+      {rel.excluded_by && (
+        <p className="m-0 mb-3 flex items-start gap-1.5 text-xs text-muted" role="note">
+          <Icon name="ban" size={14} className="mt-0.5 shrink-0" />
+          <span className="min-w-0">
+            <span className="font-semibold text-ink">Excluded by your release preferences: {rel.excluded_by}.</span>
+            <span className="mt-0.5 block">Bulk download skips it. You can still download it here.</span>
+          </span>
+        </p>
+      )}
       <dl className="release-sizes m-0 mb-3 flex flex-wrap gap-x-6 gap-y-2 text-xs wrap-anywhere">
         <div>
           <dt className="mb-1 text-muted">Current files</dt>
@@ -517,6 +558,11 @@ export default function ReleaseDetails({
               <p className="mt-2 mb-0 text-xs text-warn">
                 This download belongs to a different client URL and cannot be controlled from here.
               </p>
+            )}
+            {transfer.import && transfer.import.state !== 'waiting' && (
+              <div className="mt-2">
+                <ImportStatusLine entry={transfer} />
+              </div>
             )}
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs text-muted wrap-anywhere">
