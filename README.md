@@ -148,7 +148,7 @@ Season corrections affect only that season. Choose **Use automatic match** to re
 
 ### Download and monitor upgrades
 
-Download an individual release from **Details**, or open bulk review to select several upgrades. **Download** in release details sends that one release straight to its client without a review step: it skips releases already queued, but it does not ask about disk space or about extra files in whole Usenet sources. A notification confirms the send or explains why it failed. Bulk review includes titles matching your current filters across all pages. Choose **Entire library** to include titles outside those filters; hidden titles start unchecked.
+Download an individual release from **Details**, or open bulk review to select several upgrades. **Download** in release details sends that one release straight to its client without a review step: it skips releases already queued and does not ask about extra files in whole Usenet sources. It asks first only when the download client reports less free space than the release needs; choose **Send anyway** or **Cancel** in the release row. A notification confirms the send, and a failed send is explained in the release row with **Try again**. Bulk review includes titles matching your current filters across all pages. Choose **Entire library** to include titles outside those filters; hidden titles start unchecked.
 
 In bulk review, check the release groups, selected episodes, download sizes, and available disk space before submitting. Downloads already present in qBittorrent or SABnzbd are skipped. When filenames identify the required episodes, SeaDex Companion can download only the selected files; otherwise, review the whole-torrent scope before proceeding.
 
