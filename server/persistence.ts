@@ -1,6 +1,7 @@
+import { errorMessage } from '../shared/errors.js'
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { log, errorMessage } from './logging.js'
+import { log } from './logging.js'
 
 export function readJson<T>(file: string, fallback: T, warning?: string): T {
   if (!existsSync(file)) return fallback
@@ -12,7 +13,11 @@ export function readJson<T>(file: string, fallback: T, warning?: string): T {
   }
 }
 
-export function loadStringSet(file: string, warning: string, normalize: (value: unknown) => string | null = (value) => typeof value === 'string' && value ? value : null): Set<string> {
+export function loadStringSet(
+  file: string,
+  warning: string,
+  normalize: (value: unknown) => string | null = value => (typeof value === 'string' && value ? value : null),
+): Set<string> {
   const stored = readJson<unknown>(file, [], warning)
   if (!Array.isArray(stored)) {
     log('WARNING', `${warning} (expected a JSON array), using defaults`)

@@ -2,7 +2,9 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
-export const BASE_DIR = MODULE_DIR.endsWith(join('dist', 'server')) ? resolve(MODULE_DIR, '../..') : resolve(MODULE_DIR, '..')
+export const BASE_DIR = MODULE_DIR.endsWith(join('dist', 'server'))
+  ? resolve(MODULE_DIR, '../..')
+  : resolve(MODULE_DIR, '..')
 export const DATA_DIR = process.env.DATA_DIR || BASE_DIR
 export const STATIC_DIR = process.env.STATIC_DIR || join(BASE_DIR, 'static')
 export const CONFIG_FILE = join(DATA_DIR, 'config.json')

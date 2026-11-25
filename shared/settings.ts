@@ -13,10 +13,15 @@ export const DEFAULT_RELEASE_PREFERENCES: ReleasePreferences = {
 /** Shown wherever SeaDex lists releases for a season or cour but the saved preferences accept none of them. */
 export const PREFERENCE_BLOCKED_REASON = 'No listed release fits your release preferences'
 
-export const EMPTY_LIBRARY_SCOPE: LibraryScope = { anime_only: false, include_tags: [], exclude_tags: [], root_folders: [] }
+export const EMPTY_LIBRARY_SCOPE: LibraryScope = {
+  anime_only: false,
+  include_tags: [],
+  exclude_tags: [],
+  root_folders: [],
+}
 
 export const ARR_TAG_KEYS = ['arr_tag_best', 'arr_tag_upgrade', 'arr_tag_unlisted', 'arr_tag_review'] as const
-export type ArrTagKey = typeof ARR_TAG_KEYS[number]
+export type ArrTagKey = (typeof ARR_TAG_KEYS)[number]
 export const DEFAULT_ARR_TAGS: Record<ArrTagKey, string> = {
   arr_tag_best: 'seadex-best',
   arr_tag_upgrade: 'seadex-upgradable',
@@ -31,7 +36,8 @@ const MAX_ITEM_LENGTH = 200
 
 /** Trimmed, case-insensitively unique entries from a list or a comma/newline separated string. */
 export function textList(value: unknown, label = 'list'): string[] {
-  const raw = typeof value === 'string' ? value.split(/[,\n]/) : Array.isArray(value) ? value : value == null ? [] : null
+  const raw =
+    typeof value === 'string' ? value.split(/[,\n]/) : Array.isArray(value) ? value : value == null ? [] : null
   if (!raw) throw new Error(`${label} must be a list of text values`)
   const seen = new Set<string>()
   const items: string[] = []
@@ -39,7 +45,8 @@ export function textList(value: unknown, label = 'list'): string[] {
     if (typeof entry !== 'string') throw new Error(`${label} must contain only text values`)
     const text = entry.trim()
     if (!text || seen.has(text.toLowerCase())) continue
-    if (text.length > MAX_ITEM_LENGTH) throw new Error(`${label} entries must be ${MAX_ITEM_LENGTH} characters or fewer`)
+    if (text.length > MAX_ITEM_LENGTH)
+      throw new Error(`${label} entries must be ${MAX_ITEM_LENGTH} characters or fewer`)
     seen.add(text.toLowerCase())
     items.push(text)
   }
@@ -51,7 +58,8 @@ export function normalizeLibraryScope(value: unknown, label = 'scope'): LibraryS
   if (value == null) return { ...EMPTY_LIBRARY_SCOPE, include_tags: [], exclude_tags: [], root_folders: [] }
   if (typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`)
   const source = value as Record<string, unknown>
-  if (source.anime_only !== undefined && typeof source.anime_only !== 'boolean') throw new Error(`${label}.anime_only must be a boolean`)
+  if (source.anime_only !== undefined && typeof source.anime_only !== 'boolean')
+    throw new Error(`${label}.anime_only must be a boolean`)
   return {
     anime_only: source.anime_only === true,
     include_tags: textList(source.include_tags, `${label}.include_tags`).map(tag => tag.toLowerCase()),
@@ -61,19 +69,28 @@ export function normalizeLibraryScope(value: unknown, label = 'scope'): LibraryS
 }
 
 export function scopeIsEmpty(scope: LibraryScope | undefined): boolean {
-  return !scope || (!scope.anime_only && !scope.include_tags.length && !scope.exclude_tags.length && !scope.root_folders.length)
+  return (
+    !scope ||
+    (!scope.anime_only && !scope.include_tags.length && !scope.exclude_tags.length && !scope.root_folders.length)
+  )
 }
 
 export function normalizeReleasePreferences(value: unknown): ReleasePreferences {
   if (value == null) return { ...DEFAULT_RELEASE_PREFERENCES, ignored_groups: [], ignored_trackers: [] }
   if (typeof value !== 'object' || Array.isArray(value)) throw new Error('release_preferences must be an object')
   const source = value as Record<string, unknown>
-  if (source.size !== undefined && source.size !== 'largest' && source.size !== 'smallest') throw new Error('release_preferences.size must be largest or smallest')
+  if (source.size !== undefined && source.size !== 'largest' && source.size !== 'smallest')
+    throw new Error('release_preferences.size must be largest or smallest')
   for (const key of ['dual_audio', 'accept_alternatives', 'strict'] as const) {
-    if (source[key] !== undefined && typeof source[key] !== 'boolean') throw new Error(`release_preferences.${key} must be a boolean`)
+    if (source[key] !== undefined && typeof source[key] !== 'boolean')
+      throw new Error(`release_preferences.${key} must be a boolean`)
   }
-  const limit = source.max_episode_gb === undefined || source.max_episode_gb === null || source.max_episode_gb === '' ? 0 : Number(source.max_episode_gb)
-  if (!Number.isFinite(limit) || limit < 0 || limit > 1000) throw new Error('release_preferences.max_episode_gb must be between 0 and 1000')
+  const limit =
+    source.max_episode_gb === undefined || source.max_episode_gb === null || source.max_episode_gb === ''
+      ? 0
+      : Number(source.max_episode_gb)
+  if (!Number.isFinite(limit) || limit < 0 || limit > 1000)
+    throw new Error('release_preferences.max_episode_gb must be between 0 and 1000')
   return {
     size: source.size === 'smallest' ? 'smallest' : 'largest',
     dual_audio: source.dual_audio === true,

@@ -1,10 +1,16 @@
+import { baseGroupKey, resultGroupKey } from '../../shared/ids.js'
+import { seasonTag } from '../../shared/ids.js'
 import { isSeasonUpgradable } from '../../shared/download-plan.js'
 import type { CardStatus, GroupedCard, ResultItem } from './types.js'
 
 const USENET_PROVIDER_NAMES = { animetosho: 'AnimeTosho', amenzb: 'AmeNZB' } as const
 
 /** Short explanation for a background Usenet sweep that is waiting on a paused provider. */
-export function usenetPauseText(paused: { provider: keyof typeof USENET_PROVIDER_NAMES; resume_in_seconds: number; rate_limited: boolean }[] | undefined): string | null {
+export function usenetPauseText(
+  paused:
+    | { provider: keyof typeof USENET_PROVIDER_NAMES; resume_in_seconds: number; rate_limited: boolean }[]
+    | undefined,
+): string | null {
   if (!paused?.length) return null
   const longest = Math.max(...paused.map(pause => pause.resume_in_seconds))
   const wait = longest < 90 ? `${longest}s` : `${Math.ceil(longest / 60)} min`
@@ -29,7 +35,9 @@ export const PROVIDER_LABEL: Record<string, string> = { animetosho: 'AnimeTosho'
 
 /** Deduplicated display names for a list of provider ids; empty when unknown. */
 export function providerNames(providers: (string | undefined)[]): string[] {
-  return [...new Set(providers)].filter((provider): provider is string => Boolean(provider)).map(provider => PROVIDER_LABEL[provider] || provider)
+  return [...new Set(providers)]
+    .filter((provider): provider is string => Boolean(provider))
+    .map(provider => PROVIDER_LABEL[provider] || provider)
 }
 
 export function hasCardUpgrade(group: GroupedCard): boolean {
@@ -38,8 +46,10 @@ export function hasCardUpgrade(group: GroupedCard): boolean {
 
 /** Potential library growth if every upgradable season used its target release. */
 export function cardSizeDelta(group: GroupedCard): number {
-  return group.seasons.reduce((total, season) => total + (isSeasonUpgradable(season)
-    ? (season.best_size || 0) - (season.local_size || 0) : 0), 0)
+  return group.seasons.reduce(
+    (total, season) => total + (isSeasonUpgradable(season) ? (season.best_size || 0) - (season.local_size || 0) : 0),
+    0,
+  )
 }
 
 export function formatBytes(n: number): string {
@@ -78,7 +88,7 @@ export function formatEta(remaining: number, speed: number): string {
 }
 
 export function seasonLabel(r: ResultItem): string {
-  if (r.season) return `S${String(r.season).padStart(2, '0')}`
+  if (r.season) return `${seasonTag(r.season)}`
   // Season 0 is a Radarr movie.
   return 'Movie'
 }
@@ -88,18 +98,7 @@ export function sourceName(r: Pick<ResultItem, 'arr' | 'instance_name'>): string
   return r.instance_name || r.arr
 }
 
-export function resultGroupKey(r: ResultItem): number | string {
-  // The same anime in an additional instance is a separate card.
-  const base = baseGroupKey(r)
-  return r.instance ? `${r.instance}:${base}` : base
-}
-
-function baseGroupKey(r: ResultItem): number | string {
-  if (r.group_id != null) return r.group_id
-  if (r.anilist_id != null) return r.anilist_id
-  const keyParts = String(r.key || '').split(':')
-  return keyParts.length >= 2 ? `${r.arr}:${keyParts[1]}` : `${r.arr}:${r.title}`
-}
+export { resultGroupKey }
 
 /**
  * Group flat scan results into one card per anime. Grouping uses the base
@@ -136,16 +135,21 @@ export function groupResults(results: ResultItem[]): GroupedCard[] {
     // The card inherits its artwork from the first season result, but the
     // first season can have no AniList banner (or cover). Prefer the first
     // season that actually has one so the card still shows artwork.
-    g.banner = g.seasons.find((s) => s.banner)?.banner ?? g.banner
-    g.image = g.seasons.find((s) => s.image)?.image ?? g.image
+    g.banner = g.seasons.find(s => s.banner)?.banner ?? g.banner
+    g.image = g.seasons.find(s => s.image)?.image ?? g.image
     // A card is partial whenever SeaDex has usable releases for some seasons
     // but not all of them. This includes filler entries that exist on the site
     // without any release candidates: the backend reports those seasons as
     // missing/uncovered, while resolved seasons remain upgrade/best.
-    const st = g.seasons.map((r) => r.status || 'upgrade')
-    const hasUnresolved = st.some((status) => status === 'missing' || status === 'uncovered' || status === 'partial')
-    const hasResolved = st.some((status) => status === 'upgrade' || status === 'best')
-    if (g.seasons.some(season => season.match_status === 'unmatched' || (!season.anilist_id && season.status === 'missing'))) g.status = 'review'
+    const st = g.seasons.map(r => r.status || 'upgrade')
+    const hasUnresolved = st.some(status => status === 'missing' || status === 'uncovered' || status === 'partial')
+    const hasResolved = st.some(status => status === 'upgrade' || status === 'best')
+    if (
+      g.seasons.some(
+        season => season.match_status === 'unmatched' || (!season.anilist_id && season.status === 'missing'),
+      )
+    )
+      g.status = 'review'
     else if (st.includes('partial') || (hasUnresolved && hasResolved)) g.status = 'partial'
     else if (hasUnresolved) g.status = 'missing'
     else if (st.includes('upgrade')) g.status = 'upgrade'

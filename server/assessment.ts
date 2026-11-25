@@ -1,5 +1,27 @@
-import type { ChainEntry, ResultItem, LocalItem, LocalSeason, ReleaseCandidate, ReleasePreferences, SeaDexEntry, ResolvedPart } from './types.js'
-import { effectiveSeasonParts, entryParts, exclusionReason, localPartOwnership, seadexSlot, pickBest, scopeReleaseToPart, scopeReleaseToSeasonRange, commonBestRelease, orderedPartReleases, releaseDict } from './matching.js'
+import { seasonTag } from '../shared/ids.js'
+import type {
+  ChainEntry,
+  ResultItem,
+  LocalItem,
+  LocalSeason,
+  ReleaseCandidate,
+  ReleasePreferences,
+  SeaDexEntry,
+  ResolvedPart,
+} from './types.js'
+import {
+  effectiveSeasonParts,
+  entryParts,
+  exclusionReason,
+  localPartOwnership,
+  seadexSlot,
+  pickBest,
+  scopeReleaseToPart,
+  scopeReleaseToSeasonRange,
+  commonBestRelease,
+  orderedPartReleases,
+  releaseDict,
+} from './matching.js'
 import { verifyPart } from './verification.js'
 import { sourceKeyOf } from './arr-instances.js'
 import { DEFAULT_RELEASE_PREFERENCES, PREFERENCE_BLOCKED_REASON } from '../shared/settings.js'
@@ -19,7 +41,10 @@ function localSeasonEpisodeCount(local?: LocalSeason): number {
 
 export function resolveSeasonChainEntry(item: LocalItem, season: number, chain: ChainEntry[]): ResolvedSeasonChain {
   if (season === 0) return { entry: chain[0], seasonEpisodeOffset: 0, multiSeasonSplit: false }
-  const seasonNumbers = Object.keys(item.seasons || {}).map(Number).filter((n) => Number.isInteger(n) && n > 0).sort((a, b) => a - b)
+  const seasonNumbers = Object.keys(item.seasons || {})
+    .map(Number)
+    .filter(n => Number.isInteger(n) && n > 0)
+    .sort((a, b) => a - b)
   if (seasonNumbers[0] !== 1 || !seasonNumbers.includes(season)) {
     return { entry: chain.find(entry => entry.season === season), seasonEpisodeOffset: 0, multiSeasonSplit: false }
   }
@@ -58,12 +83,22 @@ export function resolveSeasonChainEntry(item: LocalItem, season: number, chain: 
       }
       // A partial sum cannot establish that TVDB split a continuous entry.
       // The first season retains its title anchor; later seasons need review.
-      if (offset !== chainCount) return currentSeason === season ? { entry: currentChain, seasonEpisodeOffset: 0, multiSeasonSplit: false } : unresolved
+      if (offset !== chainCount)
+        return currentSeason === season
+          ? { entry: currentChain, seasonEpisodeOffset: 0, multiSeasonSplit: false }
+          : unresolved
       const split = splits.find(part => part.season === season)
-      if (split) return {
-        entry: { ...currentChain, season, episodeCount: split.count, parts: [{ ...currentChain.parts[0], episodeCount: split.count }] },
-        seasonEpisodeOffset: split.offset, multiSeasonSplit: true,
-      }
+      if (split)
+        return {
+          entry: {
+            ...currentChain,
+            season,
+            episodeCount: split.count,
+            parts: [{ ...currentChain.parts[0], episodeCount: split.count }],
+          },
+          seasonEpisodeOffset: split.offset,
+          multiSeasonSplit: true,
+        }
       seasonIndex = splitIndex
       aligned = true
       chainIndex += 1
@@ -72,12 +107,7 @@ export function resolveSeasonChainEntry(item: LocalItem, season: number, chain: 
 
     // Case 2: Multiple AniList sequel entries grouped into a single TVDB season (e.g. Bleach S17 -> TYBW Cours 1-4).
     const nextChainCount = Number(chain[chainIndex + 1]?.episodeCount || 0)
-    if (
-      localCount > 0 &&
-      chainCount > 0 &&
-      nextChainCount > 0 &&
-      chainCount + nextChainCount <= localCount
-    ) {
+    if (localCount > 0 && chainCount > 0 && nextChainCount > 0 && chainCount + nextChainCount <= localCount) {
       const mergedEntries: ChainEntry[] = []
       let mergedEpisodes = 0
       let mergeIndex = chainIndex
@@ -91,12 +121,12 @@ export function resolveSeasonChainEntry(item: LocalItem, season: number, chain: 
       }
       if (mergedEpisodes === localCount && currentSeason === season) {
         const first = mergedEntries[0]
-        const parts = mergedEntries.flatMap((entry) => entryParts(entry))
+        const parts = mergedEntries.flatMap(entry => entryParts(entry))
         return {
           entry: {
             season,
             id: first.id,
-            ids: mergedEntries.flatMap((entry) => entry.ids),
+            ids: mergedEntries.flatMap(entry => entry.ids),
             parts,
             cover: first.cover,
             banner: first.banner,
@@ -136,26 +166,83 @@ export { PREFERENCE_BLOCKED_REASON }
 
 const groupKey = (group: string) => group.trim().toLowerCase()
 
-export function assessSeason(item: LocalItem, season: number, local: LocalSeason, chain: ChainEntry[], best: Map<number, SeaDexEntry>, libraryKey: string, mappingId: number | undefined, arrUrl: string | null, override?: { entry: ChainEntry | null; groupId: number | null; ids: number[] }, settings: AssessmentSettings = DEFAULT_ASSESSMENT): ResultItem {
+/** Everything one season's recommendation is computed from. */
+export interface SeasonAssessment {
+  item: LocalItem
+  season: number
+  local: LocalSeason
+  /** The title's AniList entries in season order. */
+  chain: ChainEntry[]
+  /** SeaDex entries by AniList ID. */
+  best: Map<number, SeaDexEntry>
+  libraryKey: string
+  /** The user's manual title match, when there is one. */
+  mappingId?: number
+  arrUrl: string | null
+  /** The user's manual match for this season, which replaces the automatic chain entry. */
+  override?: { entry: ChainEntry | null; groupId: number | null; ids: number[] }
+  /** Release preferences and ownership verification; defaults apply when omitted. */
+  settings?: AssessmentSettings
+}
+
+export function assessSeason({
+  item,
+  season,
+  local,
+  chain,
+  best,
+  libraryKey,
+  mappingId,
+  arrUrl,
+  override,
+  settings = DEFAULT_ASSESSMENT,
+}: SeasonAssessment): ResultItem {
   const localGroups: string[] = local.groups
   const automatic = resolveSeasonChainEntry(item, season, chain)
-  const sameContinuousEntry = override?.entry && automatic.multiSeasonSplit && override.entry.ids.length === 1 && override.entry.id === automatic.entry?.id
+  const sameContinuousEntry =
+    override?.entry &&
+    automatic.multiSeasonSplit &&
+    override.entry.ids.length === 1 &&
+    override.entry.id === automatic.entry?.id
   const { entry, seasonEpisodeOffset, multiSeasonSplit } = override
-    ? { entry: sameContinuousEntry ? automatic.entry : override.entry, seasonEpisodeOffset: sameContinuousEntry ? automatic.seasonEpisodeOffset : 0, multiSeasonSplit: Boolean(sameContinuousEntry) }
+    ? {
+        entry: sameContinuousEntry ? automatic.entry : override.entry,
+        seasonEpisodeOffset: sameContinuousEntry ? automatic.seasonEpisodeOffset : 0,
+        multiSeasonSplit: Boolean(sameContinuousEntry),
+      }
     : automatic
-  const groupId = override ? override.groupId : chain[0]?.id ?? null
+  const groupId = override ? override.groupId : (chain[0]?.id ?? null)
   // Results of an additional instance carry its key prefix, so the same anime in two libraries stays two results.
   const source = sourceKeyOf(item)
-  const instance = item.instance ? { instance: item.instance, ...(item.instance_name ? { instance_name: item.instance_name } : {}) } : {}
+  const instance = item.instance
+    ? { instance: item.instance, ...(item.instance_name ? { instance_name: item.instance_name } : {}) }
+    : {}
   if (!entry) {
     return {
-      key: `${source}:item${item.id}:${season}:missing`, group_id: groupId,
-      arr: item.arr, ...instance, title: item.title, season, library_key: libraryKey, mapping_override: Boolean(mappingId),
-      season_mapping_override: Boolean(override), ...(override ? { anilist_ids: override.ids } : {}),
-      status: 'missing', match_status: 'unmatched', have: [...localGroups].sort(), local_size: local.size || 0,
-      missing_episode_count: local.missing_episode_count, best_group: null, best_size: 0, releases: [],
-      url: null, notes: 'No AniList season match was found. Review the title mapping before downloading.',
-      image: chain[0]?.cover || null, banner: chain[0]?.banner || null, anilist_id: null, arr_url: arrUrl,
+      key: `${source}:item${item.id}:${season}:missing`,
+      group_id: groupId,
+      arr: item.arr,
+      ...instance,
+      title: item.title,
+      season,
+      library_key: libraryKey,
+      mapping_override: Boolean(mappingId),
+      season_mapping_override: Boolean(override),
+      ...(override ? { anilist_ids: override.ids } : {}),
+      status: 'missing',
+      match_status: 'unmatched',
+      have: [...localGroups].sort(),
+      local_size: local.size || 0,
+      missing_episode_count: local.missing_episode_count,
+      best_group: null,
+      best_size: 0,
+      releases: [],
+      url: null,
+      notes: 'No AniList season match was found. Review the title mapping before downloading.',
+      image: chain[0]?.cover || null,
+      banner: chain[0]?.banner || null,
+      anilist_id: null,
+      arr_url: arrUrl,
     }
   }
   const alid = entry.id
@@ -164,21 +251,35 @@ export function assessSeason(item: LocalItem, season: number, local: LocalSeason
   const parts = effectiveSeasonParts(local, entryParts(entry))
   const partOwnership = localPartOwnership(local, parts)
   const common: Omit<ResultItem, 'key' | 'status' | 'best_group' | 'best_size' | 'releases'> = {
-    group_id: groupId, arr: item.arr, ...instance, title: item.title, season, have: [...localGroups].sort(),
-    match_status: 'matched', missing_episode_count: local.missing_episode_count,
-    library_key: libraryKey, mapping_override: Boolean(mappingId),
+    group_id: groupId,
+    arr: item.arr,
+    ...instance,
+    title: item.title,
+    season,
+    have: [...localGroups].sort(),
+    match_status: 'matched',
+    missing_episode_count: local.missing_episode_count,
+    library_key: libraryKey,
+    mapping_override: Boolean(mappingId),
     season_mapping_override: Boolean(override),
-    have_by_part: partOwnership.have, owned_by_part: partOwnership.owned, precise_part_ownership: partOwnership.precise,
+    have_by_part: partOwnership.have,
+    owned_by_part: partOwnership.owned,
+    precise_part_ownership: partOwnership.precise,
     local_size_by_part: partOwnership.sizes,
-    local_size: local.size || 0, url: null, notes: null, image: entry.cover || null,
-    banner: entry.banner || null, anilist_id: alid, arr_url: arrUrl,
+    local_size: local.size || 0,
+    url: null,
+    notes: null,
+    image: entry.cover || null,
+    banner: entry.banner || null,
+    anilist_id: alid,
+    arr_url: arrUrl,
   }
   const resolved: ResolvedPart[] = []
   const resolvedOutcome: number[] = []
   const sources: { label: string; url: string }[] = []
   const unavailableParts: { label: string; reason: string }[] = []
   const outcomes: ('missing' | 'uncovered' | 'resolved')[] = []
-  const partName = (label: string | null) => label || (season ? `S${String(season).padStart(2, '0')}` : 'Movie')
+  const partName = (label: string | null) => label || (season ? seasonTag(season) : 'Movie')
   let episodeOffset = seasonEpisodeOffset
   for (const [partIndex, part] of parts.entries()) {
     const currentEpisodeOffset = episodeOffset
@@ -199,10 +300,11 @@ export function assessSeason(item: LocalItem, season: number, local: LocalSeason
     }
     const slotCandidates = multiSeasonSplit
       ? slot.candidates.flatMap(candidate => {
-        const episodeNumbers = part.episodeNumbers || Array.from({ length: Number(part.episodeCount || 0) }, (_, index) => index + 1)
-        const scoped = scopeReleaseToSeasonRange(candidate, episodeNumbers, currentEpisodeOffset, season)
-        return scoped ? [scoped] : []
-      })
+          const episodeNumbers =
+            part.episodeNumbers || Array.from({ length: Number(part.episodeCount || 0) }, (_, index) => index + 1)
+          const scoped = scopeReleaseToSeasonRange(candidate, episodeNumbers, currentEpisodeOffset, season)
+          return scoped ? [scoped] : []
+        })
       : slot.candidates
     // The catalog is shared between library titles, so exclusions are noted on copies.
     const eligibleCandidates = slotCandidates.map((candidate): ReleaseCandidate => {
@@ -215,7 +317,10 @@ export function assessSeason(item: LocalItem, season: number, local: LocalSeason
     if (blocked) [selected, alternatives] = pickBest(eligibleCandidates, part.episodeCount)
     if (!selected) {
       outcomes.push('uncovered')
-      unavailableParts.push({ label: partName(label), reason: multiSeasonSplit ? 'No releases available on SeaDex' : 'No release candidates available' })
+      unavailableParts.push({
+        label: partName(label),
+        reason: multiSeasonSplit ? 'No releases available on SeaDex' : 'No release candidates available',
+      })
       continue
     }
     resolvedOutcome.push(outcomes.length)
@@ -223,48 +328,74 @@ export function assessSeason(item: LocalItem, season: number, local: LocalSeason
     resolved.push({
       label,
       source,
-      best: multiSeasonSplit ? selected : scopeReleaseToPart(selected, part.episodeCount, partIndex, parts.length, currentEpisodeOffset, season),
-      alts: alternatives.map((release) => multiSeasonSplit ? release : scopeReleaseToPart(release, part.episodeCount, partIndex, parts.length, currentEpisodeOffset, season)),
+      best: multiSeasonSplit
+        ? selected
+        : scopeReleaseToPart(selected, part.episodeCount, partIndex, parts.length, currentEpisodeOffset, season),
+      alts: alternatives.map(release =>
+        multiSeasonSplit
+          ? release
+          : scopeReleaseToPart(release, part.episodeCount, partIndex, parts.length, currentEpisodeOffset, season),
+      ),
       ...(blocked ? { blocked } : {}),
       ...(part.episodeNumbers ? { episodeNumbers: part.episodeNumbers } : {}),
     })
   }
   common.urls = sources
-  common.anilist_ids = parts.map((part) => part.id)
+  common.anilist_ids = parts.map(part => part.id)
   common.unavailable_parts = unavailableParts
-  common.notes_by_part = Object.fromEntries(resolved.map((part) => [part.label || '', part.source.notes || '-']))
+  common.notes_by_part = Object.fromEntries(resolved.map(part => [part.label || '', part.source.notes || '-']))
   if (sources.length) {
     common.url = sources[0].url
-    const notes = [...new Set(resolved.map((part) => part.source.notes || '-').filter((note) => note !== '-'))]
+    const notes = [...new Set(resolved.map(part => part.source.notes || '-').filter(note => note !== '-'))]
     common.notes = notes.length ? notes.join('\n') : '-'
   }
   if (!resolved.length) {
     const status = outcomes.includes('missing') ? 'missing' : 'uncovered'
-    return { ...common, key: `${source}:${alid}:${season}:${status}`, status, best_group: null, best_size: 0, releases: [] }
+    return {
+      ...common,
+      key: `${source}:${alid}:${season}:${status}`,
+      status,
+      best_group: null,
+      best_size: 0,
+      releases: [],
+    }
   }
 
   // Ownership: release group names, corrected by the file-size fingerprint of each listed release.
   const candidatesOf = (part: ResolvedPart) => [part.best, ...part.alts]
-  const verification = resolved.map((part) => settings.verify && (parts.length === 1 || part.episodeNumbers)
-    ? verifyPart(local, part.episodeNumbers, partOwnership.owned[part.label || ''] || [], candidatesOf(part))
-    : { verified: [], mismatched: [] })
+  const verification = resolved.map(part =>
+    settings.verify && (parts.length === 1 || part.episodeNumbers)
+      ? verifyPart(local, part.episodeNumbers, partOwnership.owned[part.label || ''] || [], candidatesOf(part))
+      : { verified: [], mismatched: [] },
+  )
   const ownedByPart = resolved.map((part, index) => {
     const owned = new Set<string>((partOwnership.owned[part.label || ''] || []).map(groupKey))
     for (const group of verification[index].mismatched) owned.delete(groupKey(group))
     for (const group of verification[index].verified) owned.add(groupKey(group))
     return owned
   })
-  const byPart = (pick: (index: number) => string[]) => Object.fromEntries(resolved.flatMap((part, index) => pick(index).length ? [[part.label || '', [...pick(index)].sort()]] : []))
+  const byPart = (pick: (index: number) => string[]) =>
+    Object.fromEntries(
+      resolved.flatMap((part, index) => (pick(index).length ? [[part.label || '', [...pick(index)].sort()]] : [])),
+    )
   const verifiedByPart = byPart(index => verification[index].verified)
   const mismatchedByPart = byPart(index => verification[index].mismatched)
   if (Object.keys(verifiedByPart).length) common.verified_by_part = verifiedByPart
   if (Object.keys(mismatchedByPart).length) common.mismatched_by_part = mismatchedByPart
 
   // SeaDex marks its picks as best; an unmarked listing treats the chosen release as its best.
-  const isBestKind = (part: ResolvedPart, release: ReleaseCandidate) => release.is_best || (!candidatesOf(part).some(candidate => candidate.is_best) && groupKey(release.releaseGroup) === groupKey(part.best.releaseGroup))
-  const settlingGroups = (part: ResolvedPart): Set<string> => preferences.strict && !part.blocked
-    ? new Set([groupKey(part.best.releaseGroup)])
-    : new Set(candidatesOf(part).filter(release => isBestKind(part, release) || preferences.accept_alternatives).map(release => groupKey(release.releaseGroup)))
+  const isBestKind = (part: ResolvedPart, release: ReleaseCandidate) =>
+    release.is_best ||
+    (!candidatesOf(part).some(candidate => candidate.is_best) &&
+      groupKey(release.releaseGroup) === groupKey(part.best.releaseGroup))
+  const settlingGroups = (part: ResolvedPart): Set<string> =>
+    preferences.strict && !part.blocked
+      ? new Set([groupKey(part.best.releaseGroup)])
+      : new Set(
+          candidatesOf(part)
+            .filter(release => isBestKind(part, release) || preferences.accept_alternatives)
+            .map(release => groupKey(release.releaseGroup)),
+        )
   const settled = resolved.map((part, index) => [...settlingGroups(part)].some(group => ownedByPart[index].has(group)))
   // A part whose releases are all excluded has nothing to offer unless the library already settles it.
   const dormant = resolved.map((part, index) => Boolean(part.blocked) && !settled[index])
@@ -273,38 +404,65 @@ export function assessSeason(item: LocalItem, season: number, local: LocalSeason
     outcomes[resolvedOutcome[index]] = 'uncovered'
     unavailableParts.push({ label: partName(part.label), reason: PREFERENCE_BLOCKED_REASON })
   })
-  const listReleases = (part: ResolvedPart, primary: ReleaseCandidate) => orderedPartReleases(primary, part.alts).map(([, release]) => {
-    const kind = isBestKind(part, release) ? 'best' : 'alt'
-    const satisfies = settlingGroups(part).has(groupKey(release.releaseGroup))
-    return releaseDict(kind, release, part.label, part.source.url, {
-      target: !part.blocked && groupKey(release.releaseGroup) === groupKey(part.best.releaseGroup),
-      // Stored only where it departs from the kind, which is what older results imply.
-      ...(satisfies !== (kind === 'best') ? { satisfies } : {}),
+  const listReleases = (part: ResolvedPart, primary: ReleaseCandidate) =>
+    orderedPartReleases(primary, part.alts).map(([, release]) => {
+      const kind = isBestKind(part, release) ? 'best' : 'alt'
+      const satisfies = settlingGroups(part).has(groupKey(release.releaseGroup))
+      return releaseDict(kind, release, part.label, part.source.url, {
+        target: !part.blocked && groupKey(release.releaseGroup) === groupKey(part.best.releaseGroup),
+        // Stored only where it departs from the kind, which is what older results imply.
+        ...(satisfies !== (kind === 'best') ? { satisfies } : {}),
+      })
     })
-  })
   const active = resolved.filter((_, index) => !dormant[index])
   if (!active.length) {
     const status = outcomes.includes('missing') ? 'missing' : 'uncovered'
     return {
-      ...common, key: `${source}:${alid}:${season}:${status}`, status, best_group: null, best_size: 0, preference_blocked: true,
+      ...common,
+      key: `${source}:${alid}:${season}:${status}`,
+      status,
+      best_group: null,
+      best_size: 0,
+      preference_blocked: true,
       releases: resolved.flatMap(part => listReleases(part, part.best)),
     }
   }
   const partiallyResolved = outcomes.some(outcome => outcome !== 'resolved')
-  const bestGroups = [...new Set(active.map((part) => part.best.releaseGroup))]
+  const bestGroups = [...new Set(active.map(part => part.best.releaseGroup))]
   let bestGroup = bestGroups.join(' + ')
   let bestSize = active.reduce((sum, part) => sum + (part.best.size || 0), 0)
   let ownsAllBest = resolved.every((_, index) => dormant[index] || settled[index])
-  const activeOwned = resolved.flatMap((_, index) => dormant[index] ? [] : [ownedByPart[index]])
-  const commonOwnedGroups = [...activeOwned.slice(1).reduce((commonGroups, groups) => new Set([...commonGroups].filter((group) => groups.has(group))), activeOwned[0])]
+  const activeOwned = resolved.flatMap((_, index) => (dormant[index] ? [] : [ownedByPart[index]]))
+  const commonOwnedGroups = [
+    ...activeOwned
+      .slice(1)
+      .reduce((commonGroups, groups) => new Set([...commonGroups].filter(group => groups.has(group))), activeOwned[0]),
+  ]
   let commonBest = commonBestRelease(active, new Set(commonOwnedGroups))
   // In strict mode only the targeted release settles a part, so a shared batch must be that target.
-  if (commonBest && preferences.strict && !active.every(part => part.blocked || groupKey(part.best.releaseGroup) === groupKey(commonBest!.releaseGroup))) commonBest = null
-  if (commonBest) { bestGroup = commonBest.releaseGroup; bestSize = commonBest.size || 0; ownsAllBest = true }
-  const releases = resolved.flatMap((part, index) => listReleases(part, !dormant[index] && !partiallyResolved && ownsAllBest ? commonBest || part.best : part.best))
+  if (
+    commonBest &&
+    preferences.strict &&
+    !active.every(part => part.blocked || groupKey(part.best.releaseGroup) === groupKey(commonBest!.releaseGroup))
+  )
+    commonBest = null
+  if (commonBest) {
+    bestGroup = commonBest.releaseGroup
+    bestSize = commonBest.size || 0
+    ownsAllBest = true
+  }
+  const releases = resolved.flatMap((part, index) =>
+    listReleases(part, !dormant[index] && !partiallyResolved && ownsAllBest ? commonBest || part.best : part.best),
+  )
   const status = partiallyResolved ? 'partial' : ownsAllBest ? 'best' : 'upgrade'
   return {
-    ...common, key: `${source}:${alid}:${season}:${bestGroup}`, status, ...(partiallyResolved ? { upgrade_available: !ownsAllBest } : {}),
-    ...(dormant.some(Boolean) ? { preference_blocked: true } : {}), best_group: bestGroup, best_size: bestSize, releases,
+    ...common,
+    key: `${source}:${alid}:${season}:${bestGroup}`,
+    status,
+    ...(partiallyResolved ? { upgrade_available: !ownsAllBest } : {}),
+    ...(dormant.some(Boolean) ? { preference_blocked: true } : {}),
+    best_group: bestGroup,
+    best_size: bestSize,
+    releases,
   }
 }

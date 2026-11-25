@@ -7,22 +7,47 @@ import { DEFAULT_CONFIG } from '../server/config.js'
 import { normalizeResults } from '../server/result-model.js'
 import { releaseOffered, releaseOwned, releaseSatisfies, upgradeParts } from '../shared/download-plan.js'
 import { releaseIdentity } from '../shared/releases.js'
-import { DEFAULT_RELEASE_PREFERENCES, PREFERENCE_BLOCKED_REASON, normalizeReleasePreferences, preferencesAreDefault } from '../shared/settings.js'
-import type { ChainEntry, LocalItem, LocalSeason, ReleaseCandidate, ReleasePreferences, SeaDexEntry } from '../server/types.js'
+import {
+  DEFAULT_RELEASE_PREFERENCES,
+  PREFERENCE_BLOCKED_REASON,
+  normalizeReleasePreferences,
+  preferencesAreDefault,
+} from '../shared/settings.js'
+import type {
+  ChainEntry,
+  LocalItem,
+  LocalSeason,
+  ReleaseCandidate,
+  ReleasePreferences,
+  SeaDexEntry,
+} from '../server/types.js'
 
 const GB = 1024 ** 3
 let created = 0
 /** Every candidate gets its own valid torrent hash. */
 const nextHash = () => '0123456789abcdef'[created++ % 16].repeat(40)
-const prefs = (changes: Partial<ReleasePreferences> = {}): ReleasePreferences => ({ ...DEFAULT_RELEASE_PREFERENCES, ...changes })
+const prefs = (changes: Partial<ReleasePreferences> = {}): ReleasePreferences => ({
+  ...DEFAULT_RELEASE_PREFERENCES,
+  ...changes,
+})
 
 /** A twelve-episode release whose episodes all have the given size. */
 function candidate(group: string, episodeGb: number, extra: Partial<ReleaseCandidate> = {}): ReleaseCandidate {
   const length = Math.round(episodeGb * GB)
   return {
-    releaseGroup: group, tracker: 'Nyaa', quality: '1080p Blu-ray', tags: [], size: length * 12, file_count: 12,
-    info_hashes: [nextHash()], is_best: true,
-    source_files: Array.from({ length: 12 }, (_, index) => ({ name: `Show - S01E${String(index + 1).padStart(2, '0')}.mkv`, length })), ...extra,
+    releaseGroup: group,
+    tracker: 'Nyaa',
+    quality: '1080p Blu-ray',
+    tags: [],
+    size: length * 12,
+    file_count: 12,
+    info_hashes: [nextHash()],
+    is_best: true,
+    source_files: Array.from({ length: 12 }, (_, index) => ({
+      name: `Show - S01E${String(index + 1).padStart(2, '0')}.mkv`,
+      length,
+    })),
+    ...extra,
   }
 }
 
@@ -33,26 +58,57 @@ const privateBest = candidate('Vault', 7, { tracker: 'AB', info_hashes: ['<redac
 
 function season(groups: string[] = ['Old']): LocalSeason {
   const episodes = Array.from({ length: 12 }, (_, index) => index + 1)
-  return { groups, size: 12 * GB, episode_numbers: episodes, episode_count: 12, missing_episode_count: 0, groups_by_episode: Object.fromEntries(groups.map(group => [group, episodes])), sizes_by_episode: {} }
+  return {
+    groups,
+    size: 12 * GB,
+    episode_numbers: episodes,
+    episode_count: 12,
+    missing_episode_count: 0,
+    groups_by_episode: Object.fromEntries(groups.map(group => [group, episodes])),
+    sizes_by_episode: {},
+  }
 }
 
 const chain: ChainEntry[] = [{ season: 1, id: 42, ids: [42], parts: [{ id: 42, episodeCount: 12 }], episodeCount: 12 }]
 function assess(candidates: ReleaseCandidate[], preferences: ReleasePreferences, groups?: string[]) {
   const local = season(groups)
   const item: LocalItem = { arr: 'Sonarr', id: 1, title: 'Show', seasons: { 1: local } }
-  const catalog = new Map<number, SeaDexEntry>([[42, { url: 'https://seadex.moe/42/', notes: '', seasons: { 1: { candidates } } }]])
-  return assessSeason(item, 1, local, chain, catalog, 'Sonarr:item1', undefined, null, undefined, { preferences, verify: true })
+  const catalog = new Map<number, SeaDexEntry>([
+    [42, { url: 'https://seadex.moe/42/', notes: '', seasons: { 1: { candidates } } }],
+  ])
+  return assessSeason({
+    item: item,
+    season: 1,
+    local: local,
+    chain: chain,
+    best: catalog,
+    libraryKey: 'Sonarr:item1',
+    arrUrl: null,
+    settings: {
+      preferences,
+      verify: true,
+    },
+  })
 }
 const targetOf = (result: ReturnType<typeof assess>) => result.releases.find(release => release.target)?.releaseGroup
 
-test('the default preferences keep SeaDex\'s own pick: the largest best release', () => {
+test("the default preferences keep SeaDex's own pick: the largest best release", () => {
   assert.equal(pickBest([encode, remux], 12)[0], remux)
   assert.equal(pickBest([encode, remux], 12, prefs())[0], remux)
   const result = assess([encode, remux], prefs())
   assert.equal(result.best_group, 'Remux')
   assert.equal(targetOf(result), 'Remux')
-  assert.deepEqual(result.releases.map(release => [release.kind, release.releaseGroup]), [['best', 'Remux'], ['best', 'Encode']])
-  assert.ok(result.releases.every(release => release.satisfies === undefined && release.excluded_by === undefined), 'Default results carry no preference markers')
+  assert.deepEqual(
+    result.releases.map(release => [release.kind, release.releaseGroup]),
+    [
+      ['best', 'Remux'],
+      ['best', 'Encode'],
+    ],
+  )
+  assert.ok(
+    result.releases.every(release => release.satisfies === undefined && release.excluded_by === undefined),
+    'Default results carry no preference markers',
+  )
   assert.equal(preferencesAreDefault(prefs()), true)
 })
 
@@ -68,12 +124,20 @@ test('the smallest release can be targeted instead, and an unknown size never wi
 test('a dual-audio release becomes the target whenever one is listed', () => {
   const dualBest = candidate('DualBest', 3, { dual_audio: true })
   assert.equal(targetOf(assess([remux, dualBest], prefs({ dual_audio: true }))), 'DualBest')
-  assert.equal(targetOf(assess([remux, encode], prefs({ dual_audio: true }))), 'Remux', 'Without a dual-audio release the preference changes nothing')
+  assert.equal(
+    targetOf(assess([remux, encode], prefs({ dual_audio: true }))),
+    'Remux',
+    'Without a dual-audio release the preference changes nothing',
+  )
   // An alternative is only reachable when alternatives are accepted.
   assert.equal(targetOf(assess([remux, dualAlt], prefs({ dual_audio: true }))), 'Remux')
   const withAlternative = assess([remux, dualAlt], prefs({ dual_audio: true, accept_alternatives: true }))
   assert.equal(targetOf(withAlternative), 'Dub')
-  assert.equal(withAlternative.releases.find(release => release.releaseGroup === 'Dub')?.kind, 'alt', 'SeaDex\'s own label is kept')
+  assert.equal(
+    withAlternative.releases.find(release => release.releaseGroup === 'Dub')?.kind,
+    'alt',
+    "SeaDex's own label is kept",
+  )
 })
 
 test('a size limit excludes larger releases from the target and from bulk download', () => {
@@ -83,29 +147,54 @@ test('a size limit excludes larger releases from the target and from bulk downlo
   assert.equal(result.status, 'upgrade')
   assert.equal(result.best_group, 'Encode')
   assert.equal(result.releases.find(release => release.releaseGroup === 'Remux')?.excluded_by, 'Over 4 GB per episode')
-  assert.deepEqual(upgradeParts(result).map(part => part.options.map(option => option.release.releaseGroup)), [['Encode']])
+  assert.deepEqual(
+    upgradeParts(result).map(part => part.options.map(option => option.release.releaseGroup)),
+    [['Encode']],
+  )
   // Owning the excluded release is still owning a best release.
   assert.equal(assess([remux, encode], prefs({ max_episode_gb: 4 }), ['Remux']).status, 'best')
 })
 
 test('the per-episode limit is measured on episodes, not on the batch a cour is cut from', () => {
   // A 24-episode batch that covers two cours: 1.5 GB per episode, 36 GB in total.
-  const batch = candidate('Encode', 1.5, { file_count: 24, size: 36 * GB, source_files: Array.from({ length: 24 }, (_, index) => ({ name: `Show - ${String(index + 1).padStart(2, '0')}.mkv`, length: 1.5 * GB })) })
+  const batch = candidate('Encode', 1.5, {
+    file_count: 24,
+    size: 36 * GB,
+    source_files: Array.from({ length: 24 }, (_, index) => ({
+      name: `Show - ${String(index + 1).padStart(2, '0')}.mkv`,
+      length: 1.5 * GB,
+    })),
+  })
   assert.equal(exclusionReason(batch, 12, prefs({ max_episode_gb: 2 })), undefined)
 })
 
 test('movies are not held to a per-episode limit', () => {
-  const movie = candidate('Film', 30, { file_count: 1, size: 30 * GB, source_files: [{ name: 'Movie (2020).mkv', length: 30 * GB }] })
+  const movie = candidate('Film', 30, {
+    file_count: 1,
+    size: 30 * GB,
+    source_files: [{ name: 'Movie (2020).mkv', length: 30 * GB }],
+  })
   const local: LocalSeason = { groups: [], size: 0 }
-  const result = assessSeason({ arr: 'Radarr', id: 5, title: 'Movie', seasons: { 0: local } }, 0, local,
-    [{ season: 1, id: 42, ids: [42], parts: [{ id: 42, episodeCount: 1 }] }],
-    new Map([[42, { url: 'https://seadex.moe/42/', notes: '', seasons: { 0: { candidates: [movie] } } }]]), 'Radarr:item5', undefined, null, undefined, { preferences: prefs({ max_episode_gb: 2 }), verify: true })
+  const result = assessSeason({
+    item: { arr: 'Radarr', id: 5, title: 'Movie', seasons: { 0: local } },
+    season: 0,
+    local: local,
+    chain: [{ season: 1, id: 42, ids: [42], parts: [{ id: 42, episodeCount: 1 }] }],
+    best: new Map([[42, { url: 'https://seadex.moe/42/', notes: '', seasons: { 0: { candidates: [movie] } } }]]),
+    libraryKey: 'Radarr:item5',
+    arrUrl: null,
+    settings: { preferences: prefs({ max_episode_gb: 2 }), verify: true },
+  })
   assert.equal(result.status, 'upgrade')
   assert.equal(result.releases[0].excluded_by, undefined)
 })
 
 test('ignored groups and trackers are never targeted', () => {
-  assert.equal(targetOf(assess([remux, encode], prefs({ ignored_groups: ['remux'] }))), 'Encode', 'Group names are matched without regard to case')
+  assert.equal(
+    targetOf(assess([remux, encode], prefs({ ignored_groups: ['remux'] }))),
+    'Encode',
+    'Group names are matched without regard to case',
+  )
   const result = assess([privateBest, encode], prefs({ ignored_trackers: ['ab'] }))
   assert.equal(targetOf(result), 'Encode')
   assert.equal(result.releases.find(release => release.releaseGroup === 'Vault')?.excluded_by, 'Ignored tracker')
@@ -117,9 +206,16 @@ test('when the preferences exclude every release the season offers nothing, but 
   assert.equal(result.preference_blocked, true)
   assert.equal(result.best_group, null)
   assert.deepEqual(result.unavailable_parts, [{ label: 'S01', reason: PREFERENCE_BLOCKED_REASON }])
-  assert.deepEqual(result.releases.map(release => release.excluded_by), ['Over 2 GB per episode', 'Over 2 GB per episode'])
+  assert.deepEqual(
+    result.releases.map(release => release.excluded_by),
+    ['Over 2 GB per episode', 'Over 2 GB per episode'],
+  )
   assert.ok(result.releases.every(release => !release.target))
-  assert.deepEqual(upgradeParts({ ...result, status: 'upgrade' }), [], 'Even a forced upgrade status offers no excluded release')
+  assert.deepEqual(
+    upgradeParts({ ...result, status: 'upgrade' }),
+    [],
+    'Even a forced upgrade status offers no excluded release',
+  )
   // The same library already holding one of them is simply on its best release.
   const owned = assess([remux, privateBest], prefs({ max_episode_gb: 2 }), ['Remux'])
   assert.equal(owned.status, 'best')
@@ -135,7 +231,11 @@ test('owning any best release settles a season unless only the target counts', (
   const owned = strict.releases.find(release => release.releaseGroup === 'Remux')!
   assert.equal(owned.satisfies, false)
   assert.equal(releaseSatisfies(owned), false)
-  assert.deepEqual(upgradeParts(strict).map(part => part.options.map(option => option.release.releaseGroup)), [['Encode']], 'The owned release is not offered again')
+  assert.deepEqual(
+    upgradeParts(strict).map(part => part.options.map(option => option.release.releaseGroup)),
+    [['Encode']],
+    'The owned release is not offered again',
+  )
   assert.equal(assess([remux, encode], prefs({ size: 'smallest', strict: true }), ['Encode']).status, 'best')
 })
 
@@ -153,7 +253,20 @@ test('an owned alternative counts as best only when alternatives are accepted', 
 test('preference markers survive saving and reloading results', () => {
   const result = assess([remux, encode, dualAlt], prefs({ max_episode_gb: 4, accept_alternatives: true, strict: true }))
   const [saved] = normalizeResults(JSON.parse(JSON.stringify([result])))
-  assert.deepEqual(saved.releases.map(release => [release.releaseGroup, release.target === true, release.satisfies, release.excluded_by]), result.releases.map(release => [release.releaseGroup, release.target === true, release.satisfies, release.excluded_by]))
+  assert.deepEqual(
+    saved.releases.map(release => [
+      release.releaseGroup,
+      release.target === true,
+      release.satisfies,
+      release.excluded_by,
+    ]),
+    result.releases.map(release => [
+      release.releaseGroup,
+      release.target === true,
+      release.satisfies,
+      release.excluded_by,
+    ]),
+  )
   assert.equal(saved.releases.filter(release => release.target).length, 1)
 })
 
@@ -166,21 +279,43 @@ test('bulk review refuses a release the preferences exclude, while a single down
   const pick = (index: number) => ({ key: 'row', release: index, identity: releaseIdentity(result.releases[index]) })
   const other = { ...result, key: 'other' }
   assert.equal(releaseOffered(result.releases[encodeIndex]), true)
-  const bulk = await buildDownloadPlan(config, [pick(remuxIndex), { ...pick(remuxIndex), key: 'other' }], { results: [result, other] })
+  const bulk = await buildDownloadPlan(config, [pick(remuxIndex), { ...pick(remuxIndex), key: 'other' }], {
+    results: [result, other],
+  })
   assert.ok('review' in bulk)
-  assert.deepEqual(bulk.review.blocked.map(row => [row.key, row.code, row.reason]), [
-    ['row', 'invalid', 'Your release preferences exclude this release. (Over 4 GB per episode)'],
-    ['other', 'invalid', 'Your release preferences exclude this release. (Over 4 GB per episode)'],
-  ])
+  assert.deepEqual(
+    bulk.review.blocked.map(row => [row.key, row.code, row.reason]),
+    [
+      ['row', 'invalid', 'Your release preferences exclude this release. (Over 4 GB per episode)'],
+      ['other', 'invalid', 'Your release preferences exclude this release. (Over 4 GB per episode)'],
+    ],
+  )
   const single = await buildDownloadPlan(config, [pick(remuxIndex)], { results: [result] })
   assert.ok('review' in single)
-  assert.equal(single.review.blocked.some(row => row.code === 'invalid'), false, 'An explicit single download is the person\'s own choice')
+  assert.equal(
+    single.review.blocked.some(row => row.code === 'invalid'),
+    false,
+    "An explicit single download is the person's own choice",
+  )
 })
 
 test('preferences are validated and normalized', () => {
   assert.deepEqual(normalizeReleasePreferences(null), DEFAULT_RELEASE_PREFERENCES)
-  assert.deepEqual(normalizeReleasePreferences({ size: 'smallest', max_episode_gb: '2.456', ignored_groups: ' A, a ,B\nC ', ignored_trackers: ['AB', 'ab', ''] }),
-    { ...DEFAULT_RELEASE_PREFERENCES, size: 'smallest', max_episode_gb: 2.46, ignored_groups: ['A', 'B', 'C'], ignored_trackers: ['AB'] })
+  assert.deepEqual(
+    normalizeReleasePreferences({
+      size: 'smallest',
+      max_episode_gb: '2.456',
+      ignored_groups: ' A, a ,B\nC ',
+      ignored_trackers: ['AB', 'ab', ''],
+    }),
+    {
+      ...DEFAULT_RELEASE_PREFERENCES,
+      size: 'smallest',
+      max_episode_gb: 2.46,
+      ignored_groups: ['A', 'B', 'C'],
+      ignored_trackers: ['AB'],
+    },
+  )
   assert.throws(() => normalizeReleasePreferences({ size: 'medium' }), /largest or smallest/)
   assert.throws(() => normalizeReleasePreferences({ max_episode_gb: -1 }), /between 0 and 1000/)
   assert.throws(() => normalizeReleasePreferences({ strict: 'yes' }), /must be a boolean/)

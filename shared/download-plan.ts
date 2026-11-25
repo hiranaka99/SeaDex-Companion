@@ -1,7 +1,15 @@
+import { INFO_HASH_PATTERN } from './ids.js'
 import type { EstimatableRelease } from './download-estimate.js'
 
-export const normalizeTorrentPath = (path: string): string => path.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '').toLowerCase()
-export const torrentHashes = (release: EstimatableRelease): string[] => [...new Set(release.info_hashes.map(hash => hash.toLowerCase()).filter(hash => /^[0-9a-f]{40}$/.test(hash)))]
+export const normalizeTorrentPath = (path: string): string =>
+  path
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\/+|\/+$/g, '')
+    .toLowerCase()
+export const torrentHashes = (release: EstimatableRelease): string[] => [
+  ...new Set(release.info_hashes.map(hash => hash.toLowerCase()).filter(hash => INFO_HASH_PATTERN.test(hash))),
+]
 
 export interface RecommendationRelease extends EstimatableRelease {
   kind: 'best' | 'alt'
@@ -33,13 +41,19 @@ export interface RecommendationSeason<R extends RecommendationRelease = Recommen
 export const isSeasonUpgradable = (season: Pick<RecommendationSeason, 'status' | 'upgrade_available'>): boolean =>
   season.status === 'upgrade' || (season.status === 'partial' && season.upgrade_available === true)
 
-type OwnershipFacts = Pick<RecommendationSeason, 'precise_part_ownership' | 'owned_by_part' | 'verified_by_part' | 'mismatched_by_part' | 'have'>
+type OwnershipFacts = Pick<
+  RecommendationSeason,
+  'precise_part_ownership' | 'owned_by_part' | 'verified_by_part' | 'mismatched_by_part' | 'have'
+>
 
 /**
  * Whether the library holds this release. A file-size match proves ownership whatever the
  * files are named; a size mismatch disproves it even when the release group name matches.
  */
-export function releaseOwned(season: OwnershipFacts, release: Pick<RecommendationRelease, 'part' | 'releaseGroup'>): boolean {
+export function releaseOwned(
+  season: OwnershipFacts,
+  release: Pick<RecommendationRelease, 'part' | 'releaseGroup'>,
+): boolean {
   const part = release.part || ''
   const wanted = release.releaseGroup.trim().toLowerCase()
   const named = (groups: string[] | undefined) => Boolean(groups?.some(group => group.trim().toLowerCase() === wanted))
@@ -49,14 +63,17 @@ export function releaseOwned(season: OwnershipFacts, release: Pick<Recommendatio
 }
 
 /** Whether owning this release settles its season or cour. Results saved before preferences existed rely on the kind. */
-export const releaseSatisfies = (release: Pick<RecommendationRelease, 'kind' | 'satisfies'>): boolean => release.satisfies ?? release.kind === 'best'
+export const releaseSatisfies = (release: Pick<RecommendationRelease, 'kind' | 'satisfies'>): boolean =>
+  release.satisfies ?? release.kind === 'best'
 
 /** Whether bulk download may offer this release: SeaDex's best releases and the preferred target, minus exclusions. */
 export const releaseOffered = (release: Pick<RecommendationRelease, 'kind' | 'target' | 'excluded_by'>): boolean =>
   !release.excluded_by && (release.kind === 'best' || release.target === true)
 
 /** One eligibility policy for review, preflight validation, and submission. Torrent availability only. */
-export function upgradeParts<R extends RecommendationRelease>(season: RecommendationSeason<R>): { part: string; options: { index: number; release: R }[]; torrent_available: boolean }[] {
+export function upgradeParts<R extends RecommendationRelease>(
+  season: RecommendationSeason<R>,
+): { part: string; options: { index: number; release: R }[]; torrent_available: boolean }[] {
   if (!isSeasonUpgradable(season) || season.excluded) return []
   const parts = new Map<string, { index: number; release: R }[]>()
   const settled = new Set<string>()
@@ -69,12 +86,16 @@ export function upgradeParts<R extends RecommendationRelease>(season: Recommenda
     if (!releaseOffered(release) || season.excluded_parts?.includes(part)) return
     parts.set(part, [...(parts.get(part) || []), { index, release }])
   })
-  return [...parts].filter(([part]) => !settled.has(part)).map(([part, offered]) => {
-    // The preferred target leads, so it is the default choice wherever several releases are offered.
-    const options = [...offered].sort((left, right) => Number(right.release.target === true) - Number(left.release.target === true))
-    const available = options.filter(({ release }) => release.torrent_available && torrentHashes(release).length > 0)
-    return { part, options: available.length ? available : options, torrent_available: available.length > 0 }
-  })
+  return [...parts]
+    .filter(([part]) => !settled.has(part))
+    .map(([part, offered]) => {
+      // The preferred target leads, so it is the default choice wherever several releases are offered.
+      const options = [...offered].sort(
+        (left, right) => Number(right.release.target === true) - Number(left.release.target === true),
+      )
+      const available = options.filter(({ release }) => release.torrent_available && torrentHashes(release).length > 0)
+      return { part, options: available.length ? available : options, torrent_available: available.length > 0 }
+    })
 }
 
 export interface PlannedTorrent {
@@ -87,25 +108,47 @@ export interface PlannedTorrent {
 }
 
 /** Deduplicate hashes and union file scopes once. Any whole-torrent selection wins. */
-export function planTorrents(selections: { release: EstimatableRelease; category: string; label?: string }[]): PlannedTorrent[] {
+export function planTorrents(
+  selections: { release: EstimatableRelease; category: string; label?: string }[],
+): PlannedTorrent[] {
   const plan = new Map<string, PlannedTorrent>()
   for (const { release, category, label } of selections) {
     const catalogs = release.torrent_files || []
     const allNames = new Set(catalogs.flatMap(catalog => catalog.files.map(file => normalizeTorrentPath(file.name))))
-    const completeScope = torrentHashes(release).every(hash => catalogs.some(catalog => catalog.hash.toLowerCase() === hash && catalog.files.length > 0)) && release.selected_files?.every(name => allNames.has(normalizeTorrentPath(name)))
+    const completeScope =
+      torrentHashes(release).every(hash =>
+        catalogs.some(catalog => catalog.hash.toLowerCase() === hash && catalog.files.length > 0),
+      ) && release.selected_files?.every(name => allNames.has(normalizeTorrentPath(name)))
     for (const hash of torrentHashes(release)) {
-      const ownNames = new Set(catalogs.filter(catalog => catalog.hash.toLowerCase() === hash).flatMap(catalog => catalog.files.map(file => normalizeTorrentPath(file.name))))
-      const selected = release.selected_files?.filter(name => !completeScope || ownNames.has(normalizeTorrentPath(name)))
+      const ownNames = new Set(
+        catalogs
+          .filter(catalog => catalog.hash.toLowerCase() === hash)
+          .flatMap(catalog => catalog.files.map(file => normalizeTorrentPath(file.name))),
+      )
+      const selected = release.selected_files?.filter(
+        name => !completeScope || ownNames.has(normalizeTorrentPath(name)),
+      )
       if (release.selected_files?.length && !selected?.length) continue
       const existing = plan.get(hash)
       if (!existing) {
-        plan.set(hash, { hash, category, labels: label ? [label] : [], releases: [release], ...(selected?.length ? { selectedFiles: [...new Map(selected.map(name => [normalizeTorrentPath(name), name])).values()] } : {}) })
+        plan.set(hash, {
+          hash,
+          category,
+          labels: label ? [label] : [],
+          releases: [release],
+          ...(selected?.length
+            ? { selectedFiles: [...new Map(selected.map(name => [normalizeTorrentPath(name), name])).values()] }
+            : {}),
+        })
         continue
       }
       existing.releases.push(release)
       if (label && !existing.labels.includes(label)) existing.labels.push(label)
       if (!selected?.length) delete existing.selectedFiles
-      else if (existing.selectedFiles) existing.selectedFiles = [...new Map([...existing.selectedFiles, ...selected].map(name => [normalizeTorrentPath(name), name])).values()]
+      else if (existing.selectedFiles)
+        existing.selectedFiles = [
+          ...new Map([...existing.selectedFiles, ...selected].map(name => [normalizeTorrentPath(name), name])).values(),
+        ]
     }
   }
   return [...plan.values()]

@@ -10,8 +10,14 @@ function fixture(responses: Response[]) {
   const pauses: number[] = []
   const client = createAniListClient({
     now: () => clock,
-    sleep: async delay => { pauses.push(delay); clock += delay },
-    fetch: async () => { const response = responses[Math.min(calls++, responses.length - 1)]; return response.clone() },
+    sleep: async delay => {
+      pauses.push(delay)
+      clock += delay
+    },
+    fetch: async () => {
+      const response = responses[Math.min(calls++, responses.length - 1)]
+      return response.clone()
+    },
   })
   return { client, pauses, calls: () => calls }
 }
@@ -35,29 +41,42 @@ test('other HTTP failures and mixed GraphQL errors are not hidden as missing ani
   const http = fixture([new Response('Unavailable', { status: 503 })])
   await assert.rejects(http.client.media('query', {}), /HTTP 503/)
   assert.equal(http.calls(), 6)
-  const graphql = fixture([Response.json({ errors: [{ status: 404, message: 'Not Found.' }, { message: 'Service unavailable' }] })])
+  const graphql = fixture([
+    Response.json({ errors: [{ status: 404, message: 'Not Found.' }, { message: 'Service unavailable' }] }),
+  ])
   await assert.rejects(graphql.client.media('query', {}), /Service unavailable/)
   assert.equal(graphql.calls(), 6)
 })
 
 test('burst throttling without Retry-After retries quickly and escalates repeated backoff', async () => {
-  const { client, pauses, calls } = fixture([new Response('', { status: 429 }), new Response('', { status: 429 }), Response.json({ data: { Media: { id: 1 } } })])
+  const { client, pauses, calls } = fixture([
+    new Response('', { status: 429 }),
+    new Response('', { status: 429 }),
+    Response.json({ data: { Media: { id: 1 } } }),
+  ])
   assert.equal((await client.media('query', {})).id, 1)
   assert.deepEqual(pauses, [3000, 6000])
   assert.equal(calls(), 3)
 })
 
 test('rate limits with Retry-After respect the server delay', async () => {
-  const { client, pauses } = fixture([new Response('', { status: 429, headers: { 'Retry-After': '5' } }), Response.json({ data: { Media: { id: 1 } } })])
+  const { client, pauses } = fixture([
+    new Response('', { status: 429, headers: { 'Retry-After': '5' } }),
+    Response.json({ data: { Media: { id: 1 } } }),
+  ])
   await client.media('query', {})
   assert.deepEqual(pauses, [6000])
 })
 
 test('concurrent searches and scans wait after the preceding response completes', async () => {
   let clock = 10_000
-  const starts: number[] = [], completions: number[] = []
+  const starts: number[] = [],
+    completions: number[] = []
   const client = createAniListClient({
-    now: () => clock, sleep: async delay => { clock += delay },
+    now: () => clock,
+    sleep: async delay => {
+      clock += delay
+    },
     fetch: async () => {
       starts.push(clock)
       clock += 7500
@@ -73,12 +92,27 @@ test('concurrent searches and scans wait after the preceding response completes'
 
 test('queued scan cancellation is immediate and cannot let later requests overtake an active request', async () => {
   let release!: () => void, started!: () => void
-  const blocked = new Promise<void>(resolve => { release = resolve })
-  const ready = new Promise<void>(resolve => { started = resolve })
-  let calls = 0, clock = 10_000
+  const blocked = new Promise<void>(resolve => {
+    release = resolve
+  })
+  const ready = new Promise<void>(resolve => {
+    started = resolve
+  })
+  let calls = 0,
+    clock = 10_000
   const client = createAniListClient({
-    now: () => clock, sleep: async delay => { clock += delay },
-    fetch: async () => { calls++; if (calls === 1) { started(); await blocked }; return Response.json({ data: { Media: { id: calls } } }) },
+    now: () => clock,
+    sleep: async delay => {
+      clock += delay
+    },
+    fetch: async () => {
+      calls++
+      if (calls === 1) {
+        started()
+        await blocked
+      }
+      return Response.json({ data: { Media: { id: calls } } })
+    },
   })
   const first = client.media('query', {})
   await ready

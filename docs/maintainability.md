@@ -1,6 +1,12 @@
 # Runtime ownership
 
-HTTP composition lives in `server/index.ts`; download routes and scheduling have their own modules. Production modules import their owners directly. `server/app.ts` retains the previous exports for callers and existing tests.
+`server/index.ts` composes the server: it builds one route table from the `*-routes.ts` modules, applies the session check, serves static files, and owns startup and shutdown. A route is a method, a path, an access level, and a handler (`server/router.ts`). Handlers answer with `sendJson` and refuse by throwing `HttpError` (`server/http-error.ts`) with the status and any extra body fields; `AuthError`, `PlanRejected`, `OwnershipError`, `DownloadJobConflict`, and `UsenetSelectionError` are subclasses. Anything else that is thrown is logged and answered with HTTP 500. The rules behind a request live with the data they change (`user-rules.ts`, `hidden.ts`, `config-service.ts`), not in the handlers. Production modules and tests import their owners directly; there is no barrel module.
+
+Everything specific to one download client sits behind `DownloadClientAdapter` (`server/download-client-types.ts`), implemented by `qbittorrent-adapter.ts` and `sabnzbd-adapter.ts` and handed out per protocol by `downloadClients(config)`. Review (`download-preflight.ts`), submission (`download-submit.ts`), and progress and control (`download-progress.ts`) walk the adapters and do not branch on protocol. A new client means a new adapter. `planDownloads` is pure planning; `buildDownloadPlan` additionally stores the expiring plan a review is confirmed with, so accepting a plan re-plans without storing another one.
+
+Usenet indexers are described once in `server/usenet-providers.ts` (label, settings keys, lookup, NZB fetch, connection test, entry-ID shape); the resolver, cache validation, settings invalidation, and connection tests read that registry. Request pacing, priorities, and provider pauses belong to `LookupScheduler` (`server/usenet-scheduler.ts`), which `usenet.ts` instantiates once.
+
+Identities and guards used on both sides of the API are defined once under `shared/`: `ids.ts` (info hashes, review-row keys, season tags, card keys), `guards.ts`, and `errors.ts`.
 
 The scan service resolves its dependencies once. Its coordinator owns admission, cancellation, progress, commits, and notifications; `assessment.ts` computes a season recommendation without I/O. Sonarr and Radarr adapters load independently. Shared API contracts describe results and configuration, while `result-model.ts` normalizes old cached results before they reach API readers or download commands.
 

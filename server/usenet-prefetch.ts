@@ -2,8 +2,14 @@ import { log } from './logging.js'
 import { loadLastResults } from './results.js'
 import { exclusionRuleKey, loadUserRules } from './user-rules.js'
 import { torrentHashes } from '../shared/download-plan.js'
-import { resolveUsenetRelease, retainUsenetHashes, sabnzbdConfigured, usenetProviderPauses, usenetProvidersEnabled } from './usenet.js'
-import type { UsenetProvider } from '../shared/usenet-contracts.js'
+import {
+  resolveUsenetRelease,
+  retainUsenetHashes,
+  sabnzbdConfigured,
+  usenetProviderPauses,
+  usenetProvidersEnabled,
+} from './usenet.js'
+import type { UsenetPrefetchProgress } from '../shared/contracts.js'
 import type { Config, Release, ResultItem } from './types.js'
 
 /**
@@ -14,14 +20,6 @@ import type { Config, Release, ResultItem } from './types.js'
  * limiter and provider pauses; a sweep is superseded by the next one.
  */
 
-export interface UsenetPrefetchProgress {
-  running: boolean
-  checked: number
-  total: number
-  /** Providers the sweep is currently waiting on after rate limiting or repeated failures. */
-  paused?: { provider: UsenetProvider; resume_in_seconds: number; rate_limited: boolean }[]
-}
-
 let enabled = false
 let sweepEpoch = 0
 let progress = { running: false, checked: 0, total: 0 }
@@ -30,7 +28,11 @@ let progress = { running: false, checked: 0, total: 0 }
 export function usenetPrefetchProgress(): UsenetPrefetchProgress {
   if (!progress.running) return { running: false, checked: 0, total: 0 }
   const now = Date.now()
-  const paused = usenetProviderPauses().map(pause => ({ provider: pause.provider, resume_in_seconds: Math.max(1, Math.ceil((pause.until - now) / 1000)), rate_limited: pause.reason === 'rate_limited' }))
+  const paused = usenetProviderPauses().map(pause => ({
+    provider: pause.provider,
+    resume_in_seconds: Math.max(1, Math.ceil((pause.until - now) / 1000)),
+    rate_limited: pause.reason === 'rate_limited',
+  }))
   return { ...progress, ...(paused.length ? { paused } : {}) }
 }
 
@@ -50,7 +52,10 @@ const STATUS_PRIORITY: Partial<Record<ResultItem['status'], number>> = { missing
 const statusPriority = (result: ResultItem) => STATUS_PRIORITY[result.status] ?? 2
 
 /** Releases the sweep should check, in priority order, without excluded seasons or parts. */
-export function prefetchPlan(results: ResultItem[], exclusions: ReadonlySet<string> = new Set(loadUserRules().exclusions)): { key: string; releases: Release[] }[] {
+export function prefetchPlan(
+  results: ResultItem[],
+  exclusions: ReadonlySet<string> = new Set(loadUserRules().exclusions),
+): { key: string; releases: Release[] }[] {
   const excluded = (result: ResultItem, release: Release) => {
     if (result.excluded) return true
     if (release.part && result.excluded_parts?.includes(release.part)) return true
@@ -97,9 +102,13 @@ export function stopUsenetPrefetch(): void {
 async function runSweep(epoch: number, config: Config, results: ResultItem[], reason: string): Promise<void> {
   const ownsProgress = () => epoch === sweepEpoch
   let plan: ReturnType<typeof prefetchPlan>
-  try { plan = prefetchPlan(results) }
-  catch (error) {
-    log('WARNING', `Usenet availability prefetch could not read exclusions: ${error instanceof Error ? error.message : 'unknown error'}`)
+  try {
+    plan = prefetchPlan(results)
+  } catch (error) {
+    log(
+      'WARNING',
+      `Usenet availability prefetch could not read exclusions: ${error instanceof Error ? error.message : 'unknown error'}`,
+    )
     plan = prefetchPlan(results, new Set())
   }
   const releases = plan.reduce((total, entry) => total + entry.releases.length, 0)
@@ -117,7 +126,10 @@ async function runSweep(epoch: number, config: Config, results: ResultItem[], re
       progress = { running: true, checked, total: releases }
     }
     if (!ownsProgress()) return
-    log('INFO', `Usenet availability prefetch finished (${checked} releases in ${((Date.now() - started) / 1000).toFixed(0)}s)`)
+    log(
+      'INFO',
+      `Usenet availability prefetch finished (${checked} releases in ${((Date.now() - started) / 1000).toFixed(0)}s)`,
+    )
   } catch {
     if (ownsProgress()) log('WARNING', 'Usenet availability prefetch failed')
   } finally {

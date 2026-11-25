@@ -1,4 +1,14 @@
-export type { AuthState, Release, ResultItem, ScanHistoryChange, ScanHistoryEntry, ScannedDataInfo, ScanSchedule, PublicConfig as Config, Status } from '../../shared/contracts.js'
+export type {
+  AuthState,
+  Release,
+  ResultItem,
+  ScanHistoryChange,
+  ScanHistoryEntry,
+  ScannedDataInfo,
+  ScanSchedule,
+  PublicConfig as Config,
+  Status,
+} from '../../shared/contracts.js'
 import type { ResultItem } from '../../shared/contracts.js'
 export type CardStatus = 'upgrade' | 'best' | 'missing' | 'partial' | 'review'
 

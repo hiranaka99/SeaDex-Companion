@@ -1,6 +1,8 @@
+import { isRecord } from '../shared/guards.js'
 import { normalizeResults } from './result-model.js'
 import { recordReleaseChanges } from './release-changes.js'
 import type { ResultItem } from './types.js'
+import type { ScannedDataInfo } from '../shared/contracts.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { CACHE_FILE, RESULTS_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
@@ -9,27 +11,52 @@ import type { JsonObject } from './types.js'
 
 export function loadCache(): JsonObject {
   const cache = readJson<unknown>(CACHE_FILE, {})
-  return cache && typeof cache === 'object' && !Array.isArray(cache) ? cache as JsonObject : {}
+  return isRecord(cache) ? (cache as JsonObject) : {}
 }
-export function saveCache(cache: JsonObject): void { writeJsonAtomic(CACHE_FILE, cache, true) }
+export function saveCache(cache: JsonObject): void {
+  writeJsonAtomic(CACHE_FILE, cache, true)
+}
 /** Signatures of the settings the saved results were computed under. */
-export interface ResultSettings { assessment?: string; library?: string }
-
-export function saveLastResults(results: JsonObject[], lastRun: string, options: { settings?: ResultSettings; baseline?: boolean } = {}): void {
-  const previous = loadLastResults()?.results || []
-  recordReleaseChanges(previous, normalizeResults(results), undefined, undefined, { baseline: options.baseline })
-  writeJsonAtomic(RESULTS_FILE, { results, last_run: lastRun, ...(options.settings ? { settings: options.settings } : {}) })
+export interface ResultSettings {
+  assessment?: string
+  library?: string
 }
-export function loadLastResults(): { results: ResultItem[]; last_run: string | null; settings?: ResultSettings } | null {
+
+export function saveLastResults(
+  results: ResultItem[],
+  lastRun: string,
+  options: { settings?: ResultSettings; baseline?: boolean } = {},
+): void {
+  const previous = loadLastResults()?.results || []
+  recordReleaseChanges(previous, results, undefined, undefined, { baseline: options.baseline })
+  writeJsonAtomic(RESULTS_FILE, {
+    results,
+    last_run: lastRun,
+    ...(options.settings ? { settings: options.settings } : {}),
+  })
+}
+export function loadLastResults(): {
+  results: ResultItem[]
+  last_run: string | null
+  settings?: ResultSettings
+} | null {
   const saved = readJson<JsonObject | null>(RESULTS_FILE, null)
   if (!saved || typeof saved !== 'object' || !Array.isArray(saved.results)) return null
-  const settings = saved.settings && typeof saved.settings === 'object' && !Array.isArray(saved.settings) ? saved.settings as JsonObject : null
+  const settings =
+    saved.settings && typeof saved.settings === 'object' && !Array.isArray(saved.settings)
+      ? (saved.settings as JsonObject)
+      : null
   return {
-    results: normalizeResults(saved.results), last_run: typeof saved.last_run === 'string' ? saved.last_run : null,
-    ...(settings ? { settings: {
-      ...(typeof settings.assessment === 'string' ? { assessment: settings.assessment } : {}),
-      ...(typeof settings.library === 'string' ? { library: settings.library } : {}),
-    } } : {}),
+    results: normalizeResults(saved.results),
+    last_run: typeof saved.last_run === 'string' ? saved.last_run : null,
+    ...(settings
+      ? {
+          settings: {
+            ...(typeof settings.assessment === 'string' ? { assessment: settings.assessment } : {}),
+            ...(typeof settings.library === 'string' ? { library: settings.library } : {}),
+          },
+        }
+      : {}),
   }
 }
 
@@ -37,22 +64,21 @@ export function loadLastResults(): { results: ResultItem[]; last_run: string | n
 export function loadResultSettings(): { count: number; settings?: ResultSettings } {
   const saved = readJson<JsonObject | null>(RESULTS_FILE, null)
   if (!saved || typeof saved !== 'object' || !Array.isArray(saved.results)) return { count: 0 }
-  const settings = saved.settings && typeof saved.settings === 'object' && !Array.isArray(saved.settings) ? saved.settings as JsonObject : null
+  const settings =
+    saved.settings && typeof saved.settings === 'object' && !Array.isArray(saved.settings)
+      ? (saved.settings as JsonObject)
+      : null
   return {
     count: saved.results.length,
-    ...(settings ? { settings: {
-      ...(typeof settings.assessment === 'string' ? { assessment: settings.assessment } : {}),
-      ...(typeof settings.library === 'string' ? { library: settings.library } : {}),
-    } } : {}),
+    ...(settings
+      ? {
+          settings: {
+            ...(typeof settings.assessment === 'string' ? { assessment: settings.assessment } : {}),
+            ...(typeof settings.library === 'string' ? { library: settings.library } : {}),
+          },
+        }
+      : {}),
   }
-}
-
-export interface ScannedDataInfo {
-  cache_entries: number
-  results: number
-  last_run: string | null
-  cache_valid: boolean
-  results_valid: boolean
 }
 
 export function scannedDataInfo(cacheFile = CACHE_FILE, resultsFile = RESULTS_FILE): ScannedDataInfo {
@@ -62,12 +88,25 @@ export function scannedDataInfo(cacheFile = CACHE_FILE, resultsFile = RESULTS_FI
   const resultsExists = existsSync(resultsFile)
   let cacheValid = true
   let resultsValid = true
-  try { if (cacheExists) cache = JSON.parse(readFileSync(cacheFile, 'utf8')) as JsonObject } catch { cacheValid = false }
-  try { if (resultsExists) saved = JSON.parse(readFileSync(resultsFile, 'utf8')) as JsonObject } catch { resultsValid = false }
+  try {
+    if (cacheExists) cache = JSON.parse(readFileSync(cacheFile, 'utf8')) as JsonObject
+  } catch {
+    cacheValid = false
+  }
+  try {
+    if (resultsExists) saved = JSON.parse(readFileSync(resultsFile, 'utf8')) as JsonObject
+  } catch {
+    resultsValid = false
+  }
   const cacheShapeValid = !cacheExists || (cache !== null && typeof cache === 'object' && !Array.isArray(cache))
-  const resultsShapeValid = !resultsExists || (saved !== null && typeof saved === 'object' && Array.isArray(saved.results) && (saved.last_run == null || typeof saved.last_run === 'string'))
+  const resultsShapeValid =
+    !resultsExists ||
+    (saved !== null &&
+      typeof saved === 'object' &&
+      Array.isArray(saved.results) &&
+      (saved.last_run == null || typeof saved.last_run === 'string'))
   return {
-    cache_entries: cache && typeof cache === 'object' && !Array.isArray(cache) ? Object.keys(cache).length : 0,
+    cache_entries: isRecord(cache) ? Object.keys(cache).length : 0,
     results: Array.isArray(saved?.results) ? saved.results.length : 0,
     last_run: typeof saved?.last_run === 'string' ? saved.last_run : null,
     cache_valid: cacheValid && cacheShapeValid,
@@ -75,7 +114,10 @@ export function scannedDataInfo(cacheFile = CACHE_FILE, resultsFile = RESULTS_FI
   }
 }
 
-export function clearScannedData(cacheFile = CACHE_FILE, resultsFile = RESULTS_FILE): { cacheEntries: number; results: number } {
+export function clearScannedData(
+  cacheFile = CACHE_FILE,
+  resultsFile = RESULTS_FILE,
+): { cacheEntries: number; results: number } {
   const info = scannedDataInfo(cacheFile, resultsFile)
   writeJsonAtomic(cacheFile, {}, true)
   writeJsonAtomic(resultsFile, { results: [], last_run: null }, true)

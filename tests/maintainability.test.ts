@@ -14,39 +14,107 @@ import { qbAddTorrent, qbControlTorrents, qbGetTorrents, resetQbRuntime } from '
 import { cancelScan, getState } from '../server/scan-state.js'
 import { createScanService } from '../server/scan.js'
 
-const a = 'a'.repeat(40), b = 'b'.repeat(40)
-const release = { kind: 'best' as const, releaseGroup: 'Best', tracker: 'Nyaa', torrent_available: true, info_hashes: [a], size: 100 }
+const a = 'a'.repeat(40),
+  b = 'b'.repeat(40)
+const release = {
+  kind: 'best' as const,
+  releaseGroup: 'Best',
+  tracker: 'Nyaa',
+  torrent_available: true,
+  info_hashes: [a],
+  size: 100,
+}
 
 test('review and server eligibility agree for owned, excluded, and unavailable cours', () => {
-  const season = { key: 'series', status: 'partial', upgrade_available: true, precise_part_ownership: true, owned_by_part: { 'Cour 1': ['BEST'] }, releases: [
-    { ...release, part: 'Cour 1' }, { ...release, part: 'Cour 2', info_hashes: [b] },
-  ] }
-  assert.deepEqual(upgradeParts(season).map(part => part.part), ['Cour 2'])
+  const season = {
+    key: 'series',
+    status: 'partial',
+    upgrade_available: true,
+    precise_part_ownership: true,
+    owned_by_part: { 'Cour 1': ['BEST'] },
+    releases: [
+      { ...release, part: 'Cour 1' },
+      { ...release, part: 'Cour 2', info_hashes: [b] },
+    ],
+  }
+  assert.deepEqual(
+    upgradeParts(season).map(part => part.part),
+    ['Cour 2'],
+  )
   assert.deepEqual(upgradeParts({ ...season, excluded_parts: ['Cour 2'] }), [])
   assert.deepEqual(upgradeParts({ ...season, excluded: true }), [])
-  const unavailable = upgradeParts({ ...season, releases: [{ ...release, info_hashes: [], torrent_available: false, part: 'Cour 2' }] })
+  const unavailable = upgradeParts({
+    ...season,
+    releases: [{ ...release, info_hashes: [], torrent_available: false, part: 'Cour 2' }],
+  })
   assert.equal(unavailable.length, 1, 'A part without a downloadable release stays visible for review')
   assert.equal(unavailable[0].part, 'Cour 2')
   assert.equal(unavailable[0].torrent_available, false)
-  assert.deepEqual(unavailable[0].options.map(option => option.index), [0], 'Unavailable options are kept for the review surface')
+  assert.deepEqual(
+    unavailable[0].options.map(option => option.index),
+    [0],
+    'Unavailable options are kept for the review surface',
+  )
 })
 
 test('planning and estimation use the same per-hash union and whole-torrent override', () => {
-  const catalogs = [{ hash: a, files: [{ name: '01.mkv', length: 100 }] }, { hash: b, files: [{ name: '02.mkv', length: 200 }] }]
-  const selections = [{ release: { ...release, info_hashes: [a, b], selected_files: ['01.mkv', '02.mkv'], torrent_files: catalogs }, category: 'anime' }]
-  assert.deepEqual(planTorrents(selections).map(torrent => [torrent.hash, torrent.selectedFiles]), [[a, ['01.mkv']], [b, ['02.mkv']]])
+  const catalogs = [
+    { hash: a, files: [{ name: '01.mkv', length: 100 }] },
+    { hash: b, files: [{ name: '02.mkv', length: 200 }] },
+  ]
+  const selections = [
+    {
+      release: { ...release, info_hashes: [a, b], selected_files: ['01.mkv', '02.mkv'], torrent_files: catalogs },
+      category: 'anime',
+    },
+  ]
+  assert.deepEqual(
+    planTorrents(selections).map(torrent => [torrent.hash, torrent.selectedFiles]),
+    [
+      [a, ['01.mkv']],
+      [b, ['02.mkv']],
+    ],
+  )
   assert.equal(estimateDownloads(selections).new_bytes, 300)
   const incomplete = [{ ...selections[0], release: { ...selections[0].release, torrent_files: catalogs.slice(0, 1) } }]
-  assert.deepEqual(planTorrents(incomplete).map(torrent => torrent.hash), [a, b], 'Incomplete metadata cannot silently drop a hash')
-  assert.deepEqual(planTorrents([{ ...selections[0], release: { ...selections[0].release, selected_files: ['01.mkv'] } }]).map(torrent => torrent.hash), [a], 'An empty per-hash scope must never become a whole-torrent download')
-  assert.equal(planTorrents([...selections, { release: { ...release, torrent_files: catalogs }, category: 'anime' }])[0].selectedFiles, undefined)
+  assert.deepEqual(
+    planTorrents(incomplete).map(torrent => torrent.hash),
+    [a, b],
+    'Incomplete metadata cannot silently drop a hash',
+  )
+  assert.deepEqual(
+    planTorrents([{ ...selections[0], release: { ...selections[0].release, selected_files: ['01.mkv'] } }]).map(
+      torrent => torrent.hash,
+    ),
+    [a],
+    'An empty per-hash scope must never become a whole-torrent download',
+  )
+  assert.equal(
+    planTorrents([...selections, { release: { ...release, torrent_files: catalogs }, category: 'anime' }])[0]
+      .selectedFiles,
+    undefined,
+  )
 })
 
 test('result loading normalizes malformed and legacy releases once without losing selected-file identity', () => {
-  const results = normalizeResults([null, [], 7, { key: 'old', title: 'Legacy', have: null, releases: [
-    { ...release, tracker: 'Private', info_hashes: [] },
-    { ...release, selected_files: ['01.mkv'], torrent_files: [{ hash: a, files: [{ name: '01.mkv', length: 100 }] }] },
-  ] }])
+  const results = normalizeResults([
+    null,
+    [],
+    7,
+    {
+      key: 'old',
+      title: 'Legacy',
+      have: null,
+      releases: [
+        { ...release, tracker: 'Private', info_hashes: [] },
+        {
+          ...release,
+          selected_files: ['01.mkv'],
+          torrent_files: [{ hash: a, files: [{ name: '01.mkv', length: 100 }] }],
+        },
+      ],
+    },
+  ])
   assert.equal(results.length, 1)
   assert.deepEqual(results[0].have, [])
   assert.equal(results[0].releases.length, 1)
@@ -55,11 +123,30 @@ test('result loading normalizes malformed and legacy releases once without losin
 })
 
 test('job identity, restart recovery, and failed persistence preserve authoritative state', () => {
-  let saved: unknown = [], failWrite = false
-  const storage = { read: () => saved, write: (jobs: unknown) => { if (failWrite) throw new Error('disk full'); saved = structuredClone(jobs) } }
+  let saved: unknown = [],
+    failWrite = false
+  const storage = {
+    read: () => saved,
+    write: (jobs: unknown) => {
+      if (failWrite) throw new Error('disk full')
+      saved = structuredClone(jobs)
+    },
+  }
   const store = createDownloadJobStore(storage)
-  const unitA = { unit_id: `torrent:${a}`, protocol: 'torrent' as const, source_hash: a, label: 'First', selections: [{ key: 'old-result', release: 0 }] }
-  const unitB = { unit_id: `torrent:${b}`, protocol: 'torrent' as const, source_hash: b, label: 'Second', selections: [{ key: 'old-result', release: 0 }] }
+  const unitA = {
+    unit_id: `torrent:${a}`,
+    protocol: 'torrent' as const,
+    source_hash: a,
+    label: 'First',
+    selections: [{ key: 'old-result', release: 0 }],
+  }
+  const unitB = {
+    unit_id: `torrent:${b}`,
+    protocol: 'torrent' as const,
+    source_hash: b,
+    label: 'Second',
+    selections: [{ key: 'old-result', release: 0 }],
+  }
   const targets = [{ key: 'old-result', release: 0 }]
   failWrite = true
   assert.throws(() => store.begin(targets, [unitA]), /disk full/)
@@ -69,22 +156,52 @@ test('job identity, restart recovery, and failed persistence preserve authoritat
   assert.throws(() => store.begin(targets, []), /already running/)
   store.added(first.id, unitA.unit_id, { native_id: a })
   failWrite = true
-  assert.throws(() => store.failure(first.id, { unit_id: unitB.unit_id, protocol: 'torrent', source_hash: b, label: 'Second', code: 'client', error: 'boom', selections: targets }), /disk full/)
-  assert.deepEqual(store.get(first.id)?.pending.map(unit => unit.unit_id), [unitB.unit_id], 'A failed write must not mutate durable state')
+  assert.throws(
+    () =>
+      store.failure(first.id, {
+        unit_id: unitB.unit_id,
+        protocol: 'torrent',
+        source_hash: b,
+        label: 'Second',
+        code: 'client',
+        error: 'boom',
+        selections: targets,
+      }),
+    /disk full/,
+  )
+  assert.deepEqual(
+    store.get(first.id)?.pending.map(unit => unit.unit_id),
+    [unitB.unit_id],
+    'A failed write must not mutate durable state',
+  )
   failWrite = false
   const restarted = createDownloadJobStore(storage)
   restarted.restore()
   const recovered = restarted.get(first.id)!
   assert.equal(recovered.finished, true)
-  assert.deepEqual(recovered.added.map(unit => unit.unit_id), [unitA.unit_id])
+  assert.deepEqual(
+    recovered.added.map(unit => unit.unit_id),
+    [unitA.unit_id],
+  )
   assert.deepEqual(recovered.pending, [])
   assert.equal(recovered.failures[0].code, 'interrupted')
   assert.match(recovered.failures[0].error, /restarted/)
   const second = restarted.begin(targets, [unitA, unitB])
   assert.notEqual(second.id, first.id)
-  restarted.failure(second.id, { unit_id: unitB.unit_id, protocol: 'torrent', source_hash: b, label: 'Second', code: 'client', error: 'boom', selections: targets })
+  restarted.failure(second.id, {
+    unit_id: unitB.unit_id,
+    protocol: 'torrent',
+    source_hash: b,
+    label: 'Second',
+    code: 'client',
+    error: 'boom',
+    selections: targets,
+  })
   const secondState = restarted.get(second.id)!
-  assert.deepEqual(secondState.pending.map(unit => unit.unit_id), [unitA.unit_id])
+  assert.deepEqual(
+    secondState.pending.map(unit => unit.unit_id),
+    [unitA.unit_id],
+  )
   assert.deepEqual(secondState.existing, [])
   assert.equal(secondState.failures[0].code, 'client')
   assert.match(secondState.failures[0].error, /boom/)
@@ -94,16 +211,37 @@ test('job identity, restart recovery, and failed persistence preserve authoritat
   assert.deepEqual(restarted.get(first.id)?.targets, [{ key: 'old-result', release: 0 }])
   const snapshot = restarted.get(first.id)!
   snapshot.added.length = 0
-  assert.deepEqual(restarted.get(first.id)?.added.map(unit => unit.unit_id), [unitA.unit_id])
+  assert.deepEqual(
+    restarted.get(first.id)?.added.map(unit => unit.unit_id),
+    [unitA.unit_id],
+  )
 })
 
 test('job outcomes retain only each source unit selections and the chosen protocols', () => {
   const store = createDownloadJobStore({ read: () => [], write: () => undefined })
-  const targets = [{ key: 'torrent-row', release: 0, protocol: 'torrent' as const }, { key: 'usenet-row', release: 1, protocol: 'usenet' as const }]
-  const torrent = { unit_id: `torrent:${a}`, protocol: 'torrent' as const, source_hash: a, label: 'Torrent', selections: [{ key: 'torrent-row', release: 0 }] }
-  const usenet = { unit_id: `usenet:${b}`, protocol: 'usenet' as const, source_hash: b, label: 'NZB', selections: [{ key: 'usenet-row', release: 1 }] }
+  const targets = [
+    { key: 'torrent-row', release: 0, protocol: 'torrent' as const },
+    { key: 'usenet-row', release: 1, protocol: 'usenet' as const },
+  ]
+  const torrent = {
+    unit_id: `torrent:${a}`,
+    protocol: 'torrent' as const,
+    source_hash: a,
+    label: 'Torrent',
+    selections: [{ key: 'torrent-row', release: 0 }],
+  }
+  const usenet = {
+    unit_id: `usenet:${b}`,
+    protocol: 'usenet' as const,
+    source_hash: b,
+    label: 'NZB',
+    selections: [{ key: 'usenet-row', release: 1 }],
+  }
   const job = store.begin(targets, [torrent, usenet])
-  assert.deepEqual(job.pending.map(unit => unit.selections), [torrent.selections, usenet.selections])
+  assert.deepEqual(
+    job.pending.map(unit => unit.selections),
+    [torrent.selections, usenet.selections],
+  )
   store.added(job.id, torrent.unit_id)
   store.failure(job.id, { ...usenet, code: 'client', error: 'rejected' })
   const finished = store.finish(job.id)
@@ -116,42 +254,89 @@ test('metadata loading does not block status reads or controls for another torre
   resetQbRuntime()
   const original = globalThis.fetch
   let unblock!: () => void, entered!: () => void
-  const gate = new Promise<void>(resolve => { unblock = resolve })
-  const ready = new Promise<void>(resolve => { entered = resolve })
+  const gate = new Promise<void>(resolve => {
+    unblock = resolve
+  })
+  const ready = new Promise<void>(resolve => {
+    entered = resolve
+  })
   const controls: string[] = []
   globalThis.fetch = (async (input, init) => {
     const url = new URL(String(input))
     if (url.pathname.endsWith('/auth/login')) return new Response('Ok.', { headers: { 'Set-Cookie': 'SID=test' } })
-    if (url.pathname.endsWith('/torrents/files')) { entered(); await gate; return Response.json([{ index: 0, name: '01.mkv' }]) }
-    if (url.pathname.endsWith('/torrents/info')) return Response.json(url.searchParams.has('hashes') ? [] : [{ hash: b }])
+    if (url.pathname.endsWith('/torrents/files')) {
+      entered()
+      await gate
+      return Response.json([{ index: 0, name: '01.mkv' }])
+    }
+    if (url.pathname.endsWith('/torrents/info'))
+      return Response.json(url.searchParams.has('hashes') ? [] : [{ hash: b }])
     if (url.pathname.endsWith('/torrents/stop')) controls.push(new URLSearchParams(String(init?.body)).get('hashes')!)
     return new Response('Ok.')
   }) as typeof fetch
-  const config = { ...DEFAULT_CONFIG, qbittorrent_url: 'http://metadata.test', qbittorrent_user: 'user', qbittorrent_pass: 'password' }
+  const config = {
+    ...DEFAULT_CONFIG,
+    qbittorrent_url: 'http://metadata.test',
+    qbittorrent_user: 'user',
+    qbittorrent_pass: 'password',
+  }
   const add = qbAddTorrent(config, `magnet:?xt=urn:btih:${a}`, 'anime', ['01.mkv'])
   let deadline: ReturnType<typeof setTimeout> | undefined
   let sameHashControl: Promise<void> | undefined
   let sameHashFinished = false
   try {
     await ready
-    sameHashControl = qbControlTorrents({ ...config, qbittorrent_pass: 'updated-password' }, [a], 'pause').then(() => { sameHashFinished = true })
+    sameHashControl = qbControlTorrents({ ...config, qbittorrent_pass: 'updated-password' }, [a], 'pause').then(() => {
+      sameHashFinished = true
+    })
     await Promise.race([
-      Promise.all([qbGetTorrents(config).then(torrents => assert.equal(torrents[0].hash, b)), qbControlTorrents(config, [b], 'pause')]),
-      new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Independent reads and controls were blocked by metadata')), 1000) }),
+      Promise.all([
+        qbGetTorrents(config).then(torrents => assert.equal(torrents[0].hash, b)),
+        qbControlTorrents(config, [b], 'pause'),
+      ]),
+      new Promise((_, reject) => {
+        deadline = setTimeout(() => reject(new Error('Independent reads and controls were blocked by metadata')), 1000)
+      }),
     ])
     assert.ok(controls.includes(b))
-    assert.equal(sameHashFinished, false, 'Credential changes must retain the mutation lock for the same endpoint and hash')
-  } finally { clearTimeout(deadline); unblock(); await add; await sameHashControl; globalThis.fetch = original; resetQbRuntime() }
+    assert.equal(
+      sameHashFinished,
+      false,
+      'Credential changes must retain the mutation lock for the same endpoint and hash',
+    )
+  } finally {
+    clearTimeout(deadline)
+    unblock()
+    await add
+    await sameHashControl
+    globalThis.fetch = original
+    resetQbRuntime()
+  }
 })
 
 test('scan service rejects overlapping runs and storage overrides retain history behavior', async () => {
   let unblock!: () => void
-  const gate = new Promise<void>(resolve => { unblock = resolve })
+  const gate = new Promise<void>(resolve => {
+    unblock = resolve
+  })
   let history = 0
-  const service = createScanService({ seadexBest: async () => { await gate; return new Map() }, localItems: async () => [], saveLastResults: () => {}, recordScanHistory: (previous, current, runAt) => { history += 1; return buildScanHistoryEntry(previous, current, runAt) } })
+  const service = createScanService({
+    seadexBest: async () => {
+      await gate
+      return new Map()
+    },
+    localItems: async () => [],
+    saveLastResults: () => {},
+    recordScanHistory: (previous, current, runAt) => {
+      history += 1
+      return buildScanHistoryEntry(previous, current, runAt)
+    },
+  })
   const first = service.run(DEFAULT_CONFIG)
   await assert.rejects(service.run(DEFAULT_CONFIG), /already running/)
-  cancelScan(); unblock(); await first
+  cancelScan()
+  unblock()
+  await first
   assert.equal(getState().cancelled, true)
   assert.equal(history, 1, 'Injected history is also used for cancelled runs')
 })
@@ -185,7 +370,13 @@ test('configuration migration is explicit and an interrupted commit preserves se
       migrateConfig();
       assert.equal(fs.readFileSync(CONFIG_FILE, 'utf8'), 'broken-json', 'Migration must not overwrite damaged configuration');
     `
-    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, DATA_DIR: dir }, encoding: 'utf8', windowsHide: true })
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      env: { ...process.env, DATA_DIR: dir },
+      encoding: 'utf8',
+      windowsHide: true,
+    })
     assert.equal(child.status, 0, child.stderr)
-  } finally { rmSync(dir, { recursive: true, force: true }) }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

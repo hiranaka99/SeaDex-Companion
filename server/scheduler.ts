@@ -1,3 +1,4 @@
+import { errorMessage } from '../shared/errors.js'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { nextScanTime } from '../shared/scan-schedule.js'
@@ -6,7 +7,7 @@ import { DATA_DIR } from './paths.js'
 import { loadConfig } from './config.js'
 import { getState, autocheckState } from './scan-state.js'
 import { runScan } from './scan.js'
-import { log, errorMessage } from './logging.js'
+import { log } from './logging.js'
 import { followImports, importsToFollow, readArrQueue } from './import-follow.js'
 import { collectDownloadProgress } from './download-progress.js'
 import { sendImportProblem } from './notifications.js'
@@ -50,20 +51,34 @@ export function resetWebhookScanState(): void {
 function queueItem(instanceId: string, id: number): void {
   if (instanceId === 'sonarr') webhookScanState.sonarrIds.add(id)
   else if (instanceId === 'radarr') webhookScanState.radarrIds.add(id)
-  else webhookScanState.instanceIds.set(instanceId, (webhookScanState.instanceIds.get(instanceId) || new Set<number>()).add(id))
+  else
+    webhookScanState.instanceIds.set(
+      instanceId,
+      (webhookScanState.instanceIds.get(instanceId) || new Set<number>()).add(id),
+    )
 }
 
 /** `known` says the title is already in the scan results; import events are ignored for any other title. */
-export function queueWebhookScan(source: ArrSource, eventType: unknown, targetId?: unknown, now = Date.now() / 1000, options: { instanceId?: string; known?: boolean } = {}): { accepted: boolean; dueAt: number | null } {
+export function queueWebhookScan(
+  source: ArrSource,
+  eventType: unknown,
+  targetId?: unknown,
+  now = Date.now() / 1000,
+  options: { instanceId?: string; known?: boolean } = {},
+): { accepted: boolean; dueAt: number | null } {
   const normalizedEvent = String(eventType || '').toLowerCase()
   const id = Number(targetId)
-  const wanted = ADD_EVENTS[source].has(normalizedEvent) || (IMPORT_EVENTS[source].has(normalizedEvent) && options.known === true)
+  const wanted =
+    ADD_EVENTS[source].has(normalizedEvent) || (IMPORT_EVENTS[source].has(normalizedEvent) && options.known === true)
   if (!wanted || !Number.isInteger(id) || id <= 0) return { accepted: false, dueAt: webhookScanState.dueAt }
   webhookScanState.sources.add(source)
   queueItem(options.instanceId || source, id)
   webhookScanState.dueAt = now + WEBHOOK_DEBOUNCE_SECONDS
   const dueTime = new Date(webhookScanState.dueAt * 1000).toISOString()
-  log('INFO', `${source === 'sonarr' ? 'Sonarr' : 'Radarr'} ${eventType} webhook queued an automatic scan for ${dueTime}`)
+  log(
+    'INFO',
+    `${source === 'sonarr' ? 'Sonarr' : 'Radarr'} ${eventType} webhook queued an automatic scan for ${dueTime}`,
+  )
   return { accepted: true, dueAt: webhookScanState.dueAt }
 }
 
@@ -87,13 +102,19 @@ export function queueImportScan(instance: Pick<ArrInstance, 'id'>, itemId: numbe
 
 function webhookTrigger(): ScanTrigger {
   if (webhookScanState.sources.size > 1) return 'sonarr+radarr'
-  return webhookScanState.sources.has('sonarr') ? 'sonarr' : webhookScanState.sources.has('radarr') ? 'radarr' : 'import'
+  return webhookScanState.sources.has('sonarr')
+    ? 'sonarr'
+    : webhookScanState.sources.has('radarr')
+      ? 'radarr'
+      : 'import'
 }
 
 let nextImportFollow = 0
 let followingImports = false
 /** Runs the next import check on the following scheduler tick instead of waiting out the interval. */
-export function requestImportFollow(): void { nextImportFollow = 0 }
+export function requestImportFollow(): void {
+  nextImportFollow = 0
+}
 
 export async function processImportFollow(config: Config, now = Date.now()): Promise<void> {
   if (followingImports || now < nextImportFollow) return
@@ -102,26 +123,43 @@ export async function processImportFollow(config: Config, now = Date.now()): Pro
   followingImports = true
   try {
     await followImports(config, {
-      readProgress: collectDownloadProgress, readQueue: readArrQueue, notify: sendImportProblem,
+      readProgress: collectDownloadProgress,
+      readQueue: readArrQueue,
+      notify: sendImportProblem,
       requestScan: (instance, itemId) => queueImportScan(instance, itemId, now / 1000),
-      scanRunning: () => getState().running, now: () => now,
+      scanRunning: () => getState().running,
+      now: () => now,
     })
   } catch (error) {
     log('WARNING', `Import follow-up failed: ${errorMessage(error)}`)
-  } finally { followingImports = false }
+  } finally {
+    followingImports = false
+  }
 }
-export async function processWebhookScans(config: Config, now = Date.now() / 1000, scan: (config: Config, trigger: ScanTrigger, scope: ScanScope) => Promise<void> = (scanConfig, trigger, scope) => runScan(scanConfig, {}, trigger, scope)): Promise<void> {
+export async function processWebhookScans(
+  config: Config,
+  now = Date.now() / 1000,
+  scan: (config: Config, trigger: ScanTrigger, scope: ScanScope) => Promise<void> = runScan,
+): Promise<void> {
   const scheduledPending = autocheckState.pending
   if (webhookScanState.dueAt === null || now < webhookScanState.dueAt || getState().running) return
   const trigger = scheduledPending ? 'scheduled' : webhookTrigger()
-  const scope: ScanScope = scheduledPending ? {} : {
-    sonarrIds: [...webhookScanState.sonarrIds], radarrIds: [...webhookScanState.radarrIds],
-    ...(webhookScanState.instanceIds.size ? { instances: Object.fromEntries([...webhookScanState.instanceIds].map(([id, ids]) => [id, [...ids]])) } : {}),
-  }
+  const scope: ScanScope = scheduledPending
+    ? {}
+    : {
+        sonarrIds: [...webhookScanState.sonarrIds],
+        radarrIds: [...webhookScanState.radarrIds],
+        ...(webhookScanState.instanceIds.size
+          ? { instances: Object.fromEntries([...webhookScanState.instanceIds].map(([id, ids]) => [id, [...ids]])) }
+          : {}),
+      }
   resetWebhookScanState()
   autocheckState.pending = false
   if (scheduledPending) persistAutocheckState()
-  log('INFO', `Webhook debounce elapsed; starting ${scheduledPending ? 'full scheduled' : `incremental ${trigger}`} scan`)
+  log(
+    'INFO',
+    `Webhook debounce elapsed; starting ${scheduledPending ? 'full scheduled' : `incremental ${trigger}`} scan`,
+  )
   await scan(config, trigger, scope)
 }
 
@@ -137,7 +175,11 @@ export function nextScheduledTime(schedule: ScanSchedule, after: number): number
 }
 
 function persistAutocheckState(): void {
-  writeJsonAtomic(SCHEDULE_STATE_FILE, { signature: autocheckState.signature, next: autocheckState.next, pending: autocheckState.pending })
+  writeJsonAtomic(SCHEDULE_STATE_FILE, {
+    signature: autocheckState.signature,
+    next: autocheckState.next,
+    pending: autocheckState.pending,
+  })
 }
 
 function restoreAutocheckState(): void {
@@ -148,11 +190,16 @@ function restoreAutocheckState(): void {
       autocheckState.next = stored.next
       autocheckState.pending = stored.pending === true
     }
-  } catch { /* A missing or damaged state file starts a fresh schedule. */ }
+  } catch {
+    /* A missing or damaged state file starts a fresh schedule. */
+  }
 }
 
 function skipMissedAutocheck(config: Config, now: number): void {
-  if (config.scan_schedule.missed_run === 'skip' && autocheckState.pending) { autocheckState.pending = false; persistAutocheckState() }
+  if (config.scan_schedule.missed_run === 'skip' && autocheckState.pending) {
+    autocheckState.pending = false
+    persistAutocheckState()
+  }
   if (config.scan_schedule.missed_run !== 'skip' || autocheckState.next === null || autocheckState.next > now) return
   autocheckState.next = nextScheduledTime(config.scan_schedule, now)
   persistAutocheckState()
@@ -176,7 +223,11 @@ export function refreshAutocheckSchedule(config: Config, now = Date.now() / 1000
   }
 }
 
-export async function processAutocheck(config: Config, now = Date.now() / 1000, scan: (config: Config, trigger: ScanTrigger) => Promise<void> = (scanConfig, trigger) => runScan(scanConfig, {}, trigger)): Promise<void> {
+export async function processAutocheck(
+  config: Config,
+  now = Date.now() / 1000,
+  scan: (config: Config, trigger: ScanTrigger) => Promise<void> = runScan,
+): Promise<void> {
   refreshAutocheckSchedule(config, now)
   const schedule = config.scan_schedule
   if (!schedule.enabled) return
@@ -199,11 +250,23 @@ export async function processAutocheck(config: Config, now = Date.now() / 1000, 
 
 export function startScheduler(): NodeJS.Timeout {
   restoreAutocheckState()
-  try { const config = loadConfig(); refreshAutocheckSchedule(config); skipMissedAutocheck(config, Date.now() / 1000) } catch (error) { log('ERROR', `Scheduler initialization failed: ${error instanceof Error ? error.message : String(error)}`) }
+  try {
+    const config = loadConfig()
+    refreshAutocheckSchedule(config)
+    skipMissedAutocheck(config, Date.now() / 1000)
+  } catch (error) {
+    log('ERROR', `Scheduler initialization failed: ${errorMessage(error)}`)
+  }
   return setInterval(() => {
     void (async () => {
-      try { const config = loadConfig(); void processImportFollow(config); await processAutocheck(config); await processWebhookScans(config) }
-      catch (error) { log('ERROR', `Scheduler error: ${error instanceof Error ? error.message : String(error)}`) }
+      try {
+        const config = loadConfig()
+        void processImportFollow(config)
+        await processAutocheck(config)
+        await processWebhookScans(config)
+      } catch (error) {
+        log('ERROR', `Scheduler error: ${errorMessage(error)}`)
+      }
     })()
   }, SCHEDULER_TICK_MS)
 }

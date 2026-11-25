@@ -8,19 +8,43 @@ const docker = (...args) => execFileSync('docker', args, { encoding: 'utf8', win
 const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 let created = false
 try {
-  docker('run', '-d', '--name', name, '--health-interval=1s', '--health-start-period=0s', '-p', '127.0.0.1::8080', image)
+  docker(
+    'run',
+    '-d',
+    '--name',
+    name,
+    '--health-interval=1s',
+    '--health-start-period=0s',
+    '-p',
+    '127.0.0.1::8080',
+    image,
+  )
   created = true
-  const address = () => `http://127.0.0.1:${JSON.parse(docker('inspect', name))[0].NetworkSettings.Ports['8080/tcp'][0].HostPort}`
+  const address = () =>
+    `http://127.0.0.1:${JSON.parse(docker('inspect', name))[0].NetworkSettings.Ports['8080/tcp'][0].HostPort}`
   let base = address()
   const ready = async () => {
     for (let attempt = 0; attempt < 150; attempt++) {
-      try { if ((await fetch(`${base}/healthz`)).ok) return } catch { /* Container is starting. */ }
+      try {
+        if ((await fetch(`${base}/healthz`)).ok) return
+      } catch {
+        /* Container is starting. */
+      }
       await pause(200)
     }
     throw new Error('Container did not become ready')
   }
   await ready()
-  assert.equal(docker('exec', name, 'node', '-p', "require('node:fs').readFileSync('/proc/1/status', 'utf8').match(/^Uid:\\s+(\\d+)/m)[1]"), '1000')
+  assert.equal(
+    docker(
+      'exec',
+      name,
+      'node',
+      '-p',
+      "require('node:fs').readFileSync('/proc/1/status', 'utf8').match(/^Uid:\\s+(\\d+)/m)[1]",
+    ),
+    '1000',
+  )
   const page = await fetch(base)
   assert.equal(page.status, 200)
   assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/)
@@ -31,11 +55,23 @@ try {
     assert.match(response.headers.get('cache-control'), /immutable/)
   }
   assert.equal((await fetch(`${base}/api/config`)).status, 401)
-  const setup = await fetch(`${base}/api/auth/setup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'container-tester', password: 'temporary-container-fixture-password' }) })
+  const setup = await fetch(`${base}/api/auth/setup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'container-tester', password: 'temporary-container-fixture-password' }),
+  })
   assert.equal(setup.status, 201)
   const cookie = setup.headers.get('set-cookie').split(';')[0]
-  const request = (path, body) => fetch(base + path, { method: body ? 'POST' : 'GET', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })
-  const saved = await request('/api/config', { sonarr_key: 'temporary-container-fixture-secret', scan_schedule: { enabled: false } })
+  const request = (path, body) =>
+    fetch(base + path, {
+      method: body ? 'POST' : 'GET',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    })
+  const saved = await request('/api/config', {
+    sonarr_key: 'temporary-container-fixture-secret',
+    scan_schedule: { enabled: false },
+  })
   assert.equal(saved.status, 200)
   assert.equal((await saved.json()).sonarr_key_configured, true)
   const verifyStorage = `const fs = require('node:fs'); const data = fs.readFileSync('/app/data/config.json', 'utf8'); if (data.includes('temporary-container-fixture-secret') || !JSON.parse(data)._secrets) process.exit(1); if ((fs.statSync('/app/data/.seadex-key').mode & 0o777) !== 0o600) process.exit(2);`
@@ -43,14 +79,23 @@ try {
   // Jobs accept only a server-side review plan. A selection that matches no scan result is
   // reviewed as blocked; submitting that plan is refused without contacting any download client,
   // and the plan stays single-use.
-  const review = await request('/api/download_bulk/preflight', { selections: [{ key: 'container-smoke-missing', release: 0 }] })
+  const review = await request('/api/download_bulk/preflight', {
+    selections: [{ key: 'container-smoke-missing', release: 0 }],
+  })
   assert.equal(review.status, 200)
   const plan = await review.json()
   assert.equal(typeof plan.plan_id, 'string')
-  assert.deepEqual(plan.blocked.map(row => row.code), ['invalid'])
+  assert.deepEqual(
+    plan.blocked.map(row => row.code),
+    ['invalid'],
+  )
   const refused = await request('/api/download-jobs', { plan_id: plan.plan_id })
   assert.equal(refused.status, 409, await refused.clone().text())
-  assert.equal((await request('/api/download-jobs', { plan_id: plan.plan_id })).status, 410, 'A review plan can be used once')
+  assert.equal(
+    (await request('/api/download-jobs', { plan_id: plan.plan_id })).status,
+    410,
+    'A review plan can be used once',
+  )
   assert.equal((await request('/api/download-jobs', {})).status, 400, 'Jobs require a review plan')
   // Restart uses the same private container filesystem; no host data is mounted.
   docker('restart', '--time', '15', name)
@@ -69,7 +114,9 @@ try {
   assert.equal(JSON.parse(docker('inspect', name))[0].State.Health.Status, 'healthy')
   docker('stop', '--time', '15', name)
   assert.equal(JSON.parse(docker('inspect', name))[0].State.ExitCode, 0)
-  console.log('PASS Docker: non-root startup, health check, static assets, Argon2 authentication, encrypted settings, review-plan enforcement, restart persistence, and graceful shutdown')
+  console.log(
+    'PASS Docker: non-root startup, health check, static assets, Argon2 authentication, encrypted settings, review-plan enforcement, restart persistence, and graceful shutdown',
+  )
 } catch (error) {
   if (created) process.stderr.write(docker('logs', name) + '\n')
   throw error

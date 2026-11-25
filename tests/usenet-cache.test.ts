@@ -8,8 +8,25 @@ import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { bumpGeneration } from '../server/config-generation.js'
-import { PersistentUsenetCache, USENET_CACHE_FILE, USENET_CACHE_LIMIT, providerFingerprint, usenetCacheJournalFile, usenetCacheKey, type UsenetCacheRecord } from '../server/usenet-cache.js'
-import { fetchUsenetNzb, flushUsenetCache, invalidateUsenetLookups, resetUsenetLookups, resolveUsenetHash, resolveUsenetRelease, setUsenetProviderMinIntervalMs, usenetAvailability } from '../server/usenet.js'
+import {
+  PersistentUsenetCache,
+  USENET_CACHE_FILE,
+  USENET_CACHE_LIMIT,
+  providerFingerprint,
+  usenetCacheJournalFile,
+  usenetCacheKey,
+  type UsenetCacheRecord,
+} from '../server/usenet-cache.js'
+import {
+  fetchUsenetNzb,
+  flushUsenetCache,
+  invalidateUsenetLookups,
+  resetUsenetLookups,
+  resolveUsenetHash,
+  resolveUsenetRelease,
+  usenetScheduler,
+  usenetAvailability,
+} from '../server/usenet.js'
 import type { Config, Release, ResultItem } from '../server/types.js'
 import type { UsenetAvailabilityResult } from '../shared/usenet-contracts.js'
 import { DATA_DIR } from '../server/paths.js'
@@ -26,23 +43,47 @@ const settings = { baseUrl: 'https://cache-provider.test', apiKey: 'private-key'
 const fingerprint = providerFingerprint('animetosho', settings)
 
 function config(overrides: Partial<Config> = {}): Config {
-  return { ...DEFAULT_CONFIG, animetosho_url: settings.baseUrl, animetosho_enabled: true, amenzb_enabled: false, ...overrides }
+  return {
+    ...DEFAULT_CONFIG,
+    animetosho_url: settings.baseUrl,
+    animetosho_enabled: true,
+    amenzb_enabled: false,
+    ...overrides,
+  }
 }
 
 function release(hashes = [HASH]): Release {
-  return { kind: 'best', releaseGroup: 'Group', tracker: 'Nyaa', torrent_available: true, info_hashes: hashes, size: 100 } as Release
+  return {
+    kind: 'best',
+    releaseGroup: 'Group',
+    tracker: 'Nyaa',
+    torrent_available: true,
+    info_hashes: hashes,
+    size: 100,
+  } as Release
 }
 
 function match(hash = HASH, id = 123): Response {
-  return Response.json({ id, info_hash: hash, nzb_url: '/nzb/123', title: `Release ${id}`, num_files: 1, files: [{ name: 'Show.mkv', size: 100 }], total_size: 100 })
+  return Response.json({
+    id,
+    info_hash: hash,
+    nzb_url: '/nzb/123',
+    title: `Release ${id}`,
+    num_files: 1,
+    files: [{ name: 'Show.mkv', size: 100 }],
+    total_size: 100,
+  })
 }
 
-async function fixture(t: TestContext, run: (state: {
-  advance(ms: number): void
-  calls: URL[]
-  respond(handler: (url: URL) => Response | Promise<Response>): void
-  snapshot(hashes?: string[], refresh?: boolean, cfg?: Config): Promise<UsenetAvailabilityResult>
-}) => Promise<void>): Promise<void> {
+async function fixture(
+  t: TestContext,
+  run: (state: {
+    advance(ms: number): void
+    calls: URL[]
+    respond(handler: (url: URL) => Response | Promise<Response>): void
+    snapshot(hashes?: string[], refresh?: boolean, cfg?: Config): Promise<UsenetAvailabilityResult>
+  }) => Promise<void>,
+): Promise<void> {
   const originalFetch = globalThis.fetch
   const stored = fs.existsSync(USENET_CACHE_FILE) ? fs.readFileSync(USENET_CACHE_FILE) : undefined
   const storedJournal = fs.existsSync(JOURNAL) ? fs.readFileSync(JOURNAL) : undefined
@@ -52,8 +93,8 @@ async function fixture(t: TestContext, run: (state: {
   const calls: URL[] = []
   let response = (url: URL): Response | Promise<Response> => match(url.searchParams.get('hash') || HASH)
   resetUsenetLookups()
-  setUsenetProviderMinIntervalMs('animetosho', 0)
-  setUsenetProviderMinIntervalMs('amenzb', 0)
+  usenetScheduler.options.minIntervalMs.animetosho = 0
+  usenetScheduler.options.minIntervalMs.amenzb = 0
   globalThis.fetch = (async input => {
     const url = new URL(String(input))
     calls.push(url)
@@ -61,11 +102,16 @@ async function fixture(t: TestContext, run: (state: {
   }) as typeof fetch
   try {
     await run({
-      advance(ms) { now += ms }, calls,
-      respond(handler) { response = handler },
+      advance(ms) {
+        now += ms
+      },
+      calls,
+      respond(handler) {
+        response = handler
+      },
       async snapshot(hashes = [HASH], refresh = false, cfg = config()) {
         const results = [{ key: 'cache-show', releases: [release(hashes)] }] as unknown as ResultItem[]
-        const [row] = await usenetAvailability(cfg, [{ key: 'cache-show', release: 0 }], refresh, results)
+        const [row] = await usenetAvailability(cfg, [{ key: 'cache-show', release: 0 }], results, { refresh })
         return row
       },
     })
@@ -107,8 +153,19 @@ test('restored manifest paths remain exact so cached scope checks cannot hide ex
     try {
       fs.rmSync(ledgerFile, { force: true })
       resetOwnedRuntime()
-      state.respond(() => Response.json({ id: 123, info_hash: HASH, nzb_url: '/nzb/123', num_files: 2,
-        files: [{ name: selectedName, size: 50 }, { name: extraName, size: 50 }], total_size: 100 }))
+      state.respond(() =>
+        Response.json({
+          id: 123,
+          info_hash: HASH,
+          nzb_url: '/nzb/123',
+          num_files: 2,
+          files: [
+            { name: selectedName, size: 50 },
+            { name: extraName, size: 50 },
+          ],
+          total_size: 100,
+        }),
+      )
       await resolveUsenetHash(config(), HASH)
       resetUsenetLookups(true)
       state.respond(url => {
@@ -116,10 +173,22 @@ test('restored manifest paths remain exact so cached scope checks cannot hide ex
         return Response.json({ queue: { slots: [], diskspace1: '1', diskspace2: '1' } })
       })
       const selected = { ...release(), selected_files: [selectedName] }
-      const results = [{ key: 'cache-show', arr: 'Sonarr', title: 'Cached scope', season: 1, status: 'upgrade', have: [], releases: [selected] }] as unknown as ResultItem[]
-      const built = await buildDownloadPlan(config({ download_mode: 'usenet_only', sabnzbd_url: 'http://cache-sab.test', sabnzbd_key: 'test-key' }),
-        [{ key: 'cache-show', release: 0, protocol: 'usenet' }], { results })
-      if ('error' in built) assert.fail(built.error[1])
+      const results = [
+        {
+          key: 'cache-show',
+          arr: 'Sonarr',
+          title: 'Cached scope',
+          season: 1,
+          status: 'upgrade',
+          have: [],
+          releases: [selected],
+        },
+      ] as unknown as ResultItem[]
+      const built = await buildDownloadPlan(
+        config({ download_mode: 'usenet_only', sabnzbd_url: 'http://cache-sab.test', sabnzbd_key: 'test-key' }),
+        [{ key: 'cache-show', release: 0, protocol: 'usenet' }],
+        { results },
+      )
       assert.equal(built.review.requires_whole_ack, true)
       assert.deepEqual(built.review.units[0].known_extra_files, [extraName])
       assert.equal(built.review.units[0].extra_file_count, 1)
@@ -134,14 +203,22 @@ test('restored manifest paths remain exact so cached scope checks cannot hide ex
 test('a provider observation visible before abrupt process exit restores without a shutdown flush', async t => {
   await fixture(t, async state => {
     const usenetModule = new URL('../server/usenet.js', import.meta.url).href
-    const child = spawnSync(process.execPath, ['--input-type=module', '--eval', `
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        `
       import { resolveUsenetHash } from ${JSON.stringify(usenetModule)};
       Date.now = () => 1800000000000;
       globalThis.fetch = async () => new Response(JSON.stringify({ id: 123, info_hash: ${JSON.stringify(HASH)}, nzb_url: '/nzb/123', num_files: 1, files: [{ name: 'Show.mkv', size: 100 }] }));
       const observation = await resolveUsenetHash(${JSON.stringify(config())}, ${JSON.stringify(HASH)});
       if (observation.state !== 'available') process.exit(2);
       process.exit(0);
-    `], { encoding: 'utf8' })
+    `,
+      ],
+      { encoding: 'utf8' },
+    )
     assert.equal(child.status, 0, child.stderr)
     resetUsenetLookups(true)
     const restored = await state.snapshot()
@@ -163,7 +240,10 @@ test('stale and mixed snapshots return last-known rows before delayed, deduplica
       return response.promise
     })
     const row = await state.snapshot([HASH, OTHER])
-    assert.deepEqual(row.hashes.map(hash => hash.state), ['available', 'not_checked'])
+    assert.deepEqual(
+      row.hashes.map(hash => hash.state),
+      ['available', 'not_checked'],
+    )
     assert.equal(row.aggregate, 'incomplete')
     assert.equal(row.checked_at, checked.checked_at)
     assert.equal(row.stale, true)
@@ -218,15 +298,27 @@ test('failed refreshes retain stable observations and stop polling work until ba
 test('processing, absence, failures, and new hashes use distinct retry intervals without invented absence', async t => {
   await fixture(t, async state => {
     let processing = true
-    state.respond(url => url.searchParams.get('hash') === HASH
-      ? processing ? Response.json({ id: 123, info_hash: HASH, nzb_url: null }) : match()
-      : url.searchParams.get('hash') === OTHER ? new Response('gone', { status: 404 }) : new Response('bad', { status: 503 }))
+    state.respond(url =>
+      url.searchParams.get('hash') === HASH
+        ? processing
+          ? Response.json({ id: 123, info_hash: HASH, nzb_url: null })
+          : match()
+        : url.searchParams.get('hash') === OTHER
+          ? new Response('gone', { status: 404 })
+          : new Response('bad', { status: 503 }),
+    )
     const initial = await state.snapshot([HASH, OTHER, THIRD])
-    assert.deepEqual(initial.hashes.map(hash => hash.state), ['not_checked', 'not_checked', 'not_checked'])
+    assert.deepEqual(
+      initial.hashes.map(hash => hash.state),
+      ['not_checked', 'not_checked', 'not_checked'],
+    )
     assert.equal(initial.checked_at, '')
     await nextTurn()
     const observed = await state.snapshot([HASH, OTHER, THIRD])
-    assert.deepEqual(observed.hashes.map(hash => hash.state), ['processing', 'no_match', 'lookup_failed'])
+    assert.deepEqual(
+      observed.hashes.map(hash => hash.state),
+      ['processing', 'no_match', 'lookup_failed'],
+    )
     assert.equal(observed.refreshing, false)
     state.advance(60_001)
     await state.snapshot([THIRD])
@@ -235,7 +327,10 @@ test('processing, absence, failures, and new hashes use distinct retry intervals
     processing = false
     state.advance(10 * 60_000)
     const stale = await state.snapshot([HASH, OTHER])
-    assert.deepEqual(stale.hashes.map(hash => hash.state), ['processing', 'no_match'])
+    assert.deepEqual(
+      stale.hashes.map(hash => hash.state),
+      ['processing', 'no_match'],
+    )
     await nextTurn()
     assert.equal((await state.snapshot([HASH])).aggregate, 'available')
     assert.equal(state.calls.filter(url => url.searchParams.get('hash') === OTHER).length, 1)
@@ -249,9 +344,15 @@ test('processing, absence, failures, and new hashes use distinct retry intervals
 
 test('fallback snapshots preserve provider observation ages and deduplicate the whole refresh chain', async t => {
   await fixture(t, async state => {
-    const cfg = config({ amenzb_enabled: true, amenzb_url: 'https://second-provider.test', amenzb_key: 'second-secret' })
+    const cfg = config({
+      amenzb_enabled: true,
+      amenzb_url: 'https://second-provider.test',
+      amenzb_key: 'second-secret',
+    })
     const fallback = Promise.withResolvers<Response>()
-    state.respond(url => url.host === 'cache-provider.test' ? new Response('gone', { status: 404 }) : fallback.promise)
+    state.respond(url =>
+      url.host === 'cache-provider.test' ? new Response('gone', { status: 404 }) : fallback.promise,
+    )
     const pending = await state.snapshot([HASH], false, cfg)
     assert.equal(pending.aggregate, 'not_checked')
     await nextTurn()
@@ -259,7 +360,14 @@ test('fallback snapshots preserve provider observation ages and deduplicate the 
     assert.equal((await state.snapshot([HASH], false, cfg)).aggregate, 'not_checked')
     assert.equal(state.calls.length, 2)
     state.advance(5000)
-    fallback.resolve(new Response('<rss xmlns:newznab="http://newznab.in/xmlns/newznab/"><channel><item><newznab:attr name="guid" value="entry-123"/><title>Show</title><enclosure url="https://second-provider.test/api?t=get&amp;id=entry-123&amp;apikey=second-secret" length="100" type="application/x-nzb"/><newznab:attr name="infohash" value="' + HASH + '"/></item></channel></rss>', { headers: { 'content-type': 'application/xml' } }))
+    fallback.resolve(
+      new Response(
+        '<rss xmlns:newznab="http://newznab.in/xmlns/newznab/"><channel><item><newznab:attr name="guid" value="entry-123"/><title>Show</title><enclosure url="https://second-provider.test/api?t=get&amp;id=entry-123&amp;apikey=second-secret" length="100" type="application/x-nzb"/><newznab:attr name="infohash" value="' +
+          HASH +
+          '"/></item></channel></rss>',
+        { headers: { 'content-type': 'application/xml' } },
+      ),
+    )
     await nextTurn()
     const known = await state.snapshot([HASH], false, cfg)
     assert.equal(known.aggregate, 'available')
@@ -274,9 +382,16 @@ test('fallback snapshots preserve provider observation ages and deduplicate the 
 test('provider URL and key changes remove only incompatible records while unrelated config saves retain matches', async t => {
   await fixture(t, async state => {
     const cfg = config({ amenzb_enabled: true, amenzb_url: 'https://second-provider.test', amenzb_key: 'old-key' })
-    state.respond(url => url.host !== 'second-provider.test'
-      ? url.searchParams.get('hash') === OTHER ? new Response('gone', { status: 404 }) : match()
-      : new Response(`<rss xmlns:newznab="http://newznab.in/xmlns/newznab/"><channel><item><newznab:attr name="guid" value="entry-123"/><newznab:attr name="infohash" value="${OTHER}"/></item></channel></rss>`, { headers: { 'content-type': 'application/xml' } }))
+    state.respond(url =>
+      url.host !== 'second-provider.test'
+        ? url.searchParams.get('hash') === OTHER
+          ? new Response('gone', { status: 404 })
+          : match()
+        : new Response(
+            `<rss xmlns:newznab="http://newznab.in/xmlns/newznab/"><channel><item><newznab:attr name="guid" value="entry-123"/><newznab:attr name="infohash" value="${OTHER}"/></item></channel></rss>`,
+            { headers: { 'content-type': 'application/xml' } },
+          ),
+    )
     await resolveUsenetHash(cfg, HASH)
     await resolveUsenetHash(cfg, OTHER)
     assert.equal(state.calls.length, 3)
@@ -308,7 +423,10 @@ test('authoritative stale checks wait for refreshed facts rather than accepting 
     const pending = Promise.withResolvers<Response>()
     state.respond(() => pending.promise)
     let finished = false
-    const work = resolveUsenetRelease(config(), release()).then(result => { finished = true; return result })
+    const work = resolveUsenetRelease(config(), release()).then(result => {
+      finished = true
+      return result
+    })
     await nextTurn()
     assert.equal(finished, false)
     assert.equal((await state.snapshot()).aggregate, 'available')
@@ -355,8 +473,24 @@ test('observations checkpoint before exposure, failure metadata batches, and per
   const cache = new PersistentUsenetCache(file)
   const write = fs.writeFileSync
   const record: UsenetCacheRecord = {
-    provider: 'animetosho', fingerprint, hash: HASH, checkedAt: 100, lastAttemptAt: 100, retryAt: 0,
-    lookup: { kind: 'match', match: { provider: 'animetosho', entry_id: '123', source_hash: HASH, title: 'Title private-key https://host.test/path?apikey=private-key', files_complete: true, file_count: 205, files: Array.from({ length: 205 }, (_, index) => ({ name: `Show ${index}.mkv`, size: 100 })) } },
+    provider: 'animetosho',
+    fingerprint,
+    hash: HASH,
+    checkedAt: 100,
+    lastAttemptAt: 100,
+    retryAt: 0,
+    lookup: {
+      kind: 'match',
+      match: {
+        provider: 'animetosho',
+        entry_id: '123',
+        source_hash: HASH,
+        title: 'Title private-key https://host.test/path?apikey=private-key',
+        files_complete: true,
+        file_count: 205,
+        files: Array.from({ length: 205 }, (_, index) => ({ name: `Show ${index}.mkv`, size: 100 })),
+      },
+    },
   }
   const journal = usenetCacheJournalFile(file)
   try {
@@ -383,7 +517,15 @@ test('observations checkpoint before exposure, failure metadata batches, and per
     const beforeRead = fs.statSync(file).mtimeMs
     for (let index = 0; index < 10; index++) cache.get(key)
     assert.equal(fs.statSync(file).mtimeMs, beforeRead)
-    cache.set({ ...record, lastAttemptAt: 150, retryAt: 250, failure: { kind: 'failed', code: 'server', message: 'private-key' } }, settings)
+    cache.set(
+      {
+        ...record,
+        lastAttemptAt: 150,
+        retryAt: 250,
+        failure: { kind: 'failed', code: 'server', message: 'private-key' },
+      },
+      settings,
+    )
     assert.equal(fs.readFileSync(file, 'utf8'), saved)
     assert.equal(fs.existsSync(journal), false, 'failure metadata is batched rather than journaled')
     fs.writeFileSync = ((path: fs.PathOrFileDescriptor, ...args: unknown[]) => {
@@ -412,23 +554,54 @@ test('capacity remains a bounded safety limit without age eviction', () => {
   const file = join(directory, 'cache.json')
   const cache = new PersistentUsenetCache(file)
   try {
-    const records = Array.from({ length: USENET_CACHE_LIMIT + 1 }, (_, index) => ({ provider: 'animetosho', fingerprint, hash: index.toString(16).padStart(40, '0'), checkedAt: index + 1, lastAttemptAt: index + 1, retryAt: 0, lookup: { kind: 'no_match' } }))
+    const records = Array.from({ length: USENET_CACHE_LIMIT + 1 }, (_, index) => ({
+      provider: 'animetosho',
+      fingerprint,
+      hash: index.toString(16).padStart(40, '0'),
+      checkedAt: index + 1,
+      lastAttemptAt: index + 1,
+      retryAt: 0,
+      lookup: { kind: 'no_match' },
+    }))
     fs.writeFileSync(file, JSON.stringify({ version: 1, records }))
     assert.equal(cache.get(usenetCacheKey('animetosho', fingerprint, '0'.repeat(40))), undefined)
     assert.equal(cache.get(usenetCacheKey('animetosho', fingerprint, '1'.padStart(40, '0')))?.lookup?.kind, 'no_match')
-    cache.set({ provider: 'animetosho', fingerprint, hash: HASH, checkedAt: 50_000, lastAttemptAt: 50_000, retryAt: 0, lookup: { kind: 'no_match' } }, settings)
+    cache.set(
+      {
+        provider: 'animetosho',
+        fingerprint,
+        hash: HASH,
+        checkedAt: 50_000,
+        lastAttemptAt: 50_000,
+        retryAt: 0,
+        lookup: { kind: 'no_match' },
+      },
+      settings,
+    )
     assert.equal(cache.flush(), true)
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).records.length, USENET_CACHE_LIMIT)
     cache.reset(true)
     assert.equal(cache.get(usenetCacheKey('animetosho', fingerprint, HASH))?.lookup?.kind, 'no_match')
-  } finally { cache.reset(); fs.rmSync(directory, { recursive: true, force: true }) }
+  } finally {
+    cache.reset()
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('pruning by referenced hashes and a torn journal tail keep only valid, current observations', () => {
   const directory = fs.mkdtempSync(join(tmpdir(), 'usenet-cache-prune-'))
   const file = join(directory, 'cache.json')
   const cache = new PersistentUsenetCache(file)
-  const record = (hash: string, at: number): UsenetCacheRecord => ({ provider: 'animetosho', fingerprint, hash, checkedAt: at, lastAttemptAt: at, retryAt: 0, lookup: { kind: 'no_match' }, negativeStreak: 2 })
+  const record = (hash: string, at: number): UsenetCacheRecord => ({
+    provider: 'animetosho',
+    fingerprint,
+    hash,
+    checkedAt: at,
+    lastAttemptAt: at,
+    retryAt: 0,
+    lookup: { kind: 'no_match' },
+    negativeStreak: 2,
+  })
   try {
     cache.set(record(HASH, 100), settings)
     cache.set(record(OTHER, 100), settings)
@@ -441,7 +614,10 @@ test('pruning by referenced hashes and a torn journal tail keep only valid, curr
     cache.reset(true)
     assert.equal(cache.get(usenetCacheKey('animetosho', fingerprint, OTHER)), undefined)
     assert.equal(cache.get(usenetCacheKey('animetosho', fingerprint, HASH))?.lookup?.kind, 'no_match')
-  } finally { cache.reset(); fs.rmSync(directory, { recursive: true, force: true }) }
+  } finally {
+    cache.reset()
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('repeated absences lengthen the refresh interval and a match resets it', async t => {
@@ -472,15 +648,28 @@ test('repeated absences lengthen the refresh interval and a match resets it', as
 test('AnimeTosho entries without an NZB are processing only while recent', async t => {
   await fixture(t, async () => {
     const now = Date.now()
-    const entry = (extra: Record<string, unknown>) => Response.json({ id: 123, info_hash: HASH, nzb_url: null, ...extra })
+    const entry = (extra: Record<string, unknown>) =>
+      Response.json({ id: 123, info_hash: HASH, nzb_url: null, ...extra })
     const lookup = async (response: Response) => {
       resetUsenetLookups()
       globalThis.fetch = (async () => response) as typeof fetch
       return (await resolveUsenetHash(config(), HASH)).state
     }
-    assert.equal(await lookup(entry({ status: 'unknown', timestamp: Math.floor(now / 1000) - 400 * 24 * 3600 })), 'no_match', 'an old unmirrored entry is absent')
-    assert.equal(await lookup(entry({ status: 'unknown', timestamp: Math.floor(now / 1000) - 3600 })), 'processing', 'a recent entry is still processing')
-    assert.equal(await lookup(entry({ status: 'processing', timestamp: Math.floor(now / 1000) - 400 * 24 * 3600 })), 'processing', 'an explicit processing status wins')
+    assert.equal(
+      await lookup(entry({ status: 'unknown', timestamp: Math.floor(now / 1000) - 400 * 24 * 3600 })),
+      'no_match',
+      'an old unmirrored entry is absent',
+    )
+    assert.equal(
+      await lookup(entry({ status: 'unknown', timestamp: Math.floor(now / 1000) - 3600 })),
+      'processing',
+      'a recent entry is still processing',
+    )
+    assert.equal(
+      await lookup(entry({ status: 'processing', timestamp: Math.floor(now / 1000) - 400 * 24 * 3600 })),
+      'processing',
+      'an explicit processing status wins',
+    )
     assert.equal(await lookup(entry({})), 'processing', 'an entry without a timestamp stays conservative')
   })
 })
