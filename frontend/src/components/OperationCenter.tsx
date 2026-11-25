@@ -30,6 +30,38 @@ interface Props {
   onReviewBulk?: () => void
 }
 
+export function isScanNoticeVisible(
+  status: Status,
+  scanCompleted: string | null,
+  scanCancelledDismissed = false,
+): boolean {
+  return (
+    status.running ||
+    Boolean(status.error) ||
+    (status.cancelled && !scanCancelledDismissed) ||
+    Boolean(scanCompleted) ||
+    status.webhook_scan.queued
+  )
+}
+
+export function bulkOperationTitle(bulk: BulkOperationState): string {
+  const action = bulk.action === 'start' ? 'Bulk downloads' : 'Bulk cancellation'
+  const phase =
+    bulk.phase === 'running'
+      ? 'In progress'
+      : bulk.phase === 'success'
+        ? 'Complete'
+        : bulk.phase === 'warning'
+          ? 'Completed with issues'
+          : 'Failed'
+  return `${action} · ${phase}`
+}
+
+export function bulkOperationSummary(bulk: BulkOperationState): string {
+  return bulk.phase === 'error' ? 'Review the error details before retrying.' : bulk.message
+}
+
+/** Mobile operations banner (<= 900px); on desktop all operation notices render in SidebarStatus. */
 export default function OperationCenter({
   status,
   scanCompleted,
@@ -43,12 +75,7 @@ export default function OperationCenter({
   onDismissScan,
   onReviewBulk,
 }: Props) {
-  const scanVisible =
-    status.running ||
-    Boolean(status.error) ||
-    (status.cancelled && !scanCancelledDismissed) ||
-    Boolean(scanCompleted) ||
-    status.webhook_scan.queued
+  const scanVisible = isScanNoticeVisible(status, scanCompleted, scanCancelledDismissed)
   const usenet = status.usenet_prefetch
   if (!scanVisible && !bulk && !usenet?.running) return null
   const progress = status.total ? Math.min(100, Math.round((status.progress / status.total) * 100)) : 0
@@ -56,10 +83,7 @@ export default function OperationCenter({
 
   return (
     <section
-      className={cx(
-        'operation-center sticky top-0 z-40 mb-5 divide-y divide-line rounded-card border border-line bg-canvas-soft px-4',
-        !bulk && 'hidden max-[900px]:block',
-      )}
+      className="operation-center sticky top-0 z-40 mb-5 hidden divide-y divide-line rounded-card border border-line bg-canvas-soft px-4 max-[900px]:block"
       aria-label="Application operations"
     >
       {scanVisible && (
@@ -192,7 +216,7 @@ export default function OperationCenter({
       )}
 
       {usenet?.running && (
-        <div className="hidden py-3 max-[900px]:block" role="status">
+        <div className="py-3" role="status">
           <div className="flex items-center gap-2">
             <span
               className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-sky/30 border-t-sky"
@@ -237,18 +261,9 @@ export default function OperationCenter({
               )}
             </span>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-extrabold wrap-anywhere">
-                {bulk.action === 'start' ? 'Bulk downloads' : 'Bulk cancellation'} ·{' '}
-                {bulk.phase === 'running'
-                  ? 'In progress'
-                  : bulk.phase === 'success'
-                    ? 'Complete'
-                    : bulk.phase === 'warning'
-                      ? 'Completed with issues'
-                      : 'Failed'}
-              </div>
+              <div className="text-sm font-extrabold wrap-anywhere">{bulkOperationTitle(bulk)}</div>
               <div className="mt-1 whitespace-pre-wrap text-xs text-muted wrap-anywhere">
-                {bulk.phase === 'error' ? 'Review the error details before retrying.' : bulk.message}
+                {bulkOperationSummary(bulk)}
               </div>
             </div>
             {bulk.total > 0 && (
