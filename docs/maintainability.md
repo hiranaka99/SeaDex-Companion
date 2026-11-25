@@ -80,6 +80,8 @@ Configuration settings and their AES-GCM encrypted credentials share one atomic 
 
 `owned_downloads.json` contains the versioned protocol-neutral record ledger and its release associations. Legacy ownership arrays, versioned torrent dictionaries, and separate `download_records.json` details are read together during migration. Ownership, scope, native-ID bindings, and associations are committed before publishing in-memory state. Failed writes leave the prior ledger intact.
 
+`loadLastResults` keeps the parsed and normalized results file until its inode, modification time, or size changes, and saving or clearing results drops it at once. Like the scan state's results, the value it returns is shared, so readers must not modify it. A running scan normalizes each title's seasons once and publishes the growing snapshot with `setNormalizedResults`. Progress reads of up to 100 torrents ask qBittorrent for those hashes only.
+
 Job updates also write before publishing in-memory state. Readers receive copies, and no credentials are stored with jobs. Unknown acceptance retains duplicate protection. A fresh complete client read can establish presence or absence; malformed, failed, or endpoint-mismatched reads cannot. Removal of a confirmed missing acquisition changes only tracking and preserves files.
 
 # Verification

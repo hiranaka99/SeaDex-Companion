@@ -13,11 +13,13 @@ import {
   ENCRYPTED_SECRETS_FILE,
   HISTORY_FILE,
   LOG_FILE,
+  RELEASE_CHANGES_FILE,
   RESULTS_FILE,
   USER_RULES_FILE,
 } from '../server/paths.js'
 import { DEFAULT_CONFIG, loadConfig } from '../server/config.js'
-import { loadCache, loadLastResults } from '../server/results.js'
+import { loadCache, loadLastResults, saveLastResults } from '../server/results.js'
+import { resultItem } from './support/results.js'
 import { loadScanHistory } from '../server/history.js'
 import { loadUserRules } from '../server/user-rules.js'
 import { qbGetTorrents } from '../server/qbittorrent.js'
@@ -407,6 +409,32 @@ test('persisted collections tolerate non-object JSON roots and invalid array ent
       assert.equal(loadLastResults()?.last_run, null)
     },
   )
+})
+
+test('saved results are parsed once and read again whenever the results file changes', async () => {
+  await preserveFiles([RESULTS_FILE, RELEASE_CHANGES_FILE], () => {
+    writeFileSync(RESULTS_FILE, JSON.stringify({ results: [{ key: 'first' }], last_run: '2026-01-01T00:00:00Z' }))
+    const first = loadLastResults()
+    assert.deepEqual(
+      first?.results.map(result => result.key),
+      ['first'],
+    )
+    assert.equal(loadLastResults(), first, 'Status polls reuse an unchanged file instead of parsing it again')
+    saveLastResults([resultItem({ key: 'saved' })], '2026-01-02T00:00:00Z')
+    assert.deepEqual(
+      loadLastResults()?.results.map(result => result.key),
+      ['saved'],
+    )
+    assert.equal(loadLastResults()?.last_run, '2026-01-02T00:00:00Z')
+    writeFileSync(RESULTS_FILE, JSON.stringify({ results: [{ key: 'edited' }, { key: 'outside' }], last_run: null }))
+    assert.deepEqual(
+      loadLastResults()?.results.map(result => result.key),
+      ['edited', 'outside'],
+      'A file replaced outside the app is read again',
+    )
+    rmSync(RESULTS_FILE)
+    assert.equal(loadLastResults(), null)
+  })
 })
 
 test('qBittorrent connection changes invalidate cached torrents and credentials', async () => {
