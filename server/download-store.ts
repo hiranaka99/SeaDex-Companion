@@ -1,4 +1,4 @@
-import { normalizeInfoHash, rowKey } from '../shared/ids.js'
+import { FILES_SOURCE_PATTERN, normalizeInfoHash, normalizeSourceId, rowKey } from '../shared/ids.js'
 import { isRecord } from '../shared/guards.js'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -6,7 +6,7 @@ import { DATA_DIR, DOWNLOAD_RECORDS_FILE, OWNED_TORRENTS_FILE } from './paths.js
 import { readJson, writeJsonAtomic } from './persistence.js'
 import { log } from './logging.js'
 import type { DownloadClient, DownloadPhase, DownloadProtocol, ImportState } from '../shared/download-contracts.js'
-import type { UsenetProvider } from '../shared/usenet-contracts.js'
+import type { UsenetSource } from '../shared/usenet-contracts.js'
 
 const OWNED_DOWNLOADS_FILE = join(DATA_DIR, 'owned_downloads.json')
 
@@ -35,10 +35,12 @@ export interface OwnedDownloadRecord {
   native_id: string
   state: 'accepted' | 'acceptance_unknown'
   source_hash: string
+  /** The `files:` identity of the private-tracker release a torrent was found for, which has no hash of its own. */
+  source_alias?: string
   category: string
   /** Effective torrent file scope. Undefined means the whole torrent. */
   scope?: string[]
-  provider?: UsenetProvider
+  provider?: UsenetSource
   entry_id?: string
   nzb_name?: string
   added_at: string
@@ -127,7 +129,10 @@ function decodeRecord(value: unknown): OwnedDownloadRecord | null {
   if (raw.protocol !== 'torrent' && raw.protocol !== 'usenet') return null
   if (raw.client !== 'qbittorrent' && raw.client !== 'sabnzbd') return null
   if (raw.state !== 'accepted' && raw.state !== 'acceptance_unknown') return null
-  const sourceHash = normalizeInfoHash(raw.source_hash)
+  // A torrent is always held under its real info hash; only a Usenet copy of a private-tracker
+  // release is identified by its file list.
+  const sourceHash =
+    raw.protocol === 'torrent' ? normalizeInfoHash(raw.source_hash) : normalizeSourceId(raw.source_hash)
   if (!sourceHash) return null
   const nativeId = typeof raw.native_id === 'string' ? raw.native_id.trim() : ''
   if (raw.state === 'accepted' && !nativeId) return null
@@ -140,11 +145,16 @@ function decodeRecord(value: unknown): OwnedDownloadRecord | null {
     native_id: raw.protocol === 'torrent' ? normalizeInfoHash(nativeId) || sourceHash : nativeId,
     state: raw.state,
     source_hash: sourceHash,
+    ...(raw.protocol === 'torrent' && FILES_SOURCE_PATTERN.test(String(raw.source_alias))
+      ? { source_alias: String(raw.source_alias) }
+      : {}),
     category: safeText(raw.category, 80),
     ...(Array.isArray(raw.scope)
       ? { scope: raw.scope.filter((path): path is string => typeof path === 'string' && Boolean(path)) }
       : {}),
-    ...(raw.provider === 'animetosho' || raw.provider === 'amenzb' ? { provider: raw.provider } : {}),
+    ...(raw.provider === 'animetosho' || raw.provider === 'amenzb' || raw.provider === 'prowlarr'
+      ? { provider: raw.provider }
+      : {}),
     ...(typeof raw.entry_id === 'string' && raw.entry_id ? { entry_id: raw.entry_id.slice(0, 80) } : {}),
     ...(typeof raw.nzb_name === 'string' && raw.nzb_name ? { nzb_name: safeText(raw.nzb_name, 200) } : {}),
     added_at: addedAt,
@@ -425,9 +435,10 @@ export interface NewDownloadRecord {
   native_id?: string
   state: OwnedDownloadRecord['state']
   source_hash: string
+  source_alias?: string
   category: string
   scope?: string[]
-  provider?: UsenetProvider
+  provider?: UsenetSource
   entry_id?: string
   nzb_name?: string
   card?: CardSnapshot
@@ -438,7 +449,8 @@ export interface NewDownloadRecord {
 
 /** Creates the durable record. Torrent records reuse `t:<hash>`; Usenet gets `u:<hash>:<uuid>`. */
 export function addDownloadRecord(input: NewDownloadRecord): OwnedDownloadRecord {
-  const sourceHash = normalizeInfoHash(input.source_hash)
+  const sourceHash =
+    input.protocol === 'torrent' ? normalizeInfoHash(input.source_hash) : normalizeSourceId(input.source_hash)
   if (!sourceHash) throw new Error('Invalid source hash')
   const file = structuredClone(current())
   const id = input.protocol === 'torrent' ? `t:${sourceHash}` : `u:${sourceHash.slice(0, 12)}:${randomUUID()}`
@@ -451,6 +463,9 @@ export function addDownloadRecord(input: NewDownloadRecord): OwnedDownloadRecord
     native_id: input.protocol === 'torrent' ? sourceHash : input.native_id || '',
     state: input.state,
     source_hash: sourceHash,
+    ...(input.protocol === 'torrent' && input.source_alias && FILES_SOURCE_PATTERN.test(input.source_alias)
+      ? { source_alias: input.source_alias }
+      : {}),
     category: input.category || '',
     ...(input.scope?.length ? { scope: [...new Set(input.scope)] } : {}),
     ...(input.provider ? { provider: input.provider } : {}),

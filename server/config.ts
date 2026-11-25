@@ -58,6 +58,9 @@ export const DEFAULT_CONFIG: Config = {
   amenzb_enabled: false,
   amenzb_url: 'https://amenzb.moe',
   amenzb_key: '',
+  prowlarr_enabled: false,
+  prowlarr_url: '',
+  prowlarr_key: '',
   webhook: '',
   notify_enabled: true,
   notify_import_problems: true,
@@ -278,12 +281,14 @@ export function applyConfigUpdate(config: Config, input: unknown): Config {
   if ('sabnzbd_url' in data) next.sabnzbd_url = serviceBaseUrl(data.sabnzbd_url, 'sabnzbd_url')
   if ('animetosho_url' in data) next.animetosho_url = serviceBaseUrl(data.animetosho_url, 'animetosho_url')
   if ('amenzb_url' in data) next.amenzb_url = serviceBaseUrl(data.amenzb_url, 'amenzb_url')
+  if ('prowlarr_url' in data) next.prowlarr_url = serviceBaseUrl(data.prowlarr_url, 'prowlarr_url')
   for (const key of [
     'notify_enabled',
     'notify_import_problems',
     'unhide_on_new_best',
     'animetosho_enabled',
     'amenzb_enabled',
+    'prowlarr_enabled',
     'verify_release_files',
     'arr_tags_enabled',
   ] as const) {
@@ -336,6 +341,7 @@ export function integrationConfig(config: Config, service: string, input: unknow
     sabnzbd: ['sabnzbd_url', 'sabnzbd_key', 'sabnzbd_sonarr_category', 'sabnzbd_radarr_category'],
     animetosho: ['animetosho_enabled', 'animetosho_url'],
     amenzb: ['amenzb_enabled', 'amenzb_url', 'amenzb_key'],
+    prowlarr: ['prowlarr_enabled', 'prowlarr_url', 'prowlarr_key'],
   }
   const data = isRecord(input) ? (input as Record<string, unknown>) : {}
   // An additional instance is tested from the submitted draft list; nothing else in the draft applies.

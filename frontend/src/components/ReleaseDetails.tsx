@@ -1,12 +1,13 @@
 import { normalizeTorrentPath as normalizeFile, releaseFilesMatch, releaseOwned } from '../../../shared/download-plan'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Config, Release, ResultItem } from '../types'
-import { formatBytes, formatEta, providerNames, seasonLabel, sizeDelta } from '../utils'
+import { findsPrivateTorrent, formatBytes, formatEta, providerNames, seasonLabel, sizeDelta } from '../utils'
 import { buttonBase, cx, downloadTextTone } from '../styles'
 import Icon from './Icons'
 import { DownloadActions, ImportStatusLine, clientName, phaseLabel, type DownloadEntry } from './DownloadsPanel'
 import { estimateDownloads } from '../../../shared/download-estimate'
 import type { DownloadPhase, DownloadProtocol, UsenetAvailabilityResult } from '../api'
+import type { UsenetCandidate } from '../../../shared/usenet-contracts'
 import { DiskLine } from './PlanReview'
 import type { DetailsDownloadState, LowSpaceHold } from '../useCardDownloads'
 import { episodeRangeLabel, releaseIdentity } from '../../../shared/releases'
@@ -30,7 +31,11 @@ interface Props {
   sabnzbdConfigured: boolean
   onProtocol: (protocol: DownloadProtocol) => void
   onRefreshAvailability: () => void
+  /** Searches Prowlarr's Usenet indexers for this release now. */
+  onSearchProwlarr: () => void
   onDownload: () => void
+  /** Sends an unproven NZB the user chose from a Prowlarr search for this private-tracker release. */
+  onDownloadNzb: (nzb: string) => void
   /** A send that stopped because a client reported too little free space, or no free space at all. */
   lowSpace: Pick<LowSpaceHold, 'reason' | 'checks'> | null
   onSendAnyway: () => void
@@ -74,6 +79,9 @@ interface UsenetInfo {
 function describeUsenet(
   row: UsenetAvailabilityResult | undefined,
   sabnzbdConfigured: boolean | undefined,
+  privateRelease = false,
+  /** Prowlarr is set up. */
+  prowlarr = false,
 ): UsenetInfo | null {
   if (!row) return null
   const hash = row.hashes[0]
@@ -83,6 +91,43 @@ function describeUsenet(
       label: 'Usenet needs SABnzbd',
       detail: 'Set up SABnzbd in Settings to download over Usenet.',
     }
+  if (row.search === 'prowlarr') {
+    const reason = row.hashes.find(item => item.state === row.aggregate && item.error)?.error
+    if (row.aggregate === 'available') {
+      const size = hash?.total_bytes ? ` · ~${formatBytes(hash.total_bytes).replace(' ', '\u00a0')}` : ''
+      return {
+        usable: true,
+        label: `Usenet copy found through Prowlarr${size}`,
+        detail:
+          'The NZB names every file of this release with its exact size. It is the whole upload; files beyond the selected episodes will also download.',
+      }
+    }
+    if (row.aggregate === 'not_checked')
+      return {
+        usable: false,
+        label: row.refreshing ? 'Searching Prowlarr…' : 'Usenet: not searched',
+        detail:
+          'Private-tracker releases are searched only when you ask. Each NZB checked against the release’s files counts toward the indexer’s download limit.',
+      }
+    if (row.aggregate === 'no_match')
+      return {
+        usable: false,
+        label: 'No matching copy on Usenet',
+        detail: reason || 'No NZB found through Prowlarr has exactly this release’s files.',
+      }
+    if (row.aggregate === 'lookup_failed')
+      return {
+        usable: false,
+        label: 'Prowlarr search failed',
+        detail: `${reason || 'Prowlarr could not be reached'}. Search again in a moment.`,
+      }
+    if (row.aggregate === 'not_configured')
+      return {
+        usable: false,
+        label: 'Usenet search unavailable',
+        detail: reason || 'Add a Usenet indexer to Prowlarr to search for private-tracker releases.',
+      }
+  }
   if (row.aggregate === 'available') {
     const foundOn = providerNames(row.hashes.map(item => item.provider))
     const size = hash?.total_bytes ? ` · ~${formatBytes(hash.total_bytes).replace(' ', '\u00a0')}` : ''
@@ -107,12 +152,22 @@ function describeUsenet(
       label: 'Usenet source uncertain',
       detail: 'Providers returned partial results for this release.',
     }
-  if (row.aggregate === 'no_match')
+  if (row.aggregate === 'no_match') {
+    // Name what was actually asked: the hash providers, never Prowlarr, for a public release.
+    const checked = providerNames(row.hashes.flatMap(item => item.providers_checked || []))
+    const who = checked.length ? checked.join(' and ') : 'The enabled hash indexers'
     return {
       usable: false,
-      label: 'Not found on Usenet indexers',
-      detail: 'None of the enabled Usenet indexers has this release.',
+      label: checked.length ? `Not found on ${checked.join(' or ')}` : 'Not found on Usenet indexers',
+      detail: `${who} ${checked.length === 1 ? 'has' : 'have'} no NZB for this release's torrent hash.${
+        row.fallback === 'prowlarr'
+          ? ' Search Prowlarr to look on your other Usenet indexers.'
+          : prowlarr
+            ? ' SeaDex lists no file sizes for it, so a copy found through Prowlarr could not be checked.'
+            : ''
+      }`,
     }
+  }
   if (row.aggregate === 'lookup_failed') {
     const providers = providerNames(hash?.providers_failed || [])
     return {
@@ -125,7 +180,9 @@ function describeUsenet(
     return {
       usable: false,
       label: 'Usenet unavailable',
-      detail: 'This release has no hash the enabled Usenet sources can search.',
+      detail: privateRelease
+        ? 'Private-tracker releases have no public hash. Set up Prowlarr with Usenet indexers and include private trackers in Release preferences to search for them.'
+        : 'This release has no hash the enabled Usenet sources can search.',
     }
   if (row.aggregate === 'not_checked')
     return {
@@ -154,7 +211,9 @@ export default function ReleaseDetails({
   sabnzbdConfigured,
   onProtocol,
   onRefreshAvailability,
+  onSearchProwlarr,
   onDownload,
+  onDownloadNzb,
   lowSpace,
   onSendAnyway,
   onCancelLowSpace,
@@ -177,11 +236,28 @@ export default function ReleaseDetails({
   const usenetEnabled = mode !== 'torrent_only'
   const sabReady = sabnzbdConfigured || Boolean(config?.sabnzbd_url && config?.sabnzbd_key_configured)
   const currentAvailability = availability?.identity === releaseIdentity(rel) ? availability : undefined
-  const usenet = usenetEnabled ? describeUsenet(currentAvailability, sabReady) : null
+  const usenet = usenetEnabled
+    ? describeUsenet(
+        currentAvailability,
+        sabReady,
+        Boolean(rel.private_sources?.length),
+        Boolean(config?.prowlarr_enabled && config.prowlarr_url && config.prowlarr_key_configured),
+      )
+    : null
+  /** The row shows a Prowlarr result (a private-tracker release, or a public one the hash indexers lack). */
+  const privateSearch = currentAvailability?.search === 'prowlarr'
+  const prowlarrSearchable =
+    (privateSearch && currentAvailability?.aggregate !== 'not_configured') ||
+    currentAvailability?.fallback === 'prowlarr'
+  const prowlarrSearched =
+    privateSearch &&
+    Boolean(currentAvailability?.hashes.some(item => item.provider === 'prowlarr' && item.state !== 'not_checked'))
   const availabilityRefreshing = availabilityLoading || currentAvailability?.refreshing === true
   const refreshError = currentAvailability ? availabilityErrors([currentAvailability]) : null
   const chosen: DownloadProtocol = mode === 'torrent_only' ? 'torrent' : mode === 'usenet_only' ? 'usenet' : protocol
-  const torrentUsable = rel.torrent_available
+  /** A private-tracker torrent the server finds through Prowlarr and checks file by file before sending. */
+  const viaProwlarr = findsPrivateTorrent(rel, config)
+  const torrentUsable = rel.torrent_available || viaProwlarr
   const usenetUsable = usenet?.usable === true
   const protocolUsable = chosen === 'torrent' ? torrentUsable : usenetUsable
   const disabled = inClient || complete || !protocolUsable
@@ -190,11 +266,26 @@ export default function ReleaseDetails({
 
   const fileScope = useMemo(() => {
     const estimate = estimateDownloads([{ release: rel, category: '' }])
-    const exact = estimate.torrents.length > 0 && estimate.unknown_torrents === 0 && estimate.approximate_torrents === 0
+    const privateFiles = rel.torrent_available ? [] : (rel.private_sources || []).flatMap(source => source.files)
     const selected = [...new Map((rel.selected_files || []).map(name => [normalizeFile(name), name])).values()]
+    // SeaDex lists a private torrent's files with exact sizes, even without its hash.
+    const privateBytes = privateFiles.length
+      ? (selected.length
+          ? privateFiles.filter(file => selected.some(name => normalizeFile(name) === normalizeFile(file.name)))
+          : privateFiles
+        ).reduce((sum, file) => sum + file.length, 0)
+      : null
+    const exact =
+      privateBytes !== null ||
+      (estimate.torrents.length > 0 && estimate.unknown_torrents === 0 && estimate.approximate_torrents === 0)
     const catalogs = new Map<string, { name: string; sizes: number[] }>()
-    for (const catalog of rel.torrent_files || []) {
-      if (!rel.info_hashes.some(hash => hash.toLowerCase() === catalog.hash.toLowerCase())) continue
+    const sources = [
+      ...(rel.torrent_files || []).filter(catalog =>
+        rel.info_hashes.some(hash => hash.toLowerCase() === catalog.hash.toLowerCase()),
+      ),
+      ...(privateFiles.length ? [{ hash: '', files: privateFiles }] : []),
+    ]
+    for (const catalog of sources) {
       for (const file of catalog.files) {
         const key = normalizeFile(file.name)
         const current = catalogs.get(key) || { name: file.name, sizes: [] }
@@ -206,7 +297,7 @@ export default function ReleaseDetails({
     return {
       selected: selected.length > 0,
       exact,
-      bytes: estimate.new_bytes,
+      bytes: privateBytes ?? estimate.new_bytes,
       approximateBytes:
         !selected.length && estimate.unknown_torrents === 0 && estimate.torrents.length > 0 ? estimate.new_bytes : null,
       files: names.map(name => {
@@ -230,6 +321,20 @@ export default function ReleaseDetails({
   )
   /** Re-sending an owned release waits for a second click, so a duplicate download is never one stray tap away. */
   const [confirmingRedownload, setConfirmingRedownload] = useState(false)
+  /** An unproven NZB is only sent after the person confirms it is the release. */
+  const [confirmingNzb, setConfirmingNzb] = useState<UsenetCandidate | null>(null)
+  const nzbCandidates =
+    privateSearch && currentAvailability?.aggregate === 'no_match'
+      ? currentAvailability.hashes.flatMap(item => item.candidates || [])
+      : []
+  const nzbConfirmRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (confirmingNzb) nzbConfirmRef.current?.focus()
+  }, [confirmingNzb])
+  useEffect(() => {
+    if (confirmingNzb && !nzbCandidates.some(candidate => candidate.entry_id === confirmingNzb.entry_id))
+      setConfirmingNzb(null)
+  })
   const rowRef = useRef<HTMLElement>(null)
   const downloadRef = useRef<HTMLButtonElement>(null)
   const confirmRef = useRef<HTMLButtonElement>(null)
@@ -348,7 +453,9 @@ export default function ReleaseDetails({
           : usenet?.detail || 'Usenet is not available for this release'
         : rel.torrent_available
           ? `Send this release to qBittorrent (category: ${category})`
-          : 'No magnet available (private tracker)'
+          : viaProwlarr
+            ? `Find this release on ${rel.tracker.trim() || 'its tracker'} through Prowlarr, check its files, and send it to qBittorrent (category: ${category})`
+            : 'No magnet available (private tracker)'
   const buttonLabel = complete
     ? 'Download completed'
     : inClient
@@ -390,7 +497,7 @@ export default function ReleaseDetails({
   const recommended =
     !owned && !rel.excluded_by && (rel.target === true || (isBest && !r.releases.some(other => other.target)))
   // While an inline alert asks for a decision, the button it holds back steps aside so the alert leads.
-  const held = lowSpace !== null || confirmingRedownload
+  const held = lowSpace !== null || confirmingRedownload || confirmingNzb !== null
   const buttonTone = complete
     ? 'border-good/40 bg-good/12 text-good'
     : disabled || held
@@ -403,12 +510,13 @@ export default function ReleaseDetails({
   const statusCopy = complete ? `Download completed in ${clientName(transfers[0].client)}` : ''
   const usenetCategory = r.arr === 'Sonarr' ? config?.sabnzbd_sonarr_category : config?.sabnzbd_radarr_category
   const destination = chosen === 'usenet' ? 'SABnzbd' : 'qBittorrent'
-  const canSend = !inClient && !complete && protocolUsable && (chosen === 'usenet' || rel.torrent_available)
+  const canSend = !inClient && !complete && protocolUsable && (chosen === 'usenet' || torrentUsable)
   // What the send covers and where it goes, under the size, so the send is decided from one place.
   const sendFacts = canSend
     ? [
         chosen === 'usenet' ? 'Whole Usenet source' : fileScope.selected ? fileCount : 'Whole release',
         chosen === 'torrent' ? episodes : null,
+        chosen === 'torrent' && viaProwlarr ? 'found through Prowlarr' : null,
         `to ${destination}`,
         'free space checked on send',
       ]
@@ -425,7 +533,7 @@ export default function ReleaseDetails({
       : sizeLabel.replace(/^s/, 'S')
   const libraryChange = !owned && !verified && rel.size > 0 && localSize > 0 ? delta || 'No change' : ''
   /** A release SeaDex lists without a public magnet: it can only be fetched by hand from its tracker. */
-  const manualOnly = chosen === 'torrent' && !rel.torrent_available && !inClient && !complete && !usenetUsable
+  const manualOnly = chosen === 'torrent' && !torrentUsable && !inClient && !complete && !usenetUsable
   const tracker = rel.tracker.trim()
   /** No public magnet means the release sits on a private tracker. */
   const privateTracker = !rel.torrent_available
@@ -569,16 +677,30 @@ export default function ReleaseDetails({
           {usenet && !usenet.usable && currentAvailability?.aggregate !== 'not_checked' && (
             <span className="min-w-0 basis-44 flex-1 text-muted">{usenet.detail}</span>
           )}
-          <button
-            type="button"
-            className="touch-target inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 font-semibold text-accent-bright hover:bg-accent/10"
-            onClick={onRefreshAvailability}
-            title="Re-check the Usenet sources for this season"
-            aria-label={`Re-check Usenet sources · ${seasonLabel(r)}`}
-          >
-            <Icon name="refresh" size={13} />
-            Re-check
-          </button>
+          {rel.torrent_available && (
+            <button
+              type="button"
+              className="touch-target inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 font-semibold text-accent-bright hover:bg-accent/10"
+              onClick={onRefreshAvailability}
+              title="Re-check AnimeTosho and AmeNZB for this season"
+              aria-label={`Re-check Usenet sources · ${seasonLabel(r)}`}
+            >
+              <Icon name="refresh" size={13} />
+              Re-check
+            </button>
+          )}
+          {prowlarrSearchable && (
+            <button
+              type="button"
+              className="touch-target inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 font-semibold text-accent-bright hover:bg-accent/10"
+              onClick={onSearchProwlarr}
+              title="Search the Usenet indexers in Prowlarr for this release. Each NZB checked counts toward the indexer's download limit."
+              aria-label={`${prowlarrSearched ? 'Search Prowlarr again' : 'Search Prowlarr'} · ${seasonLabel(r)} · ${rel.releaseGroup}`}
+            >
+              <Icon name="search" size={13} />
+              {prowlarrSearched ? 'Search again' : 'Search Prowlarr'}
+            </button>
+          )}
           {currentAvailability?.checked_at && (
             <span className="basis-full text-muted">
               {currentAvailability.stale ? 'Last-known cached result' : 'Cached result'} · Last checked{' '}
@@ -601,6 +723,73 @@ export default function ReleaseDetails({
                 : 'Re-check the sources to try again.'}
             </span>
           )}
+          {nzbCandidates.length > 0 && (
+            <div className="release-nzb-candidates basis-full">
+              <p className="m-0 text-muted">
+                Found but not proven. Check {nzbCandidates.length === 1 ? 'it' : 'them'} on the indexer; if one is this
+                release, you can still download it.
+              </p>
+              <ul className="mt-1.5 mb-0 list-none divide-y divide-line rounded-lg border border-line p-0">
+                {nzbCandidates.map(candidate => (
+                  <li
+                    key={candidate.entry_id}
+                    className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-3 py-2"
+                  >
+                    <div className="min-w-0 flex-1 basis-60">
+                      {candidate.info_url ? (
+                        <a
+                          className="font-semibold text-accent-bright wrap-anywhere"
+                          href={candidate.info_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {candidate.title || 'Untitled post'}
+                          <span className="sr-only"> on {candidate.indexer || 'the indexer'} (new tab)</span>
+                        </a>
+                      ) : (
+                        <span className="font-semibold text-ink wrap-anywhere">
+                          {candidate.title || 'Untitled post'}
+                        </span>
+                      )}
+                      <span className="mt-0.5 block text-muted">
+                        {[
+                          candidate.indexer,
+                          candidate.size ? `~${formatBytes(candidate.size)}` : null,
+                          candidate.unavailable
+                            ? `could not be checked: ${candidate.unavailable}`
+                            : !candidate.sizes_known
+                              ? `${candidate.names_matched} of ${candidate.files_expected} episode file names match; the post lists no file sizes to compare`
+                              : `${candidate.files_matched} of ${candidate.files_expected} episode file${candidate.files_expected === 1 ? '' : 's'} match by name and size`,
+                          candidate.info_url ? null : 'no indexer page available',
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </span>
+                    </div>
+                    {!candidate.unavailable && (
+                      <button
+                        type="button"
+                        className={cx(
+                          buttonBase,
+                          'min-h-9 shrink-0 border-line-strong bg-panel px-2.5 text-xs text-ink enabled:hover:bg-panel-raised',
+                        )}
+                        disabled={!sabReady || inClient || complete || sendLocked || lowSpace !== null}
+                        title={sabReady ? 'Send this NZB to SABnzbd after confirming it' : 'Set up SABnzbd first'}
+                        aria-label={`Download this NZB · ${candidate.title}`}
+                        onClick={() => {
+                          setConfirmingRedownload(false)
+                          setConfirmingNzb(candidate)
+                        }}
+                      >
+                        <Icon name="download" size={14} />
+                        Download this NZB
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
@@ -616,7 +805,13 @@ export default function ReleaseDetails({
                 role="radio"
                 aria-checked={chosen === 'torrent'}
                 disabled={!torrentUsable}
-                title={torrentUsable ? 'Download with qBittorrent' : 'No magnet available (private tracker)'}
+                title={
+                  rel.torrent_available
+                    ? 'Download with qBittorrent'
+                    : viaProwlarr
+                      ? 'Find on the private tracker through Prowlarr and download with qBittorrent'
+                      : 'No magnet available (private tracker)'
+                }
                 onClick={() => onProtocol('torrent')}
                 className={cx(
                   'cursor-pointer rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors',
@@ -682,7 +877,7 @@ export default function ReleaseDetails({
                 </a>
               )}
             </div>
-          ) : chosen === 'torrent' && !rel.torrent_available ? (
+          ) : chosen === 'torrent' && !torrentUsable ? (
             <p className="m-0 text-sm font-semibold text-ink wrap-anywhere">
               Usenet only — individual download unavailable
             </p>
@@ -711,7 +906,7 @@ export default function ReleaseDetails({
               {usenetCategory ? `category: ${usenetCategory}` : 'the configured Usenet category will be used'}.
             </p>
           )}
-          {chosen === 'torrent' && !inClient && !complete && rel.torrent_available && !fileScope.exact && (
+          {chosen === 'torrent' && !inClient && !complete && torrentUsable && !fileScope.exact && (
             <p className="mt-1 mb-0 text-xs text-muted">
               {fileScope.selected
                 ? `Selected-file size is unavailable.${rel.size > 0 ? ` The full release is ${formatBytes(rel.size)}.` : ''}`
@@ -748,7 +943,7 @@ export default function ReleaseDetails({
                   'release-download-button min-h-11 min-w-0 max-w-full justify-center px-3 text-xs max-[600px]:w-full',
                   buttonTone,
                 )}
-                disabled={disabled || sendLocked || lowSpace !== null || confirmingRedownload}
+                disabled={disabled || sendLocked || lowSpace !== null || confirmingRedownload || confirmingNzb !== null}
                 aria-busy={sending}
                 title={buttonTitle}
                 // The accessible name starts with the visible label so voice control can target it.
@@ -812,6 +1007,50 @@ export default function ReleaseDetails({
               )}
               ref={lowSpaceRef}
               onClick={holdFocus(onCancelLowSpace)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {confirmingNzb && (
+        <div className="release-alert release-alert-warn mt-3" role="alert">
+          <p className="m-0 flex items-start gap-1.5 text-sm font-semibold text-warn">
+            <Icon name="alert" size={15} className="mt-0.5 shrink-0" />
+            <span>This NZB was not proven to be this release</span>
+          </p>
+          <p className="mt-1 mb-0 text-xs text-ink wrap-anywhere">
+            {confirmingNzb.sizes_known
+              ? `Only ${confirmingNzb.files_matched} of ${confirmingNzb.files_expected} episode files match what SeaDex lists for ${rel.releaseGroup}.`
+              : `The post does not list file sizes, so only names could be compared: ${confirmingNzb.names_matched} of ${confirmingNzb.files_expected} episode file names match what SeaDex lists.`}{' '}
+            Download it only if you checked it on {confirmingNzb.indexer || 'the indexer'}. SABnzbd downloads the whole
+            post{usenetCategory ? ` to the category ${usenetCategory}` : ''}.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              ref={nzbConfirmRef}
+              type="button"
+              className={cx(
+                buttonBase,
+                'min-h-11 border-warn/45 bg-warn/12 px-3 text-xs text-warn enabled:hover:bg-warn/20',
+              )}
+              disabled={sendLocked || inClient || complete}
+              onClick={holdFocus(() => {
+                const entry = confirmingNzb.entry_id
+                setConfirmingNzb(null)
+                onDownloadNzb(entry)
+              })}
+            >
+              <Icon name="download" size={15} />
+              Download anyway
+            </button>
+            <button
+              type="button"
+              className={cx(
+                buttonBase,
+                'min-h-11 border-transparent bg-transparent px-3 text-xs text-muted enabled:hover:text-ink',
+              )}
+              onClick={holdFocus(() => setConfirmingNzb(null))}
             >
               Cancel
             </button>

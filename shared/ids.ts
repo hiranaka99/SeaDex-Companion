@@ -10,6 +10,19 @@ export function normalizeInfoHash(value: unknown): string | null {
 
 export const isInfoHash = (value: unknown): value is string => normalizeInfoHash(value) !== null
 
+/**
+ * A release SeaDex lists without a public info hash (a private-tracker torrent) is identified by its
+ * file list instead: `files:` plus the SHA-1 of its sorted file names and sizes. It is never a torrent hash.
+ */
+export const FILES_SOURCE_PATTERN = /^files:[0-9a-f]{40}$/
+
+/** A source identity: a v1 info hash, or the file-list identity of a private-tracker release. */
+export function normalizeSourceId(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const lower = value.toLowerCase()
+  return INFO_HASH_PATTERN.test(lower) || FILES_SOURCE_PATTERN.test(lower) ? lower : null
+}
+
 /** Identity of one review row: a result key plus a release index. */
 export const rowKey = (ref: DownloadSelectionRef): string => `${ref.key}\u0000${ref.release}`
 
