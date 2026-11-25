@@ -1,28 +1,43 @@
 import { loadConfig, saveConfig } from './config.js'
 import { log } from './logging.js'
-import type { JsonObject } from './types.js'
+import { cardKey } from '../shared/ids.js'
+import type { ResultItem } from '../shared/contracts.js'
 
-// Match the library's card grouping, including titles without an AniList match.
-function cardKey(result: JsonObject): string {
-  if (result.group_id != null) return String(result.group_id)
-  if (result.anilist_id != null) return String(result.anilist_id)
-  const parts = String(result.key || '').split(':')
-  return `${result.arr}:${parts.length >= 2 ? parts[1] : result.title}`
+function bestReleases(result: ResultItem): string[] {
+  return result.releases
+    .filter(release => release.kind === 'best')
+    .flatMap(release => {
+      const scope = [
+        result.season || 0,
+        release.part || '',
+        release.releaseGroup.trim().toLowerCase(),
+        release.tracker.trim().toLowerCase(),
+      ]
+      const hashes = release.info_hashes.map(hash => hash.toLowerCase()).filter(Boolean)
+      // Ignore selected files, sizes, notes, and other metadata that can change
+      // without a new recommendation. Track each torrent so removals stay hidden.
+      return hashes.length
+        ? hashes.map(hash => JSON.stringify([...scope, hash]))
+        : [JSON.stringify([...scope, release.quality.trim().toLowerCase()])]
+    })
 }
 
-function bestReleases(result: JsonObject): string[] {
-  return (result.releases || []).filter((release: JsonObject) => release.kind === 'best').flatMap((release: JsonObject) => {
-    const scope = [Number(result.season || 0), release.part || '', String(release.releaseGroup || '').trim().toLowerCase(), String(release.tracker || '').trim().toLowerCase()]
-    const hashes = (release.info_hashes || []).map((hash: string) => hash.toLowerCase()).filter(Boolean)
-    // Ignore selected files, sizes, notes, and other metadata that can change
-    // without a new recommendation. Track each torrent so removals stay hidden.
-    return hashes.length
-      ? hashes.map((hash: string) => JSON.stringify([...scope, hash]))
-      : [JSON.stringify([...scope, String(release.quality || '').trim().toLowerCase()])]
-  })
+/** Hides or restores one library card and returns the saved list of hidden card keys. */
+export function setCardHidden(key: string, hidden: boolean): string[] {
+  const config = loadConfig()
+  const keys = new Set(config.hidden)
+  if (hidden) keys.add(key)
+  else keys.delete(key)
+  config.hidden = [...keys].sort()
+  saveConfig(config)
+  return config.hidden
 }
 
-export function unhideNewBestReleases(previous: JsonObject[], current: JsonObject[], dependencies = { loadConfig, saveConfig }): string[] {
+export function unhideNewBestReleases(
+  previous: ResultItem[],
+  current: ResultItem[],
+  dependencies = { loadConfig, saveConfig },
+): string[] {
   // Use the latest settings so a scan cannot overwrite edits made while it ran.
   const config = dependencies.loadConfig()
   if (!config.unhide_on_new_best || !config.hidden.length) return []

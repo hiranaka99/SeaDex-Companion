@@ -3,8 +3,20 @@ import { test } from 'node:test'
 import { setImmediate as nextTurn } from 'node:timers/promises'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { bumpGeneration } from '../server/config-generation.js'
-import { enableUsenetPrefetch, prefetchPlan, prefetchUsenetAvailability, stopUsenetPrefetch, usenetPrefetchProgress } from '../server/usenet-prefetch.js'
-import { resetUsenetLookups, resolveUsenetHash, setUsenetPauseBaseMs, setUsenetProviderMinIntervalMs, usenetAvailability, usenetProviderPauses } from '../server/usenet.js'
+import {
+  enableUsenetPrefetch,
+  prefetchPlan,
+  prefetchUsenetAvailability,
+  stopUsenetPrefetch,
+  usenetPrefetchProgress,
+} from '../server/usenet-prefetch.js'
+import {
+  resetUsenetLookups,
+  resolveUsenetHash,
+  usenetScheduler,
+  usenetAvailability,
+  usenetProviderPauses,
+} from '../server/usenet.js'
 import { retryAfterMs } from '../server/usenet-provider-types.js'
 import type { Release, ResultItem } from '../server/types.js'
 
@@ -23,10 +35,27 @@ function config() {
 
 let hashCounter = 0
 function result(key: string, releases: number): ResultItem {
-  return { key, releases: Array.from({ length: releases }, () => ({ kind: 'best', releaseGroup: 'Group', tracker: 'Nyaa', torrent_available: true, info_hashes: [hexHash(hashCounter++)], size: 100 } as Release)) } as unknown as ResultItem
+  return {
+    key,
+    releases: Array.from(
+      { length: releases },
+      () =>
+        ({
+          kind: 'best',
+          releaseGroup: 'Group',
+          tracker: 'Nyaa',
+          torrent_available: true,
+          info_hashes: [hexHash(hashCounter++)],
+          size: 100,
+        }) as Release,
+    ),
+  } as unknown as ResultItem
 }
 
-interface Probe { starts: string[]; fetches: number }
+interface Probe {
+  starts: string[]
+  fetches: number
+}
 
 function stubFetch(probe: Probe) {
   const original = globalThis.fetch
@@ -39,12 +68,14 @@ function stubFetch(probe: Probe) {
     }
     throw new Error(`unexpected provider request: ${url}`)
   }) as typeof fetch
-  return () => { globalThis.fetch = original }
+  return () => {
+    globalThis.fetch = original
+  }
 }
 
 function isolation(intervalMs: number): () => void {
   resetUsenetLookups()
-  setUsenetProviderMinIntervalMs('animetosho', intervalMs)
+  usenetScheduler.options.minIntervalMs.animetosho = intervalMs
   bumpGeneration()
   return () => resetUsenetLookups()
 }
@@ -66,7 +97,10 @@ function controlledFetch() {
     probe.pending.set(hash, resolve)
     probe.active++
     probe.maximum = Math.max(probe.maximum, probe.active)
-    return promise.finally(() => { probe.pending.delete(hash); probe.active-- })
+    return promise.finally(() => {
+      probe.pending.delete(hash)
+      probe.active--
+    })
   }) as typeof fetch
   return {
     probe,
@@ -75,7 +109,9 @@ function controlledFetch() {
       assert.ok(resolve, `request ${hash} has not started`)
       resolve(new Response('nope', { status: 404 }))
     },
-    restore() { globalThis.fetch = original },
+    restore() {
+      globalThis.fetch = original
+    },
   }
 }
 
@@ -94,9 +130,14 @@ test('ineligible configurations never trigger a prefetch sweep', async () => {
   try {
     // prefetch is not enabled yet in this process, and this config is torrent_only
     prefetchUsenetAvailability({ ...config(), download_mode: 'torrent_only' }, [result('a', 1)], 'test')
-    await assert.rejects(until(() => probe.fetches > 0, 200), /timed out/)
+    await assert.rejects(
+      until(() => probe.fetches > 0, 200),
+      /timed out/,
+    )
     assert.equal(probe.fetches, 0)
-  } finally { restore() }
+  } finally {
+    restore()
+  }
 })
 
 test('provider requests are spaced by the configured minimum interval', async () => {
@@ -115,7 +156,9 @@ test('provider requests are spaced by the configured minimum interval', async ()
     assert.equal(marks.length, 3)
     assert.ok(marks[1] - marks[0] >= 70, `second request started too early: ${marks[1] - marks[0]}ms`)
     assert.ok(marks[2] - marks[1] >= 70, `third request started too early: ${marks[2] - marks[1]}ms`)
-  } finally { globalThis.fetch = original }
+  } finally {
+    globalThis.fetch = original
+  }
 })
 
 test('interactive lookups overtake queued background lookups', async () => {
@@ -129,13 +172,21 @@ test('interactive lookups overtake queued background lookups', async () => {
     const interactive = resolveUsenetHash(config(), hexHash(3), false, false)
     await Promise.all([backgroundFirst, backgroundSecond, interactive])
     assert.deepEqual(probe.starts, [hexHash(1), hexHash(3), hexHash(2)])
-  } finally { restore() }
+  } finally {
+    restore()
+  }
 })
 
 /** Complete every started request until all work settles. */
-async function drain(work: Promise<unknown>[], probe: { pending: Map<string, unknown> }, complete: (hash: string) => void): Promise<void> {
+async function drain(
+  work: Promise<unknown>[],
+  probe: { pending: Map<string, unknown> },
+  complete: (hash: string) => void,
+): Promise<void> {
   let settled = false
-  const all = Promise.all(work).finally(() => { settled = true })
+  const all = Promise.all(work).finally(() => {
+    settled = true
+  })
   for (let round = 0; !settled && round < 100; round++) {
     for (const hash of [...probe.pending.keys()]) complete(hash)
     await nextTurn()
@@ -185,7 +236,10 @@ test('background work held back by the reserved slot waits without spinning time
   try {
     await nextTurn()
     assert.equal(probe.starts.length, 3)
-    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => { timers++; return originalSetTimeout(...args) }) as typeof setTimeout
+    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      timers++
+      return originalSetTimeout(...args)
+    }) as typeof setTimeout
     await new Promise(resolve => originalSetTimeout(resolve, 50))
     globalThis.setTimeout = originalSetTimeout
     assert.equal(timers, 0, `queued background work scheduled ${timers} timers while blocked`)
@@ -226,7 +280,7 @@ test('foreground callers promote a shared queued background lookup before global
 
 test('a rate-limited provider pauses: interactive lookups fail fast and background lookups wait and retry', async () => {
   isolation(0)
-  setUsenetPauseBaseMs(300)
+  usenetScheduler.options.pauseBaseMs = 300
   let rateLimited = true
   const starts: string[] = []
   const original = globalThis.fetch
@@ -253,7 +307,7 @@ test('a rate-limited provider pauses: interactive lookups fail fast and backgrou
     assert.deepEqual(usenetProviderPauses(), [])
   } finally {
     globalThis.fetch = original
-    setUsenetPauseBaseMs(30_000)
+    usenetScheduler.options.pauseBaseMs = 30_000
     resetUsenetLookups()
   }
 })
@@ -269,18 +323,49 @@ test('Retry-After extends a provider pause and is bounded', () => {
 })
 
 test('the sweep checks likely downloads first and skips excluded seasons and parts', () => {
-  const release = (hash: number, extra: Partial<Release> = {}) => ({ kind: 'best', releaseGroup: 'Group', tracker: 'Nyaa', torrent_available: true, info_hashes: [hexHash(hash)], size: 1, ...extra } as Release)
+  const release = (hash: number, extra: Partial<Release> = {}) =>
+    ({
+      kind: 'best',
+      releaseGroup: 'Group',
+      tracker: 'Nyaa',
+      torrent_available: true,
+      info_hashes: [hexHash(hash)],
+      size: 1,
+      ...extra,
+    }) as Release
   const results = [
     { key: 'owned', status: 'best', library_key: 'Sonarr:item1', season: 1, releases: [release(1)] },
-    { key: 'upgrade', status: 'upgrade', library_key: 'Sonarr:item2', season: 1, releases: [release(2, { kind: 'alt' }), release(3)] },
+    {
+      key: 'upgrade',
+      status: 'upgrade',
+      library_key: 'Sonarr:item2',
+      season: 1,
+      releases: [release(2, { kind: 'alt' }), release(3)],
+    },
     { key: 'missing', status: 'missing', library_key: 'Sonarr:item3', season: 1, releases: [release(4)] },
     { key: 'excluded', status: 'missing', library_key: 'Sonarr:item4', season: 2, releases: [release(5)] },
-    { key: 'parts', status: 'partial', library_key: 'Sonarr:item5', season: 1, releases: [release(6, { part: 'Part 1' }), release(7, { part: 'Part 2' })] },
+    {
+      key: 'parts',
+      status: 'partial',
+      library_key: 'Sonarr:item5',
+      season: 1,
+      releases: [release(6, { part: 'Part 1' }), release(7, { part: 'Part 2' })],
+    },
   ] as unknown as ResultItem[]
   const plan = prefetchPlan(results, new Set(['Sonarr:item4:2:*', 'Sonarr:item5:1:Part 2']))
-  assert.deepEqual(plan.map(entry => entry.key), ['missing', 'parts', 'upgrade', 'owned'])
-  assert.deepEqual(plan.find(entry => entry.key === 'upgrade')!.releases.map(entry => entry.info_hashes[0]), [hexHash(3), hexHash(2)], 'best releases precede alternatives')
-  assert.deepEqual(plan.find(entry => entry.key === 'parts')!.releases.map(entry => entry.part), ['Part 1'])
+  assert.deepEqual(
+    plan.map(entry => entry.key),
+    ['missing', 'parts', 'upgrade', 'owned'],
+  )
+  assert.deepEqual(
+    plan.find(entry => entry.key === 'upgrade')!.releases.map(entry => entry.info_hashes[0]),
+    [hexHash(3), hexHash(2)],
+    'best releases precede alternatives',
+  )
+  assert.deepEqual(
+    plan.find(entry => entry.key === 'parts')!.releases.map(entry => entry.part),
+    ['Part 1'],
+  )
 })
 
 test('a sweep prunes cached observations for hashes no longer in the results', async () => {
@@ -292,13 +377,27 @@ test('a sweep prunes cached observations for hashes no longer in the results', a
     await resolveUsenetHash(config(), hexHash(900))
     await resolveUsenetHash(config(), hexHash(901))
     assert.equal(probe.fetches, 2)
-    const kept = { key: 'kept', releases: [{ kind: 'best', releaseGroup: 'Group', tracker: 'Nyaa', torrent_available: true, info_hashes: [hexHash(900)], size: 1 }] } as unknown as ResultItem
+    const kept = {
+      key: 'kept',
+      releases: [
+        {
+          kind: 'best',
+          releaseGroup: 'Group',
+          tracker: 'Nyaa',
+          torrent_available: true,
+          info_hashes: [hexHash(900)],
+          size: 1,
+        },
+      ],
+    } as unknown as ResultItem
     prefetchUsenetAvailability({ ...config(), download_mode: 'torrent_only' }, [kept], 'prune test')
     await resolveUsenetHash(config(), hexHash(900))
     assert.equal(probe.fetches, 2, 'the referenced hash stays cached')
     await resolveUsenetHash(config(), hexHash(901))
     assert.equal(probe.fetches, 3, 'the dropped hash is looked up again')
-  } finally { restore() }
+  } finally {
+    restore()
+  }
 })
 
 test('many concurrent lookups never wedge the shared slot limiter', async () => {
@@ -313,7 +412,9 @@ test('many concurrent lookups never wedge the shared slot limiter', async () => 
     assert.equal(probe.fetches, 12)
     await resolveUsenetHash(config(), hexHash(112))
     assert.equal(probe.fetches, 13)
-  } finally { restore() }
+  } finally {
+    restore()
+  }
 })
 
 test('the prefetch sweep checks every release of the saved results in the background', async () => {
@@ -325,7 +426,9 @@ test('the prefetch sweep checks every release of the saved results in the backgr
     prefetchUsenetAvailability(config(), [result('a', 2), result('b', 2)], 'test')
     await until(() => probe.fetches === 4)
     assert.equal(probe.fetches, 4)
-  } finally { restore() }
+  } finally {
+    restore()
+  }
 })
 
 test('stopUsenetPrefetch cancels a running sweep mid-flight', async () => {
@@ -333,13 +436,22 @@ test('stopUsenetPrefetch cancels a running sweep mid-flight', async () => {
   const probe: Probe = { starts: [], fetches: 0 }
   const restore = stubFetch(probe)
   try {
-    prefetchUsenetAvailability(config(), Array.from({ length: 10 }, (_, index) => result(`show-${index}`, 1)), 'test')
+    prefetchUsenetAvailability(
+      config(),
+      Array.from({ length: 10 }, (_, index) => result(`show-${index}`, 1)),
+      'test',
+    )
     await until(() => probe.fetches >= 2)
     stopUsenetPrefetch()
     const observed = probe.fetches
     // In-flight completion of the current release is tolerated; the sweep must not continue.
-    await assert.rejects(until(() => probe.fetches > observed + 1, 300), /timed out/)
-  } finally { restore() }
+    await assert.rejects(
+      until(() => probe.fetches > observed + 1, 300),
+      /timed out/,
+    )
+  } finally {
+    restore()
+  }
 })
 
 test('an older sweep completion cannot finish or overwrite a newer sweep', async () => {
@@ -409,7 +521,11 @@ test('empty and ineligible sweeps supersede old work without retaining progress'
       const results = [result(`first-${ineligible}`, 1), result(`later-${ineligible}`, 1)]
       prefetchUsenetAvailability(config(), results, 'active')
       await nextTurn()
-      prefetchUsenetAvailability(ineligible ? { ...config(), download_mode: 'torrent_only' } : config(), [], 'replacement')
+      prefetchUsenetAvailability(
+        ineligible ? { ...config(), download_mode: 'torrent_only' } : config(),
+        [],
+        'replacement',
+      )
       assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
       complete(results[0].releases[0].info_hashes[0])
       await nextTurn()
@@ -457,7 +573,14 @@ test('public snapshots cannot count scheduled prefetch work as completed or dupl
     prefetchUsenetAvailability(config(), results, 'snapshot test')
     await nextTurn()
     assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 0, total: 2 })
-    const rows = await usenetAvailability(config(), [{ key: results[0].key, release: 0 }, { key: results[0].key, release: 1 }], false, results)
+    const rows = await usenetAvailability(
+      config(),
+      [
+        { key: results[0].key, release: 0 },
+        { key: results[0].key, release: 1 },
+      ],
+      results,
+    )
     assert.ok(rows.every(row => row.aggregate === 'not_checked' && row.refreshing))
     await nextTurn()
     assert.equal(probe.starts.length, 2)

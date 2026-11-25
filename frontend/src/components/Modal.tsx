@@ -29,11 +29,25 @@ export default function Modal({ open, labelledBy, describedBy, busy = false, onC
   }, [open])
   if (!open) return null
   return createPortal(
-    <dialog ref={ref} className={cx('modal-shell fixed inset-0 m-0 grid h-dvh w-screen max-h-none max-w-none place-items-center border-0 bg-black/65 px-4 py-6 text-ink backdrop-blur-sm', className)}
-      aria-labelledby={labelledBy} aria-describedby={describedBy} aria-busy={busy}
-      onCancel={event => { event.preventDefault(); if (!busy) onClose() }}
-      onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose() }}>
+    <dialog
+      ref={ref}
+      className={cx(
+        'modal-shell fixed inset-0 m-0 grid h-dvh w-screen max-h-none max-w-none place-items-center border-0 bg-black/65 px-4 py-6 text-ink backdrop-blur-sm',
+        className,
+      )}
+      aria-labelledby={labelledBy}
+      aria-describedby={describedBy}
+      aria-busy={busy}
+      onCancel={event => {
+        event.preventDefault()
+        if (!busy) onClose()
+      }}
+      onMouseDown={event => {
+        if (event.target === event.currentTarget && !busy) onClose()
+      }}
+    >
       {children}
-    </dialog>, document.body,
+    </dialog>,
+    document.body,
   )
 }

@@ -24,20 +24,32 @@ export function parseLogEntries(lines: string[]): LogEntry[] {
     const match = TIMESTAMP.exec(line)
     const previous = entries[entries.length - 1]
     if (!match) {
-      if (previous) { previous.continuation.push(line); previous.raw.push(line); continue }
+      if (previous) {
+        previous.continuation.push(line)
+        previous.raw.push(line)
+        continue
+      }
       // The window can start mid-entry; keep the orphaned lines readable.
       entries.push({ key: 'orphan', timestamp: '', level: '', message: line, continuation: [], raw: [line] })
       continue
     }
     const occurrence = (seen.get(line) ?? 0) + 1
     seen.set(line, occurrence)
-    entries.push({ key: `${line}#${occurrence}`, timestamp: match[1], level: (match[2] || '').toUpperCase(), message: match[3], continuation: [], raw: [line] })
+    entries.push({
+      key: `${line}#${occurrence}`,
+      timestamp: match[1],
+      level: (match[2] || '').toUpperCase(),
+      message: match[3],
+      continuation: [],
+      raw: [line],
+    })
   }
   return entries
 }
 
 export const isWarning = (entry: LogEntry) => entry.level === 'WARNING' || entry.level === 'WARN'
-export const isError = (entry: LogEntry) => entry.level === 'ERROR' || entry.level === 'CRITICAL' || entry.level === 'FATAL'
+export const isError = (entry: LogEntry) =>
+  entry.level === 'ERROR' || entry.level === 'CRITICAL' || entry.level === 'FATAL'
 
 export function entryMatches(entry: LogEntry, filter: LogFilter, search: string): boolean {
   if (filter === 'error' && !isError(entry)) return false
@@ -49,7 +61,10 @@ export function entryMatches(entry: LogEntry, filter: LogFilter, search: string)
 export function countLevels(entries: LogEntry[]) {
   let errors = 0
   let warnings = 0
-  for (const entry of entries) { if (isError(entry)) errors++; else if (isWarning(entry)) warnings++ }
+  for (const entry of entries) {
+    if (isError(entry)) errors++
+    else if (isWarning(entry)) warnings++
+  }
   return { all: entries.length, errors, warn: warnings + errors }
 }
 

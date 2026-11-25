@@ -1,7 +1,8 @@
 import * as api from './api.js'
 import type { SelectionInput, UsenetAvailabilityResult } from './api.js'
 
-export const availabilityKey = (row: Pick<SelectionInput, 'key' | 'release' | 'identity'>) => `${row.key}\u0000${row.release}\u0000${row.identity || ''}`
+export const availabilityKey = (row: Pick<SelectionInput, 'key' | 'release' | 'identity'>) =>
+  `${row.key}\u0000${row.release}\u0000${row.identity || ''}`
 
 export interface AvailabilitySnapshot {
   rows: Record<string, UsenetAvailabilityResult>
@@ -26,20 +27,30 @@ export function availabilityErrors(rows: UsenetAvailabilityResult[]): string | n
 function waitForPoll(signal: AbortSignal): Promise<void> {
   // The ES2020 browser target requires the Promise constructor; withResolvers is unavailable.
   return new Promise<void>((resolve, reject) => {
-    const abort = () => { signal.removeEventListener('abort', abort); window.clearTimeout(timer); reject(signal.reason) }
-    const timer = window.setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, 1000)
+    const abort = () => {
+      signal.removeEventListener('abort', abort)
+      window.clearTimeout(timer)
+      reject(signal.reason)
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', abort)
+      resolve()
+    }, 1000)
     signal.addEventListener('abort', abort, { once: true })
     if (signal.aborted) abort()
   })
 }
 
 /** Observe cheap snapshots only while these exact release identities are refreshing. */
-export async function observeUsenetAvailability(selections: SelectionInput[], options: {
-  signal: AbortSignal
-  refresh?: boolean
-  initial?: AvailabilitySnapshot | null
-  onSnapshot: (snapshot: AvailabilitySnapshot) => void
-}): Promise<void> {
+export async function observeUsenetAvailability(
+  selections: SelectionInput[],
+  options: {
+    signal: AbortSignal
+    refresh?: boolean
+    initial?: AvailabilitySnapshot | null
+    onSnapshot: (snapshot: AvailabilitySnapshot) => void
+  },
+): Promise<void> {
   const { signal, onSnapshot } = options
   const expected = new Set(selections.map(availabilityKey))
   let snapshot: AvailabilitySnapshot = {
@@ -51,7 +62,9 @@ export async function observeUsenetAvailability(selections: SelectionInput[], op
   }
   let pending = selections
   let first = true
-  const publish = () => { if (!signal.aborted) onSnapshot(snapshot) }
+  const publish = () => {
+    if (!signal.aborted) onSnapshot(snapshot)
+  }
   publish()
   try {
     while (pending.length && !signal.aborted) {
@@ -66,10 +79,11 @@ export async function observeUsenetAvailability(selections: SelectionInput[], op
         if (changed && (pending.length !== selections.length || offset > 0)) restart = true
         const requested = new Set(batch.map(availabilityKey))
         const received = new Set<string>()
-        for (const row of response.results) if (requested.has(availabilityKey(row))) {
-          rows[availabilityKey(row)] = row
-          received.add(availabilityKey(row))
-        }
+        for (const row of response.results)
+          if (requested.has(availabilityKey(row))) {
+            rows[availabilityKey(row)] = row
+            received.add(availabilityKey(row))
+          }
         snapshot = {
           rows,
           configGeneration: response.config_generation,
@@ -81,7 +95,9 @@ export async function observeUsenetAvailability(selections: SelectionInput[], op
         publish()
       }
       first = false
-      pending = restart ? selections : selections.filter(selection => snapshot.rows[availabilityKey(selection)]?.refreshing)
+      pending = restart
+        ? selections
+        : selections.filter(selection => snapshot.rows[availabilityKey(selection)]?.refreshing)
       if (pending.length && !restart) await waitForPoll(signal)
     }
   } catch (error) {
@@ -92,7 +108,12 @@ export async function observeUsenetAvailability(selections: SelectionInput[], op
       ...snapshot,
       loading: false,
       error: message,
-      rows: Object.fromEntries(Object.entries(snapshot.rows).map(([key, row]) => [key, failed.has(key) ? { ...row, refreshing: false, refresh_error: message } : row])),
+      rows: Object.fromEntries(
+        Object.entries(snapshot.rows).map(([key, row]) => [
+          key,
+          failed.has(key) ? { ...row, refreshing: false, refresh_error: message } : row,
+        ]),
+      ),
     }
     publish()
   }

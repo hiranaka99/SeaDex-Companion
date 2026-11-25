@@ -7,7 +7,12 @@ import type { DownloadProtocol } from '../shared/download-contracts.js'
  * acceptance. Plans are memory-only on purpose — a restart expires unsubmitted
  * reviews, and nothing here may contain keys or authenticated NZB URLs.
  */
-export interface StoredPlanSelection { key: string; release: number; identity?: string; protocol: DownloadProtocol }
+export interface StoredPlanSelection {
+  key: string
+  release: number
+  identity?: string
+  protocol: DownloadProtocol
+}
 
 export interface StoredPlan {
   id: string
@@ -33,10 +38,13 @@ export function putPlan(input: Omit<StoredPlan, 'id' | 'created_at' | 'expires_a
   return plan
 }
 
-export function getPlan(id: string): StoredPlan | null {
+function getPlan(id: string): StoredPlan | null {
   const plan = plans.get(id)
   if (!plan) return null
-  if (plan.expires_at <= Date.now()) { plans.delete(id); return null }
+  if (plan.expires_at <= Date.now()) {
+    plans.delete(id)
+    return null
+  }
   return plan
 }
 
@@ -48,4 +56,6 @@ export function consumePlan(id: string): StoredPlan | null {
 }
 
 /** Configuration changes invalidate every unsubmitted review. */
-export function invalidatePlans(): void { plans.clear() }
+export function invalidatePlans(): void {
+  plans.clear()
+}

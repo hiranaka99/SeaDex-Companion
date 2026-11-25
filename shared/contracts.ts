@@ -1,4 +1,5 @@
 import type { DownloadMode } from './download-contracts.js'
+import type { UsenetProvider } from './usenet-contracts.js'
 
 export interface AuthState {
   setup_required: boolean
@@ -73,6 +74,8 @@ export interface ReleaseChange extends ReleaseChangeDetail {
   detected_at: string
 }
 
+export type ScanTrigger = 'manual' | 'scheduled' | 'sonarr' | 'radarr' | 'sonarr+radarr'
+
 export interface ScanHistoryChange {
   library_key?: string
   type: 'new' | 'upgrade' | 'resolved' | 'changed' | 'removed'
@@ -90,7 +93,7 @@ export interface ScanHistoryChange {
 export interface ScanHistoryEntry {
   id: string
   run_at: string
-  trigger?: 'manual' | 'scheduled' | 'sonarr' | 'radarr' | 'sonarr+radarr'
+  trigger?: ScanTrigger
   duration_seconds?: number
   outcome?: 'success' | 'partial' | 'cancelled' | 'failed'
   scanned_titles?: number
@@ -146,16 +149,18 @@ export interface Config {
   hidden: string[]
 }
 
-export interface PublicConfig extends Config {
-  sonarr_key_configured: boolean
-  radarr_key_configured: boolean
-  qbittorrent_pass_configured: boolean
-  sabnzbd_key_configured: boolean
-  amenzb_key_configured: boolean
-  webhook_configured: boolean
-}
+export const SECRET_CONFIG_KEYS = [
+  'sonarr_key',
+  'radarr_key',
+  'qbittorrent_pass',
+  'sabnzbd_key',
+  'amenzb_key',
+  'webhook',
+] as const
+export type SecretConfigKey = (typeof SECRET_CONFIG_KEYS)[number]
 
-export type SecretConfigKey = 'sonarr_key' | 'radarr_key' | 'qbittorrent_pass' | 'sabnzbd_key' | 'amenzb_key' | 'webhook'
+/** Configuration as the browser sees it: secrets are blanked and reported only as configured or not. */
+export type PublicConfig = Config & { [Key in SecretConfigKey as `${Key}_configured`]: boolean }
 export type ConfigUpdate = Partial<Config> & { clear_secrets?: SecretConfigKey[] }
 
 export interface Status {
@@ -166,17 +171,19 @@ export interface Status {
   message: string
   error: string | null
   cancelled: boolean
-  trigger: 'manual' | 'scheduled' | 'sonarr' | 'radarr' | 'sonarr+radarr' | null
+  trigger: ScanTrigger | null
   source_errors: Record<string, string>
   last_run: string | null
   next_check: number | null
   webhook_scan: { queued: boolean; due_at: number | null; sources: Array<'sonarr' | 'radarr'> }
   /** Background Usenet availability sweep; absent or not running when idle. */
-  usenet_prefetch?: {
-    running: boolean
-    checked: number
-    total: number
-    /** Providers the sweep is waiting on after rate limiting or repeated failures. */
-    paused?: { provider: 'animetosho' | 'amenzb'; resume_in_seconds: number; rate_limited: boolean }[]
-  }
+  usenet_prefetch?: UsenetPrefetchProgress
+}
+
+export interface UsenetPrefetchProgress {
+  running: boolean
+  checked: number
+  total: number
+  /** Providers the sweep is waiting on after rate limiting or repeated failures. */
+  paused?: { provider: UsenetProvider; resume_in_seconds: number; rate_limited: boolean }[]
 }

@@ -1,3 +1,5 @@
+import { isRecord } from '../shared/guards.js'
+import { errorMessage } from '../shared/errors.js'
 // Authenticated SABnzbd API client (https://sabnzbd.org/wiki/configuration/5.1/api).
 // Every read and control targets explicit nzo_ids; the API never sends the
 // broad forms (`value=all|failed|completed`, category purges, global
@@ -14,7 +16,11 @@ const ID_CHUNK_SIZE = 20
 const MAX_ERROR_TEXT = 200
 const API_PATH_SUFFIX = '/api'
 
-export interface SabnzbdSettings { apiUrl: string; apiKey: string; signal?: AbortSignal }
+export interface SabnzbdSettings {
+  apiUrl: string
+  apiKey: string
+  signal?: AbortSignal
+}
 
 export interface SabQueueJob {
   nzo_id: string
@@ -82,21 +88,20 @@ const AUTH_KEY_MESSAGE = 'SABnzbd rejected the API key; the full API key (not th
 
 // --- helpers ---------------------------------------------------------------
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 // Provider text is never trusted for display: strip markup, collapse
 // whitespace, redact the API key if it ever echoes back, cap the length.
 function safeText(text: unknown, apiKey?: string): string {
   if (typeof text !== 'string') return ''
-  let out = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+  let out = text
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
   if (apiKey && out.includes(apiKey)) out = out.split(apiKey).join('[redacted]')
   return out.length > MAX_ERROR_TEXT ? out.slice(0, MAX_ERROR_TEXT) : out
 }
 
 function describeError(error: unknown, apiKey?: string): string {
-  const message = error instanceof Error ? error.message : String(error)
+  const message = errorMessage(error)
   return safeText(message, apiKey) || 'unknown error'
 }
 
@@ -290,87 +295,113 @@ function parseHistorySlot(slot: unknown): SabHistoryJob | null {
 
 // --- reads -----------------------------------------------------------------
 
+/** Adds every parsable slot once; false when the list is absent or holds a slot that could not be read. */
+function collectJobs<Job extends { nzo_id: string }>(
+  slots: unknown,
+  parse: (slot: unknown) => Job | null,
+  jobs: Map<string, Job>,
+): boolean {
+  if (!Array.isArray(slots)) return false
+  let complete = true
+  for (const slot of slots) {
+    const job = parse(slot)
+    if (!job) complete = false
+    else if (!jobs.has(job.nzo_id)) jobs.set(job.nzo_id, job)
+  }
+  return complete
+}
+
 export async function sabQueueJobs(
   settings: SabnzbdSettings,
   nzoIds: string[],
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<SabQueueRead> {
-  const jobs: SabQueueJob[] = []
-  const seen = new Set<string>()
+  const jobs = new Map<string, SabQueueJob>()
   let globalPaused = false
   let incompleteFreeBytes: number | null = null
   let completeFreeBytes: number | null = null
   let readComplete = true
   for (const chunk of chunkIds(nzoIds)) {
     try {
-      const url = buildApiUrl(settings, { ...keyParams(settings), mode: 'queue', nzo_ids: chunk.join(','), limit: String(chunk.length) })
-      const queue = readSection(await requestJson(settings, url, { method: 'GET' }, READ_TIMEOUT_MS, fetchImpl), 'queue', settings.apiKey)
+      const url = buildApiUrl(settings, {
+        ...keyParams(settings),
+        mode: 'queue',
+        nzo_ids: chunk.join(','),
+        limit: String(chunk.length),
+      })
+      const queue = readSection(
+        await requestJson(settings, url, { method: 'GET' }, READ_TIMEOUT_MS, fetchImpl),
+        'queue',
+        settings.apiKey,
+      )
       if (queue.paused_all === true) globalPaused = true
-      if (incompleteFreeBytes === null) incompleteFreeBytes = gbToBytes(queue.diskspace1)
-      if (completeFreeBytes === null) completeFreeBytes = gbToBytes(queue.diskspace2)
-      if (Array.isArray(queue.slots)) {
-        for (const slot of queue.slots) {
-          const job = parseQueueSlot(slot, queue)
-          if (!job) readComplete = false
-          if (job && !seen.has(job.nzo_id)) {
-            seen.add(job.nzo_id)
-            jobs.push(job)
-          }
-        }
-      }
-      else readComplete = false
+      incompleteFreeBytes ??= gbToBytes(queue.diskspace1)
+      completeFreeBytes ??= gbToBytes(queue.diskspace2)
+      if (!collectJobs(queue.slots, slot => parseQueueSlot(slot, queue), jobs)) readComplete = false
     } catch {
       // A failed chunk is never evidence of absence; keep partial results.
       readComplete = false
     }
   }
-  return { jobs, globalPaused, incomplete_free_bytes: incompleteFreeBytes, complete_free_bytes: completeFreeBytes, read_complete: readComplete }
+  return {
+    jobs: [...jobs.values()],
+    globalPaused,
+    incomplete_free_bytes: incompleteFreeBytes,
+    complete_free_bytes: completeFreeBytes,
+    read_complete: readComplete,
+  }
 }
 
 export async function sabHistoryJobs(
   settings: SabnzbdSettings,
   nzoIds: string[],
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<SabHistoryRead> {
-  const jobs: SabHistoryJob[] = []
-  const seen = new Set<string>()
+  const jobs = new Map<string, SabHistoryJob>()
   let readComplete = true
   for (const chunk of chunkIds(nzoIds)) {
     // Active history first, then the archive, so a live record wins if the
     // same nzo_id somehow appears in both.
     for (const archive of [false, true]) {
       try {
-        const params: Record<string, string> = { ...keyParams(settings), mode: 'history', nzo_ids: chunk.join(','), limit: String(chunk.length) }
-        if (archive) params.archive = '1'
-        const url = buildApiUrl(settings, params)
-        const history = readSection(await requestJson(settings, url, { method: 'GET' }, READ_TIMEOUT_MS, fetchImpl), 'history', settings.apiKey)
-        if (Array.isArray(history.slots)) {
-          for (const slot of history.slots) {
-            const job = parseHistorySlot(slot)
-            if (!job) readComplete = false
-            if (job && !seen.has(job.nzo_id)) {
-              seen.add(job.nzo_id)
-              jobs.push(job)
-            }
-          }
+        const params: Record<string, string> = {
+          ...keyParams(settings),
+          mode: 'history',
+          nzo_ids: chunk.join(','),
+          limit: String(chunk.length),
         }
-        else readComplete = false
+        if (archive) params.archive = '1'
+        const history = readSection(
+          await requestJson(settings, buildApiUrl(settings, params), { method: 'GET' }, READ_TIMEOUT_MS, fetchImpl),
+          'history',
+          settings.apiKey,
+        )
+        if (!collectJobs(history.slots, parseHistorySlot, jobs)) readComplete = false
       } catch {
         readComplete = false
       }
     }
   }
-  return { jobs, read_complete: readComplete }
+  return { jobs: [...jobs.values()], read_complete: readComplete }
 }
 
 /** The job name sent with an NZB: the release name without a `.nzb` suffix, which would otherwise end up in the job folder. */
 export function sabSubmissionName(nzbName: string | undefined, sourceHash: string): string {
-  return (nzbName || '').trim().replace(/\.nzb$/i, '').trim() || sourceHash.slice(0, 12)
+  return (
+    (nzbName || '')
+      .trim()
+      .replace(/\.nzb$/i, '')
+      .trim() || sourceHash.slice(0, 12)
+  )
 }
 
 /** Job names compare without the `.nzb` suffix and case, which SABnzbd may normalize. */
-export function sabJobName(name: string): string {
-  return name.trim().replace(/\.nzb$/i, '').trim().toLowerCase()
+function sabJobName(name: string): string {
+  return name
+    .trim()
+    .replace(/\.nzb$/i, '')
+    .trim()
+    .toLowerCase()
 }
 
 /**
@@ -381,7 +412,7 @@ export function sabJobName(name: string): string {
 export async function sabFindJobsByName(
   settings: SabnzbdSettings,
   name: string,
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<{ nzo_id: string; category: string }[]> {
   const wanted = sabJobName(name)
   if (!wanted) return []
@@ -391,21 +422,47 @@ export async function sabFindJobsByName(
     [{ mode: 'history', search: wanted, limit: '50' }, 'history'],
   ]
   for (const [params, section] of reads) {
-    const body = readSection(await requestJson(settings, buildApiUrl(settings, { ...keyParams(settings), ...params }), { method: 'GET' }, READ_TIMEOUT_MS, fetchImpl), section, settings.apiKey)
+    const body = readSection(
+      await requestJson(
+        settings,
+        buildApiUrl(settings, { ...keyParams(settings), ...params }),
+        { method: 'GET' },
+        READ_TIMEOUT_MS,
+        fetchImpl,
+      ),
+      section,
+      settings.apiKey,
+    )
     if (!Array.isArray(body.slots)) throw new SabnzbdError(`SABnzbd did not return ${section} slots`)
     for (const slot of body.slots) {
       const job = section === 'queue' ? parseQueueSlot(slot, body) : parseHistorySlot(slot)
-      if (job && sabJobName(job.name) === wanted && !found.has(job.nzo_id)) found.set(job.nzo_id, { nzo_id: job.nzo_id, category: job.category })
+      if (job && sabJobName(job.name) === wanted && !found.has(job.nzo_id))
+        found.set(job.nzo_id, { nzo_id: job.nzo_id, category: job.category })
     }
   }
   return [...found.values()]
 }
 
 /** Category names configured in SABnzbd, or null when the list could not be read. */
-export async function sabCategories(settings: SabnzbdSettings, fetchImpl: typeof fetch): Promise<string[] | null> {
+export async function sabCategories(
+  settings: SabnzbdSettings,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<string[] | null> {
   try {
-    const result = await requestJson(settings, buildApiUrl(settings, { ...keyParams(settings), mode: 'get_cats' }), { method: 'GET' }, READ_TIMEOUT_MS, fetchImpl)
-    if (!result.ok || providerErrorText(result.payload, settings.apiKey) || !isRecord(result.payload) || !Array.isArray(result.payload.categories)) return null
+    const result = await requestJson(
+      settings,
+      buildApiUrl(settings, { ...keyParams(settings), mode: 'get_cats' }),
+      { method: 'GET' },
+      READ_TIMEOUT_MS,
+      fetchImpl,
+    )
+    if (
+      !result.ok ||
+      providerErrorText(result.payload, settings.apiKey) ||
+      !isRecord(result.payload) ||
+      !Array.isArray(result.payload.categories)
+    )
+      return null
     return result.payload.categories.filter((category): category is string => typeof category === 'string')
   } catch {
     return null
@@ -413,7 +470,11 @@ export async function sabCategories(settings: SabnzbdSettings, fetchImpl: typeof
 }
 
 /** Configured categories SABnzbd does not know; SABnzbd silently files those NZBs under its default category. */
-export async function sabMissingCategories(settings: SabnzbdSettings, wanted: string[], fetchImpl: typeof fetch): Promise<string[] | null> {
+export async function sabMissingCategories(
+  settings: SabnzbdSettings,
+  wanted: string[],
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<string[] | null> {
   const names = [...new Set(wanted.map(category => category.trim()).filter(Boolean))]
   if (!names.length) return []
   const known = await sabCategories(settings, fetchImpl)
@@ -425,10 +486,14 @@ export async function sabMissingCategories(settings: SabnzbdSettings, wanted: st
 /** Queue-payload disk read without targeting any job; used by preflight reviews. */
 export async function sabDiskSpace(
   settings: SabnzbdSettings,
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<{ incomplete_free_bytes: number | null; complete_free_bytes: number | null }> {
   const url = buildApiUrl(settings, { ...keyParams(settings), mode: 'queue', limit: '0' })
-  const queue = readSection(await requestJson(settings, url, { method: 'GET' }, READ_TIMEOUT_MS, fetchImpl), 'queue', settings.apiKey)
+  const queue = readSection(
+    await requestJson(settings, url, { method: 'GET' }, READ_TIMEOUT_MS, fetchImpl),
+    'queue',
+    settings.apiKey,
+  )
   return { incomplete_free_bytes: gbToBytes(queue.diskspace1), complete_free_bytes: gbToBytes(queue.diskspace2) }
 }
 
@@ -436,7 +501,7 @@ export async function sabDiskSpace(
 
 export async function sabTestConnection(
   settings: SabnzbdSettings,
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<{ version: string }> {
   let versionResult: JsonResult
   try {
@@ -490,7 +555,7 @@ export async function sabAddNzb(
   nzb: Uint8Array,
   nzoName: string,
   category: string,
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<string[]> {
   const form = new FormData()
   form.set('mode', 'addfile')
@@ -506,17 +571,25 @@ export async function sabAddNzb(
   try {
     result = await requestJson(settings, url, { method: 'POST', body: form }, ADD_TIMEOUT_MS, fetchImpl)
   } catch (error) {
-    throw new SabnzbdAmbiguousError(`SABnzbd NZB submission outcome unknown: ${describeError(error, settings.apiKey)}`, { cause: error })
+    throw new SabnzbdAmbiguousError(
+      `SABnzbd NZB submission outcome unknown: ${describeError(error, settings.apiKey)}`,
+      { cause: error },
+    )
   }
   const accepted = isRecord(result.payload) && result.payload.status === true
   const rawIds = isRecord(result.payload) ? result.payload.nzo_ids : undefined
-  const usable = Array.isArray(rawIds) && rawIds.length > 0 && rawIds.every((id) => typeof id === 'string' && id.trim() !== '')
+  const usable =
+    Array.isArray(rawIds) && rawIds.length > 0 && rawIds.every(id => typeof id === 'string' && id.trim() !== '')
   if (accepted && !usable) {
-    throw new SabnzbdAmbiguousError('SABnzbd accepted the NZB but returned no usable nzo_ids. Check SABnzbd before retrying.')
+    throw new SabnzbdAmbiguousError(
+      'SABnzbd accepted the NZB but returned no usable nzo_ids. Check SABnzbd before retrying.',
+    )
   }
   const errorText = providerErrorText(result.payload, settings.apiKey)
   if (accepted && (errorText || !result.ok)) {
-    throw new SabnzbdAmbiguousError(`SABnzbd reported acceptance with an inconsistent response: ${errorText || `HTTP ${result.status}`}. Check SABnzbd before retrying.`)
+    throw new SabnzbdAmbiguousError(
+      `SABnzbd reported acceptance with an inconsistent response: ${errorText || `HTTP ${result.status}`}. Check SABnzbd before retrying.`,
+    )
   }
   if (errorText) {
     if (isApiKeyRejection(errorText)) throw new SabnzbdAuthError(`SABnzbd rejected the NZB submission: ${errorText}`)
@@ -545,7 +618,9 @@ async function runControl(
   try {
     result = await requestJson(settings, url, { method: 'GET' }, READ_TIMEOUT_MS, fetchImpl)
   } catch (error) {
-    throw new SabnzbdError(`SABnzbd ${operation} request failed: ${describeError(error, settings.apiKey)}`, { cause: error })
+    throw new SabnzbdError(`SABnzbd ${operation} request failed: ${describeError(error, settings.apiKey)}`, {
+      cause: error,
+    })
   }
   const errorText = providerErrorText(result.payload, settings.apiKey)
   if (errorText) {
@@ -558,40 +633,65 @@ async function runControl(
   }
 }
 
-export async function sabPauseJob(settings: SabnzbdSettings, nzoId: string, fetchImpl: typeof fetch): Promise<void> {
-  await runControl(settings, { mode: 'queue', name: 'pause', value: nzoId }, 'job pause', fetchImpl)
+/** The job's fresh queue entry after a control; an unreadable queue can never confirm the control. */
+async function confirmedQueueJob(
+  settings: SabnzbdSettings,
+  nzoId: string,
+  control: string,
+  fetchImpl: typeof fetch,
+): Promise<SabQueueJob | undefined> {
   const read = await sabQueueJobs(settings, [nzoId], fetchImpl)
-  if (!read.read_complete) throw new SabnzbdError('could not confirm the pause: SABnzbd queue state could not be read')
-  const job = read.jobs.find((entry) => entry.nzo_id === nzoId)
+  if (!read.read_complete)
+    throw new SabnzbdError(`could not confirm the ${control}: SABnzbd queue state could not be read`)
+  return read.jobs.find(entry => entry.nzo_id === nzoId)
+}
+
+export async function sabPauseJob(
+  settings: SabnzbdSettings,
+  nzoId: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<void> {
+  await runControl(settings, { mode: 'queue', name: 'pause', value: nzoId }, 'job pause', fetchImpl)
+  const job = await confirmedQueueJob(settings, nzoId, 'pause', fetchImpl)
   if (!job) throw new SabnzbdError(`could not confirm the pause: ${safeText(nzoId)} is no longer in the SABnzbd queue`)
   if (job.status !== 'Paused') {
-    throw new SabnzbdError(`could not confirm the pause: ${safeText(nzoId)} reports status ${safeText(job.status) || 'unknown'}`)
+    throw new SabnzbdError(
+      `could not confirm the pause: ${safeText(nzoId)} reports status ${safeText(job.status) || 'unknown'}`,
+    )
   }
 }
 
-export async function sabResumeJob(settings: SabnzbdSettings, nzoId: string, fetchImpl: typeof fetch): Promise<void> {
+export async function sabResumeJob(
+  settings: SabnzbdSettings,
+  nzoId: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<void> {
   await runControl(settings, { mode: 'queue', name: 'resume', value: nzoId }, 'job resume', fetchImpl)
-  const read = await sabQueueJobs(settings, [nzoId], fetchImpl)
-  if (!read.read_complete) throw new SabnzbdError('could not confirm the resume: SABnzbd queue state could not be read')
-  const job = read.jobs.find((entry) => entry.nzo_id === nzoId)
+  const job = await confirmedQueueJob(settings, nzoId, 'resume', fetchImpl)
   if (!job) throw new SabnzbdError(`could not confirm the resume: ${safeText(nzoId)} is no longer in the SABnzbd queue`)
-  if (job.status === 'Paused') throw new SabnzbdError(`could not confirm the resume: ${safeText(nzoId)} is still paused`)
+  if (job.status === 'Paused')
+    throw new SabnzbdError(`could not confirm the resume: ${safeText(nzoId)} is still paused`)
 }
 
 export async function sabDeleteQueueJob(
   settings: SabnzbdSettings,
   nzoId: string,
   delFiles: boolean,
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<void> {
-  await runControl(settings, { mode: 'queue', name: 'delete', value: nzoId, del_files: delFiles ? '1' : '0' }, 'queue delete', fetchImpl)
-  const read = await sabQueueJobs(settings, [nzoId], fetchImpl)
-  if (!read.read_complete) throw new SabnzbdError('could not confirm the queue deletion: SABnzbd queue state could not be read')
-  const job = read.jobs.find((entry) => entry.nzo_id === nzoId)
+  await runControl(
+    settings,
+    { mode: 'queue', name: 'delete', value: nzoId, del_files: delFiles ? '1' : '0' },
+    'queue delete',
+    fetchImpl,
+  )
+  const job = await confirmedQueueJob(settings, nzoId, 'queue deletion', fetchImpl)
   // Absence from the queue is success even if the job already moved into
   // history (post-processing race); the history record stays addressable.
   if (job) {
-    throw new SabnzbdError(`could not confirm the queue deletion: ${safeText(nzoId)} is still in the SABnzbd queue with status ${safeText(job.status) || 'unknown'}`)
+    throw new SabnzbdError(
+      `could not confirm the queue deletion: ${safeText(nzoId)} is still in the SABnzbd queue with status ${safeText(job.status) || 'unknown'}`,
+    )
   }
 }
 
@@ -599,15 +699,23 @@ export async function sabDeleteHistoryJob(
   settings: SabnzbdSettings,
   nzoId: string,
   delFiles: boolean,
-  fetchImpl: typeof fetch,
+  fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<void> {
   // archive=0 removes the record outright instead of moving it to the archive.
-  await runControl(settings, { mode: 'history', name: 'delete', value: nzoId, archive: '0', del_files: delFiles ? '1' : '0' }, 'history delete', fetchImpl)
+  await runControl(
+    settings,
+    { mode: 'history', name: 'delete', value: nzoId, archive: '0', del_files: delFiles ? '1' : '0' },
+    'history delete',
+    fetchImpl,
+  )
   const read = await sabHistoryJobs(settings, [nzoId], fetchImpl)
-  if (!read.read_complete) throw new SabnzbdError('could not confirm the history deletion: SABnzbd history state could not be read')
-  const job = read.jobs.find((entry) => entry.nzo_id === nzoId)
+  if (!read.read_complete)
+    throw new SabnzbdError('could not confirm the history deletion: SABnzbd history state could not be read')
+  const job = read.jobs.find(entry => entry.nzo_id === nzoId)
   if (job) {
-    throw new SabnzbdError(`could not confirm the history deletion: ${safeText(nzoId)} is still in SABnzbd history or archive with status ${safeText(job.status) || 'unknown'}`)
+    throw new SabnzbdError(
+      `could not confirm the history deletion: ${safeText(nzoId)} is still in SABnzbd history or archive with status ${safeText(job.status) || 'unknown'}`,
+    )
   }
 }
 

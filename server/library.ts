@@ -1,18 +1,19 @@
+import { errorMessage } from '../shared/errors.js'
 import { api } from './http.js'
-import { arrBaseUrl, arrApiUrl, sonarrApiUrl } from './config.js'
-import { errorMessage } from './logging.js'
+import { arrBaseUrl, arrApiUrl, sonarrApiUrl } from './arr-urls.js'
 import type { Config, JsonObject, ScanScope, LocalItem, LocalSeason } from './types.js'
 
 async function sonarrItems(config: Config, scope: ScanScope): Promise<LocalItem[]> {
-  const items: LocalItem[] = [], now = Date.now()
+  const items: LocalItem[] = [],
+    now = Date.now()
   const base = await sonarrApiUrl(config.sonarr_url, config.sonarr_key)
-  const series = await api(`${base}/series`, config.sonarr_key, {}, true) as JsonObject[]
+  const series = (await api(`${base}/series`, config.sonarr_key, {}, true)) as JsonObject[]
   for (const show of series) {
     if (scope.sonarrIds?.length && !scope.sonarrIds.includes(Number(show.id))) continue
-    const [episodes, episodeFiles] = await Promise.all([
+    const [episodes, episodeFiles] = (await Promise.all([
       api(`${base}/episode?seriesId=${show.id}`, config.sonarr_key, {}, true),
       api(`${base}/episodefile?seriesId=${show.id}`, config.sonarr_key, {}, true),
-    ]) as [JsonObject[], JsonObject[]]
+    ])) as [JsonObject[], JsonObject[]]
     const fileGroups = new Map<number, string>()
     const fileSizes = new Map<number, number>()
     for (const file of episodeFiles) {
@@ -37,16 +38,20 @@ async function sonarrItems(config: Config, scope: ScanScope): Promise<LocalItem[
       const number = Number(episode.episodeNumber || 0)
       if (!Number.isInteger(season) || season <= 0 || !Number.isInteger(number) || number <= 0) continue
       const seasonNumbers = episodeNumbersBySeason.get(season) || new Set<number>()
-      seasonNumbers.add(number); episodeNumbersBySeason.set(season, seasonNumbers)
+      seasonNumbers.add(number)
+      episodeNumbersBySeason.set(season, seasonNumbers)
       const fileId = Number(episode.episodeFileId || episode.episodeFile?.id || 0)
       if (fileId > 0) seasonHasFile.add(season)
       const group = String(episode.episodeFile?.releaseGroup || fileGroups.get(fileId) || '').trim()
-      if (fileId && !fileSizes.has(fileId) && episode.episodeFile?.size) fileSizes.set(fileId, Number(episode.episodeFile.size))
+      if (fileId && !fileSizes.has(fileId) && episode.episodeFile?.size)
+        fileSizes.set(fileId, Number(episode.episodeFile.size))
       if (fileId) fileEpisodes.set(fileId, [...(fileEpisodes.get(fileId) || []), { season, episode: number }])
       if (!group) continue
       const groups = groupsBySeasonEpisode.get(season) || new Map<string, Set<number>>()
       const numbers = groups.get(group) || new Set<number>()
-      numbers.add(number); groups.set(group, numbers); groupsBySeasonEpisode.set(season, groups)
+      numbers.add(number)
+      groups.set(group, numbers)
+      groupsBySeasonEpisode.set(season, groups)
     }
     const sizesBySeasonEpisode = new Map<number, Map<number, number>>()
     for (const [fileId, linkedEpisodes] of fileEpisodes) {
@@ -74,20 +79,29 @@ async function sonarrItems(config: Config, scope: ScanScope): Promise<LocalItem[
         size: stats.sizeOnDisk || 0,
         episode_numbers: episodeNumbers,
         episode_count: episodeNumbers.length || Number(stats.episodeCount || stats.totalEpisodeCount || 0) || null,
-        missing_episode_count: episodes.filter(episode => Number(episode.seasonNumber) === Number(number) && Date.parse(String(episode.airDate || '')) <= now && !Number(episode.episodeFileId || episode.episodeFile?.id || 0)).length,
+        missing_episode_count: episodes.filter(
+          episode =>
+            Number(episode.seasonNumber) === Number(number) &&
+            Date.parse(String(episode.airDate || '')) <= now &&
+            !Number(episode.episodeFileId || episode.episodeFile?.id || 0),
+        ).length,
         groups_by_episode: episodeGroups
-          ? Object.fromEntries([...episodeGroups].map(([group, numbers]) => [group, [...numbers].sort((left, right) => left - right)]))
+          ? Object.fromEntries(
+              [...episodeGroups].map(([group, numbers]) => [group, [...numbers].sort((left, right) => left - right)]),
+            )
           : {},
         sizes_by_episode: episodeSizes ? Object.fromEntries(episodeSizes) : {},
       }
     }
-    if (Object.keys(seasons).length) items.push({ arr: 'Sonarr', id: show.id, title: show.title, slug: show.titleSlug, seasons })
+    if (Object.keys(seasons).length)
+      items.push({ arr: 'Sonarr', id: show.id, title: show.title, slug: show.titleSlug, seasons })
   }
   return items
 }
 async function radarrItems(config: Config, scope: ScanScope): Promise<LocalItem[]> {
-  const items: LocalItem[] = [], now = Date.now()
-  const movies = await api(`${arrApiUrl(config.radarr_url)}/movie`, config.radarr_key) as JsonObject[]
+  const items: LocalItem[] = [],
+    now = Date.now()
+  const movies = (await api(`${arrApiUrl(config.radarr_url)}/movie`, config.radarr_key)) as JsonObject[]
   for (const movie of movies) {
     if (scope.radarrIds?.length && !scope.radarrIds.includes(Number(movie.id))) continue
     const stats = movie.statistics || {}
@@ -95,39 +109,60 @@ async function radarrItems(config: Config, scope: ScanScope): Promise<LocalItem[
     // versions expose ownership on the movie/file instead of statistics.
     const size = Number(stats.sizeOnDisk || movie.sizeOnDisk || movie.movieFile?.size || 0)
     const hasFile = size > 0 || movie.hasFile === true || Number(movie.movieFileId || movie.movieFile?.id || 0) > 0
-    const released = [movie.inCinemas, movie.digitalRelease, movie.physicalRelease, movie.releaseDate]
-      .some(value => { const date = Date.parse(String(value || '')); return Number.isFinite(date) && date <= now })
+    const released = [movie.inCinemas, movie.digitalRelease, movie.physicalRelease, movie.releaseDate].some(value => {
+      const date = Date.parse(String(value || ''))
+      return Number.isFinite(date) && date <= now
+    })
     if (!released && !hasFile) continue
     const fileGroup = String(movie.movieFile?.releaseGroup || '').trim()
-    const groups = Array.isArray(stats.releaseGroups) && stats.releaseGroups.length ? stats.releaseGroups : fileGroup ? [fileGroup] : []
+    const groups =
+      Array.isArray(stats.releaseGroups) && stats.releaseGroups.length
+        ? stats.releaseGroups
+        : fileGroup
+          ? [fileGroup]
+          : []
     items.push({
-      arr: 'Radarr', id: movie.id, title: movie.title, slug: movie.titleSlug,
+      arr: 'Radarr',
+      id: movie.id,
+      title: movie.title,
+      slug: movie.titleSlug,
       seasons: { 0: { groups, size } },
     })
   }
   return items
 }
 export async function localItems(config: Config, scope: ScanScope = {}): Promise<LocalItem[]> {
-  return (await Promise.all([
-    config.sonarr_url && config.sonarr_key ? sonarrItems(config, scope) : [],
-    config.radarr_url && config.radarr_key ? radarrItems(config, scope) : [],
-  ])).flat()
+  return (
+    await Promise.all([
+      config.sonarr_url && config.sonarr_key ? sonarrItems(config, scope) : [],
+      config.radarr_url && config.radarr_key ? radarrItems(config, scope) : [],
+    ])
+  ).flat()
 }
 
-export function arrItemUrl(config: Partial<Pick<Config, 'sonarr_url' | 'radarr_url'>>, item: { arr: string; id?: number; slug?: string }): string | null {
+export function arrItemUrl(
+  config: Partial<Pick<Config, 'sonarr_url' | 'radarr_url'>>,
+  item: { arr: string; id?: number; slug?: string },
+): string | null {
   const base = arrBaseUrl(item.arr === 'Sonarr' ? config.sonarr_url : config.radarr_url)
   if (!base) return null
   const path = item.arr === 'Sonarr' ? 'series' : 'movie'
   return `${base}/${path}/${item.slug || item.id}`
 }
 
-export async function loadLocalLibrary(config: Config, scope: ScanScope = {}): Promise<{ items: LocalItem[]; sourceErrors: Record<string, string> }> {
+export async function loadLocalLibrary(
+  config: Config,
+  scope: ScanScope = {},
+): Promise<{ items: LocalItem[]; sourceErrors: Record<string, string> }> {
   const scoped = Boolean(scope.sonarrIds || scope.radarrIds)
   const sources: { name: string; load: () => Promise<LocalItem[]> }[] = []
-  if (config.sonarr_url && config.sonarr_key && (!scoped || scope.sonarrIds?.length)) sources.push({ name: 'Sonarr', load: () => sonarrItems(config, scope) })
-  if (config.radarr_url && config.radarr_key && (!scoped || scope.radarrIds?.length)) sources.push({ name: 'Radarr', load: () => radarrItems(config, scope) })
+  if (config.sonarr_url && config.sonarr_key && (!scoped || scope.sonarrIds?.length))
+    sources.push({ name: 'Sonarr', load: () => sonarrItems(config, scope) })
+  if (config.radarr_url && config.radarr_key && (!scoped || scope.radarrIds?.length))
+    sources.push({ name: 'Radarr', load: () => radarrItems(config, scope) })
   const outcomes = await Promise.allSettled(sources.map(source => source.load()))
-  const items: LocalItem[] = [], sourceErrors: Record<string, string> = {}
+  const items: LocalItem[] = [],
+    sourceErrors: Record<string, string> = {}
   outcomes.forEach((outcome, index) => {
     if (outcome.status === 'fulfilled') items.push(...outcome.value)
     else {
@@ -135,6 +170,11 @@ export async function loadLocalLibrary(config: Config, scope: ScanScope = {}): P
       sourceErrors[sources[index].name] = errorMessage(outcome.reason)
     }
   })
-  if (sources.length && Object.keys(sourceErrors).length === sources.length) throw new Error(Object.entries(sourceErrors).map(([source, message]) => `${source}: ${message}`).join('; '))
+  if (sources.length && Object.keys(sourceErrors).length === sources.length)
+    throw new Error(
+      Object.entries(sourceErrors)
+        .map(([source, message]) => `${source}: ${message}`)
+        .join('; '),
+    )
   return { items, sourceErrors }
 }
