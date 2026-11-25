@@ -228,6 +228,26 @@ test("a group's copies of one release on two trackers are listed once", () => {
   assert.equal(result.status, 'best')
 })
 
+test('a season of a public batch and its private season copy are listed once', () => {
+  const sizes = [gb(1.5), gb(1.6)]
+  const privateCopy = candidate('Group', sizes, { tracker: 'AB', info_hashes: ['<redacted>'] })
+  // The public upload is a whole-series batch; only this season's files are selected from it.
+  const batch = candidate('Group', sizes, { info_hashes: [hash('b')], is_best: false })
+  batch.source_files!.push(
+    { name: episodeName(1, 2), length: gb(1.7) },
+    { name: episodeName(2, 2), length: gb(1.8) },
+  )
+  batch.size += gb(3.5)
+  const result = assess(localSeason('Group', sizes), [privateCopy, batch])
+  assert.deepEqual(
+    result.releases.map(release => [release.tracker, release.selected_files?.length]),
+    [['Nyaa', 2]],
+  )
+  assert.equal(result.releases[0].files_match, true)
+  const [saved] = normalizeResults(JSON.parse(JSON.stringify([result])))
+  assert.equal(saved.releases.length, 1)
+})
+
 test('extras and subtitles in a release never count as episode files', () => {
   const sizes = [gb(2), gb(2) + 1]
   const release = candidate('Best', sizes)
