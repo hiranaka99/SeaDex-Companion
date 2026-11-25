@@ -845,6 +845,13 @@ const click = async text => {
   assert.ok(found, 'Visible button: ' + text)
   await pause(100)
 }
+const openSettingsTab = async label => {
+  const found = await evaluate(
+    `(() => { const tab = [...document.querySelectorAll('[role=tab]')].find(tab => tab.getClientRects().length && tab.textContent.trim() === ${JSON.stringify(label)}); if (!tab) return false; tab.focus(); tab.click(); return true })()`,
+  )
+  assert.ok(found, 'Visible settings tab: ' + label)
+  await pause(100)
+}
 const fill = (selector, value) =>
   evaluate(
     `(() => { const input = document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)}); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true })); })()`,
@@ -854,7 +861,7 @@ const select = (selector, value) =>
     `(() => { const input = document.querySelector(${JSON.stringify(selector)}); input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('change', { bubbles: true })); })()`,
   )
 const key = async key => {
-  const keyCode = key === 'Tab' ? 9 : key === 'Enter' ? 13 : 27
+  const keyCode = { Tab: 9, Enter: 13, Escape: 27, ArrowLeft: 37, ArrowRight: 39 }[key] ?? 27
   await send('Input.dispatchKeyEvent', {
     type: 'keyDown',
     key,
@@ -2203,7 +2210,7 @@ try {
 
     await click('Configuration')
     await wait(`document.querySelector('input[name=sonarr_url]')`)
-    await click('Automation')
+    await openSettingsTab('Automation')
     const unhideSwitch = '[role=switch][aria-labelledby=unhide-on-new-best-label]'
     assert.equal(await evaluate(`document.querySelector('${unhideSwitch}').getAttribute('aria-checked')`), 'false')
     await evaluate(`document.querySelector('${unhideSwitch}').focus()`)
@@ -2258,6 +2265,22 @@ try {
 
     // Download delivery: method choice, SABnzbd client, and Usenet source cards.
     await wait(`document.querySelector('input[name=download_mode]')`)
+    await openSettingsTab('Downloads')
+    assert.ok(
+      await evaluate(
+        `document.querySelector('[role=tab][aria-selected=true]') === document.activeElement && document.activeElement.textContent.trim() === 'Downloads' && !document.querySelector('input[name=sonarr_url]').getClientRects().length`,
+      ),
+      'A settings tab shows its own section only',
+    )
+    await key('ArrowRight')
+    assert.equal(
+      await evaluate(
+        `document.activeElement.getAttribute('aria-selected') + document.activeElement.textContent.trim()`,
+      ),
+      'trueRelease preferences',
+      'Arrow keys move between settings tabs',
+    )
+    await openSettingsTab('Downloads')
     assert.deepEqual(
       await evaluate(
         `[...document.querySelectorAll('input[name=download_mode]')].map(input => [input.closest('label').textContent.trim(), input.checked])`,
@@ -2314,7 +2337,7 @@ try {
     )
     assert.ok(
       await evaluate(
-        `document.querySelector('input[name=download_mode]').closest('[role=radiogroup]').closest('details').textContent.includes('Usenet-only mode needs a working SABnzbd connection.')`,
+        `document.querySelector('input[name=download_mode]').closest('[role=radiogroup]').parentElement.textContent.includes('Usenet-only mode needs a working SABnzbd connection.')`,
       ),
       'The warning sits with the download method choice',
     )
@@ -2333,8 +2356,7 @@ try {
     const configBefore = structuredClone(config)
     const overridesBefore = statusOverrides
     const savedBefore = saved.length
-    const settingsSection = title =>
-      `[...document.querySelectorAll('.configuration-disclosures > details')].find(details => details.querySelector('h2')?.textContent === '${title}')`
+    await openSettingsTab('Library sources')
     const sonarrScope = `[...document.querySelectorAll('section')].find(section => section.querySelector('h3')?.textContent === 'Sonarr').querySelector('details')`
     assert.ok(
       await evaluate(`${sonarrScope}.querySelector('summary').textContent.includes('All series')`),
@@ -2387,12 +2409,10 @@ try {
       `[...document.querySelectorAll('input[readonly]')].some(input => input.value.includes('/api/webhooks/sonarr/'))`,
     )
     assert.ok(
-      await evaluate(
-        `[...document.querySelectorAll('.configuration-disclosures > section span')].some(chip => chip.textContent === 'Sonarr 2Not tested')`,
-      ),
-      'The new instance reports its connection state with the library',
+      await evaluate(`document.querySelector('[id^="instance-"] header').textContent.includes('Configured')`),
+      'The new instance reports its connection state in its card',
     )
-    await evaluate(`${settingsSection('Release preferences')}.querySelector('summary').click()`)
+    await openSettingsTab('Release preferences')
     await wait(`document.querySelector('input[name=release_target_size]')?.getClientRects().length`)
     assert.deepEqual(
       await evaluate(`[...document.querySelectorAll('input[name=release_target_size]')].map(input => input.checked)`),
@@ -2403,24 +2423,35 @@ try {
     await fill('input[placeholder="No limit"]', '4')
     await fill('input[placeholder="Group A, Group B"]', 'BadGroup, Other')
     await wait(
-      `['Smallest release', 'Up to 4 GB per episode', '2 ignored'].every(fact => ${settingsSection('Release preferences')}.querySelector('summary').textContent.includes(fact))`,
+      `document.querySelectorAll('input[name=release_target_size]')[1].checked && document.querySelector('input[placeholder="No limit"]').value === '4'`,
     )
     assert.equal(
       await evaluate(`document.querySelector('input[placeholder="Group A, Group B"]').value`),
       'BadGroup, Other',
       'A typed list keeps its commas while it is edited',
     )
-    await evaluate(
-      `${settingsSection('Automation')}.open || ${settingsSection('Automation')}.querySelector('summary').click()`,
-    )
+    await openSettingsTab('Library sources')
+    await capture('settings-library-sources')
+    await openSettingsTab('Automation')
     await evaluate(`document.querySelector('[aria-labelledby="arr-status-tags-label"]').click()`)
     await wait(`document.querySelector('input[name=arr_tag_best]')`)
     assert.equal(await evaluate(`document.querySelector('input[name=arr_tag_best]').placeholder`), 'seadex-best')
     await fill('input[name=arr_tag_best]', 'Bad Tag')
     await wait(`document.body.textContent.includes('Use lowercase letters, digits, and hyphens only')`)
+    assert.ok(
+      await evaluate(
+        `[...document.querySelectorAll('[role=tab]')].find(tab => tab.textContent.includes('Automation')).textContent.includes('needs attention')`,
+      ),
+      'A settings tab with an invalid value says it needs attention',
+    )
+    await openSettingsTab('General')
     await click('Save configuration')
     await wait(`document.body.textContent.includes('Fix the status tag names before saving')`)
     assert.equal(saved.length, savedBefore, 'An invalid tag name is not saved')
+    assert.ok(
+      await evaluate(`document.querySelector('input[name=arr_tag_best]').getClientRects().length > 0`),
+      'Saving with an invalid tag name returns to its section',
+    )
     await fill('input[name=arr_tag_best]', 'top-release')
     await click('Save configuration')
     await wait(`document.body.textContent.includes('All configuration changes saved')`)
@@ -2474,6 +2505,7 @@ try {
     )
     await click('Undo')
     await wait(`document.querySelector('[id^="instance-"]') && !document.body.textContent.includes('Unsaved changes')`)
+    await openSettingsTab('Library sources')
     await capture('settings-instances-desktop')
     // The library says when its results predate the saved scope or preferences.
     config = configBefore
@@ -3252,11 +3284,13 @@ try {
     )
     const saveCount = saved.length
     await fill('input[name=qbittorrent_url]', 'not-a-url')
-    await evaluate(`document.querySelector('input[name=qbittorrent_url]').closest('details').open=false`)
+    await openSettingsTab('Library sources')
     await click('Save configuration')
     assert.ok(
-      await evaluate(`document.querySelector('input[name=qbittorrent_url]').closest('details').open`),
-      'Invalid fields open their collapsed settings section',
+      await evaluate(
+        `document.querySelector('input[name=qbittorrent_url]').getClientRects().length > 0 && document.activeElement === document.querySelector('input[name=qbittorrent_url]') && document.querySelector('[role=tab][aria-selected=true]').textContent.trim() === 'Downloads'`,
+      ),
+      'An invalid field brings its settings tab forward and takes focus',
     )
     assert.equal(saved.length, saveCount, 'Invalid hidden inputs cannot submit configuration')
     await fill('input[name=qbittorrent_url]', priorConfig.qbittorrent_url)

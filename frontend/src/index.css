@@ -911,6 +911,61 @@ details[open] > summary .disclosure-chevron {
   font-weight: 700;
 }
 
+/* Configuration sections switch from a tab strip that stays at the top of the
+   pane while a long section scrolls beneath it. */
+.configuration-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  transition:
+    background-color 160ms ease-out,
+    box-shadow 160ms ease-out;
+}
+.configuration-tabs[data-stuck] {
+  background-color: var(--color-canvas);
+  box-shadow: 0 10px 18px -14px rgb(0 0 0 / 0.7);
+}
+/* Phones already pin the operation center to the top of the pane; the strip scrolls with the page there. */
+@media (width < 900px) {
+  .configuration-tabs,
+  .configuration-tabs[data-stuck] {
+    position: relative;
+    background-color: transparent;
+    box-shadow: none;
+  }
+}
+.settings-tabs-scroller {
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+}
+.settings-tabs-scroller::-webkit-scrollbar {
+  display: none;
+}
+/* When tabs run past the strip's edge, fade that edge so the overflow reads as more to scroll. */
+.settings-tabs-scroller[data-fade-end] {
+  mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+}
+.settings-tabs-scroller[data-fade-start] {
+  mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent);
+}
+.settings-tabs-scroller[data-fade-start][data-fade-end] {
+  mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent);
+}
+.settings-tab:focus-visible {
+  outline-offset: -2px;
+}
+.settings-tab-indicator {
+  transition:
+    left 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    width 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .configuration-tabs,
+  .settings-tab-indicator {
+    transition: none;
+  }
+}
+
 /* Search keeps useful reading space before the desktop controls wrap. Query
    the pane width so the collapsed sidebar and enlarged text work naturally. */
 @media (min-width: 601px) {
@@ -1258,6 +1313,12 @@ details[open] > summary .disclosure-chevron {
   .app-page-header h1 {
     font-size: 1.5rem;
     line-height: 1.3;
+  }
+  .configuration-tabs,
+  .configuration-tabs[data-stuck] {
+    position: relative;
+    background-color: transparent;
+    box-shadow: none;
   }
   .connection-status:not([role]) {
     display: none;
