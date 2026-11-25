@@ -60,9 +60,12 @@ export interface ReleasePreferences {
 export interface Release {
   kind: 'best' | 'alt'
   part?: string
+  /** The SeaDex page that lists this release. */
   url?: string
   releaseGroup: string
   tracker: string
+  /** The release's own page on its tracker. */
+  tracker_url?: string
   quality: string
   tags: string[]
   dual_audio?: boolean

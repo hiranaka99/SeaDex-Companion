@@ -285,3 +285,39 @@ test('exhausted catalog retries preserve previous scan results and record useful
     setState(before)
   }
 })
+
+test('catalog releases link to their tracker page, resolving AnimeBytes paths against its site', async () => {
+  const torrent = (tracker: string, url: string, infoHash: string) => ({
+    tracker,
+    url,
+    infoHash,
+    releaseGroup: tracker,
+    isBest: true,
+    files: [{ name: `[${tracker}] Show - 01.mkv`, length: 1 }],
+  })
+  const best = await seadexBest({
+    loadPage: async () => ({
+      totalPages: 1,
+      items: [
+        {
+          alID: 7,
+          expand: {
+            trs: [
+              torrent('AB', '/torrents.php?id=3140&torrentid=951508', '<redacted>'),
+              torrent('Nyaa', 'https://nyaa.si/view/1188887', 'a'.repeat(40)),
+              torrent('Other', 'javascript:alert(1)', 'b'.repeat(40)),
+            ],
+          },
+        },
+      ],
+    }),
+  })
+  const links = Object.fromEntries(
+    best.get(7)!.seasons[0].candidates.map(candidate => [candidate.tracker, candidate.tracker_url]),
+  )
+  assert.deepEqual(links, {
+    AB: 'https://animebytes.tv/torrents.php?id=3140&torrentid=951508',
+    Nyaa: 'https://nyaa.si/view/1188887',
+    Other: undefined,
+  })
+})
