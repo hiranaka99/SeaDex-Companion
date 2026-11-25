@@ -43,8 +43,6 @@ interface Props {
   onRemove: (entry: DownloadEntry) => void
 }
 
-const bytesOrUnknown = (bytes: number) => (bytes > 0 ? formatBytes(bytes) : 'Size unavailable')
-
 const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() || path
 /** qBittorrent names a magnet by its hash until the metadata arrives. */
 const HASH_NAME = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i
@@ -222,19 +220,56 @@ export default function ReleaseDetails({
     : fileScope.approximateBytes !== null
       ? `~${formatBytes(fileScope.approximateBytes) || '0 B'}`
       : 'size unavailable'
-  const scopeLabel = fileScope.selected
-    ? `${fileScope.files.length} selected file${fileScope.files.length === 1 ? '' : 's'} · ${sizeLabel}`
-    : `Whole release · ${sizeLabel}`
+  const fileCount = `${fileScope.files.length} selected file${fileScope.files.length === 1 ? '' : 's'}`
+  const scopeLabel = fileScope.selected ? `${fileCount} · ${sizeLabel}` : `Whole release · ${sizeLabel}`
   const episodes = useMemo(() => episodeRangeLabel(fileScope.files.map(file => file.name)), [fileScope])
   /** Re-sending an owned release waits for a second click, so a duplicate download is never one stray tap away. */
   const [confirmingRedownload, setConfirmingRedownload] = useState(false)
+  const rowRef = useRef<HTMLElement>(null)
+  const downloadRef = useRef<HTMLButtonElement>(null)
   const confirmRef = useRef<HTMLButtonElement>(null)
+  const lowSpaceRef = useRef<HTMLButtonElement>(null)
+  const retryRef = useRef<HTMLButtonElement>(null)
+  /**
+   * Set when this row's own controls start a send or close an inline alert. Disabling or removing the button that had
+   * focus would otherwise drop keyboard focus to the page body, in the middle of a modal.
+   */
+  const keepFocus = useRef(false)
+  const focusIsHere = () => {
+    const current = document.activeElement
+    return !current || current === document.body || Boolean(rowRef.current?.contains(current))
+  }
+  // Each inline alert takes focus on its safe or next action, the way the re-download confirm always has.
   useEffect(() => {
     if (confirmingRedownload) confirmRef.current?.focus()
   }, [confirmingRedownload])
   useEffect(() => {
+    if (lowSpace && focusIsHere()) lowSpaceRef.current?.focus()
+  }, [lowSpace])
+  useEffect(() => {
+    if (sendError && keepFocus.current && focusIsHere()) retryRef.current?.focus()
+  }, [sendError])
+  useEffect(() => {
     if (!owned || inClient || complete) setConfirmingRedownload(false)
   }, [owned, inClient, complete])
+  useEffect(() => {
+    if (!keepFocus.current) return
+    const current = document.activeElement
+    // Focus already moved on: an alert took it, or the person went elsewhere.
+    if (current && current !== document.body && current !== rowRef.current) {
+      keepFocus.current = false
+      return
+    }
+    const button = downloadRef.current
+    if (button && !button.disabled) {
+      button.focus()
+      keepFocus.current = false
+    } else rowRef.current?.focus({ preventScroll: true })
+  })
+  const holdFocus = (action: () => void) => () => {
+    keepFocus.current = true
+    action()
+  }
 
   const catalogByHash = useMemo(
     () => new Map((rel.torrent_files || []).map(catalog => [catalog.hash.toLowerCase(), catalog.files])),
@@ -349,9 +384,11 @@ export default function ReleaseDetails({
    */
   const recommended =
     !owned && !rel.excluded_by && (rel.target === true || (isBest && !r.releases.some(other => other.target)))
+  // While an inline alert asks for a decision, the button it holds back steps aside so the alert leads.
+  const held = lowSpace !== null || confirmingRedownload
   const buttonTone = complete
     ? 'border-good/40 bg-good/12 text-good'
-    : disabled
+    : disabled || held
       ? 'border-line bg-panel-raised text-muted'
       : owned
         ? 'border-line bg-transparent text-muted enabled:hover:bg-panel-raised enabled:hover:text-ink'
@@ -362,13 +399,35 @@ export default function ReleaseDetails({
   const usenetCategory = r.arr === 'Sonarr' ? config?.sabnzbd_sonarr_category : config?.sabnzbd_radarr_category
   const destination = chosen === 'usenet' ? 'SABnzbd' : 'qBittorrent'
   const canSend = !inClient && !complete && protocolUsable && (chosen === 'usenet' || rel.torrent_available)
-  // Where the files go and what they cover, next to the size, so the send is decided from one line.
+  // What the send covers and where it goes, under the size, so the send is decided from one place.
   const sendFacts = canSend
-    ? [chosen === 'torrent' ? episodes : null, `to ${destination}`, 'free space checked on send']
+    ? [
+        chosen === 'usenet' ? 'Whole Usenet source' : fileScope.selected ? fileCount : 'Whole release',
+        chosen === 'torrent' ? episodes : null,
+        `to ${destination}`,
+        'free space checked on send',
+      ]
         .filter(Boolean)
         .join(' · ')
     : ''
   const usenetBytes = currentAvailability?.hashes[0]?.total_bytes || 0
+  /** The two figures a send is decided on: what it downloads, and how the library grows if it replaces your files. */
+  const downloadSize =
+    chosen === 'usenet'
+      ? usenetBytes
+        ? `~${formatBytes(usenetBytes)}`
+        : 'Size unavailable'
+      : sizeLabel.replace(/^s/, 'S')
+  const libraryChange = !owned && !verified && rel.size > 0 && localSize > 0 ? delta || 'No change' : ''
+  /** A release SeaDex lists without a public magnet: it can only be fetched by hand from its tracker. */
+  const manualOnly = chosen === 'torrent' && !rel.torrent_available && !inClient && !complete && !usenetUsable
+  const tracker = rel.tracker.trim()
+  const manualSource = rel.url
+    ? { href: rel.url, label: `Open on ${tracker || 'the tracker'}` }
+    : (() => {
+        const href = (r.urls || []).find(source => source.label === (rel.part || 'seadex.moe'))?.url || r.url
+        return href ? { href, label: 'Open on SeaDex' } : null
+      })()
   const lowSpaceChecks = lowSpace
     ? lowSpace.checks.filter(check =>
         lowSpace.reason === 'low' ? check.sufficient === false : check.free_bytes === null,
@@ -378,6 +437,8 @@ export default function ReleaseDetails({
 
   return (
     <article
+      ref={rowRef}
+      tabIndex={-1}
       className={cx(
         'release-row min-w-0 rounded-xl border p-4 max-[600px]:p-3.5',
         // Green means "you have this": SeaDex's pick that is still missing stays neutral, and its button leads.
@@ -392,8 +453,12 @@ export default function ReleaseDetails({
       data-owned={owned || undefined}
     >
       <div className="mb-3 flex flex-wrap items-center gap-2">
+        {/* SeaDex's ranking reads as a label of its own, apart from the group name it qualifies. */}
         <span
-          className={cx('release-kind shrink-0 text-xs', isBest ? 'font-bold text-ink' : 'font-semibold text-muted')}
+          className={cx(
+            'release-kind shrink-0 rounded-md border px-1.5 py-px text-xs',
+            isBest ? 'border-line-strong font-bold text-ink' : 'border-line font-semibold text-muted',
+          )}
         >
           {isBest ? 'Best' : 'Alternative'}
         </span>
@@ -405,11 +470,13 @@ export default function ReleaseDetails({
               Owned
             </span>
           )}
+          {/* Your own preference, not a SeaDex tag: plain accent text with a glyph rather than another chip. */}
           {targeted && (
             <span
-              className="shrink-0 rounded-md border border-accent/40 bg-accent/12 px-2 py-0.5 text-xs font-semibold text-ink"
+              className="release-target inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-accent-bright"
               title="Your release preferences pick this release for bulk downloads"
             >
+              <Icon name="sparkles" size={13} />
               Your target
               <span className="sr-only">: your release preferences pick this release for bulk downloads</span>
             </span>
@@ -466,23 +533,6 @@ export default function ReleaseDetails({
           </span>
         </p>
       )}
-      <dl className="release-sizes m-0 mb-3 flex flex-wrap gap-x-6 gap-y-2 text-xs wrap-anywhere">
-        <div>
-          <dt className="mb-1 text-muted">Current files</dt>
-          <dd className="m-0 font-semibold tabular-nums text-ink">{bytesOrUnknown(localSize)}</dd>
-        </div>
-        <div>
-          {/* The whole release, as SeaDex lists it; what a send downloads is stated next to the button. */}
-          <dt className="mb-1 text-muted">Full release</dt>
-          <dd className="m-0 font-semibold tabular-nums text-ink">{bytesOrUnknown(rel.size)}</dd>
-        </div>
-        {rel.size > 0 && localSize > 0 && (
-          <div>
-            <dt className="mb-1 text-muted">Release size change</dt>
-            <dd className="m-0 font-semibold tabular-nums text-ink">{delta || 'No change'}</dd>
-          </div>
-        )}
-      </dl>
       {usenetEnabled && (
         <div className="mb-3 flex flex-wrap items-center gap-2 border-t border-line pt-2.5 text-xs">
           <span
@@ -580,72 +630,119 @@ export default function ReleaseDetails({
               </button>
             </div>
           )}
-          {canSend && <p className="m-0 mb-0.5 text-xs text-muted">Download size</p>}
-          <p className="m-0 text-sm font-semibold text-ink wrap-anywhere">
-            {complete
-              ? statusCopy
-              : inClient
-                ? `${phaseLabel(active[0].phase)} in ${clientName(active[0].client)}`
-                : chosen === 'usenet'
-                  ? `Whole Usenet source${usenetBytes ? ` · ~${formatBytes(usenetBytes)}` : ''}`
-                  : !rel.torrent_available && usenetUsable
-                    ? 'Usenet only — individual download unavailable'
-                    : !rel.torrent_available
-                      ? 'Individual download unavailable'
-                      : scopeLabel}
-          </p>
-          {sendFacts && <p className="release-send-facts mt-1 mb-0 text-xs text-muted wrap-anywhere">{sendFacts}</p>}
+          {complete || inClient ? (
+            <p className="m-0 text-sm font-semibold text-ink wrap-anywhere">
+              {complete ? statusCopy : `${phaseLabel(active[0].phase)} in ${clientName(active[0].client)}`}
+            </p>
+          ) : manualOnly ? (
+            <div className="release-manual">
+              <p className="m-0 text-sm font-semibold text-ink">Manual download only</p>
+              <p className="mt-1 mb-0 max-w-[60ch] text-xs text-muted wrap-anywhere">
+                {tracker ? `${tracker} is a private tracker` : 'This release is on a private tracker'}, so there is no
+                public magnet to send to qBittorrent. Download it from the tracker yourself
+                {rel.size > 0 ? ` (${formatBytes(rel.size)})` : ''}.
+              </p>
+              {usenetEnabled && manualSource && (
+                <a
+                  className="touch-target mt-1 inline-flex min-h-8 items-center gap-1 text-xs font-semibold text-accent-bright"
+                  href={manualSource.href}
+                  target="_blank"
+                  rel="noopener"
+                >
+                  {manualSource.label}
+                  <Icon name="chevron-right" size={14} />
+                  <span className="sr-only"> (new tab)</span>
+                </a>
+              )}
+            </div>
+          ) : chosen === 'torrent' && !rel.torrent_available ? (
+            <p className="m-0 text-sm font-semibold text-ink wrap-anywhere">
+              Usenet only — individual download unavailable
+            </p>
+          ) : (
+            <>
+              <dl className="release-sizes m-0 flex flex-wrap gap-x-6 gap-y-2 wrap-anywhere">
+                <div>
+                  <dt className="mb-0.5 text-xs text-muted">Download size</dt>
+                  <dd className="m-0 text-sm font-semibold tabular-nums text-ink">{downloadSize}</dd>
+                </div>
+                {libraryChange && (
+                  <div>
+                    <dt className="mb-0.5 text-xs text-muted">Library change</dt>
+                    <dd className="m-0 text-sm font-semibold tabular-nums text-ink">{libraryChange}</dd>
+                  </div>
+                )}
+              </dl>
+              {sendFacts && (
+                <p className="release-send-facts mt-1.5 mb-0 text-xs text-muted wrap-anywhere">{sendFacts}</p>
+              )}
+            </>
+          )}
           {chosen === 'usenet' && (
             <p className="mt-1 mb-0 text-xs text-muted">
               Usenet sources cannot be split;{' '}
               {usenetCategory ? `category: ${usenetCategory}` : 'the configured Usenet category will be used'}.
             </p>
           )}
-          {chosen === 'torrent' && !rel.torrent_available && (
-            <p className="mt-1 mb-0 text-xs text-muted">A public magnet is not available for this release.</p>
-          )}
           {chosen === 'torrent' && !inClient && !complete && rel.torrent_available && !fileScope.exact && (
             <p className="mt-1 mb-0 text-xs text-muted">
               {fileScope.selected
-                ? 'Selected-file size is unavailable. The full release size is shown above.'
+                ? `Selected-file size is unavailable.${rel.size > 0 ? ` The full release is ${formatBytes(rel.size)}.` : ''}`
                 : fileScope.approximateBytes !== null
                   ? 'Approximate release estimate; file metadata is unavailable.'
                   : 'Download size is unavailable.'}
             </p>
           )}
         </div>
-        {!inClient && (
-          <button
-            type="button"
-            className={cx(
-              buttonBase,
-              'release-download-button min-h-11 min-w-0 max-w-full justify-center px-3 text-xs max-[600px]:w-full',
-              buttonTone,
+        {manualOnly && !usenetEnabled
+          ? manualSource && (
+              <a
+                className={cx(
+                  buttonBase,
+                  'release-manual-link min-h-11 min-w-0 max-w-full justify-center border-line-strong bg-panel px-3 text-xs text-ink hover:bg-panel-raised hover:no-underline max-[600px]:w-full',
+                )}
+                href={manualSource.href}
+                target="_blank"
+                rel="noopener"
+              >
+                {manualSource.label}
+                <Icon name="chevron-right" size={15} />
+                <span className="sr-only"> (new tab)</span>
+              </a>
+            )
+          : !inClient && (
+              <button
+                ref={downloadRef}
+                type="button"
+                className={cx(
+                  buttonBase,
+                  'release-download-button min-h-11 min-w-0 max-w-full justify-center px-3 text-xs max-[600px]:w-full',
+                  buttonTone,
+                )}
+                disabled={disabled || sendLocked || lowSpace !== null || confirmingRedownload}
+                aria-busy={sending}
+                title={buttonTitle}
+                // The accessible name starts with the visible label so voice control can target it.
+                aria-label={`${buttonLabel} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`}
+                aria-description={buttonTitle}
+                data-recommended={recommended || undefined}
+                onClick={owned ? () => setConfirmingRedownload(true) : holdFocus(onDownload)}
+              >
+                {sending ? (
+                  <span
+                    className="size-4 shrink-0 animate-spin rounded-full border-2 border-current/30 border-t-current"
+                    aria-hidden="true"
+                  />
+                ) : complete ? (
+                  <Icon name="check" size={17} />
+                ) : (
+                  <Icon name="download" size={17} />
+                )}
+                <span className="min-w-0 wrap-anywhere">
+                  {sending ? `Sending to ${chosen === 'usenet' ? 'SABnzbd' : 'qBittorrent'}…` : buttonLabel}
+                </span>
+              </button>
             )}
-            disabled={disabled || sendLocked || lowSpace !== null || confirmingRedownload}
-            aria-busy={sending}
-            title={buttonTitle}
-            // The accessible name starts with the visible label so voice control can target it.
-            aria-label={`${buttonLabel} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`}
-            aria-description={buttonTitle}
-            data-recommended={recommended || undefined}
-            onClick={owned ? () => setConfirmingRedownload(true) : onDownload}
-          >
-            {sending ? (
-              <span
-                className="size-4 shrink-0 animate-spin rounded-full border-2 border-current/30 border-t-current"
-                aria-hidden="true"
-              />
-            ) : complete ? (
-              <Icon name="check" size={17} />
-            ) : (
-              <Icon name="download" size={17} />
-            )}
-            <span className="min-w-0 wrap-anywhere">
-              {sending ? `Sending to ${chosen === 'usenet' ? 'SABnzbd' : 'qBittorrent'}…` : buttonLabel}
-            </span>
-          </button>
-        )}
       </div>
       {lowSpace && (
         <div className="release-alert release-alert-warn mt-3" role="alert">
@@ -672,7 +769,7 @@ export default function ReleaseDetails({
                 buttonBase,
                 'min-h-11 border-warn/45 bg-warn/12 px-3 text-xs text-warn enabled:hover:bg-warn/20',
               )}
-              onClick={onSendAnyway}
+              onClick={holdFocus(onSendAnyway)}
               disabled={sendLocked}
             >
               <Icon name="download" size={15} />
@@ -684,7 +781,8 @@ export default function ReleaseDetails({
                 buttonBase,
                 'min-h-11 border-line bg-panel px-3 text-xs text-ink enabled:hover:bg-panel-raised',
               )}
-              onClick={onCancelLowSpace}
+              ref={lowSpaceRef}
+              onClick={holdFocus(onCancelLowSpace)}
             >
               Cancel
             </button>
@@ -711,10 +809,10 @@ export default function ReleaseDetails({
                 'min-h-11 border-line-strong bg-panel px-3 text-xs text-ink enabled:hover:bg-panel-raised',
               )}
               disabled={sendLocked || disabled}
-              onClick={() => {
+              onClick={holdFocus(() => {
                 setConfirmingRedownload(false)
                 onDownload()
-              }}
+              })}
             >
               <Icon name="download" size={15} />
               Re-download anyway
@@ -725,7 +823,7 @@ export default function ReleaseDetails({
                 buttonBase,
                 'min-h-11 border-transparent bg-transparent px-3 text-xs text-muted enabled:hover:text-ink',
               )}
-              onClick={() => setConfirmingRedownload(false)}
+              onClick={holdFocus(() => setConfirmingRedownload(false))}
             >
               Keep current files
             </button>
@@ -746,7 +844,8 @@ export default function ReleaseDetails({
                 buttonBase,
                 'min-h-11 border-line-strong bg-panel px-3 text-xs text-ink enabled:hover:bg-panel-raised',
               )}
-              onClick={onDownload}
+              ref={retryRef}
+              onClick={holdFocus(onDownload)}
               disabled={sendLocked || disabled}
             >
               <Icon name="refresh" size={15} />
@@ -758,14 +857,14 @@ export default function ReleaseDetails({
                 buttonBase,
                 'min-h-11 border-transparent bg-transparent px-3 text-xs text-muted enabled:hover:text-ink',
               )}
-              onClick={onDismissSendError}
+              onClick={holdFocus(onDismissSendError)}
             >
               Dismiss
             </button>
           </div>
         </div>
       )}
-      {fileScope.files.length > 0 && !inClient && !complete && chosen !== 'usenet' && (
+      {fileScope.files.length > 0 && !inClient && !complete && chosen !== 'usenet' && !manualOnly && (
         <details className="mt-3 min-w-0">
           <summary className="touch-target flex min-h-8 cursor-pointer list-none items-center gap-1.5 rounded-md text-xs font-semibold text-accent-bright [&::-webkit-details-marker]:hidden">
             <Icon name="chevron-right" size={14} className="disclosure-chevron" />
@@ -785,6 +884,13 @@ export default function ReleaseDetails({
               </li>
             ))}
           </ul>
+          {/* The release as SeaDex lists it, kept here because only the selected files download. */}
+          {fileScope.selected && rel.size > 0 && (!fileScope.exact || fileScope.bytes !== rel.size) && (
+            <p className="mt-2 mb-0 text-xs text-muted">
+              Full release · <span className="tabular-nums">{formatBytes(rel.size)}</span>. Only the selected files
+              download.
+            </p>
+          )}
         </details>
       )}
       {transfers.length > 1 && (

@@ -1,6 +1,6 @@
 import { errorMessage } from '../../../shared/errors.js'
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ResultItem, Config, Status, GroupedCard, CardStatus } from '../types'
+import { ResultItem, Config, Status, GroupedCard, CardStatus, LibraryFilterRequest } from '../types'
 import {
   groupResults,
   seasonLabel,
@@ -52,6 +52,8 @@ interface Props {
   onBulkOperationChange: (operation: BulkOperationState) => void
   operationsVisible: boolean
   onResultsChanged: () => Promise<void>
+  /** Opens the library with one status filter, e.g. from a scan history total. */
+  filterRequest?: (LibraryFilterRequest & { id: number }) | null
 }
 
 const PAGE_SIZE = 60
@@ -244,6 +246,7 @@ export default function AnimeTab({
   onBulkOperationChange,
   operationsVisible,
   onResultsChanged,
+  filterRequest,
 }: Props) {
   const { filters, update, reset: resetFilters } = useLibraryFilters(active)
   const { search, source: arr, status: statusFilter, sort, episodes: showEpisodes, unseen: showUnseen } = filters
@@ -266,6 +269,12 @@ export default function AnimeTab({
   useEffect(() => {
     if (!openResultKey) setPage(0)
   }, [search, arr, statusFilter, sort, showHidden, showUnseen, showEpisodes])
+
+  useEffect(() => {
+    if (!filterRequest) return
+    resetFilters()
+    update('status', filterRequest.status)
+  }, [filterRequest])
 
   useEffect(() => {
     if (!openResultKey) return
