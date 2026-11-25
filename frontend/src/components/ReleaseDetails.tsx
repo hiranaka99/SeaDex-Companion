@@ -1,16 +1,16 @@
 import { normalizeTorrentPath as normalizeFile, releaseFilesMatch, releaseOwned } from '../../../shared/download-plan'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Config, Release, ResultItem } from '../types'
 import { formatBytes, formatEta, providerNames, seasonLabel, sizeDelta } from '../utils'
 import { buttonBase, cx, downloadTextTone } from '../styles'
 import Icon from './Icons'
 import { DownloadActions, ImportStatusLine, clientName, phaseLabel, type DownloadEntry } from './DownloadsPanel'
 import { estimateDownloads } from '../../../shared/download-estimate'
-import type { DiskSpaceCheck, DownloadPhase, DownloadProtocol, UsenetAvailabilityResult } from '../api'
+import type { DownloadPhase, DownloadProtocol, UsenetAvailabilityResult } from '../api'
 import { DiskLine } from './PlanReview'
-import type { DetailsDownloadState } from '../useCardDownloads'
-import { releaseIdentity } from '../../../shared/releases'
-import { displayDateTime } from '../datetime'
+import type { DetailsDownloadState, LowSpaceHold } from '../useCardDownloads'
+import { episodeRangeLabel, releaseIdentity } from '../../../shared/releases'
+import { displayDateTimeMinutes } from '../datetime'
 import { availabilityErrors } from '../usenet-observation'
 
 interface Props {
@@ -31,8 +31,8 @@ interface Props {
   onProtocol: (protocol: DownloadProtocol) => void
   onRefreshAvailability: () => void
   onDownload: () => void
-  /** Disk checks of a send that stopped because a client reported too little free space. */
-  lowSpace: DiskSpaceCheck[] | null
+  /** A send that stopped because a client reported too little free space, or no free space at all. */
+  lowSpace: Pick<LowSpaceHold, 'reason' | 'checks'> | null
   onSendAnyway: () => void
   onCancelLowSpace: () => void
   /** Why the last send of this release failed. */
@@ -88,7 +88,8 @@ function describeUsenet(
   if (row.aggregate === 'available') {
     const foundOn = providerNames(row.hashes.map(item => item.provider))
     const size = hash?.total_bytes ? ` · ~${formatBytes(hash.total_bytes).replace(' ', '\u00a0')}` : ''
-    const extras = hash?.files_known && hash.file_count ? ` · ${hash.file_count} file source` : ''
+    const extras =
+      hash?.files_known && hash.file_count ? ` · ${hash.file_count} file${hash.file_count === 1 ? '' : 's'}` : ''
     return {
       usable: true,
       label: `Usenet source found${foundOn.length ? ` on ${foundOn.join(' and ')}` : ''}${size}${extras}`,
@@ -137,7 +138,7 @@ function describeUsenet(
   return {
     usable: false,
     label: 'Usenet not set up',
-    detail: 'Enable an Usenet source (AnimeTosho or AmeNZB) in Settings.',
+    detail: 'Enable a Usenet source (AnimeTosho or AmeNZB) in Settings.',
   }
 }
 
@@ -224,6 +225,16 @@ export default function ReleaseDetails({
   const scopeLabel = fileScope.selected
     ? `${fileScope.files.length} selected file${fileScope.files.length === 1 ? '' : 's'} · ${sizeLabel}`
     : `Whole release · ${sizeLabel}`
+  const episodes = useMemo(() => episodeRangeLabel(fileScope.files.map(file => file.name)), [fileScope])
+  /** Re-sending an owned release waits for a second click, so a duplicate download is never one stray tap away. */
+  const [confirmingRedownload, setConfirmingRedownload] = useState(false)
+  const confirmRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (confirmingRedownload) confirmRef.current?.focus()
+  }, [confirmingRedownload])
+  useEffect(() => {
+    if (!owned || inClient || complete) setConfirmingRedownload(false)
+  }, [owned, inClient, complete])
 
   const catalogByHash = useMemo(
     () => new Map((rel.torrent_files || []).map(catalog => [catalog.hash.toLowerCase(), catalog.files])),
@@ -349,26 +360,58 @@ export default function ReleaseDetails({
           : 'border-line-strong bg-panel text-ink enabled:hover:bg-panel-raised'
   const statusCopy = complete ? `Download completed in ${clientName(transfers[0].client)}` : ''
   const usenetCategory = r.arr === 'Sonarr' ? config?.sabnzbd_sonarr_category : config?.sabnzbd_radarr_category
+  const destination = chosen === 'usenet' ? 'SABnzbd' : 'qBittorrent'
+  const canSend = !inClient && !complete && protocolUsable && (chosen === 'usenet' || rel.torrent_available)
+  // Where the files go and what they cover, next to the size, so the send is decided from one line.
+  const sendFacts = canSend
+    ? [chosen === 'torrent' ? episodes : null, `to ${destination}`, 'free space checked on send']
+        .filter(Boolean)
+        .join(' · ')
+    : ''
+  const usenetBytes = currentAvailability?.hashes[0]?.total_bytes || 0
+  const lowSpaceChecks = lowSpace
+    ? lowSpace.checks.filter(check =>
+        lowSpace.reason === 'low' ? check.sufficient === false : check.free_bytes === null,
+      )
+    : []
+  const silentClients = [...new Set(lowSpaceChecks.map(check => clientName(check.client)))]
 
   return (
     <article
       className={cx(
         'release-row min-w-0 rounded-xl border p-4 max-[600px]:p-3.5',
-        inClient ? 'border-accent bg-accent/5' : isBest ? 'border-good/35 bg-good/5' : 'border-line bg-panel',
+        // Green means "you have this": SeaDex's pick that is still missing stays neutral, and its button leads.
+        inClient
+          ? 'border-accent bg-accent/5'
+          : owned
+            ? 'border-good/35 bg-good/5'
+            : recommended
+              ? 'border-line-strong bg-panel'
+              : 'border-line bg-panel',
       )}
+      data-owned={owned || undefined}
     >
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <span className={cx('shrink-0 text-xs font-bold', isBest ? 'text-good' : 'text-muted')}>
-          {isBest ? 'BEST' : 'ALTERNATIVE'}
+        <span
+          className={cx('release-kind shrink-0 text-xs', isBest ? 'font-bold text-ink' : 'font-semibold text-muted')}
+        >
+          {isBest ? 'Best' : 'Alternative'}
         </span>
         <div className="release-identity flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
           <span className="max-w-full text-sm font-semibold text-ink wrap-anywhere">{rel.releaseGroup}</span>
+          {owned && !verified && (
+            <span className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-good">
+              <Icon name="check" size={13} />
+              Owned
+            </span>
+          )}
           {targeted && (
             <span
               className="shrink-0 rounded-md border border-accent/40 bg-accent/12 px-2 py-0.5 text-xs font-semibold text-ink"
               title="Your release preferences pick this release for bulk downloads"
             >
               Your target
+              <span className="sr-only">: your release preferences pick this release for bulk downloads</span>
             </span>
           )}
           {tags.length > 0 && (
@@ -429,15 +472,8 @@ export default function ReleaseDetails({
           <dd className="m-0 font-semibold tabular-nums text-ink">{bytesOrUnknown(localSize)}</dd>
         </div>
         <div>
-          <dt className="mb-1 text-muted">
-            {rel.part
-              ? 'Cour release'
-              : r.arr === 'Radarr' || r.season === 0
-                ? 'Movie release'
-                : r.season !== null
-                  ? 'Season release'
-                  : 'Release'}
-          </dt>
+          {/* The whole release, as SeaDex lists it; what a send downloads is stated next to the button. */}
+          <dt className="mb-1 text-muted">Full release</dt>
           <dd className="m-0 font-semibold tabular-nums text-ink">{bytesOrUnknown(rel.size)}</dd>
         </div>
         {rel.size > 0 && localSize > 0 && (
@@ -479,7 +515,9 @@ export default function ReleaseDetails({
           {currentAvailability?.checked_at && (
             <span className="basis-full text-muted">
               {currentAvailability.stale ? 'Last-known cached result' : 'Cached result'} · Last checked{' '}
-              <time dateTime={currentAvailability.checked_at}>{displayDateTime(currentAvailability.checked_at)}</time>
+              <time dateTime={currentAvailability.checked_at}>
+                {displayDateTimeMinutes(currentAvailability.checked_at)}
+              </time>
               {availabilityRefreshing ? ' · Refreshing…' : ''}
             </span>
           )}
@@ -542,19 +580,21 @@ export default function ReleaseDetails({
               </button>
             </div>
           )}
+          {canSend && <p className="m-0 mb-0.5 text-xs text-muted">Download size</p>}
           <p className="m-0 text-sm font-semibold text-ink wrap-anywhere">
             {complete
               ? statusCopy
               : inClient
                 ? `${phaseLabel(active[0].phase)} in ${clientName(active[0].client)}`
                 : chosen === 'usenet'
-                  ? 'Whole Usenet source'
+                  ? `Whole Usenet source${usenetBytes ? ` · ~${formatBytes(usenetBytes)}` : ''}`
                   : !rel.torrent_available && usenetUsable
                     ? 'Usenet only — individual download unavailable'
                     : !rel.torrent_available
                       ? 'Individual download unavailable'
                       : scopeLabel}
           </p>
+          {sendFacts && <p className="release-send-facts mt-1 mb-0 text-xs text-muted wrap-anywhere">{sendFacts}</p>}
           {chosen === 'usenet' && (
             <p className="mt-1 mb-0 text-xs text-muted">
               Usenet sources cannot be split;{' '}
@@ -567,7 +607,7 @@ export default function ReleaseDetails({
           {chosen === 'torrent' && !inClient && !complete && rel.torrent_available && !fileScope.exact && (
             <p className="mt-1 mb-0 text-xs text-muted">
               {fileScope.selected
-                ? 'Selected-file size is unavailable. Release size is shown above.'
+                ? 'Selected-file size is unavailable. The full release size is shown above.'
                 : fileScope.approximateBytes !== null
                   ? 'Approximate release estimate; file metadata is unavailable.'
                   : 'Download size is unavailable.'}
@@ -582,14 +622,14 @@ export default function ReleaseDetails({
               'release-download-button min-h-11 min-w-0 max-w-full justify-center px-3 text-xs max-[600px]:w-full',
               buttonTone,
             )}
-            disabled={disabled || sendLocked || lowSpace !== null}
+            disabled={disabled || sendLocked || lowSpace !== null || confirmingRedownload}
             aria-busy={sending}
             title={buttonTitle}
             // The accessible name starts with the visible label so voice control can target it.
             aria-label={`${buttonLabel} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`}
             aria-description={buttonTitle}
             data-recommended={recommended || undefined}
-            onClick={onDownload}
+            onClick={owned ? () => setConfirmingRedownload(true) : onDownload}
           >
             {sending ? (
               <span
@@ -611,17 +651,19 @@ export default function ReleaseDetails({
         <div className="release-alert release-alert-warn mt-3" role="alert">
           <p className="m-0 flex items-start gap-1.5 text-sm font-semibold text-warn">
             <Icon name="alert" size={15} className="mt-0.5 shrink-0" />
-            <span>Not enough free space for this release</span>
+            <span>
+              {lowSpace.reason === 'low' ? 'Not enough free space for this release' : 'Free space could not be checked'}
+            </span>
           </p>
           <ul className="mt-2 mb-0 list-none divide-y divide-line p-0">
-            {lowSpace
-              .filter(check => check.sufficient === false)
-              .map((check, index) => (
-                <DiskLine key={`${check.client}-${index}`} check={check} />
-              ))}
+            {lowSpaceChecks.map((check, index) => (
+              <DiskLine key={`${check.client}-${index}`} check={check} />
+            ))}
           </ul>
           <p className="mt-2 mb-0 text-xs text-muted">
-            The download stalls when the disk fills up and resumes once space is freed.
+            {lowSpace.reason === 'low'
+              ? 'The download stalls when the disk fills up and resumes once space is freed.'
+              : `${silentClients.join(' and ') || 'The download client'} did not report free space, so the fit cannot be confirmed. The download stalls if the disk fills up.`}
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <button
@@ -645,6 +687,47 @@ export default function ReleaseDetails({
               onClick={onCancelLowSpace}
             >
               Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {confirmingRedownload && (
+        <div className="release-alert release-alert-neutral mt-3" role="alert">
+          <p className="m-0 flex items-start gap-1.5 text-sm font-semibold text-ink">
+            <Icon name="info" size={15} className="mt-0.5 shrink-0" />
+            <span>You already have this release</span>
+          </p>
+          <p className="mt-1 mb-0 text-xs text-muted wrap-anywhere">
+            Sending it again downloads{' '}
+            {chosen === 'usenet' ? 'the whole Usenet source' : scopeLabel.replace(/^./, first => first.toLowerCase())}{' '}
+            to {destination} alongside the files you have.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              ref={confirmRef}
+              type="button"
+              className={cx(
+                buttonBase,
+                'min-h-11 border-line-strong bg-panel px-3 text-xs text-ink enabled:hover:bg-panel-raised',
+              )}
+              disabled={sendLocked || disabled}
+              onClick={() => {
+                setConfirmingRedownload(false)
+                onDownload()
+              }}
+            >
+              <Icon name="download" size={15} />
+              Re-download anyway
+            </button>
+            <button
+              type="button"
+              className={cx(
+                buttonBase,
+                'min-h-11 border-transparent bg-transparent px-3 text-xs text-muted enabled:hover:text-ink',
+              )}
+              onClick={() => setConfirmingRedownload(false)}
+            >
+              Keep current files
             </button>
           </div>
         </div>
@@ -684,8 +767,8 @@ export default function ReleaseDetails({
       )}
       {fileScope.files.length > 0 && !inClient && !complete && chosen !== 'usenet' && (
         <details className="mt-3 min-w-0">
-          <summary className="touch-target flex min-h-8 cursor-pointer items-center gap-1.5 rounded-md text-xs font-semibold text-accent-bright">
-            <Icon name="chevron-right" size={14} />
+          <summary className="touch-target flex min-h-8 cursor-pointer list-none items-center gap-1.5 rounded-md text-xs font-semibold text-accent-bright [&::-webkit-details-marker]:hidden">
+            <Icon name="chevron-right" size={14} className="disclosure-chevron" />
             {fileScope.selected ? 'View' : 'Inspect'} {fileScope.files.length}{' '}
             {fileScope.selected ? 'selected' : 'release'} file{fileScope.files.length === 1 ? '' : 's'}
           </summary>
@@ -745,9 +828,9 @@ export default function ReleaseDetails({
                 .join(' · ')}
             </p>
           )}
-          <details className="group mt-2 min-w-0" open={overall.attention > 0 || undefined}>
+          <details className="mt-2 min-w-0" open={overall.attention > 0 || undefined}>
             <summary className="touch-target flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md text-xs font-semibold text-accent-bright [&::-webkit-details-marker]:hidden">
-              <Icon name="chevron-right" size={14} className="transition-transform duration-150 group-open:rotate-90" />
+              <Icon name="chevron-right" size={14} className="disclosure-chevron" />
               {transfers.length} torrents
               {overall.attention > 0 && (
                 <span className="font-normal text-warn">· {overall.attention} need attention</span>

@@ -1,14 +1,14 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { releaseOwned } from '../../../shared/download-plan'
 import type { Config, ResultItem } from '../types'
 import { currentReleases, releaseCours, releaseQuality } from '../release-status'
 import { buttonBase, cx } from '../styles'
 import { IDLE_DOWNLOAD, sendKey, type LowSpaceHold, type SeasonAvailability } from '../useCardDownloads'
 import Icon from './Icons'
+import DetailsQuality, { QUALITY_ICONS, QUALITY_TONES } from './DetailsQuality'
 import type { DownloadEntry } from './DownloadsPanel'
 import ReleaseDetails from './ReleaseDetails'
 import type { DetailsDownloadState } from '../useCardDownloads'
-import DetailsQuality from './DetailsQuality'
 import type { DownloadProtocol } from '../api'
 import { releaseIdentity } from '../../../shared/releases'
 import { PREFERENCE_BLOCKED_REASON } from '../../../shared/settings'
@@ -25,8 +25,8 @@ function RecommendationNotes({ notes }: { notes?: string | null }) {
   if (!notes || notes === '-') return null
   return (
     <details className="release-notes">
-      <summary className="touch-target flex cursor-pointer items-center gap-1.5 py-2 text-xs font-semibold text-accent-bright">
-        <Icon name="chevron-right" size={14} />
+      <summary className="touch-target flex cursor-pointer list-none items-center gap-1.5 py-2 text-xs font-semibold text-accent-bright">
+        <Icon name="chevron-right" size={14} className="disclosure-chevron" />
         Why these releases?
       </summary>
       <div className="max-w-[70ch] pb-3 whitespace-pre-line text-sm leading-relaxed text-muted wrap-anywhere">
@@ -38,7 +38,7 @@ function RecommendationNotes({ notes }: { notes?: string | null }) {
 
 function CurrentRelease({ groups, unscoped = false }: { groups: string[]; unscoped?: boolean }) {
   return (
-    <span className="details-current-release">
+    <span className="details-current-release details-clamp" title={groups.join(', ') || undefined}>
       <span>{unscoped ? 'Season files: ' : 'Your release: '}</span>
       <strong>{groups.length ? groups.join(', ') : 'None found'}</strong>
       {unscoped && <span> · cour ownership unconfirmed</span>}
@@ -74,6 +74,11 @@ interface Props {
   onToggleExclusion: (part: string, excluded: boolean) => void
   onCorrectMatch: () => void
   onCorrectTitleMatch: () => void
+  /** Starts expanded: the only season of a title, or one that needs a decision. Later changes never collapse it. */
+  defaultOpen: boolean
+  /** The next season that needs a decision, reached from the end of this one. */
+  nextAction: { id: string; label: string } | null
+  onJump: (id: string) => void
 }
 
 export default function DetailsSeason({
@@ -101,8 +106,12 @@ export default function DetailsSeason({
   onToggleExclusion,
   onCorrectMatch,
   onCorrectTitleMatch,
+  defaultOpen,
+  nextAction,
+  onJump,
 }: Props) {
   const root = useRef<HTMLElement>(null)
+  const [initiallyOpen] = useState(defaultOpen)
   const groups = releaseCours(r)
   const split = groups.some(group => group.part)
   const seasonName = detailsSeasonName(r)
@@ -140,31 +149,39 @@ export default function DetailsSeason({
   const exclusion = (part = '') => {
     const excluded = ignored || Boolean(part && r.excluded_parts?.includes(part))
     const name = part || seasonName
+    const blockedReason =
+      part && ignored
+        ? 'Restore the season to change individual cour rules.'
+        : !r.library_key
+          ? 'Run a new scan to enable season rules.'
+          : ''
     return (
-      <button
-        type="button"
-        className={cx(
-          buttonBase,
-          'min-h-11 min-w-0 max-w-full px-3 text-xs',
-          excluded
-            ? 'border-warn/40 bg-warn/10 text-warn'
-            : 'border-line bg-panel text-muted hover:bg-panel-raised hover:text-ink',
+      <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-2">
+        <button
+          type="button"
+          className={cx(
+            buttonBase,
+            'min-h-11 min-w-0 max-w-full px-3 text-xs',
+            excluded
+              ? 'border-warn/40 bg-warn/10 text-warn'
+              : 'border-transparent bg-transparent text-muted hover:bg-panel-raised hover:text-ink',
+          )}
+          // A toggle keeps one name; its pressed state says whether the rule is on.
+          aria-pressed={excluded}
+          aria-label={`Ignore ${name} in bulk downloads and notifications`}
+          aria-describedby={blockedReason ? `${sectionId}-rule-${part || 'season'}` : undefined}
+          disabled={!r.library_key || Boolean(ruleBusy) || Boolean(part && ignored)}
+          onClick={() => onToggleExclusion(part, !excluded)}
+        >
+          <Icon name="ban" size={15} />
+          {excluded ? 'Ignored for bulk' : 'Ignore for bulk'}
+        </button>
+        {blockedReason && (
+          <span id={`${sectionId}-rule-${part || 'season'}`} className="text-xs text-muted">
+            {blockedReason}
+          </span>
         )}
-        aria-pressed={excluded}
-        aria-label={`${excluded ? 'Include' : 'Ignore'} ${name} in bulk downloads and notifications`}
-        title={
-          part && ignored
-            ? 'Restore the season to change individual cour rules.'
-            : !r.library_key
-              ? 'Run a new scan to enable season rules'
-              : undefined
-        }
-        disabled={!r.library_key || Boolean(ruleBusy) || Boolean(part && ignored)}
-        onClick={() => onToggleExclusion(part, !excluded)}
-      >
-        <Icon name="ban" size={15} />
-        {excluded ? 'Ignored for bulk' : 'Ignore for bulk'}
-      </button>
+      </span>
     )
   }
 
@@ -191,7 +208,7 @@ export default function DetailsSeason({
             onProtocol={protocol => onProtocol(index, protocol)}
             onRefreshAvailability={onRefreshAvailability}
             onDownload={() => onDownload(index)}
-            lowSpace={lowSpace?.release === index ? lowSpace.checks : null}
+            lowSpace={lowSpace?.release === index ? lowSpace : null}
             onSendAnyway={() => onDownload(index, true)}
             onCancelLowSpace={onCancelLowSpace}
             sendError={sendErrors[sendKey(r.key, index)] || null}
@@ -205,6 +222,42 @@ export default function DetailsSeason({
     </div>
   )
 
+  const ownershipId = `${sectionId}-ownership`
+  const matchLabel = seasonMatch
+    ? `${r.season_mapping_override ? 'Change' : 'Correct'} Season ${r.season} match`
+    : 'Choose AniList match'
+  const courStatuses = new Map(groups.filter(group => group.part).map(group => [group.part, releaseQuality(r, group)]))
+  const seasonLinks = [
+    ...sources.map(source => (
+      <a
+        key={source.url}
+        href={source.url}
+        target="_blank"
+        rel="noopener"
+        className="touch-target inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-accent-bright"
+        aria-label={`Open ${seasonName} on SeaDex (new tab)`}
+      >
+        SeaDex
+        <Icon name="chevron-right" size={14} />
+      </a>
+    )),
+    ...(r.arr === 'Sonarr' && !!r.season && r.anilist_id
+      ? [
+          <a
+            key="anilist"
+            href={`https://anilist.co/anime/${r.anilist_id}`}
+            target="_blank"
+            rel="noopener"
+            className="touch-target inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-accent-bright"
+            aria-label={`Open Season ${r.season} in AniList (new tab)`}
+          >
+            AniList
+            <Icon name="chevron-right" size={14} />
+          </a>,
+        ]
+      : []),
+  ]
+
   return (
     <section
       ref={root}
@@ -216,24 +269,45 @@ export default function DetailsSeason({
     >
       <details
         className="details-season-disclosure"
+        open={initiallyOpen || undefined}
         onToggle={event => {
           if (usenetEnabled && (event.target as HTMLDetailsElement).open) onOpened()
         }}
       >
-        <summary className="details-summary cursor-pointer">
-          <span className="min-w-0">
+        <summary
+          className="details-summary cursor-pointer"
+          // A short name for the control; the ownership lines are its description.
+          aria-label={`${seasonName}: ${quality.label}`}
+          aria-describedby={ownershipId}
+        >
+          <span className="details-summary-title">
             <span className="details-season-name">{seasonName}</span>
+            <DetailsQuality status={quality} />
+          </span>
+          <span id={ownershipId} className="details-summary-body">
             {split && r.precise_part_ownership ? (
               <span className="details-current-release">
                 Your releases:
                 <span className="details-owned-cours">
                   {groups
                     .filter(group => group.part)
-                    .map(group => (
-                      <span key={group.part}>
-                        {group.part}: <strong>{currentReleases(r, group.part).join(', ') || 'None found'}</strong>
-                      </span>
-                    ))}
+                    .map(group => {
+                      const status = courStatuses.get(group.part)!
+                      const owned = currentReleases(r, group.part).join(', ') || 'None found'
+                      return (
+                        <span key={group.part} className="details-owned-cour" title={`${group.part}: ${owned}`}>
+                          <Icon
+                            name={QUALITY_ICONS[status.kind]}
+                            size={13}
+                            className={cx('details-owned-cour-glyph', QUALITY_TONES[status.kind])}
+                          />
+                          <span className="sr-only">{status.label}, </span>
+                          <span className="details-owned-cour-text">
+                            {group.part}: <strong>{owned}</strong>
+                          </span>
+                        </span>
+                      )
+                    })}
                 </span>
               </span>
             ) : (
@@ -258,8 +332,7 @@ export default function DetailsSeason({
               <span className="details-summary-note text-accent-bright">Download activity · expand for controls</span>
             )}
           </span>
-          <DetailsQuality status={quality} />
-          <Icon name="chevron-right" size={16} className="details-disclosure-chevron text-muted" />
+          <Icon name="chevron-right" size={16} className="disclosure-chevron text-muted" />
         </summary>
         <div className="details-season-content">
           {availability?.error && (
@@ -285,12 +358,15 @@ export default function DetailsSeason({
                   'mt-3 min-h-11 border-transparent bg-accent px-3 text-xs text-on-accent enabled:hover:bg-accent-bright',
                 )}
                 disabled={!r.library_key || Boolean(ruleBusy)}
-                title={!r.library_key ? 'Run a new scan to enable manual matching' : undefined}
                 onClick={seasonMatch ? onCorrectMatch : onCorrectTitleMatch}
+                aria-label={matchLabel}
               >
                 <Icon name="search" size={15} />
-                Choose AniList match
+                {matchLabel}
               </button>
+              {!r.library_key && (
+                <p className="mt-2 mb-0 text-xs text-muted">Run a new scan to enable manual matching.</p>
+              )}
             </div>
           )}
           {!split && quality.kind !== 'review' && (r.status === 'missing' || r.status === 'uncovered') && (
@@ -310,7 +386,8 @@ export default function DetailsSeason({
           )}
           {groups.map((cour, courIndex) => {
             if (!cour.part) return <div key="season">{renderReleases(cour.items)}</div>
-            const courStatus = releaseQuality(r, cour)
+            const courStatus = courStatuses.get(cour.part) || releaseQuality(r, cour)
+            const courLinks = (r.urls || []).filter(source => source.label === cour.part)
             return (
               <details
                 id={`${sectionId}-cour-${courIndex}`}
@@ -319,17 +396,18 @@ export default function DetailsSeason({
                 aria-label={`${seasonName} · ${cour.part}`}
                 data-needs-action={courStatus.kind === 'upgrade' || courStatus.kind === 'review' || undefined}
               >
-                <summary className="details-summary cursor-pointer">
-                  <span className="min-w-0">
+                <summary className="details-summary cursor-pointer" aria-label={`${cour.part}: ${courStatus.label}`}>
+                  <span className="details-summary-title">
                     <span className="details-season-name">{cour.part}</span>
-                    {/* Without per-cour ownership the season summary already names the files once. */}
-                    {r.precise_part_ownership && <CurrentRelease groups={currentReleases(r, cour.part)} />}
-                    {r.excluded_parts?.includes(cour.part) && !ignored && (
-                      <span className="details-summary-note text-warn">Ignored for bulk</span>
-                    )}
+                    <DetailsQuality status={courStatus} />
                   </span>
-                  <DetailsQuality status={courStatus} />
-                  <Icon name="chevron-right" size={16} className="details-disclosure-chevron text-muted" />
+                  {/* The season summary above already names the files of every cour. */}
+                  {r.excluded_parts?.includes(cour.part) && !ignored && (
+                    <span className="details-summary-body">
+                      <span className="details-summary-note text-warn">Ignored for bulk</span>
+                    </span>
+                  )}
+                  <Icon name="chevron-right" size={16} className="disclosure-chevron text-muted" />
                 </summary>
                 <div className="details-cour-content">
                   {cour.unavailable && (
@@ -344,75 +422,26 @@ export default function DetailsSeason({
                   )}
                   <RecommendationNotes notes={r.notes_by_part?.[cour.part]} />
                   {renderReleases(cour.items)}
-                  <div className="details-secondary-actions">
-                    {(r.urls || [])
-                      .filter(source => source.label === cour.part)
-                      .map(source => (
-                        <a
-                          key={source.url}
-                          href={source.url}
-                          target="_blank"
-                          rel="noopener"
-                          className="touch-target inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-accent-bright"
-                        >
-                          SeaDex · {cour.part}
-                          <Icon name="chevron-right" size={14} />
-                        </a>
-                      ))}
+                  <div className="details-secondary-actions" aria-label={`${cour.part} options`} role="group">
+                    {courLinks.map(source => (
+                      <a
+                        key={source.url}
+                        href={source.url}
+                        target="_blank"
+                        rel="noopener"
+                        className="touch-target inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-accent-bright"
+                        aria-label={`Open ${seasonName} ${cour.part} on SeaDex (new tab)`}
+                      >
+                        SeaDex · {cour.part}
+                        <Icon name="chevron-right" size={14} />
+                      </a>
+                    ))}
                     {exclusion(cour.part)}
                   </div>
                 </div>
               </details>
             )
           })}
-          <details className="details-season-actions">
-            <summary className="touch-target flex cursor-pointer items-center gap-1.5 py-2 text-xs font-semibold text-muted">
-              {r.arr === 'Radarr' ? 'Movie actions' : 'Season actions'}
-              <Icon name="more" size={16} />
-            </summary>
-            <div className="details-secondary-actions">
-              {sources.map(source => (
-                <a
-                  key={source.url}
-                  href={source.url}
-                  target="_blank"
-                  rel="noopener"
-                  className="touch-target inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-accent-bright"
-                >
-                  SeaDex
-                  <Icon name="chevron-right" size={14} />
-                </a>
-              ))}
-              {r.arr === 'Sonarr' && !!r.season && (
-                <button
-                  type="button"
-                  className={cx(
-                    buttonBase,
-                    'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised',
-                  )}
-                  disabled={!r.library_key || Boolean(ruleBusy)}
-                  onClick={onCorrectMatch}
-                  aria-label={`${r.season_mapping_override ? 'Change' : 'Correct'} Season ${r.season} match`}
-                >
-                  <Icon name="refresh" size={15} />
-                  {r.season_mapping_override ? 'Change season match' : 'Correct season match'}
-                </button>
-              )}
-              {r.arr === 'Sonarr' && !!r.season && r.anilist_id && (
-                <a
-                  href={`https://anilist.co/anime/${r.anilist_id}`}
-                  target="_blank"
-                  rel="noopener"
-                  className="touch-target inline-flex min-h-11 items-center gap-1 text-xs font-semibold text-accent-bright"
-                  aria-label={`Open Season ${r.season} in AniList`}
-                >
-                  AniList
-                  <Icon name="chevron-right" size={14} />
-                </a>
-              )}
-              {exclusion()}
-            </div>
-          </details>
           {r.precise_part_ownership &&
             !split &&
             r.have.length > 0 &&
@@ -430,6 +459,42 @@ export default function DetailsSeason({
                 The release group appears in your files, but complete ownership is not confirmed.
               </p>
             )}
+          <div
+            className="details-secondary-actions details-season-actions"
+            role="group"
+            aria-label={`${seasonName} options`}
+          >
+            {seasonLinks}
+            {r.arr === 'Sonarr' && !!r.season && quality.kind !== 'review' && (
+              <button
+                type="button"
+                className={cx(
+                  buttonBase,
+                  'min-h-11 border-transparent bg-transparent px-3 text-xs text-muted hover:bg-panel-raised hover:text-ink',
+                )}
+                disabled={!r.library_key || Boolean(ruleBusy)}
+                onClick={onCorrectMatch}
+                aria-label={`${r.season_mapping_override ? 'Change' : 'Correct'} Season ${r.season} match`}
+              >
+                <Icon name="refresh" size={15} />
+                {r.season_mapping_override ? 'Change season match' : 'Correct season match'}
+              </button>
+            )}
+            {exclusion()}
+            {nextAction && (
+              <button
+                type="button"
+                className={cx(
+                  buttonBase,
+                  'details-next-action ml-auto min-h-11 border-accent/40 bg-accent/10 px-3 text-xs text-accent-bright hover:bg-accent/16',
+                )}
+                onClick={() => onJump(nextAction.id)}
+              >
+                Next: {nextAction.label}
+                <Icon name="chevron-right" size={15} />
+              </button>
+            )}
+          </div>
         </div>
       </details>
     </section>

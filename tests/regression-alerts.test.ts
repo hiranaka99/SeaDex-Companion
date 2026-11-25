@@ -168,7 +168,7 @@ test('scan history tells a regression apart from a new upgrade', () => {
     { type: 'upgrade', count: 1, label: 'upgradable' },
   ])
   assert.equal(changeTypeLabel.regression, 'No longer best')
-  assert.equal(historyStatus(shown[0]), 'Best quality → Upgradable')
+  assert.equal(historyStatus(shown[0]), 'Best owned → Upgrade available')
   assert.deepEqual(historyDetails(shown[0]), [
     { summary: 'No longer on the best release', release: 'Your files changed: Best → Weekly', part: undefined },
   ])

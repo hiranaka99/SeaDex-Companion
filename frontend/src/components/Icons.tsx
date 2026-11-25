@@ -241,12 +241,15 @@ interface Props extends SVGProps<SVGSVGElement> {
   size?: number
 }
 
-export default function Icon({ name, size = 20, ...props }: Props) {
+export default function Icon({ name, size = 20, style, ...props }: Props) {
   return (
     <svg
       viewBox="0 0 24 24"
       width={size}
       height={size}
+      // The pixel size is the default; a surface that scales with text reads it from --icon-size.
+      data-icon=""
+      style={{ ['--icon-size' as string]: size, ...style }}
       fill="none"
       stroke="currentColor"
       strokeWidth={2}

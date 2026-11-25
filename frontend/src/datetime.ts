@@ -25,3 +25,11 @@ export function displayDateTime(value: string | null | undefined): string {
   const date = parseTimestamp(value)
   return date ? formatDateTime(date, activeFormat) : (value ?? '')
 }
+
+/** The configured format without seconds, for timestamps where minute precision is all a person needs. */
+export function displayDateTimeMinutes(value: string | null | undefined): string {
+  const date = parseTimestamp(value)
+  if (!date) return value ?? ''
+  const format = activeFormat.replace(/[:.]?s{1,2}/g, '')
+  return formatDateTime(date, format || activeFormat)
+}

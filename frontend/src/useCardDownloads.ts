@@ -13,7 +13,7 @@ import type { Release, ResultItem } from './types'
 import type { GroupedCard } from './types'
 import type { DownloadEntry } from './components/DownloadsPanel'
 import { toDownloadEntry, clientName, importUnsettled } from './components/DownloadsPanel'
-import { seasonLabel } from './utils'
+import { formatBytes, seasonLabel } from './utils'
 import type { DiskSpaceCheck, DownloadProtocol, UsenetAvailabilityResult } from './api'
 import { availabilityKey, observeUsenetAvailability, type AvailabilitySnapshot } from './usenet-observation'
 
@@ -24,12 +24,22 @@ export const IDLE_DOWNLOAD: DetailsDownloadState = { transfers: [] }
 
 type Notify = (message: string, tone: 'success' | 'error' | 'info') => void
 
-/** A one-click send that stopped because a download client reported too little free space. */
+/**
+ * A one-click send that stopped before submission because the fit on disk is not established: a client reported
+ * too little free space (`low`), or did not report free space at all (`unknown`).
+ */
 export interface LowSpaceHold {
   key: string
   release: number
   protocol: DownloadProtocol
+  reason: 'low' | 'unknown'
   checks: DiskSpaceCheck[]
+}
+
+/** "412 GB free" when every destination reported its free space and they all agree on one figure. */
+function freeSpaceNote(checks: DiskSpaceCheck[]): string {
+  const free = [...new Set(checks.map(check => check.free_bytes))]
+  return free.length === 1 && free[0] !== null ? ` · ${formatBytes(free[0]) || '0 B'} free` : ''
 }
 
 /** Identifies one release of one season in per-release download state. */
@@ -81,8 +91,9 @@ export function useCardDownloads(group: GroupedCard, notify: Notify, detailsShow
     })
 
   /**
-   * Sends one release with one click. The only pause is a client reporting less free space than the release needs:
-   * the release row then asks before sending. Unconfirmed space and whole Usenet sources send without asking.
+   * Sends one release with one click. It pauses only when free space is not established: a client reports less free
+   * space than the release needs, or reports no free space at all. The release row then asks before sending. An
+   * estimated size with known free space, and whole Usenet sources, send without asking.
    */
   const handleDownload = async (key: string, index: number, protocol: DownloadProtocol, sendAnyway = false) => {
     if (sending.current) return
@@ -112,8 +123,10 @@ export function useCardDownloads(group: GroupedCard, notify: Notify, detailsShow
       const blocked = preflight.blocked.find(row => row.key === key && row.release === index)
       if (blocked) throw new Error(blocked.reason)
       if (!preflight.units.length) throw new Error('This release is already queued in the download client')
-      if (!sendAnyway && preflight.disk_space.some(check => check.sufficient === false)) {
-        setLowSpace({ key, release: index, protocol, checks: preflight.disk_space })
+      const low = preflight.disk_space.some(check => check.sufficient === false)
+      const unknown = preflight.disk_space.some(check => check.free_bytes === null)
+      if (!sendAnyway && (low || unknown)) {
+        setLowSpace({ key, release: index, protocol, reason: low ? 'low' : 'unknown', checks: preflight.disk_space })
         return
       }
       const receipt = await api.submitDownload(preflight.plan_id, { whole_source: true, disk_space: true })
@@ -121,7 +134,7 @@ export function useCardDownloads(group: GroupedCard, notify: Notify, detailsShow
       if (receipt.acceptance_unknown || receipt.failures?.some(failure => failure.code === 'acceptance_unknown')) {
         report(`${where} was asked to start this download but did not confirm it. Check ${where} before retrying.`)
       } else if (!receipt.ok) throw new Error(receipt.error || 'The download client rejected the submission')
-      else notify(`Sent ${label} to ${where}`, 'success')
+      else notify(`Sent ${label} to ${where}${freeSpaceNote(preflight.disk_space)}`, 'success')
     } catch (error) {
       if (controller.signal.aborted) return
       if (
