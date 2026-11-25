@@ -1,10 +1,20 @@
 import type { ChangePresentation } from '../release-changes'
 import Icon from './Icons'
+import { cx } from '../styles'
 
-export default function ReleaseChangeLine({ detail, context }: { detail: ChangePresentation; context?: string }) {
+/** One release edit. `quiet` sets it below a status line, as secondary text, instead of leading the row. */
+export default function ReleaseChangeLine({
+  detail,
+  context,
+  quiet = false,
+}: {
+  detail: ChangePresentation
+  context?: string
+  quiet?: boolean
+}) {
   const scope = [context, detail.part].filter(Boolean).join(' · ')
   const scopeLabel = scope && <span className="text-xs text-muted">{scope}</span>
-  const label = <strong className="font-bold text-ink">{detail.summary}</strong>
+  const label = <strong className={quiet ? 'font-semibold text-muted' : 'font-bold text-ink'}>{detail.summary}</strong>
   if (detail.note)
     return (
       <details className="group min-w-0">
@@ -32,7 +42,7 @@ export default function ReleaseChangeLine({ detail, context }: { detail: ChangeP
       {scopeLabel}
       {label}
       {detail.release && (
-        <span className="min-w-0 text-xs text-muted">
+        <span className={cx('min-w-0 text-xs', quiet ? 'text-muted-dim' : 'text-muted')}>
           <span aria-hidden="true">· </span>
           {detail.release}
         </span>

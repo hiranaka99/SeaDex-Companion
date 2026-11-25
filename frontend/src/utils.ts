@@ -27,6 +27,15 @@ export const STATUS_LABEL: Record<CardStatus, string> = {
   review: 'Match needs review',
 }
 
+/** Glyph and tone for each status, shared by library cards and scan history so a status never relies on color alone. */
+export const STATUS_GLYPH: Record<CardStatus, { icon: 'arrow-up' | 'check' | 'minus' | 'alert'; color: string }> = {
+  upgrade: { icon: 'arrow-up', color: 'text-accent-bright' },
+  best: { icon: 'check', color: 'text-good' },
+  missing: { icon: 'minus', color: 'text-muted' },
+  partial: { icon: 'alert', color: 'text-warn' },
+  review: { icon: 'alert', color: 'text-warn' },
+}
+
 export { isSeasonUpgradable } from '../../shared/download-plan.js'
 
 /** Display names for Usenet indexers, in lookup order. */
