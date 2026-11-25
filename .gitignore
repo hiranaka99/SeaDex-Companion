@@ -99,3 +99,4 @@ Thumbs.db
 # ---------------------------------------------------------------------------
 scripts/push-dockerhub
 scripts/push-dockerhub.ps1
+release-assets/

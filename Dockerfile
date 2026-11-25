@@ -12,7 +12,12 @@ RUN npm ci
 
 COPY server/ ./server/
 COPY shared/ ./shared/
+COPY scripts/ ./scripts/
+COPY Dockerfile docker-entrypoint.sh ./
 RUN npm run build:server
+# Describe what this image provides to in-app updates (Node.js, system setup,
+# launcher, and production packages). Releases built for another runtime need a new image.
+RUN node scripts/release-bundle.mjs runtime runtime.json
 # Retain production dependencies, including Alpine's prebuilt Argon2 binary.
 RUN npm prune --omit=dev
 
@@ -50,6 +55,7 @@ RUN apk upgrade --no-cache \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 COPY package.json ./
+COPY --from=backend /app/runtime.json ./runtime.json
 COPY --from=backend /app/dist ./dist
 COPY --from=backend /app/node_modules ./node_modules
 COPY --from=frontend /app/static ./static
@@ -66,4 +72,6 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD ["node", "-e", "const p=process.env.PORT||'8080';fetch('http://127.0.0.1:'+p+'/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["node", "dist/server/index.js"]
+# The launcher runs the built-in app, or a newer one installed in-app under
+# /app/data/app-updates, and restarts it when an update is applied.
+CMD ["node", "dist/server/launcher.js"]

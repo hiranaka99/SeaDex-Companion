@@ -7,7 +7,9 @@ import { arrScopeOptions, isArrService } from './integration-tests.js'
 import { readLogTail } from './logging.js'
 import { route, type Route } from './router.js'
 import { getState } from './scan-state.js'
-import { checkForUpdates } from './updates.js'
+import { downloadJobs } from './download-jobs.js'
+import { requestRestart } from './lifecycle.js'
+import { checkForUpdates, installUpdate, updateStatus } from './updates.js'
 import { errorMessage } from '../shared/errors.js'
 import { asRecord } from '../shared/guards.js'
 
@@ -51,6 +53,15 @@ export const configRoutes: Route[] = [
     sendJson(response, 200, { ok: true, removed: result.removed })
   }),
   route('GET', '/api/update-check', async ({ response }) => sendJson(response, 200, await checkForUpdates())),
+  route('GET', '/api/update/status', ({ response }) => sendJson(response, 200, updateStatus())),
+  route('POST', '/api/update/install', async ({ response }) => {
+    if (getState().running) throw new HttpError(409, 'Wait for the current scan to finish before updating')
+    if (downloadJobs.active()) throw new HttpError(409, 'Wait for the bulk download to finish before updating')
+    const { version } = await installUpdate()
+    // Restart only after the browser has the answer; it then waits for the new version.
+    response.once('finish', () => setTimeout(requestRestart, 250))
+    sendJson(response, 202, { ok: true, version, restarting: true })
+  }),
   route('GET', '/api/logs', ({ response, url }) => {
     const requested = Number.parseInt(url.searchParams.get('lines') || String(DEFAULT_LOG_LINES), 10)
     const count = Math.max(1, Math.min(Number.isFinite(requested) ? requested : DEFAULT_LOG_LINES, MAX_LOG_LINES))

@@ -4,6 +4,9 @@ import { Status, TabId } from '../types'
 import { cx } from '../styles'
 import Icon, { IconName } from './Icons'
 import SidebarStatus from './SidebarStatus'
+import { useToast } from './Toast'
+import UpdateDialog, { UPDATED_FLAG } from './UpdateDialog'
+import type { UpdateInfo } from '../../../shared/update-contracts.js'
 import pkg from '../../package.json'
 
 const APP_VERSION = `v${pkg.version.replace(/\.0$/, '')}`
@@ -83,7 +86,15 @@ function TopBar({
   onOpenConfig,
   onDismissScan,
 }: Props) {
-  const [update, setUpdate] = useState<{ latest: string; url: string } | null>(null)
+  const toast = useToast()
+  const [update, setUpdate] = useState<UpdateInfo | null>(null)
+  const [updateOpen, setUpdateOpen] = useState(false)
+  const needsImage = update?.install?.mode === 'image_required'
+  const updateLabel = update
+    ? needsImage
+      ? `v${update.latest} available — needs a new Docker image`
+      : `v${update.latest} available`
+    : ''
   const mobileHeaderRef = useRef<HTMLElement>(null)
   const mobileNavRef = useRef<HTMLElement>(null)
   const desktopNavRef = useRef<HTMLElement>(null)
@@ -146,14 +157,22 @@ function TopBar({
     api
       .checkForUpdates()
       .then(info => {
-        if (active && info.latest)
-          setUpdate({ latest: info.latest, url: info.url || 'https://github.com/hiranaka99/SeaDex-Companion/releases' })
+        if (active && info.latest) setUpdate(info)
       })
       .catch(() => undefined)
+    try {
+      const updated = sessionStorage.getItem(UPDATED_FLAG)
+      if (updated) {
+        sessionStorage.removeItem(UPDATED_FLAG)
+        toast.show(`SeaDex Companion was updated to v${updated}`, 'success', 6000)
+      }
+    } catch {
+      /* Session storage unavailable. */
+    }
     return () => {
       active = false
     }
-  }, [])
+  }, [toast])
 
   return (
     <>
@@ -241,20 +260,32 @@ function TopBar({
           />
           {collapsed ? (
             <div className="flex w-full flex-col items-center gap-3 animate-fade">
-              <div
-                className={cx(
-                  'flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.14em]',
-                  update ? 'text-accent-bright' : 'text-muted-dim',
-                )}
-                title={
-                  update
-                    ? `SeaDex Companion ${APP_VERSION} installed — v${update.latest} available`
-                    : `SeaDex Companion ${APP_VERSION}`
-                }
-              >
-                {APP_VERSION}
-                {update && <span className="size-1.5 rounded-full bg-accent-bright" aria-label="Update available" />}
-              </div>
+              {update ? (
+                <button
+                  type="button"
+                  onClick={() => setUpdateOpen(true)}
+                  className={cx(
+                    'touch-target flex cursor-pointer items-center gap-1.5 rounded-md px-1 text-[10px] font-semibold tracking-[0.14em] hover:underline',
+                    needsImage ? 'text-warn' : 'text-accent-bright',
+                  )}
+                  title={`SeaDex Companion ${APP_VERSION} installed — ${updateLabel}`}
+                  aria-label={`${updateLabel}. Open update details`}
+                >
+                  {APP_VERSION}
+                  {needsImage ? (
+                    <Icon name="alert" size={11} />
+                  ) : (
+                    <span className="size-1.5 rounded-full bg-accent-bright" aria-hidden="true" />
+                  )}
+                </button>
+              ) : (
+                <div
+                  className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.14em] text-muted-dim"
+                  title={`SeaDex Companion ${APP_VERSION}`}
+                >
+                  {APP_VERSION}
+                </div>
+              )}
               <div className="flex w-full flex-col items-center gap-2 border-t border-line pt-4">
                 <span
                   className="grid size-9 place-items-center rounded-full bg-panel-raised text-muted"
@@ -276,15 +307,20 @@ function TopBar({
           ) : (
             <div className="flex w-full flex-col gap-3 animate-fade">
               {update ? (
-                <a
-                  href={update.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="px-1 text-[10px] font-semibold tracking-[0.14em] text-accent-bright hover:underline"
-                  title={`SeaDex Companion ${APP_VERSION} installed — v${update.latest} is available`}
+                <button
+                  type="button"
+                  onClick={() => setUpdateOpen(true)}
+                  className={cx(
+                    'flex cursor-pointer flex-col items-start gap-0.5 rounded-md px-1 text-left text-[10px] font-semibold tracking-[0.14em] hover:underline',
+                    needsImage ? 'text-warn' : 'text-accent-bright',
+                  )}
+                  title={`SeaDex Companion ${APP_VERSION} installed — ${updateLabel}`}
                 >
-                  v{update.latest} available
-                </a>
+                  <span className="flex items-center gap-1.5">
+                    {needsImage && <Icon name="alert" size={12} />}v{update.latest} available
+                  </span>
+                  {needsImage && <span className="tracking-normal text-muted">Needs a new Docker image</span>}
+                </button>
               ) : (
                 <div
                   className="px-1 text-[10px] font-semibold tracking-[0.14em] text-muted-dim"
@@ -324,6 +360,19 @@ function TopBar({
       >
         <Brand compact />
         <div className="flex items-center gap-3">
+          {update && (
+            <button
+              type="button"
+              onClick={() => setUpdateOpen(true)}
+              aria-label={`${updateLabel}. Open update details`}
+              className={cx(
+                'touch-target inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-xs font-semibold',
+                needsImage ? 'border-warn/35 bg-warn/10 text-warn' : 'border-accent/35 bg-accent/12 text-accent-bright',
+              )}
+            >
+              <Icon name={needsImage ? 'alert' : 'download'} size={15} />v{update.latest}
+            </button>
+          )}
           <button
             type="button"
             className="touch-target grid size-9 shrink-0 cursor-pointer place-items-center rounded-lg border border-line bg-panel text-ink"
@@ -359,6 +408,8 @@ function TopBar({
           </button>
         ))}
       </nav>
+
+      {update && <UpdateDialog open={updateOpen} info={update} onClose={() => setUpdateOpen(false)} />}
     </>
   )
 }
