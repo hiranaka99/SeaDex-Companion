@@ -166,15 +166,16 @@ export default function DetailsSeason({
               ? 'border-warn/40 bg-warn/10 text-warn'
               : 'border-transparent bg-transparent text-muted hover:bg-panel-raised hover:text-ink',
           )}
-          // A toggle keeps one name; its pressed state says whether the rule is on.
+          // A toggle keeps one name; its pressed state says whether the rule is on. The visible label names its scope,
+          // since a split season shows one of these for the season and one for every cour.
           aria-pressed={excluded}
-          aria-label={`Ignore ${name} in bulk downloads and notifications`}
+          aria-label={`Ignore ${name} for bulk downloads and notifications`}
           aria-describedby={blockedReason ? `${sectionId}-rule-${part || 'season'}` : undefined}
           disabled={!r.library_key || Boolean(ruleBusy) || Boolean(part && ignored)}
           onClick={() => onToggleExclusion(part, !excluded)}
         >
           <Icon name="ban" size={15} />
-          {excluded ? 'Ignored for bulk' : 'Ignore for bulk'}
+          {excluded ? `${name} ignored for bulk` : `Ignore ${name} for bulk`}
         </button>
         {blockedReason && (
           <span id={`${sectionId}-rule-${part || 'season'}`} className="text-xs text-muted">
@@ -222,6 +223,16 @@ export default function DetailsSeason({
     </div>
   )
 
+  /**
+   * An upgrade that only exists on a private tracker: nothing here can send it, so the status says so up front instead
+   * of promising a download the release row cannot start.
+   */
+  const torrentOnly = (config?.download_mode || 'torrent_only') === 'torrent_only'
+  const manualOnly = (items: (typeof groups)[number]['items'], kind: string) => {
+    const wanted = items.filter(({ rel }) => !releaseOwned(r, rel))
+    return torrentOnly && kind === 'upgrade' && wanted.length > 0 && wanted.every(({ rel }) => !rel.torrent_available)
+  }
+  const manualNote = <span className="details-summary-note text-muted">Manual download only · no public magnet</span>
   const ownershipId = `${sectionId}-ownership`
   const matchLabel = seasonMatch
     ? `${r.season_mapping_override ? 'Change' : 'Correct'} Season ${r.season} match`
@@ -323,6 +334,7 @@ export default function DetailsSeason({
                 Your {mismatchedGroups.join(', ')} files differ from the listed release
               </span>
             )}
+            {!split && groups.length === 1 && manualOnly(groups[0].items, quality.kind) && manualNote}
             {r.season_mapping_override && <span className="details-summary-note text-muted">Manual season match</span>}
             {ignored && <span className="details-summary-note text-warn">Ignored for bulk</span>}
             {!ignored && !!r.excluded_parts?.length && (
@@ -388,13 +400,18 @@ export default function DetailsSeason({
             if (!cour.part) return <div key="season">{renderReleases(cour.items)}</div>
             const courStatus = courStatuses.get(cour.part) || releaseQuality(r, cour)
             const courLinks = (r.urls || []).filter(source => source.label === cour.part)
+            const needsAction = courStatus.kind === 'upgrade' || courStatus.kind === 'review'
+            const courManual = manualOnly(cour.items, courStatus.kind)
+            const courIgnored = Boolean(r.excluded_parts?.includes(cour.part)) && !ignored
             return (
               <details
                 id={`${sectionId}-cour-${courIndex}`}
                 key={cour.part}
                 className="details-cour"
+                // A season that opens for a decision opens the cours holding it too, the same as "Review upgrade".
+                open={(initiallyOpen && needsAction) || undefined}
                 aria-label={`${seasonName} · ${cour.part}`}
-                data-needs-action={courStatus.kind === 'upgrade' || courStatus.kind === 'review' || undefined}
+                data-needs-action={needsAction || undefined}
               >
                 <summary className="details-summary cursor-pointer" aria-label={`${cour.part}: ${courStatus.label}`}>
                   <span className="details-summary-title">
@@ -402,9 +419,10 @@ export default function DetailsSeason({
                     <DetailsQuality status={courStatus} />
                   </span>
                   {/* The season summary above already names the files of every cour. */}
-                  {r.excluded_parts?.includes(cour.part) && !ignored && (
+                  {(courIgnored || courManual) && (
                     <span className="details-summary-body">
-                      <span className="details-summary-note text-warn">Ignored for bulk</span>
+                      {courManual && manualNote}
+                      {courIgnored && <span className="details-summary-note text-warn">Ignored for bulk</span>}
                     </span>
                   )}
                   <Icon name="chevron-right" size={16} className="disclosure-chevron text-muted" />
