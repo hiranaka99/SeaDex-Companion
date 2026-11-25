@@ -32,6 +32,8 @@ export interface LowSpaceHold {
   key: string
   release: number
   protocol: DownloadProtocol
+  /** An unproven NZB the user chose, sent again by "Send anyway". */
+  nzb?: string
   reason: 'low' | 'unknown'
   checks: DiskSpaceCheck[]
 }
@@ -95,7 +97,14 @@ export function useCardDownloads(group: GroupedCard, notify: Notify, detailsShow
    * space than the release needs, or reports no free space at all. The release row then asks before sending. An
    * estimated size with known free space, and whole Usenet sources, send without asking.
    */
-  const handleDownload = async (key: string, index: number, protocol: DownloadProtocol, sendAnyway = false) => {
+  const handleDownload = async (
+    key: string,
+    index: number,
+    protocol: DownloadProtocol,
+    sendAnyway = false,
+    /** An unproven NZB the user chose for a private-tracker release; always sent over Usenet. */
+    nzb?: string,
+  ) => {
     if (sending.current) return
     const season = group.seasons.find(item => item.key === key)
     const release: Release | undefined = season?.releases[index]
@@ -115,7 +124,7 @@ export function useCardDownloads(group: GroupedCard, notify: Notify, detailsShow
     }
     try {
       const preflight = await api.preflightDownload(
-        [{ key, release: index, identity, protocol }],
+        [{ key, release: index, identity, protocol, ...(nzb ? { nzb } : {}) }],
         true,
         controller.signal,
       )
@@ -126,7 +135,14 @@ export function useCardDownloads(group: GroupedCard, notify: Notify, detailsShow
       const low = preflight.disk_space.some(check => check.sufficient === false)
       const unknown = preflight.disk_space.some(check => check.free_bytes === null)
       if (!sendAnyway && (low || unknown)) {
-        setLowSpace({ key, release: index, protocol, reason: low ? 'low' : 'unknown', checks: preflight.disk_space })
+        setLowSpace({
+          key,
+          release: index,
+          protocol,
+          ...(nzb ? { nzb } : {}),
+          reason: low ? 'low' : 'unknown',
+          checks: preflight.disk_space,
+        })
         return
       }
       const receipt = await api.submitDownload(preflight.plan_id, { whole_source: true, disk_space: true })
@@ -227,11 +243,12 @@ export function useSeasonAvailability(enabled: boolean, seasons: ResultItem[], o
   currentSignatures.current = signatures
   const signature = JSON.stringify(signatures)
 
-  const load = async (season: ResultItem, refresh = false) => {
+  /** `searchRelease` asks Prowlarr to search for that one release of the season now. */
+  const load = async (season: ResultItem, refresh = false, searchRelease?: number) => {
     if (!enabled || !open) return
     const key = season.key
     const signature = signatures[key]
-    if (!refresh && requested.current.get(key) === signature) return
+    if (!refresh && searchRelease === undefined && requested.current.get(key) === signature) return
     requested.current.set(key, signature)
     requests.current.get(key)?.controller.abort()
     const controller = new AbortController()
@@ -252,6 +269,7 @@ export function useSeasonAvailability(enabled: boolean, seasons: ResultItem[], o
     try {
       await observeUsenetAvailability(selections, {
         refresh,
+        ...(searchRelease !== undefined ? { search: [{ key, release: searchRelease }] } : {}),
         signal: controller.signal,
         initial,
         onSnapshot: snapshot => {

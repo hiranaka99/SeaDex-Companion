@@ -231,9 +231,20 @@ export function assessSeason({
   const instance = item.instance
     ? { instance: item.instance, ...(item.instance_name ? { instance_name: item.instance_name } : {}) }
     : {}
+  // Sonarr's own search terms for this season: titles for every season, and those of this season.
+  const sceneTitles = [
+    ...new Set(
+      (item.alternate_titles || [])
+        .filter(alternate => alternate.season === null || alternate.season === season)
+        .map(alternate => alternate.title)
+        .filter(title => title.toLowerCase() !== item.title.toLowerCase()),
+    ),
+  ].slice(0, 10)
+  const searchTitles = sceneTitles.length ? { search_titles: sceneTitles } : {}
   if (!entry) {
     return {
       key: `${source}:item${item.id}:${season}:missing`,
+      ...searchTitles,
       group_id: groupId,
       arr: item.arr,
       ...instance,
@@ -269,6 +280,7 @@ export function assessSeason({
     arr: item.arr,
     ...instance,
     title: item.title,
+    ...searchTitles,
     season,
     have: [...localGroups].sort(),
     match_status: 'matched',

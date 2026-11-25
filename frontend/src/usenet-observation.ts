@@ -47,6 +47,8 @@ export async function observeUsenetAvailability(
   options: {
     signal: AbortSignal
     refresh?: boolean
+    /** Rows to search Prowlarr for, sent with the first request only. */
+    search?: { key: string; release: number }[]
     initial?: AvailabilitySnapshot | null
     onSnapshot: (snapshot: AvailabilitySnapshot) => void
   },
@@ -71,7 +73,12 @@ export async function observeUsenetAvailability(
       let restart = false
       for (let offset = 0; offset < pending.length; offset += 200) {
         const batch = pending.slice(offset, offset + 200)
-        const response = await api.usenetAvailability(batch, first && options.refresh === true, signal)
+        const searchNow = first
+          ? options.search?.filter(row =>
+              batch.some(selection => selection.key === row.key && selection.release === row.release),
+            )
+          : undefined
+        const response = await api.usenetAvailability(batch, first && options.refresh === true, signal, searchNow)
         if (signal.aborted) return
         if (!response.ok) throw new Error(response.error || 'Could not check Usenet sources')
         const changed = snapshot.configGeneration !== null && snapshot.configGeneration !== response.config_generation

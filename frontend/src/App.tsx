@@ -16,6 +16,7 @@ import * as api from './api'
 import { useBulkOperation } from './useBulkOperation'
 import { useHashTab } from './useHashTab'
 import { useLibraryData } from './useLibraryData'
+import { useProwlarrCoverage } from './useProwlarrCoverage'
 import { useSidebar } from './useSidebar'
 
 interface AuthenticatedAppProps {
@@ -35,6 +36,8 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   const [libraryFilter, setLibraryFilter] = useState<(LibraryFilterRequest & { id: number }) | null>(null)
   const [configFooterTarget, setConfigFooterTarget] = useState<HTMLDivElement | null>(null)
   const { status, config, scanCompleted, scanCancelledDismissed } = library
+  // The library also needs what Prowlarr's indexers cover; settings keep the plain saved configuration.
+  const libraryConfig = useProwlarrCoverage(config, library.results)
   const busy = status.running || bulk.running
 
   const handleResultOpened = useCallback(() => setOpenResultKey(null), [])
@@ -143,7 +146,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
                   bulkReviewRequest={bulk.reviewRequest}
                   onBulkReviewReset={bulk.resetReview}
                   results={library.results}
-                  config={config}
+                  config={libraryConfig}
                   status={status}
                   lastRun={library.lastRun}
                   onScan={handleScan}

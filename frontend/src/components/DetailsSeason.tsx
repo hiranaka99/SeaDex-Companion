@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { releaseOwned } from '../../../shared/download-plan'
 import type { Config, ResultItem } from '../types'
 import { currentReleases, releaseCours, releaseQuality } from '../release-status'
+import { torrentSendable } from '../utils'
 import { buttonBase, cx } from '../styles'
 import { IDLE_DOWNLOAD, sendKey, type LowSpaceHold, type SeasonAvailability } from '../useCardDownloads'
 import Icon from './Icons'
@@ -59,9 +60,12 @@ interface Props {
   protocolFor: (index: number) => DownloadProtocol
   onProtocol: (index: number, protocol: DownloadProtocol) => void
   onRefreshAvailability: () => void
+  /** Searches Prowlarr for one release of this season. */
+  onSearchProwlarr: (release: number) => void
   onOpened: () => void
   /** `sendAnyway` sends after a low free-space warning. */
-  onDownload: (release: number, sendAnyway?: boolean) => void
+  /** `nzb` sends an unproven NZB the user chose for a private-tracker release. */
+  onDownload: (release: number, sendAnyway?: boolean, nzb?: string) => void
   /** A send of a release in this season that is waiting for the low-space decision. */
   lowSpace: LowSpaceHold | null
   sendErrors: Record<string, string>
@@ -93,6 +97,7 @@ export default function DetailsSeason({
   protocolFor,
   onProtocol,
   onRefreshAvailability,
+  onSearchProwlarr,
   onOpened,
   onDownload,
   lowSpace,
@@ -208,7 +213,9 @@ export default function DetailsSeason({
             sabnzbdConfigured={Boolean(availability?.sabnzbdConfigured)}
             onProtocol={protocol => onProtocol(index, protocol)}
             onRefreshAvailability={onRefreshAvailability}
+            onSearchProwlarr={() => onSearchProwlarr(index)}
             onDownload={() => onDownload(index)}
+            onDownloadNzb={nzb => onDownload(index, false, nzb)}
             lowSpace={lowSpace?.release === index ? lowSpace : null}
             onSendAnyway={() => onDownload(index, true)}
             onCancelLowSpace={onCancelLowSpace}
@@ -230,7 +237,9 @@ export default function DetailsSeason({
   const torrentOnly = (config?.download_mode || 'torrent_only') === 'torrent_only'
   const manualOnly = (items: (typeof groups)[number]['items'], kind: string) => {
     const wanted = items.filter(({ rel }) => !releaseOwned(r, rel))
-    return torrentOnly && kind === 'upgrade' && wanted.length > 0 && wanted.every(({ rel }) => !rel.torrent_available)
+    return (
+      torrentOnly && kind === 'upgrade' && wanted.length > 0 && wanted.every(({ rel }) => !torrentSendable(rel, config))
+    )
   }
   const manualNote = <span className="details-summary-note text-muted">Manual download only · no public magnet</span>
   const ownershipId = `${sectionId}-ownership`

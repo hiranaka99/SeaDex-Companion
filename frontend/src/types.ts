@@ -6,10 +6,12 @@ export type {
   ScanHistoryEntry,
   ScannedDataInfo,
   ScanSchedule,
-  PublicConfig as Config,
   Status,
 } from '../../shared/contracts.js'
-import type { ResultItem } from '../../shared/contracts.js'
+import type { ProwlarrCoverage, PublicConfig, ResultItem } from '../../shared/contracts.js'
+
+/** Settings as the browser holds them; the library adds what Prowlarr's indexers cover once Prowlarr answers. */
+export type Config = PublicConfig & { prowlarr_coverage?: ProwlarrCoverage }
 export type CardStatus = 'upgrade' | 'best' | 'missing' | 'partial' | 'review'
 
 export type TabId = 'anime' | 'history' | 'config' | 'log'

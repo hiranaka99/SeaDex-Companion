@@ -2,7 +2,7 @@ import { errorMessage } from '../../../shared/errors.js'
 import { useCardDownloads, useSeasonAvailability } from '../useCardDownloads'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { GroupedCard, ResultItem, Config } from '../types'
-import { seasonLabel, STATUS_LABEL, cardSizeDelta, formatBytes, isSeasonUpgradable } from '../utils'
+import { seasonLabel, STATUS_LABEL, cardSizeDelta, formatBytes, isSeasonUpgradable, torrentSendable } from '../utils'
 import { displayDateTimeMinutes } from '../datetime'
 import * as api from '../api'
 import { buttonBase, cx } from '../styles'
@@ -156,6 +156,10 @@ function Card({
     config?.amenzb_enabled,
     config?.amenzb_url,
     config?.amenzb_key_configured,
+    config?.prowlarr_enabled,
+    config?.prowlarr_url,
+    config?.prowlarr_key_configured,
+    config?.tracker_mode,
     config?.sabnzbd_url,
     config?.sabnzbd_key_configured,
   ])
@@ -172,8 +176,10 @@ function Card({
     if (chosen) return chosen
     const seasonAvailability = availability[season.key]
     // Default to Usenet only when the torrent path is a dead end.
+    const release = season.releases[index]
     if (
-      !season.releases[index]?.torrent_available &&
+      release &&
+      !torrentSendable(release, config) &&
       seasonAvailability?.sabnzbdConfigured &&
       seasonAvailability.byRelease[index]?.aggregate === 'available'
     )
@@ -786,15 +792,23 @@ function Card({
                           setProtocols(current => ({ ...current, [protocolKey(season.key, index)]: protocol }))
                         }
                         onRefreshAvailability={() => void loadAvailability(season, true)}
+                        onSearchProwlarr={release => void loadAvailability(season, false, release)}
                         onOpened={() => void loadAvailability(season)}
-                        onDownload={(release, sendAnyway) =>
+                        onDownload={(release, sendAnyway, chosenNzb) => {
+                          // "Send anyway" repeats the send that was held, including an NZB the user chose.
+                          const held =
+                            sendAnyway && lowSpace?.key === season.key && lowSpace.release === release
+                              ? lowSpace.nzb
+                              : undefined
+                          const nzb = chosenNzb ?? held
                           void handleDownload(
                             season.key,
                             release,
-                            config?.download_mode === 'usenet_only' ? 'usenet' : protocolFor(season, release),
+                            nzb || config?.download_mode === 'usenet_only' ? 'usenet' : protocolFor(season, release),
                             sendAnyway,
+                            nzb,
                           )
-                        }
+                        }}
                         lowSpace={lowSpace?.key === season.key ? lowSpace : null}
                         sendErrors={sendErrors}
                         onCancelLowSpace={cancelLowSpace}

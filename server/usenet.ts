@@ -10,8 +10,18 @@ import type {
   UsenetAvailabilityResult,
   UsenetHashAvailability,
   UsenetProvider,
+  UsenetSource,
   UsenetUnitState,
 } from '../shared/usenet-contracts.js'
+import type { PrivateSource, Release } from '../shared/contracts.js'
+import { knownProwlarrIndexers, privateSearchSettings, prowlarrSettings } from './prowlarr.js'
+import {
+  privateNzbBytes,
+  privateNzbSnapshot,
+  privateNzbState,
+  searchContext,
+  searchPrivateNzbInBackground,
+} from './private-sources.js'
 import { LOOKUP_TIMEOUT_MS, type ProviderLookup, type ProviderSettings } from './usenet-provider-types.js'
 import { PersistentUsenetCache, providerFingerprint, usenetCacheKey } from './usenet-cache.js'
 import { providerSettings, USENET_PROVIDER_IDS, USENET_PROVIDERS } from './usenet-providers.js'
@@ -54,6 +64,44 @@ export function usenetConfigured(config: Config): boolean {
 
 export function sabnzbdConfigured(config: Config): boolean {
   return Boolean(sabnzbdApiUrl(config) && config.sabnzbd_key)
+}
+
+/** Private-tracker sources Prowlarr can search for, when the release has no public torrent hash. */
+export function privateUsenetSources(
+  config: Config,
+  release: Pick<Release, 'info_hashes' | 'private_sources'>,
+): PrivateSource[] {
+  if (torrentHashes(release).length || !privateSearchSettings(config)) return []
+  return release.private_sources || []
+}
+
+/**
+ * A public torrent as a source Prowlarr can search for once the hash indexers lack it: its hash and exact file
+ * list. Null without Prowlarr, or when SeaDex lists no complete file list to check a copy against.
+ */
+export function prowlarrFallbackSource(
+  config: Config,
+  release: Pick<Release, 'torrent_files'>,
+  hash: string,
+): PrivateSource | null {
+  if (!prowlarrSettings(config) || prowlarrHasUsenet(config) === false) return null
+  const files = (release.torrent_files || []).find(catalog => catalog.hash.toLowerCase() === hash)?.files
+  if (!files?.length || !files.every(file => file.name && Number.isSafeInteger(file.length) && file.length >= 0))
+    return null
+  return { id: hash, files }
+}
+
+/** Whether Prowlarr has a Usenet indexer: false only when its current indexer list says so, never while unknown. */
+export function prowlarrHasUsenet(config: Config): boolean | undefined {
+  const settings = prowlarrSettings(config)
+  if (!settings) return false
+  return knownProwlarrIndexers(settings)?.some(indexer => indexer.protocol === 'usenet')
+}
+
+/** The Usenet source identities a release is acquired by: its torrent hashes, or its private sources' file-list IDs. */
+export function usenetSourceIds(config: Config, release: Pick<Release, 'info_hashes' | 'private_sources'>): string[] {
+  const hashes = torrentHashes(release)
+  return hashes.length ? hashes : privateUsenetSources(config, release).map(source => source.id)
 }
 
 /** Provider failure warnings repeat at most once per minute per provider; sweeps must not spam the log. */
@@ -345,7 +393,7 @@ function hashState(provider: UsenetProvider, lookup: ProviderLookup): UsenetHash
     case 'deleted':
       return { hash: '', state: 'no_match', provider, entry_id: lookup.entry_id }
     case 'no_match':
-      return { hash: '', state: 'no_match' }
+      return { hash: '', state: 'no_match', provider }
     case 'failed':
       return {
         hash: '',
@@ -384,8 +432,16 @@ function withoutMatch(
   queried: UsenetHashAvailability[],
   absent: 'no_match' | 'not_checked',
 ): UsenetHashAvailability {
-  const metadata = availabilityMetadata(queried)
-  if (!queried.length) return { hash, state: 'not_configured', ...metadata }
+  const checked = [
+    ...new Set(
+      queried
+        .filter(state => state.state === 'no_match' || state.state === 'processing')
+        .map(state => state.provider)
+        .filter((provider): provider is UsenetSource => Boolean(provider)),
+    ),
+  ]
+  const metadata = { ...availabilityMetadata(queried), ...(checked.length ? { providers_checked: checked } : {}) }
+  if (!queried.length) return { hash, state: 'not_configured', ...availabilityMetadata(queried) }
   const failed = queried.filter(state => state.state === 'lookup_failed')
   if (failed.length) return { ...failed[0], hash, providers_failed: failed.map(state => state.provider!), ...metadata }
   const processing = queried.find(state => state.state === 'processing')
@@ -550,9 +606,15 @@ export async function usenetAvailability(
   config: Config,
   selections: { key: string; release: number; identity?: string }[],
   results: ResultItem[],
-  { refresh = false, background = false }: { refresh?: boolean; background?: boolean } = {},
+  {
+    refresh = false,
+    background = false,
+    search = [],
+  }: { refresh?: boolean; background?: boolean; search?: { key: string; release: number }[] } = {},
 ): Promise<UsenetAvailabilityResult[]> {
   const resultsByKey = new Map(results.map(result => [result.key, result]))
+  // Prowlarr is searched only for the rows asked for: each checked NZB counts against the indexer's grab limit.
+  const searched = new Set(search.map(row => `${row.key}\u0000${row.release}`))
   const selected = selections.map(selection => {
     const release =
       Number.isSafeInteger(selection.release) && selection.release >= 0
@@ -574,6 +636,46 @@ export async function usenetAvailability(
   })
   const scheduled = new Set<string>()
   return selected.map(({ selection, release, identity }) => {
+    const privateSources = privateUsenetSources(config, release)
+    const result = resultsByKey.get(selection.key)
+    const context = searchContext(result, release)
+    const searchNow = searched.has(`${selection.key}\u0000${selection.release}`)
+    if (privateSources.length) {
+      // Prowlarr without a Usenet indexer cannot find a copy; say so instead of offering a search.
+      const noUsenet = prowlarrHasUsenet(config) === false
+      const hashes = privateSources.map(source => {
+        if (noUsenet)
+          return {
+            hash: source.id,
+            state: 'not_configured' as const,
+            provider: 'prowlarr' as const,
+            error: 'Prowlarr has no Usenet indexer.',
+            checked_at: '',
+            stale: false,
+            refreshing: false,
+          }
+        if (searchNow && !scheduled.has(source.id)) {
+          scheduled.add(source.id)
+          searchPrivateNzbInBackground(config, source, context)
+        }
+        const snapshot = privateNzbSnapshot(config, source.id)
+        return {
+          ...privateNzbState(source.id, snapshot.lookup),
+          checked_at: isoTime(snapshot.checkedAt),
+          stale: false,
+          refreshing: snapshot.running,
+        }
+      })
+      return {
+        key: selection.key,
+        release: selection.release,
+        identity,
+        hashes,
+        aggregate: aggregateHashStates(hashes.map(hash => hash.state)),
+        search: 'prowlarr' as const,
+        ...availabilityMetadata(hashes),
+      }
+    }
     const sourceHashes = torrentHashes(release)
     const hashes: UsenetHashAvailability[] = sourceHashes.length
       ? sourceHashes.map(hash => {
@@ -588,8 +690,31 @@ export async function usenetAvailability(
           }
         })
       : [{ hash: '', state: 'unsupported_hash', stale: false, refreshing: false }]
+    // Where the hash indexers have nothing, Prowlarr may have found (or may be asked to find) a copy.
+    let fallback = false
+    let viaProwlarr = false
+    const merged = hashes.map((state): UsenetHashAvailability => {
+      if (state.state !== 'no_match') return state
+      const source = prowlarrFallbackSource(config, release, state.hash)
+      if (!source) return state
+      fallback = true
+      if (searchNow && !scheduled.has(`prowlarr:${source.id}`)) {
+        scheduled.add(`prowlarr:${source.id}`)
+        searchPrivateNzbInBackground(config, source, context)
+      }
+      const snapshot = privateNzbSnapshot(config, source.id)
+      if (snapshot.lookup.kind === 'not_checked' && !snapshot.running) return state
+      viaProwlarr = true
+      return {
+        ...privateNzbState(source.id, snapshot.lookup),
+        ...(state.providers_checked ? { providers_checked: state.providers_checked } : {}),
+        checked_at: isoTime(snapshot.checkedAt),
+        stale: false,
+        refreshing: snapshot.running,
+      }
+    })
     // The public projection bounds filename lists; a truncated list is no longer a complete manifest.
-    const publicHashes = hashes.map(hash =>
+    const publicHashes = merged.map(hash =>
       hash.file_names && hash.file_names.length > FILE_NAME_LIMIT
         ? { ...hash, files_known: false, file_names: hash.file_names.slice(0, FILE_NAME_LIMIT) }
         : hash,
@@ -599,8 +724,9 @@ export async function usenetAvailability(
       release: selection.release,
       identity,
       hashes: publicHashes,
-      aggregate: aggregateHashStates(hashes.map(hash => hash.state)),
-      ...availabilityMetadata(hashes),
+      aggregate: aggregateHashStates(merged.map(hash => hash.state)),
+      ...(viaProwlarr ? { search: 'prowlarr' as const } : fallback ? { fallback: 'prowlarr' as const } : {}),
+      ...availabilityMetadata(merged),
     }
   })
 }
@@ -608,10 +734,11 @@ export async function usenetAvailability(
 /** Server-side NZB retrieval for an accepted submission. Never trusts browser-supplied URLs. */
 export async function fetchUsenetNzb(
   config: Config,
-  provider: UsenetProvider,
+  provider: UsenetSource,
   entryId: string,
   sourceHash: string,
 ): Promise<Uint8Array> {
+  if (provider === 'prowlarr') return privateNzbBytes(config, sourceHash, entryId)
   const result = await providerLookup(config, provider, sourceHash, false, false)
   const lookup = result.kind === 'settled' ? result.lookup : undefined
   if (lookup?.kind === 'failed' && lookup.code === 'rate_limited') throw new Error(lookup.message)

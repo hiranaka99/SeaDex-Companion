@@ -2,7 +2,7 @@ import { SECRET_CONFIG_KEYS, type PublicArrInstance, type SecretConfigKey } from
 import type { DownloadProtocol } from '../../shared/download-contracts.js'
 import type { Config } from './types'
 
-export type Service = 'sonarr' | 'radarr' | 'qbittorrent' | 'sabnzbd' | 'animetosho' | 'amenzb' | 'discord'
+export type Service = 'sonarr' | 'radarr' | 'qbittorrent' | 'sabnzbd' | 'animetosho' | 'amenzb' | 'prowlarr' | 'discord'
 /** A fixed integration, or `arr:<id>` for an additional Sonarr or Radarr instance. */
 export type IntegrationService = Service | `arr:${string}`
 
@@ -16,7 +16,7 @@ interface ServiceDefinition {
   /** The download method that uses this service; services without one are always relevant. */
   protocol?: DownloadProtocol
   /** The switch that turns an optional service off. */
-  enabledBy?: 'animetosho_enabled' | 'amenzb_enabled'
+  enabledBy?: 'animetosho_enabled' | 'amenzb_enabled' | 'prowlarr_enabled'
   /** Enough is filled in to attempt a connection. */
   configured(form: ConfigDraft): boolean
 }
@@ -67,6 +67,14 @@ export const SERVICES: Record<Service, ServiceDefinition> = {
     protocol: 'usenet',
     enabledBy: 'amenzb_enabled',
     configured: form => Boolean(form.amenzb_enabled) && filled(form, 'amenzb_url') && hasSecret(form, 'amenzb_key'),
+  },
+  // Prowlarr finds private-tracker releases for both download methods.
+  prowlarr: {
+    label: 'Prowlarr',
+    fieldPrefix: 'prowlarr',
+    enabledBy: 'prowlarr_enabled',
+    configured: form =>
+      Boolean(form.prowlarr_enabled) && filled(form, 'prowlarr_url') && hasSecret(form, 'prowlarr_key'),
   },
   discord: { label: 'Discord', fieldPrefix: 'webhook', configured: form => hasSecret(form, 'webhook') },
 }
