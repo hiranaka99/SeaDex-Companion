@@ -4,7 +4,8 @@ import { LibraryFilterRequest, ResultItem, ScanHistoryChange, ScanHistoryEntry }
 import Icon from './Icons'
 import { buttonBase, control, cx } from '../styles'
 import { displayDateTime } from '../datetime'
-import { sourceName, STATUS_GLYPH } from '../utils'
+import { sourceName } from '../utils'
+import { STATUS_PRESENTATION } from '../status-presentation'
 import {
   changeTypeLabel,
   groupChanges,
@@ -54,10 +55,10 @@ const summaryTone: Record<string, string> = {
 }
 /** Header totals open the library with the matching filter; "uncovered" is counted with "missing" there. */
 const totalFilters: Record<string, LibraryFilterRequest> = {
-  upgrade: { status: 'upgrade', coverage: '' },
-  best: { status: '', coverage: 'best' },
-  missing: { status: '', coverage: 'missing' },
-  partial: { status: '', coverage: 'partial' },
+  upgrade: { status: 'upgrade' },
+  best: { status: 'best' },
+  missing: { status: 'missing' },
+  partial: { status: 'partial' },
 }
 const outcomeLabel: Record<string, string> = { failed: 'Failed', partial: 'Partial', cancelled: 'Cancelled' }
 const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1)
@@ -154,10 +155,10 @@ function TitleLink({
 }
 
 function StatusMark({ status, label, strong }: { status: string; label: string; strong: boolean }) {
-  const glyph = STATUS_GLYPH[historyStatusKind(status) as CardStatus]
+  const glyph = STATUS_PRESENTATION[historyStatusKind(status) as CardStatus]
   return (
-    <span className={cx('inline-flex items-center gap-1', strong && 'font-bold', strong ? glyph?.color : 'text-muted')}>
-      {glyph && <Icon name={glyph.icon} size={13} className={cx('shrink-0', !strong && glyph.color)} />}
+    <span className={cx('inline-flex items-center gap-1', strong && 'font-bold', strong ? glyph?.tone : 'text-muted')}>
+      {glyph && <Icon name={glyph.icon} size={13} className={cx('shrink-0', !strong && glyph.tone)} />}
       {label}
     </span>
   )

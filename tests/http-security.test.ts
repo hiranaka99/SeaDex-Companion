@@ -324,6 +324,22 @@ test('account setup, authenticated access, revocation, and login throttling work
     revisionAfterReview,
     'Other sessions reload reviewed changes on their next status poll',
   )
+  const restoreChanges = (changes: unknown, authenticated = true) =>
+    fetch(`${baseUrl}/api/release-changes/restore`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(authenticated ? { Cookie: updatedCookie } : {}) },
+      body: JSON.stringify({ changes }),
+    })
+  assert.equal((await restoreChanges([{ key: changeKey, change }], false)).status, 401)
+  assert.equal((await restoreChanges('all')).status, 400)
+  assert.equal((await restoreChanges([{ key: changeKey, change: { ...change, kind: 'invented' } }])).status, 400)
+  assert.equal((await restoreChanges([{ key: '', change }])).status, 400)
+  assert.deepEqual(await (await restoreChanges([{ key: changeKey, change }])).json(), { ok: true, restored: 1 })
+  assert.deepEqual(
+    (await readResults())[0].unseen_changes.map((entry: { id: string }) => entry.id).sort(),
+    ['newer-change', 'observed-change'],
+    'Undo puts the reviewed change back as unseen',
+  )
   const match = (body: unknown, authenticated = true) =>
     fetch(`${baseUrl}/api/mapping-overrides`, {
       method: 'POST',

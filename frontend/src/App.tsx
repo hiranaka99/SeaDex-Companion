@@ -9,6 +9,7 @@ import ConfirmDialog from './components/ConfirmDialog'
 import OperationCenter from './components/OperationCenter'
 import HistoryTab from './components/HistoryTab'
 import SidebarResizer from './components/SidebarResizer'
+import ErrorBoundary, { PageErrorFallback } from './components/ErrorBoundary'
 import { useToast } from './components/Toast'
 import type { AuthState, LibraryFilterRequest } from './types'
 import * as api from './api'
@@ -136,73 +137,91 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
               )}
             </div>
             <div hidden={tab !== 'anime'}>
-              <AnimeTab
-                active={tab === 'anime'}
-                openResultKey={openResultKey}
-                onResultOpened={handleResultOpened}
-                bulkOperationActive={bulk.running}
-                bulkReviewRequest={bulk.reviewRequest}
-                onBulkReviewReset={bulk.resetReview}
-                results={library.results}
-                config={config}
-                status={status}
-                lastRun={library.lastRun}
-                onScan={handleScan}
-                loading={library.resultsLoading}
-                loadError={library.resultsError}
-                onReloadResults={() => void library.reloadResults()}
-                onOpenConfig={openConfig}
-                onBulkOperationChange={bulk.report}
-                operationsVisible={
-                  status.running ||
-                  Boolean(status.error) ||
-                  (status.cancelled && !scanCancelledDismissed) ||
-                  status.webhook_scan.queued ||
-                  Boolean(scanCompleted) ||
-                  Boolean(bulk.operation)
-                }
-                onResultsChanged={library.reloadResults}
-                filterRequest={libraryFilter}
-              />
+              <ErrorBoundary
+                fallback={(error, reset) => <PageErrorFallback error={error} reset={reset} what="The library" />}
+              >
+                <AnimeTab
+                  active={tab === 'anime'}
+                  openResultKey={openResultKey}
+                  onResultOpened={handleResultOpened}
+                  bulkOperationActive={bulk.running}
+                  bulkReviewRequest={bulk.reviewRequest}
+                  onBulkReviewReset={bulk.resetReview}
+                  results={library.results}
+                  config={config}
+                  status={status}
+                  lastRun={library.lastRun}
+                  onScan={handleScan}
+                  loading={library.resultsLoading}
+                  loadError={library.resultsError}
+                  onReloadResults={() => void library.reloadResults()}
+                  onOpenConfig={openConfig}
+                  onBulkOperationChange={bulk.report}
+                  operationsVisible={
+                    status.running ||
+                    Boolean(status.error) ||
+                    (status.cancelled && !scanCancelledDismissed) ||
+                    status.webhook_scan.queued ||
+                    Boolean(scanCompleted) ||
+                    Boolean(bulk.operation)
+                  }
+                  onResultsChanged={library.reloadResults}
+                  filterRequest={libraryFilter}
+                />
+              </ErrorBoundary>
             </div>
             {visited.has('history') && (
               <div hidden={tab !== 'history'}>
-                <HistoryTab
-                  active={tab === 'history'}
-                  results={library.results}
-                  resultsLoading={library.resultsLoading}
-                  resultsError={library.resultsError}
-                  scanDisabled={busy}
-                  onScan={() => void handleScan()}
-                  onOpenResult={handleOpenHistoryResult}
-                  onOpenLibrary={filter => {
-                    setLibraryFilter(current => ({ ...filter, id: (current?.id ?? 0) + 1 }))
-                    changeTab('anime')
-                  }}
-                  onOpenLog={() => changeTab('log')}
-                />
+                <ErrorBoundary
+                  fallback={(error, reset) => <PageErrorFallback error={error} reset={reset} what="Scan history" />}
+                >
+                  <HistoryTab
+                    active={tab === 'history'}
+                    results={library.results}
+                    resultsLoading={library.resultsLoading}
+                    resultsError={library.resultsError}
+                    scanDisabled={busy}
+                    onScan={() => void handleScan()}
+                    onOpenResult={handleOpenHistoryResult}
+                    onOpenLibrary={filter => {
+                      setLibraryFilter(current => ({ ...filter, id: (current?.id ?? 0) + 1 }))
+                      changeTab('anime')
+                    }}
+                    onOpenLog={() => changeTab('log')}
+                  />
+                </ErrorBoundary>
               </div>
             )}
             {visited.has('config') && (
               <div hidden={tab !== 'config'}>
-                <ConfigTab
-                  active={tab === 'config'}
-                  scanDisabled={busy}
-                  footerTarget={configFooterTarget}
-                  loadError={library.configError}
-                  onRetry={() => void library.loadConfig()}
-                  config={config}
-                  status={status}
-                  username={username}
-                  knownTrackers={knownTrackers}
-                  onRunScan={handleScan}
-                  onAccountUpdated={onAccountUpdated}
-                  onSaved={library.applySavedConfig}
-                  onScannedDataCleared={library.clearResults}
-                />
+                <ErrorBoundary
+                  fallback={(error, reset) => <PageErrorFallback error={error} reset={reset} what="Configuration" />}
+                >
+                  <ConfigTab
+                    active={tab === 'config'}
+                    scanDisabled={busy}
+                    footerTarget={configFooterTarget}
+                    loadError={library.configError}
+                    onRetry={() => void library.loadConfig()}
+                    config={config}
+                    status={status}
+                    username={username}
+                    knownTrackers={knownTrackers}
+                    onRunScan={handleScan}
+                    onAccountUpdated={onAccountUpdated}
+                    onSaved={library.applySavedConfig}
+                    onScannedDataCleared={library.clearResults}
+                  />
+                </ErrorBoundary>
               </div>
             )}
-            {tab === 'log' && <LogTab active={tab === 'log'} />}
+            {tab === 'log' && (
+              <ErrorBoundary
+                fallback={(error, reset) => <PageErrorFallback error={error} reset={reset} what="The server log" />}
+              >
+                <LogTab active={tab === 'log'} />
+              </ErrorBoundary>
+            )}
           </div>
         </div>
         <div

@@ -32,7 +32,7 @@ export type {
   PreflightBlocked,
   SubmissionRow,
 } from '../../shared/download-contracts.js'
-import type { ArrScopeOptions, ConfigUpdate } from '../../shared/contracts.js'
+import type { ArrScopeOptions, ConfigUpdate, ReleaseChange } from '../../shared/contracts.js'
 import type { AuthState, Config, ResultItem, ScanHistoryEntry, ScannedDataInfo, Status } from './types.js'
 import type { UpdateInfo, UpdateStatus } from '../../shared/update-contracts.js'
 
@@ -178,6 +178,24 @@ export const reviewReleaseChanges = (ids: string[]) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids }),
   })
+
+/** Undoes a review; `key` is the release identity of the result each change belongs to. */
+export const restoreReleaseChanges = (changes: { key: string; change: ReleaseChange }[]) =>
+  api<{ ok: boolean; restored: number }>('/api/release-changes/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ changes }),
+  })
+
+export interface DownloadSpaceLocation {
+  client: 'qbittorrent' | 'sabnzbd'
+  label: string
+  free_bytes: number | null
+  reason?: string
+}
+
+/** Free space where the configured download clients store new downloads. */
+export const getDownloadSpace = () => api<{ ok: boolean; locations: DownloadSpaceLocation[] }>('/api/download-space')
 
 export interface AniListSearchResult {
   id: number

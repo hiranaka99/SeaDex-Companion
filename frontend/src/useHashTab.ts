@@ -4,7 +4,7 @@ import type { TabId } from './types'
 const TABS: TabId[] = ['anime', 'history', 'config', 'log']
 
 function readTab(): TabId {
-  // A page may keep its own state after a "?" (e.g. #history?type=upgrade); only the part before it names the page.
+  // A page may keep its own state after a "?" (e.g. #anime?status=upgrade or #history?type=upgrade); only the part before it names the page.
   const value = window.location.hash.slice(1).split('?')[0]
   return TABS.find(tab => tab === value) ?? 'anime'
 }

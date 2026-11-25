@@ -1,6 +1,7 @@
 import { releaseOwned, releaseSatisfies, isSeasonUpgradable } from '../../shared/download-plan.js'
 import { PREFERENCE_BLOCKED_REASON } from '../../shared/settings.js'
 import type { Release, ResultItem } from './types.js'
+import { isUnconfirmedMatch } from './utils.js'
 
 export interface CourReleases {
   part: string
@@ -40,8 +41,7 @@ export function currentReleases(season: ResultItem, part?: string): string[] {
 }
 
 export function releaseQuality(season: ResultItem, cour?: CourReleases): QualityStatus {
-  if (season.match_status === 'unmatched' || (!season.anilist_id && season.status === 'missing'))
-    return { kind: 'review', label: 'Match needs review' }
+  if (isUnconfirmedMatch(season)) return { kind: 'review', label: 'Match needs review' }
   // SeaDex does list releases here; the saved preferences rule all of them out.
   if (
     season.preference_blocked &&

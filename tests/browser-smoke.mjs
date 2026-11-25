@@ -840,7 +840,7 @@ const wait = async expression => {
 }
 const click = async text => {
   const found = await evaluate(
-    `(() => { if (${JSON.stringify(text)} === 'Bulk cancel') { const menu = document.querySelector('.library-more-actions'); if (menu?.getClientRects().length && !menu.open) menu.querySelector('summary').click() }; const button = [...document.querySelectorAll('button, summary')].find(button => button.getClientRects().length && button.textContent.trim() === ${JSON.stringify(text)}); if (!button) return false; button.focus(); button.click(); return true })()`,
+    `(() => { const button = [...document.querySelectorAll('button, summary')].find(button => button.getClientRects().length && button.textContent.trim() === ${JSON.stringify(text)}); if (!button) return false; button.focus(); button.click(); return true })()`,
   )
   assert.ok(found, 'Visible button: ' + text)
   await pause(100)
@@ -930,7 +930,7 @@ try {
       `(() => { window.libraryMotionCalls = []; const original = Element.prototype.animate; Element.prototype.animate = function(frames, options) { if (this.matches('article[data-library-key]')) window.libraryMotionCalls.push({ key: this.dataset.libraryKey, frames, options }); return original.call(this, frames, options) }; window.restoreLibraryMotion = () => { Element.prototype.animate = original } })()`,
     )
     await select('[aria-label="Sort library"]', 'title')
-    await wait(`document.querySelector('.library-grid article h2')?.textContent === 'Example anime'`)
+    await wait(`document.querySelector('.library-grid article h3')?.textContent === 'Example anime'`)
     assert.ok(
       await evaluate(
         `window.libraryMotionCalls.some(call => call.frames[0].transform && call.options.duration <= 300)`,
@@ -983,7 +983,7 @@ try {
     )
     await evaluate(`window.libraryMotionCalls = []`)
     await select('[aria-label="Sort library"]', 'title')
-    await wait(`document.querySelector('.library-grid article h2')?.textContent === 'Example anime'`)
+    await wait(`document.querySelector('.library-grid article h3')?.textContent === 'Example anime'`)
     assert.equal(
       await evaluate(`window.libraryMotionCalls.length`),
       0,
@@ -1044,7 +1044,7 @@ try {
     await evaluate(`document.querySelector('[aria-label="Unseen changes (2 titles)"]').click()`)
     await wait(`document.querySelectorAll('.library-grid article').length === 2`)
     assert.equal(
-      await evaluate(`document.querySelector('.library-grid article h2').textContent`),
+      await evaluate(`document.querySelector('.library-grid article h3').textContent`),
       'Recent anime',
       'Unseen titles show their latest change first',
     )
@@ -1184,7 +1184,13 @@ try {
     await wait(
       `document.querySelector('[aria-label="Unseen changes (65 titles)"]') && document.querySelectorAll('.library-grid article').length === 60`,
     )
-    await evaluate(`document.querySelector('[aria-label="Unseen changes (65 titles)"]').click()`)
+    assert.equal(
+      await evaluate(
+        `document.querySelector('[aria-label="Unseen changes (65 titles)"]').getAttribute('aria-pressed')`,
+      ),
+      'true',
+      'Library filters survive a reload through the URL',
+    )
     await click('Mark all reviewed')
     await wait(`document.body.textContent.includes('No unseen changes')`)
     assert.equal(
@@ -1196,7 +1202,8 @@ try {
     progressMode = 'downloading'
     revision++
     await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
-    await evaluate('location.reload()')
+    // Start the next checks from an unfiltered library; filters otherwise survive the reload.
+    await evaluate(`history.replaceState(null, '', '#anime'); location.reload()`)
     await wait(
       `document.body.textContent.includes('Unmatched anime') && document.querySelectorAll('.library-grid article').length === 2`,
     )
@@ -3075,7 +3082,7 @@ try {
     )
     failBulk = false
     cancelableDownloads = [example, movie].map(cancelableFor)
-    await click('Bulk cancel')
+    await click('Cancel downloads')
     await wait(`document.querySelector('dialog[open]')?.textContent.includes('Radarr movie')`)
     assert.ok(
       await evaluate(`document.querySelector('dialog[open]')?.textContent.includes('Cancel downloads')`),
@@ -3500,7 +3507,7 @@ try {
       0,
     ),
   ]
-  await click('Bulk cancel')
+  await click('Cancel downloads')
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('VeryLongUnbroken')`)
   assert.ok(
     await evaluate(
@@ -3516,12 +3523,12 @@ try {
   )
   await capture('follow-up-mobile-bulk-cancel')
   await key('Escape')
-  await click('Filters & sort')
+  await click('Source & sort')
   await evaluate(
     `(() => { const source=document.querySelector('select[aria-label="Source"]'); source.value='Sonarr'; source.dispatchEvent(new Event('change',{bubbles:true})) })()`,
   )
   await evaluate(
-    `[...document.querySelectorAll('button')].find(button=>button.textContent.includes('Filters & sort')).click()`,
+    `[...document.querySelectorAll('button')].find(button=>button.textContent.includes('Source & sort')).click()`,
   )
   assert.ok(
     await evaluate(`document.querySelector('[aria-label="Active library filters"]').textContent.includes('Sonarr')`),

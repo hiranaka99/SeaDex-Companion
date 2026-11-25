@@ -6,7 +6,7 @@ import { loadScanHistory } from './history.js'
 import { HttpError } from './http-error.js'
 import { readJson, sendJson } from './http-response.js'
 import { log } from './logging.js'
-import { reviewReleaseChanges, withReleaseChanges } from './release-changes.js'
+import { isReleaseChange, restoreReleaseChanges, reviewReleaseChanges, withReleaseChanges } from './release-changes.js'
 import { clearScannedData, loadLastResults, scannedDataInfo } from './results.js'
 import { route, type Route } from './router.js'
 import { getState } from './scan-state.js'
@@ -19,6 +19,8 @@ import {
 } from './user-rules.js'
 import { stopUsenetPrefetch } from './usenet-prefetch.js'
 import { cardKey } from '../shared/ids.js'
+import { isRecord } from '../shared/guards.js'
+import type { ReleaseChange } from '../shared/contracts.js'
 
 /** Matches feed the running scan, so they only change between scans. */
 function requireIdleScan(): void {
@@ -122,6 +124,27 @@ export const libraryRoutes: Route[] = [
       throw new HttpError(400, 'Provide the change IDs to mark reviewed')
     }
     sendJson(response, 200, { ok: true, reviewed: reviewReleaseChanges(ids) })
+  }),
+  route('POST', '/api/release-changes/restore', async ({ request, response }) => {
+    const { changes } = await readJson(request)
+    if (
+      !Array.isArray(changes) ||
+      changes.length > 10_000 ||
+      !changes.every(
+        (entry: unknown) =>
+          isRecord(entry) &&
+          typeof entry.key === 'string' &&
+          entry.key.length > 0 &&
+          entry.key.length <= 2_000 &&
+          isReleaseChange(entry.change),
+      )
+    ) {
+      throw new HttpError(400, 'Provide the reviewed changes to restore')
+    }
+    sendJson(response, 200, {
+      ok: true,
+      restored: restoreReleaseChanges(changes as { key: string; change: ReleaseChange }[]),
+    })
   }),
   route('GET', '/api/scanned-data', ({ response }) => sendJson(response, 200, { ok: true, ...scannedDataInfo() })),
   route('DELETE', '/api/scanned-data', ({ response }) => {

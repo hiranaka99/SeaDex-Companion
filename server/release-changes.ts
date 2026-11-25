@@ -6,27 +6,32 @@ import { describeRegression, describeReleaseChanges, releaseResultIdentity } fro
 import type { ReleaseChange, ResultItem } from '../shared/contracts.js'
 
 type ChangeStore = Record<string, ReleaseChange[]>
+
+const CHANGE_KINDS: ReleaseChange['kind'][] = ['best', 'alternative', 'updated', 'removed', 'regression']
+
+/** A stored or submitted release change with the fields every reader relies on. */
+export function isReleaseChange(change: unknown): change is ReleaseChange {
+  if (!change || typeof change !== 'object') return false
+  const candidate = change as ReleaseChange
+  return (
+    typeof candidate.id === 'string' &&
+    candidate.id.length > 0 &&
+    candidate.id.length <= 100 &&
+    typeof candidate.description === 'string' &&
+    CHANGE_KINDS.includes(candidate.kind) &&
+    typeof candidate.detected_at === 'string' &&
+    Number.isFinite(Date.parse(candidate.detected_at)) &&
+    (candidate.part === undefined || typeof candidate.part === 'string')
+  )
+}
+
 export function loadReleaseChanges(file = RELEASE_CHANGES_FILE): ChangeStore {
   const stored = readJson<unknown>(file, {}, 'Could not read unseen release changes')
   if (!isRecord(stored)) return {}
   return Object.fromEntries(
     Object.entries(stored)
       .filter(([, changes]) => Array.isArray(changes))
-      .map(([key, changes]) => [
-        key,
-        (changes as unknown[]).filter((change): change is ReleaseChange =>
-          Boolean(
-            change &&
-            typeof change === 'object' &&
-            typeof (change as ReleaseChange).id === 'string' &&
-            typeof (change as ReleaseChange).description === 'string' &&
-            ['best', 'alternative', 'updated', 'removed', 'regression'].includes((change as ReleaseChange).kind) &&
-            typeof (change as ReleaseChange).detected_at === 'string' &&
-            Number.isFinite(Date.parse((change as ReleaseChange).detected_at)) &&
-            ((change as ReleaseChange).part === undefined || typeof (change as ReleaseChange).part === 'string'),
-          ),
-        ),
-      ]),
+      .map(([key, changes]) => [key, (changes as unknown[]).filter(isReleaseChange)]),
   )
 }
 
@@ -80,5 +85,26 @@ export function reviewReleaseChanges(ids: string[], file = RELEASE_CHANGES_FILE)
     if (remaining.length) next[key] = remaining
   }
   if (count) writeJsonAtomic(file, next)
+  return count
+}
+
+/**
+ * Undoes a review: puts the given changes back as unseen under the result they belonged to.
+ * Changes that are still unseen are left alone, so a repeated undo adds nothing twice.
+ */
+export function restoreReleaseChanges(
+  entries: { key: string; change: ReleaseChange }[],
+  file = RELEASE_CHANGES_FILE,
+): number {
+  const stored = loadReleaseChanges(file)
+  const present = new Set(Object.values(stored).flatMap(changes => changes.map(change => change.id)))
+  let count = 0
+  for (const { key, change } of entries) {
+    if (present.has(change.id)) continue
+    present.add(change.id)
+    stored[key] = [...(stored[key] || []), change].sort((a, b) => a.detected_at.localeCompare(b.detected_at))
+    count++
+  }
+  if (count) writeJsonAtomic(file, stored)
   return count
 }
