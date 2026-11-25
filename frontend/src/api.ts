@@ -128,8 +128,8 @@ export const saveConfig = (cfg: ConfigUpdate) =>
   }).then(config => {
     const credentialsChanged = Boolean(
       cfg.amenzb_key?.trim() ||
-        cfg.sabnzbd_key?.trim() ||
-        cfg.clear_secrets?.some(key => key === 'amenzb_key' || key === 'sabnzbd_key'),
+      cfg.sabnzbd_key?.trim() ||
+      cfg.clear_secrets?.some(key => key === 'amenzb_key' || key === 'sabnzbd_key'),
     )
     rememberAvailabilityConfig(config, credentialsChanged)
     return config
@@ -137,14 +137,7 @@ export const saveConfig = (cfg: ConfigUpdate) =>
 
 /** `arr:<id>` addresses an additional Sonarr or Radarr instance. */
 export type IntegrationService =
-  | 'sonarr'
-  | 'radarr'
-  | 'qbittorrent'
-  | 'discord'
-  | 'sabnzbd'
-  | 'animetosho'
-  | 'amenzb'
-  | `arr:${string}`
+  'sonarr' | 'radarr' | 'qbittorrent' | 'discord' | 'sabnzbd' | 'animetosho' | 'amenzb' | `arr:${string}`
 
 /** Tags and root folders an instance offers for its library scope, read with the unsaved draft. */
 export const getArrOptions = (service: IntegrationService, config: ConfigUpdate) =>

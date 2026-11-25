@@ -8,8 +8,7 @@ const USENET_PROVIDER_NAMES = { animetosho: 'AnimeTosho', amenzb: 'AmeNZB' } as 
 /** Short explanation for a background Usenet sweep that is waiting on a paused provider. */
 export function usenetPauseText(
   paused:
-    | { provider: keyof typeof USENET_PROVIDER_NAMES; resume_in_seconds: number; rate_limited: boolean }[]
-    | undefined,
+    { provider: keyof typeof USENET_PROVIDER_NAMES; resume_in_seconds: number; rate_limited: boolean }[] | undefined,
 ): string | null {
   if (!paused?.length) return null
   const longest = Math.max(...paused.map(pause => pause.resume_in_seconds))

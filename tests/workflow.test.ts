@@ -16,9 +16,8 @@ after(() => {
 })
 
 const { DATA_DIR, DOWNLOAD_RECORDS_FILE, OWNED_TORRENTS_FILE } = await import('../server/paths.js')
-const { addDownloadRecord, downloadRecords, downloadRows, migrateOwnedDownloads, resetOwnedRuntime } = await import(
-  '../server/download-store.js'
-)
+const { addDownloadRecord, downloadRecords, downloadRows, migrateOwnedDownloads, resetOwnedRuntime } =
+  await import('../server/download-store.js')
 const { findAcquisitionRecord } = await import('./support/ledger.js')
 const { resultsRevision, setState } = await import('../server/scan-state.js')
 

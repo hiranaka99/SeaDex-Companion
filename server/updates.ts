@@ -79,16 +79,16 @@ export function isUpdateManifest(value: unknown): value is UpdateManifest {
   const record = value as Partial<UpdateManifest> | null
   return Boolean(
     record &&
-      record.format === 1 &&
-      typeof record.version === 'string' &&
-      VERSION_PATTERN.test(record.version) &&
-      record.bundle &&
-      record.bundle.name === bundleAssetName(record.version) &&
-      Number.isSafeInteger(record.bundle.size) &&
-      record.bundle.size > 0 &&
-      record.bundle.size <= MAX_BUNDLE_BYTES &&
-      /^[0-9a-f]{64}$/.test(String(record.bundle.sha256)) &&
-      isRuntimeIdentity(record.runtime),
+    record.format === 1 &&
+    typeof record.version === 'string' &&
+    VERSION_PATTERN.test(record.version) &&
+    record.bundle &&
+    record.bundle.name === bundleAssetName(record.version) &&
+    Number.isSafeInteger(record.bundle.size) &&
+    record.bundle.size > 0 &&
+    record.bundle.size <= MAX_BUNDLE_BYTES &&
+    /^[0-9a-f]{64}$/.test(String(record.bundle.sha256)) &&
+    isRuntimeIdentity(record.runtime),
   )
 }
 
