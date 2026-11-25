@@ -342,3 +342,59 @@ test('literal title matches outrank approximate long-vowel romanization matches'
   )
   assert.equal(match?.id, 2)
 })
+
+const kissXSisCandidates = [
+  { id: 5042, format: 'OVA', seasonYear: 2009, title: { romaji: 'kiss×sis', english: 'Kiss x Sis' } },
+  { id: 7593, format: 'TV', seasonYear: 2010, title: { romaji: 'kiss×sis (TV)', native: 'kiss×sis (TV)' } },
+]
+
+test('a TV series disambiguated with "(TV)" outranks its same-named OVA', async () => {
+  assert.equal(pickAniListSearchResult(kissXSisCandidates, 'KissXSis')?.id, 7593)
+  const queries: string[] = []
+  const match = await anilistLookup(
+    'KissXSis',
+    {},
+    async (_query: string, variables: { t?: string }) => {
+      queries.push(String(variables.t))
+      return variables.t === 'Kiss X Sis' ? kissXSisCandidates : []
+    },
+    () => {},
+  )
+  assert.deepEqual(queries, ['KissXSis', 'Kiss X Sis'])
+  assert.equal(match?.id, 7593)
+  assert.equal(match?.format, 'TV')
+})
+
+test('cached lookups are rechecked once only when they resolved to a non-series format', async () => {
+  const cache: Record<string, any> = {
+    'lookup:v3:KissXSis': { id: 5042 },
+    'media:v1:5042': { media: { id: 5042, format: 'OVA' }, fetched_at: 0 },
+    'lookup:v3:Dororo': { id: 101347 },
+    'media:v1:101347': { media: { id: 101347, format: 'TV' }, fetched_at: 0 },
+  }
+  let searches = 0
+  const search = async () => {
+    searches += 1
+    return kissXSisCandidates
+  }
+  assert.equal((await anilistLookup('KissXSis', cache, search, () => {}))?.id, 7593)
+  assert.equal((await anilistLookup('KissXSis', cache, search, () => {}))?.id, 7593)
+  assert.equal((await anilistLookup('Dororo', cache, search, () => {}))?.id, 101347)
+  assert.equal(searches, 1, 'only the OVA match is searched again, and only once')
+})
+
+test('a failed recheck keeps the earlier cached match', async () => {
+  const cache: Record<string, any> = {
+    'lookup:v3:Example': { id: 1 },
+    'media:v1:1': { media: { id: 1, format: 'OVA' }, fetched_at: 0 },
+  }
+  const match = await anilistLookup(
+    'Example',
+    cache,
+    async () => {
+      throw new Error('AniList unavailable')
+    },
+    () => {},
+  )
+  assert.equal(match?.id, 1)
+})

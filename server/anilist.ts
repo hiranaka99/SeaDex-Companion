@@ -1,5 +1,6 @@
 import { saveCache } from './results.js'
 import { alSearch } from './anilist-client.js'
+import { scanRequests } from './http.js'
 import { freshCache, loadAniListMedia, metadataFetchedAt, type MetadataDependencies } from './anilist-metadata.js'
 export { alMedia, alSearch } from './anilist-client.js'
 import type { JsonObject, ChainPart, ChainEntry } from './types.js'
@@ -69,6 +70,16 @@ export function titleKey(title?: string | null): string {
     .replace(/[^a-z0-9]+/g, '')
 }
 
+// AniList often disambiguates a TV series from its same-named OVA with "(TV)",
+// and writes the title's "x" as a multiplication sign.
+function candidateTitleKey(title?: string | null): string {
+  return titleKey(
+    String(title || '')
+      .replace(/×/g, 'x')
+      .replace(/\s*\(TV\)\s*$/i, ''),
+  )
+}
+
 function collapseRomanization(key: string): string {
   return key.replace(/uu/g, 'u').replace(/ou/g, 'o')
 }
@@ -83,7 +94,7 @@ export function pickAniListSearchResult(candidates: JsonObject[], title: string)
     const titleScore = Math.max(
       0,
       ...['english', 'romaji', 'native'].map(key => {
-        const candidateKey = titleKey(titles[key])
+        const candidateKey = candidateTitleKey(titles[key])
         if (!candidateKey) return 0
         if (candidateKey === wanted || (wantedStripped && candidateKey === wantedStripped)) return 3
         return wantedCollapsed && collapseRomanization(candidateKey) === wantedCollapsed ? 2 : 0
@@ -103,6 +114,18 @@ export function pickAniListSearchResult(candidates: JsonObject[], title: string)
   )
 }
 
+const SEASON_FORMATS = new Set(['TV', 'TV_SHORT', 'ONA'])
+
+/**
+ * Lookups cached before the format was recorded may have picked a same-named OVA,
+ * special, or movie over its TV series. Search those once more; series matches stay cached.
+ */
+function needsLookupRecheck(entry: JsonObject, cache: JsonObject): boolean {
+  if (entry.format !== undefined) return false
+  const format = cache[`media:v1:${entry.id}`]?.media?.format
+  return typeof format === 'string' && !SEASON_FORMATS.has(format)
+}
+
 export async function anilistLookup(
   title: string,
   cache: JsonObject,
@@ -110,23 +133,36 @@ export async function anilistLookup(
   persist = saveCache,
 ): Promise<JsonObject | null> {
   const cacheKey = `lookup:v3:${title}`
-  if (cache[cacheKey]) return cache[cacheKey]
+  const cached = cache[cacheKey]
+  if (cached && !needsLookupRecheck(cached, cache)) return cached
   const query =
     'query($t:String){Page(perPage:10){media(search:$t,type:ANIME,sort:SEARCH_MATCH){id format season seasonYear episodes title{romaji english native} coverImage{large extraLarge} bannerImage}}}'
   for (const candidate of searchCandidates(title)) {
-    const data = pickAniListSearchResult(await search(query, { t: candidate }), title)
+    let results: JsonObject[]
+    try {
+      results = await search(query, { t: candidate })
+    } catch (error) {
+      // A failed recheck keeps the earlier match rather than failing the title.
+      if (cached && !scanRequests.getStore()?.aborted) return cached
+      throw error
+    }
+    const data = pickAniListSearchResult(results, title)
     if (data) {
       const cover = data.coverImage || {}
-      const entry = { id: data.id, cover: cover.extraLarge || cover.large, banner: data.bannerImage }
+      const entry = {
+        id: data.id,
+        cover: cover.extraLarge || cover.large,
+        banner: data.bannerImage,
+        format: data.format ?? null,
+      }
       cache[cacheKey] = entry
       persist(cache)
       return entry
     }
   }
-  return null
+  return cached ?? null
 }
 
-const SEASON_FORMATS = new Set(['TV', 'TV_SHORT', 'ONA'])
 const SEASON_ORDER: JsonObject = { WINTER: 0, SPRING: 1, SUMMER: 2, FALL: 3 }
 const COUR_PART_RE = /\b(?:part|cour)\s*(?:[-:]\s*)?(\d+|first|second|third|fourth|1st|2nd|3rd|4th)\b/i
 const COUR_ORDINALS: JsonObject = { first: 1, '1st': 1, second: 2, '2nd': 2, third: 3, '3rd': 3, fourth: 4, '4th': 4 }
