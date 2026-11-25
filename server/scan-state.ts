@@ -1,7 +1,7 @@
 import { normalizeResults } from './result-model.js'
 import { statSync } from 'node:fs'
 import { RESULTS_FILE, USER_RULES_FILE, RELEASE_CHANGES_FILE } from './paths.js'
-import type { ScanState } from './types.js'
+import type { ResultItem, ScanState } from './types.js'
 
 export const scanState: ScanState = {
   running: false,
@@ -41,6 +41,15 @@ export function setState(values: Omit<Partial<ScanState>, 'results'> & { results
     values = { ...values, results: normalizeResults(values.results) }
   }
   Object.assign(scanState, values)
+}
+
+/**
+ * Publishes results that already passed through `normalizeResults`. A running scan publishes a growing snapshot
+ * after every title, and normalizing the whole snapshot each time would make a scan quadratic in its results.
+ */
+export function setNormalizedResults(results: ResultItem[], values: Omit<Partial<ScanState>, 'results'> = {}): void {
+  resultRevision += 1
+  Object.assign(scanState, values, { results })
 }
 
 export function getState(): ScanState {

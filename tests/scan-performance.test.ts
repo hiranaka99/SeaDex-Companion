@@ -319,6 +319,44 @@ test('a 100-title scan refreshes metadata in four paced requests and reuses it o
   }
 })
 
+test('a running scan publishes each title once and keeps the results it already published', async () => {
+  const before = getState()
+  const items: LocalItem[] = Array.from({ length: 4 }, (_, index) => ({
+    arr: 'Sonarr',
+    id: index + 1,
+    title: `Anime ${index + 1}`,
+    seasons: { 1: { groups: [], size: 0 }, 2: { groups: [], size: 0 } },
+  }))
+  const snapshots: (typeof before.results)[] = []
+  const service = scanFixture({
+    localItems: async () => items,
+    anilistChain: async () => {
+      snapshots.push(getState().results)
+      return []
+    },
+  })
+  try {
+    setState({ results: [], error: null })
+    await service.run(DEFAULT_CONFIG)
+    assert.equal(getState().error, null)
+    assert.deepEqual(
+      snapshots.map(snapshot => snapshot.length),
+      [0, 2, 4, 6],
+      'Every title publishes its seasons before the next title starts',
+    )
+    for (const [index, snapshot] of snapshots.entries())
+      for (const [position, result] of snapshot.entries())
+        assert.equal(
+          snapshots.at(-1)![position],
+          result,
+          `Result ${position} published after title ${index} is not normalized again`,
+        )
+    assert.equal(getState().results.length, 8)
+  } finally {
+    setState(before)
+  }
+})
+
 test('fully manual seasons skip automatic lookup and retain continuous episode ranges and show anchor', async () => {
   const before = getState(),
     cache: JsonObject = {}
