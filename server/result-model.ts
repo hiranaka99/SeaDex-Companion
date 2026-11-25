@@ -112,6 +112,7 @@ export function normalizeResults(value: unknown): ResultItem[] {
           ? { mismatched_by_part: dictionary(item.mismatched_by_part, strings) }
           : {}),
         ...(item.preference_blocked === true ? { preference_blocked: true } : {}),
+        ...(item.private_only === true ? { private_only: true } : {}),
         local_size_by_part: dictionary(item.local_size_by_part, number),
         notes_by_part: dictionary(item.notes_by_part, value => text(value) || ''),
         excluded: item.excluded === true,

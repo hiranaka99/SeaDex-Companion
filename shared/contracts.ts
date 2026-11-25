@@ -57,6 +57,12 @@ export interface ReleasePreferences {
   strict: boolean
 }
 
+/**
+ * Which SeaDex releases the app works with. `public` leaves out every release without a public torrent
+ * (private trackers); `private` also lists those for manual download.
+ */
+export type TrackerMode = 'public' | 'private'
+
 export interface Release {
   kind: 'best' | 'alt'
   part?: string
@@ -109,6 +115,8 @@ export interface ResultItem {
   mismatched_by_part?: Record<string, string[]>
   /** SeaDex lists releases for this season, but the saved preferences accept none of them. */
   preference_blocked?: boolean
+  /** SeaDex lists releases for this season only on private trackers, which public-tracker mode leaves out. */
+  private_only?: boolean
   local_size_by_part?: Record<string, number>
   precise_part_ownership?: boolean
   local_size: number
@@ -204,6 +212,7 @@ export interface Config {
   /** Sonarr and Radarr instances beyond the first of each kind. */
   arr_instances: ArrInstanceConfig[]
   release_preferences: ReleasePreferences
+  tracker_mode: TrackerMode
   /** Compare local file sizes with the listed release before counting it as owned. */
   verify_release_files: boolean
   /** Maintain SeaDex status tags on series and movies in Sonarr and Radarr. */
