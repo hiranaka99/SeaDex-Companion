@@ -76,6 +76,8 @@ export interface Release {
   target?: boolean
   /** Owning this release makes its season or cour count as best. Absent means the release kind decides. */
   satisfies?: boolean
+  /** The library's files are this release's files, byte for byte. Absent when they are not, or nothing was compared. */
+  files_match?: boolean
   /** Why the saved preferences never offer this release for download. */
   excluded_by?: string
 }

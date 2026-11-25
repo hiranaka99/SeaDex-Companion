@@ -25,6 +25,44 @@ const slot = (release: Release) =>
 const name = (release: Release) =>
   `${clean(release.releaseGroup) || 'Unknown group'}${release.tracker ? ` (${clean(release.tracker)})` : ''}`
 
+/**
+ * Matches each listed release with its previous listing. A group can list several releases on one
+ * tracker, so a shared torrent pairs them first; the rest pair in order, which reports a replaced torrent.
+ */
+function pairReleases(
+  previous: Release[],
+  current: Release[],
+): { pairs: [Release, Release][]; added: Release[]; removed: Release[] } {
+  const pairs: [Release, Release][] = []
+  const added: Release[] = []
+  const removed: Release[] = []
+  const bySlot = (releases: Release[]) => {
+    const slots = new Map<string, Release[]>()
+    for (const release of releases) slots.set(slot(release), [...(slots.get(slot(release)) || []), release])
+    return slots
+  }
+  const before = bySlot(previous)
+  const after = bySlot(current)
+  for (const [key, releases] of after) {
+    const unmatched = [...(before.get(key) || [])]
+    const leftover: Release[] = []
+    for (const release of releases) {
+      const hashes = new Set(release.info_hashes.map(normalized))
+      const index = unmatched.findIndex(old => old.info_hashes.some(hash => hashes.has(normalized(hash))))
+      if (index < 0) leftover.push(release)
+      else pairs.push([unmatched.splice(index, 1)[0], release])
+    }
+    for (const release of leftover) {
+      const old = unmatched.shift()
+      if (old) pairs.push([old, release])
+      else added.push(release)
+    }
+    removed.push(...unmatched)
+  }
+  for (const [key, releases] of before) if (!after.has(key)) removed.push(...releases)
+  return { pairs, added, removed }
+}
+
 function bestReleases(result: ResultItem, part: string): Release[] {
   return (result.releases || []).filter(release => release.kind === 'best' && clean(release.part) === part)
 }
@@ -59,8 +97,7 @@ function notesByPart(result: ResultItem): Map<string, string | null> {
 /** Compare catalog facts only: ownership, selected files, and download state are local. */
 export function describeReleaseChanges(previous: ResultItem, current: ResultItem): ReleaseChangeDetail[] {
   const changes: ReleaseChangeDetail[] = []
-  const before = new Map((previous.releases || []).map(release => [slot(release), release]))
-  const after = new Map((current.releases || []).map(release => [slot(release), release]))
+  const { pairs, added, removed } = pairReleases(previous.releases || [], current.releases || [])
   const changedBestParts = new Set<string>()
   const parts = new Set([...(previous.releases || []), ...(current.releases || [])].map(release => clean(release.part)))
   for (const part of parts) {
@@ -83,18 +120,17 @@ export function describeReleaseChanges(previous: ResultItem, current: ResultItem
           : `New best release: ${newBest.join(', ')}`,
     })
   }
-  for (const [key, release] of after) {
-    const old = before.get(key),
-      part = clean(release.part)
-    if (!old) {
-      if (release.kind !== 'best' || !changedBestParts.has(part))
-        changes.push({
-          kind: release.kind === 'best' ? 'best' : 'alternative',
-          part,
-          description: `New ${release.kind === 'best' ? 'best release' : 'alternative'}: ${name(release)}${release.quality ? ` · ${clean(release.quality)}` : ''}`,
-        })
-      continue
-    }
+  for (const release of added) {
+    const part = clean(release.part)
+    if (release.kind !== 'best' || !changedBestParts.has(part))
+      changes.push({
+        kind: release.kind === 'best' ? 'best' : 'alternative',
+        part,
+        description: `New ${release.kind === 'best' ? 'best release' : 'alternative'}: ${name(release)}${release.quality ? ` · ${clean(release.quality)}` : ''}`,
+      })
+  }
+  for (const [old, release] of pairs) {
+    const part = clean(release.part)
     if (old.kind === 'best' && release.kind === 'alt')
       changes.push({ kind: 'alternative', part, description: `Now an alternative: ${name(release)}` })
     const edits: string[] = []
@@ -108,8 +144,8 @@ export function describeReleaseChanges(previous: ResultItem, current: ResultItem
     if (old.size !== release.size) edits.push('Release size changed')
     if (edits.length) changes.push({ kind: 'updated', part, description: `${name(release)} · ${edits.join('; ')}` })
   }
-  for (const [key, release] of before)
-    if (!after.has(key) && !(release.kind === 'best' && changedBestParts.has(clean(release.part)))) {
+  for (const release of removed)
+    if (!(release.kind === 'best' && changedBestParts.has(clean(release.part)))) {
       changes.push({
         kind: 'removed',
         part: clean(release.part),

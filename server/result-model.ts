@@ -1,6 +1,7 @@
 import { isRecord, asRecord } from '../shared/guards.js'
 import type { Release, ResultItem } from '../shared/contracts.js'
 import { torrentHashes, planTorrents } from '../shared/download-plan.js'
+import { sameRelease } from '../shared/releases.js'
 
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
@@ -16,7 +17,7 @@ export function normalizeResults(value: unknown): ResultItem[] {
     .filter(item => isRecord(item))
     .map(raw => {
       const item = asRecord(raw)
-      const releases = new Map<string, Release>()
+      const releases: Release[] = []
       for (const rawRelease of Array.isArray(item.releases) ? item.releases : []) {
         const source = asRecord(rawRelease)
         const hashes = strings(source.info_hashes)
@@ -35,6 +36,7 @@ export function normalizeResults(value: unknown): ResultItem[] {
           ...(strings(source.selected_files).length ? { selected_files: strings(source.selected_files) } : {}),
           ...(source.target === true ? { target: true } : {}),
           ...(typeof source.satisfies === 'boolean' ? { satisfies: source.satisfies } : {}),
+          ...(source.files_match === true ? { files_match: true } : {}),
           ...(text(source.excluded_by) ? { excluded_by: String(source.excluded_by) } : {}),
           ...(Array.isArray(source.torrent_files)
             ? {
@@ -53,9 +55,12 @@ export function normalizeResults(value: unknown): ResultItem[] {
         }
         release.info_hashes = planTorrents([{ release, category: '' }]).map(torrent => torrent.hash)
         release.torrent_available = release.info_hashes.length > 0
-        const id = `${release.part || ''}\0${release.releaseGroup.trim().toLowerCase()}`
-        const previous = releases.get(id)
-        if (!previous || (!previous.torrent_available && release.torrent_available)) releases.set(id, release)
+        // Older results could list one release once per tracker; a group's other releases stay listed.
+        const index = releases.findIndex(
+          previous => (previous.part || '') === (release.part || '') && sameRelease(previous, release, true),
+        )
+        if (index < 0) releases.push(release)
+        else if (!releases[index].torrent_available && release.torrent_available) releases[index] = release
       }
       const status =
         item.status === 'best' || item.status === 'partial' || item.status === 'upgrade' || item.status === 'uncovered'
@@ -78,7 +83,7 @@ export function normalizeResults(value: unknown): ResultItem[] {
         local_size: number(item.local_size),
         best_group: text(item.best_group),
         best_size: number(item.best_size),
-        releases: [...releases.values()],
+        releases,
         url: text(item.url),
         notes: text(item.notes),
         image: text(item.image),
