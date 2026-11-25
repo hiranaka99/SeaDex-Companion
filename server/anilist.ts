@@ -5,14 +5,20 @@ export { alMedia, alSearch } from './anilist-client.js'
 import type { JsonObject, ChainPart, ChainEntry } from './types.js'
 
 export async function searchAniListTitles(title: string): Promise<JsonObject[]> {
-  const query = 'query($t:String){Page(perPage:12){media(search:$t,type:ANIME,sort:SEARCH_MATCH){id format seasonYear episodes title{romaji english native} coverImage{large extraLarge}}}}'
+  const query =
+    'query($t:String){Page(perPage:12){media(search:$t,type:ANIME,sort:SEARCH_MATCH){id format seasonYear episodes title{romaji english native} coverImage{large extraLarge}}}}'
   const matches = await alSearch(query, { t: title.trim() })
-  return matches.map((media) => {
-    const titles = media.title || {}; const cover = media.coverImage || {}
+  return matches.map(media => {
+    const titles = media.title || {}
+    const cover = media.coverImage || {}
     return {
-      id: Number(media.id), title: titles.english || titles.romaji || titles.native || `AniList #${media.id}`,
-      romaji: titles.romaji || null, year: media.seasonYear || null, format: media.format || null,
-      episodes: media.episodes ?? null, cover: cover.extraLarge || cover.large || null,
+      id: Number(media.id),
+      title: titles.english || titles.romaji || titles.native || `AniList #${media.id}`,
+      romaji: titles.romaji || null,
+      year: media.seasonYear || null,
+      format: media.format || null,
+      episodes: media.episodes ?? null,
+      cover: cover.extraLarge || cover.large || null,
     }
   })
 }
@@ -25,14 +31,22 @@ export function extractTitleYear(title: string): number | null {
 }
 
 export function stripTitleYear(title: string): string {
-  return String(title || '').replace(TITLE_YEAR_RE, '').trim()
+  return String(title || '')
+    .replace(TITLE_YEAR_RE, '')
+    .trim()
 }
 
 export function normalizeTitle(title: string): string {
   if (!title) return ''
-  return stripTitleYear(title).replace(/×/g, 'x').replace(/[‘’]/g, "'").replace(/[–—]/g, '-').replace(/…/g, '...')
-    .replace(/[«»]/g, '').replace(/\s*[:-]\s*(The\s+Movie|Movie|Theatrical)\b.*$/i, '')
-    .replace(/\s+/g, ' ').trim()
+  return stripTitleYear(title)
+    .replace(/×/g, 'x')
+    .replace(/[‘’]/g, "'")
+    .replace(/[–—]/g, '-')
+    .replace(/…/g, '...')
+    .replace(/[«»]/g, '')
+    .replace(/\s*[:-]\s*(The\s+Movie|Movie|Theatrical)\b.*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 export function searchCandidates(title: string): string[] {
@@ -40,7 +54,7 @@ export function searchCandidates(title: string): string[] {
   const spaced = normalized.replace(/([a-z])\s*([Xx])\s*([A-Z])/g, '$1 $2 $3')
   const candidates = extractTitleYear(title) ? [normalized, spaced, title] : [title, normalized, spaced]
   const seen = new Set<string>()
-  return candidates.filter((candidate) => {
+  return candidates.filter(candidate => {
     const key = candidate?.toLowerCase()
     if (!key || seen.has(key)) return false
     seen.add(key)
@@ -49,7 +63,10 @@ export function searchCandidates(title: string): string[] {
 }
 
 export function titleKey(title?: string | null): string {
-  return (title || '').toLowerCase().replace(/’/g, "'").replace(/[^a-z0-9]+/g, '')
+  return (title || '')
+    .toLowerCase()
+    .replace(/’/g, "'")
+    .replace(/[^a-z0-9]+/g, '')
 }
 
 function collapseRomanization(key: string): string {
@@ -63,12 +80,15 @@ export function pickAniListSearchResult(candidates: JsonObject[], title: string)
   const wantedYear = extractTitleYear(title)
   const score = (media: JsonObject): number[] => {
     const titles = media.title || {}
-    const titleScore = Math.max(0, ...['english', 'romaji', 'native'].map((key) => {
-      const candidateKey = titleKey(titles[key])
-      if (!candidateKey) return 0
-      if (candidateKey === wanted || (wantedStripped && candidateKey === wantedStripped)) return 3
-      return wantedCollapsed && collapseRomanization(candidateKey) === wantedCollapsed ? 2 : 0
-    }))
+    const titleScore = Math.max(
+      0,
+      ...['english', 'romaji', 'native'].map(key => {
+        const candidateKey = titleKey(titles[key])
+        if (!candidateKey) return 0
+        if (candidateKey === wanted || (wantedStripped && candidateKey === wantedStripped)) return 3
+        return wantedCollapsed && collapseRomanization(candidateKey) === wantedCollapsed ? 2 : 0
+      }),
+    )
     const yearMatch = wantedYear ? (Number(media.seasonYear) === wantedYear ? 1 : 0) : 0
     const seasonFormat = ['TV', 'TV_SHORT', 'ONA'].includes(media.format)
     return [titleScore, yearMatch, seasonFormat ? 1 : 0, -(media.seasonYear || 9999), -(media.id || 0)]
@@ -77,13 +97,22 @@ export function pickAniListSearchResult(candidates: JsonObject[], title: string)
     for (let i = 0; i < left.length; i += 1) if (left[i] !== right[i]) return left[i] - right[i]
     return 0
   }
-  return candidates.reduce<JsonObject | null>((best, candidate) => !best || compare(score(candidate), score(best)) > 0 ? candidate : best, null)
+  return candidates.reduce<JsonObject | null>(
+    (best, candidate) => (!best || compare(score(candidate), score(best)) > 0 ? candidate : best),
+    null,
+  )
 }
 
-export async function anilistLookup(title: string, cache: JsonObject, search = alSearch, persist = saveCache): Promise<JsonObject | null> {
+export async function anilistLookup(
+  title: string,
+  cache: JsonObject,
+  search = alSearch,
+  persist = saveCache,
+): Promise<JsonObject | null> {
   const cacheKey = `lookup:v3:${title}`
   if (cache[cacheKey]) return cache[cacheKey]
-  const query = 'query($t:String){Page(perPage:10){media(search:$t,type:ANIME,sort:SEARCH_MATCH){id format season seasonYear episodes title{romaji english native} coverImage{large extraLarge} bannerImage}}}'
+  const query =
+    'query($t:String){Page(perPage:10){media(search:$t,type:ANIME,sort:SEARCH_MATCH){id format season seasonYear episodes title{romaji english native} coverImage{large extraLarge} bannerImage}}}'
   for (const candidate of searchCandidates(title)) {
     const data = pickAniListSearchResult(await search(query, { t: candidate }), title)
     if (data) {
@@ -105,7 +134,9 @@ const COUR_ORDINALS: JsonObject = { first: 1, '1st': 1, second: 2, '2nd': 2, thi
 export function courPartNumber(media: JsonObject): number | null {
   const titles = media.title || {}
   for (const title of [titles.english, titles.romaji, titles.native]) {
-    const value = String(title || '').match(COUR_PART_RE)?.[1]?.toLowerCase()
+    const value = String(title || '')
+      .match(COUR_PART_RE)?.[1]
+      ?.toLowerCase()
     if (value) return /^\d+$/.test(value) ? Number(value) : COUR_ORDINALS[value]
   }
   return null
@@ -115,7 +146,8 @@ function mediaPart(id: number, data: JsonObject, fallback: JsonObject = {}): Cha
   const cover = data.coverImage || {}
   const titles = data.title || {}
   return {
-    id, cover: cover.extraLarge || cover.large || fallback.cover,
+    id,
+    cover: cover.extraLarge || cover.large || fallback.cover,
     banner: data.bannerImage || fallback.banner,
     episodeCount: data.episodes ?? null,
     title: titles.english || titles.romaji,
@@ -129,13 +161,24 @@ export interface AniListDependencies extends MetadataDependencies {
 function chainEntry(parts: ChainPart[], season = 1): ChainEntry {
   const first = parts[0]
   return {
-    season, id: first.id, ids: parts.map(part => part.id), parts, cover: first.cover, banner: first.banner,
-    episodeCount: parts.every(part => part.episodeCount !== null) ? parts.reduce((sum, part) => sum + (part.episodeCount ?? 0), 0) : null,
+    season,
+    id: first.id,
+    ids: parts.map(part => part.id),
+    parts,
+    cover: first.cover,
+    banner: first.banner,
+    episodeCount: parts.every(part => part.episodeCount !== null)
+      ? parts.reduce((sum, part) => sum + (part.episodeCount ?? 0), 0)
+      : null,
   }
 }
 
 /** Resolve only the explicitly selected entries, in episode order, without following sequels. */
-export async function anilistSeason(ids: number[], cache: JsonObject, dependencies: AniListDependencies = {}): Promise<ChainEntry | null> {
+export async function anilistSeason(
+  ids: number[],
+  cache: JsonObject,
+  dependencies: AniListDependencies = {},
+): Promise<ChainEntry | null> {
   const now = (dependencies.now || Date.now)()
   const key = `season:v1:${ids.join(',')}`
   if (freshCache(cache[key], now)) return cache[key].entry
@@ -153,7 +196,13 @@ export async function anilistSeason(ids: number[], cache: JsonObject, dependenci
   return entry
 }
 
-export async function anilistChain(title: string, cache: JsonObject, dependencies: AniListDependencies = {}, overrideId?: number, options: { requiredSeasons?: number[] } = {}): Promise<ChainEntry[]> {
+export async function anilistChain(
+  title: string,
+  cache: JsonObject,
+  dependencies: AniListDependencies = {},
+  overrideId?: number,
+  options: { requiredSeasons?: number[] } = {},
+): Promise<ChainEntry[]> {
   const lookup = dependencies.lookup || anilistLookup
   const persist = dependencies.persist || saveCache
   const base = overrideId ? { id: overrideId } : await lookup(title, cache)
@@ -164,8 +213,15 @@ export async function anilistChain(title: string, cache: JsonObject, dependencie
   const requiredSeason = Math.max(0, ...(options.requiredSeasons || []))
   // A newly observed Sonarr season triggers one refresh even for a recent chain.
   // Remember that check so disconnected sequels do not force requests on every scan.
-  if (freshCache(cached, now) && Array.isArray(cached.chain) && requiredSeason <= Math.max(cached.checked_through_season || 0, cached.chain.length)) return cached.chain
-  const knownIds: number[] = (Array.isArray(cached?.chain) ? cached.chain : []).flatMap((entry: ChainEntry) => entry.ids || [entry.id])
+  if (
+    freshCache(cached, now) &&
+    Array.isArray(cached.chain) &&
+    requiredSeason <= Math.max(cached.checked_through_season || 0, cached.chain.length)
+  )
+    return cached.chain
+  const knownIds: number[] = (Array.isArray(cached?.chain) ? cached.chain : []).flatMap(
+    (entry: ChainEntry) => entry.ids || [entry.id],
+  )
   // Newly observed seasons must recheck relations even if raw metadata is fresh.
   const refreshIds = freshCache(cached, now) ? [base.id, ...knownIds] : []
   await loadAniListMedia([base.id, ...knownIds, ...(dependencies.prefetchIds || [])], cache, dependencies, refreshIds)
@@ -191,9 +247,10 @@ export async function anilistChain(title: string, cache: JsonObject, dependencie
   }
   if (!nodes.has(base.id)) return []
   const discovery = new Map([...nodes.keys()].map((id, index) => [id, index]))
-  const seasonIds = [...nodes.keys()].filter((id) => id !== base.id && SEASON_FORMATS.has(nodes.get(id)?.format))
+  const seasonIds = [...nodes.keys()].filter(id => id !== base.id && SEASON_FORMATS.has(nodes.get(id)?.format))
   seasonIds.sort((left, right) => {
-    const a = nodes.get(left) || {}; const b = nodes.get(right) || {}
+    const a = nodes.get(left) || {}
+    const b = nodes.get(right) || {}
     const aa = [discovery.get(left) || 0, a.seasonYear || 0, SEASON_ORDER[a.season] ?? 4, left]
     const bb = [discovery.get(right) || 0, b.seasonYear || 0, SEASON_ORDER[b.season] ?? 4, right]
     for (let index = 0; index < aa.length; index += 1) if (aa[index] !== bb[index]) return aa[index] - bb[index]
@@ -205,17 +262,27 @@ export async function anilistChain(title: string, cache: JsonObject, dependencie
     const data = nodes.get(id)!
     let group: number[] | undefined
     if ((courPartNumber(data) || 0) >= 2) {
-      const prequels = (data.relations?.edges || []).filter((edge: JsonObject) => edge.relationType === 'PREQUEL').map((edge: JsonObject) => edge.node?.id)
+      const prequels = (data.relations?.edges || [])
+        .filter((edge: JsonObject) => edge.relationType === 'PREQUEL')
+        .map((edge: JsonObject) => edge.node?.id)
       group = prequels.map((prequel: number) => groupById.get(prequel)).find(Boolean) || groups.at(-1)
     }
-    if (!group) { group = []; groups.push(group) }
-    group.push(id); groupById.set(id, group)
+    if (!group) {
+      group = []
+      groups.push(group)
+    }
+    group.push(id)
+    groupById.set(id, group)
   }
   const chain = groups.map((ids, index) => {
-    const parts = ids.map((id) => mediaPart(id, nodes.get(id) || {}, id === base.id ? base : {}))
+    const parts = ids.map(id => mediaPart(id, nodes.get(id) || {}, id === base.id ? base : {}))
     return chainEntry(parts, index + 1)
   })
-  cache[chainKey] = { chain, fetched_at: metadataFetchedAt([...seen], cache, now), checked_through_season: Math.max(requiredSeason, chain.length) }
+  cache[chainKey] = {
+    chain,
+    fetched_at: metadataFetchedAt([...seen], cache, now),
+    checked_through_season: Math.max(requiredSeason, chain.length),
+  }
   persist(cache)
   return chain
 }

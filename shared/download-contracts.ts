@@ -1,3 +1,4 @@
+import { rowKey } from './ids.js'
 import type { UsenetProvider } from './usenet-contracts.js'
 
 export type DownloadProtocol = 'torrent' | 'usenet'
@@ -20,7 +21,10 @@ export type DownloadPhase =
   | 'missing'
   | 'unavailable'
 
-export interface DownloadSelectionRef { key: string; release: number }
+export interface DownloadSelectionRef {
+  key: string
+  release: number
+}
 
 /** One review row's acquisition intent. The server resolves authority from the saved mode. */
 export interface DownloadSelection extends DownloadSelectionRef {
@@ -68,8 +72,23 @@ export interface PlannedUnit {
 export interface PreflightBlocked {
   key: string
   release: number
-  code: 'protocol_required' | 'mode_conflict' | 'no_torrent' | 'no_match' | 'processing' | 'incomplete'
-    | 'lookup_failed' | 'usenet_unconfigured' | 'not_upgradable' | 'owned' | 'excluded' | 'invalid' | 'conflict' | 'acceptance_unknown' | 'client_unreachable' | 'category_missing'
+  code:
+    | 'protocol_required'
+    | 'mode_conflict'
+    | 'no_torrent'
+    | 'no_match'
+    | 'processing'
+    | 'incomplete'
+    | 'lookup_failed'
+    | 'usenet_unconfigured'
+    | 'not_upgradable'
+    | 'owned'
+    | 'excluded'
+    | 'invalid'
+    | 'conflict'
+    | 'acceptance_unknown'
+    | 'client_unreachable'
+    | 'category_missing'
   reason: string
 }
 
@@ -180,12 +199,23 @@ export function jobResult(job: Omit<DownloadJob, 'id'>): BulkSubmissionResult {
     failed: boolean
   }
   const outcomes = new Map<string, Outcome>()
-  const merge = (entry: DownloadUnitEntry | DownloadUnitFailure, status: 'pending' | 'added' | 'existing' | 'failed') => {
+  const merge = (
+    entry: DownloadUnitEntry | DownloadUnitFailure,
+    status: 'pending' | 'added' | 'existing' | 'failed',
+  ) => {
     for (const selection of entry.selections) {
-      const id = `${selection.key}\u0000${selection.release}`
+      const id = rowKey(selection)
       let outcome = outcomes.get(id)
       if (!outcome) {
-        outcome = { key: selection.key, release: selection.release, protocols: [], pending: false, added: false, existing: false, failed: false }
+        outcome = {
+          key: selection.key,
+          release: selection.release,
+          protocols: [],
+          pending: false,
+          added: false,
+          existing: false,
+          failed: false,
+        }
         outcomes.set(id, outcome)
       }
       if (!outcome.protocols.includes(entry.protocol)) outcome.protocols.push(entry.protocol)

@@ -1,3 +1,4 @@
+import { isRecord } from '../shared/guards.js'
 import { randomUUID } from 'node:crypto'
 import { RELEASE_CHANGES_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
@@ -7,24 +8,44 @@ import type { ReleaseChange, ResultItem } from '../shared/contracts.js'
 type ChangeStore = Record<string, ReleaseChange[]>
 export function loadReleaseChanges(file = RELEASE_CHANGES_FILE): ChangeStore {
   const stored = readJson<unknown>(file, {}, 'Could not read unseen release changes')
-  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {}
-  return Object.fromEntries(Object.entries(stored).filter(([, changes]) => Array.isArray(changes)).map(([key, changes]) => [key,
-    (changes as unknown[]).filter((change): change is ReleaseChange => Boolean(change && typeof change === 'object' &&
-      typeof (change as ReleaseChange).id === 'string' && typeof (change as ReleaseChange).description === 'string' &&
-      ['best', 'alternative', 'updated', 'removed'].includes((change as ReleaseChange).kind) &&
-      typeof (change as ReleaseChange).detected_at === 'string' && Number.isFinite(Date.parse((change as ReleaseChange).detected_at)) &&
-      ((change as ReleaseChange).part === undefined || typeof (change as ReleaseChange).part === 'string'))),
-  ]))
+  if (!isRecord(stored)) return {}
+  return Object.fromEntries(
+    Object.entries(stored)
+      .filter(([, changes]) => Array.isArray(changes))
+      .map(([key, changes]) => [
+        key,
+        (changes as unknown[]).filter((change): change is ReleaseChange =>
+          Boolean(
+            change &&
+              typeof change === 'object' &&
+              typeof (change as ReleaseChange).id === 'string' &&
+              typeof (change as ReleaseChange).description === 'string' &&
+              ['best', 'alternative', 'updated', 'removed'].includes((change as ReleaseChange).kind) &&
+              typeof (change as ReleaseChange).detected_at === 'string' &&
+              Number.isFinite(Date.parse((change as ReleaseChange).detected_at)) &&
+              ((change as ReleaseChange).part === undefined || typeof (change as ReleaseChange).part === 'string'),
+          ),
+        ),
+      ]),
+  )
 }
 
-export function recordReleaseChanges(previous: ResultItem[], current: ResultItem[], file = RELEASE_CHANGES_FILE, detectedAt = new Date().toISOString()): void {
+export function recordReleaseChanges(
+  previous: ResultItem[],
+  current: ResultItem[],
+  file = RELEASE_CHANGES_FILE,
+  detectedAt = new Date().toISOString(),
+): void {
   const stored = loadReleaseChanges(file)
   const before = new Map(previous.map(result => [releaseResultIdentity(result), result]))
   const next: ChangeStore = {}
   for (const result of current) {
-    const key = releaseResultIdentity(result), old = before.get(key)
+    const key = releaseResultIdentity(result),
+      old = before.get(key)
     // New installations, cleared scan data, and newly discovered titles establish a baseline.
-    const additions = old ? describeReleaseChanges(old, result).map(change => ({ ...change, id: randomUUID(), detected_at: detectedAt })) : []
+    const additions = old
+      ? describeReleaseChanges(old, result).map(change => ({ ...change, id: randomUUID(), detected_at: detectedAt }))
+      : []
     const changes = old ? [...(stored[key] || []), ...additions] : []
     if (changes.length) next[key] = changes
   }
@@ -38,7 +59,8 @@ export function withReleaseChanges(results: ResultItem[], file = RELEASE_CHANGES
 
 /** Acknowledge explicit event IDs so a concurrent scan cannot clear a newer event. */
 export function reviewReleaseChanges(ids: string[], file = RELEASE_CHANGES_FILE): number {
-  const reviewed = new Set(ids), stored = loadReleaseChanges(file)
+  const reviewed = new Set(ids),
+    stored = loadReleaseChanges(file)
   let count = 0
   const next: ChangeStore = {}
   for (const [key, changes] of Object.entries(stored)) {

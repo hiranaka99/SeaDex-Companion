@@ -43,8 +43,22 @@ expect(cardStatus('partial'), 'partial', 'a partially resolved split season rema
 expect(STATUS_LABEL.partial, 'Partially on SeaDex', 'partial cards have an explicit label')
 
 const unmatchedCards = groupResults([
-  { ...result(1, 'missing'), key: 'Sonarr:item10:1:missing', group_id: null, anilist_id: null, title: 'Shared title', arr: 'Sonarr' },
-  { ...result(0, 'missing'), key: 'Radarr:item20:0:missing', group_id: null, anilist_id: null, title: 'Shared title', arr: 'Radarr' },
+  {
+    ...result(1, 'missing'),
+    key: 'Sonarr:item10:1:missing',
+    group_id: null,
+    anilist_id: null,
+    title: 'Shared title',
+    arr: 'Sonarr',
+  },
+  {
+    ...result(0, 'missing'),
+    key: 'Radarr:item20:0:missing',
+    group_id: null,
+    anilist_id: null,
+    title: 'Shared title',
+    arr: 'Radarr',
+  },
 ])
 expect(unmatchedCards.length, 2, 'unmatched Sonarr and Radarr entries do not merge by title')
 
@@ -62,21 +76,25 @@ const artCard = groupResults([
 ])[0]
 expect(artCard.banner, 'banner-1', 'card banner falls back to the first season that has one')
 expect(artCard.image, 'cover-0', 'card image keeps the first season cover when it exists')
-const artlessCard = groupResults([
-  resultWithArt(0, null, null),
-  resultWithArt(1, 'banner-1', 'cover-1'),
-])[0]
+const artlessCard = groupResults([resultWithArt(0, null, null), resultWithArt(1, 'banner-1', 'cover-1')])[0]
 expect(artlessCard.image, 'cover-1', 'card image also falls back when the first season has none')
 const noArtCard = groupResults([resultWithArt(0, null, null), resultWithArt(1, null, null)])[0]
 expect(noArtCard.banner, null, 'cards without any banner stay bannerless')
 expect(noArtCard.image, null, 'cards without any cover stay coverless')
 
-const unmatchedCard = groupResults([{ ...result(1, 'missing'), anilist_id: null, group_id: null, match_status: 'unmatched' }])[0]
-expect(unmatchedCard.status, 'review', 'unmatched anime need matching review rather than being reported absent from SeaDex')
+const unmatchedCard = groupResults([
+  { ...result(1, 'missing'), anilist_id: null, group_id: null, match_status: 'unmatched' },
+])[0]
+expect(
+  unmatchedCard.status,
+  'review',
+  'unmatched anime need matching review rather than being reported absent from SeaDex',
+)
 expect(STATUS_LABEL.review, 'Match needs review', 'matching review has a distinct label')
 
 const partlyCoveredUpgrade = groupResults([
-  { ...result(1, 'upgrade'), local_size: 100, best_size: 150 }, result(2, 'missing'),
+  { ...result(1, 'upgrade'), local_size: 100, best_size: 150 },
+  result(2, 'missing'),
 ])[0]
 expect(partlyCoveredUpgrade.status, 'partial', 'coverage remains partial when another season is unlisted')
 expect(hasCardUpgrade(partlyCoveredUpgrade), true, 'partial coverage does not hide an upgradable season')
@@ -86,5 +104,13 @@ const partlyResolvedUpgrade = groupResults([
 ])[0]
 expect(hasCardUpgrade(partlyResolvedUpgrade), true, 'partly resolved seasons expose upgrade availability')
 expect(cardSizeDelta(partlyResolvedUpgrade), 75, 'library totals include the same partial-season upgrade as cards')
-expect(hasCardUpgrade(groupResults([result(1, 'partial')])[0]), false, 'partial coverage alone does not imply an upgrade')
-expect(hasCardUpgrade(groupResults([result(1, 'best'), result(2, 'missing')])[0]), false, 'owned best and unlisted seasons are not upgrade candidates')
+expect(
+  hasCardUpgrade(groupResults([result(1, 'partial')])[0]),
+  false,
+  'partial coverage alone does not imply an upgrade',
+)
+expect(
+  hasCardUpgrade(groupResults([result(1, 'best'), result(2, 'missing')])[0]),
+  false,
+  'owned best and unlisted seasons are not upgrade candidates',
+)

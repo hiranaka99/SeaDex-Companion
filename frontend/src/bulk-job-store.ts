@@ -19,8 +19,9 @@ async function poll(current = generation): Promise<void> {
     if (current !== generation) return
     publish(job)
     if (job.finished) selectedId = undefined
-  } catch { /* Connectivity failures leave the job running; retry from the same ID. */ }
-  finally {
+  } catch {
+    /* Connectivity failures leave the job running; retry from the same ID. */
+  } finally {
     if (current === generation) {
       if (subscribers.size) timer = window.setTimeout(() => void poll(current), latest?.finished ? 10_000 : 700)
       else watching = false
@@ -32,22 +33,36 @@ async function poll(current = generation): Promise<void> {
 export function watchDownloadJob(callback: (job: DownloadJobStatus) => void): () => void {
   subscribers.add(callback)
   if (latest) callback(latest)
-  if (!watching) { watching = true; void poll() }
+  if (!watching) {
+    watching = true
+    void poll()
+  }
   return () => {
     subscribers.delete(callback)
-    if (!subscribers.size) { window.clearTimeout(timer); generation += 1; watching = false }
+    if (!subscribers.size) {
+      window.clearTimeout(timer)
+      generation += 1
+      watching = false
+    }
   }
 }
 
-export function waitForDownloadJob(job: DownloadJobStatus, onProgress?: (job: DownloadJobStatus) => void): Promise<DownloadJobStatus> {
+export function waitForDownloadJob(
+  job: DownloadJobStatus,
+  onProgress?: (job: DownloadJobStatus) => void,
+): Promise<DownloadJobStatus> {
   selectedId = job.id || undefined
-  window.clearTimeout(timer); generation += 1
+  window.clearTimeout(timer)
+  generation += 1
   publish(job)
   return new Promise(resolve => {
     const callback = (status: DownloadJobStatus) => {
       if (status.id !== job.id) return
       onProgress?.(status)
-      if (status.finished) { subscribers.delete(callback); resolve(status) }
+      if (status.finished) {
+        subscribers.delete(callback)
+        resolve(status)
+      }
     }
     subscribers.add(callback)
     callback(job)
@@ -57,15 +72,22 @@ export function waitForDownloadJob(job: DownloadJobStatus, onProgress?: (job: Do
 }
 
 /** Point the shared poller at a freshly started job and resolve when it finishes. */
-export function followDownloadJob(id: string, onProgress?: (job: DownloadJobStatus) => void): Promise<DownloadJobStatus> {
+export function followDownloadJob(
+  id: string,
+  onProgress?: (job: DownloadJobStatus) => void,
+): Promise<DownloadJobStatus> {
   selectedId = id
-  window.clearTimeout(timer); generation += 1
+  window.clearTimeout(timer)
+  generation += 1
   latest = null
   return new Promise(resolve => {
     const callback = (status: DownloadJobStatus) => {
       if (status.id !== id) return
       onProgress?.(status)
-      if (status.finished) { subscribers.delete(callback); resolve(status) }
+      if (status.finished) {
+        subscribers.delete(callback)
+        resolve(status)
+      }
     }
     subscribers.add(callback)
     watching = true

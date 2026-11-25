@@ -1,8 +1,15 @@
 export type JsonObject = Record<string, any>
 
-export type { Config, ScanSchedule, ResultItem, Release, PublicConfig, ConfigUpdate } from '../shared/contracts.js'
-import type { ResultItem } from '../shared/contracts.js'
-export type ScanTrigger = 'manual' | 'scheduled' | 'sonarr' | 'radarr' | 'sonarr+radarr'
+export type {
+  Config,
+  ScanSchedule,
+  ScanTrigger,
+  ResultItem,
+  Release,
+  PublicConfig,
+  ConfigUpdate,
+} from '../shared/contracts.js'
+import type { ResultItem, ScanTrigger } from '../shared/contracts.js'
 
 export interface ScanScope {
   sonarrIds?: number[]
@@ -72,6 +79,17 @@ export interface LocalItem {
   slug?: string
   seasons: Record<number, LocalSeason>
 }
-export interface SeaDexSlot { candidates: ReleaseCandidate[] }
-export interface SeaDexEntry { url: string; notes: string; seasons: Record<number, SeaDexSlot> }
-export interface ResolvedPart { label: string | null; source: SeaDexEntry; best: ReleaseCandidate; alts: ReleaseCandidate[] }
+export interface SeaDexSlot {
+  candidates: ReleaseCandidate[]
+}
+export interface SeaDexEntry {
+  url: string
+  notes: string
+  seasons: Record<number, SeaDexSlot>
+}
+export interface ResolvedPart {
+  label: string | null
+  source: SeaDexEntry
+  best: ReleaseCandidate
+  alts: ReleaseCandidate[]
+}

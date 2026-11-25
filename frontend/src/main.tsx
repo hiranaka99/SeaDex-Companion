@@ -3,4 +3,8 @@ import App from './App'
 import { ToastProvider } from './components/Toast'
 import './index.css'
 
-ReactDOM.createRoot(document.getElementById('root')!).render(<ToastProvider><App /></ToastProvider>)
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <ToastProvider>
+    <App />
+  </ToastProvider>,
+)

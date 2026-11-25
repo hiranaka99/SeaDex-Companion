@@ -1,4 +1,9 @@
-import { DEFAULT_DATETIME_FORMAT, formatDateTime, isValidDateTimeFormat, parseTimestamp } from '../../shared/datetime-format.js'
+import {
+  DEFAULT_DATETIME_FORMAT,
+  formatDateTime,
+  isValidDateTimeFormat,
+  parseTimestamp,
+} from '../../shared/datetime-format.js'
 
 /**
  * App-wide display format for timestamps. Seeded from the saved configuration
@@ -18,5 +23,5 @@ export function currentDateTimeFormat(): string {
 /** Renders stored timestamps in the configured format; non-timestamp text passes through. */
 export function displayDateTime(value: string | null | undefined): string {
   const date = parseTimestamp(value)
-  return date ? formatDateTime(date, activeFormat) : value ?? ''
+  return date ? formatDateTime(date, activeFormat) : (value ?? '')
 }

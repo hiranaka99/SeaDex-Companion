@@ -1,10 +1,13 @@
+import { INFO_HASH_PATTERN } from '../shared/ids.js'
+import { isRecord } from '../shared/guards.js'
 import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { DATA_DIR } from './paths.js'
 import { log } from './logging.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
-import { AMENZB_ENTRY_PATTERN, ANIMETOSHO_ENTRY_PATTERN, HASH_PATTERN, isRecord, safeText, type ProviderLookup, type ProviderSettings } from './usenet-provider-types.js'
+import { safeText, type ProviderLookup, type ProviderSettings } from './usenet-provider-types.js'
+import { isUsenetProvider, USENET_PROVIDERS } from './usenet-providers.js'
 import type { UsenetFailureCode, UsenetProvider } from '../shared/usenet-contracts.js'
 
 export const USENET_CACHE_FILE = join(DATA_DIR, 'usenet_cache.json')
@@ -14,7 +17,15 @@ export const USENET_CACHE_LIMIT = 20_000
 const COMPACT_DELAY_MS = 30_000
 const WRITE_RETRY_MS = 60_000
 const FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/
-const FAILURE_CODES: Record<UsenetFailureCode, true> = { network: true, timeout: true, invalid_response: true, unauthorized: true, rate_limited: true, server: true, invalid_config: true }
+const FAILURE_CODES: Record<UsenetFailureCode, true> = {
+  network: true,
+  timeout: true,
+  invalid_response: true,
+  unauthorized: true,
+  rate_limited: true,
+  server: true,
+  invalid_config: true,
+}
 type Observation = Exclude<ProviderLookup, { kind: 'failed' }>
 type Failure = Extract<ProviderLookup, { kind: 'failed' }>
 
@@ -36,7 +47,9 @@ export function usenetCacheJournalFile(file: string): string {
 }
 
 export function providerFingerprint(provider: UsenetProvider, settings: ProviderSettings): string {
-  return createHash('sha256').update(JSON.stringify([provider, settings.baseUrl.replace(/\/+$/, ''), settings.apiKey || ''])).digest('hex')
+  return createHash('sha256')
+    .update(JSON.stringify([provider, settings.baseUrl.replace(/\/+$/, ''), settings.apiKey || '']))
+    .digest('hex')
 }
 
 export function usenetCacheKey(provider: UsenetProvider, fingerprint: string, hash: string): string {
@@ -49,17 +62,23 @@ function safeMetadata(value: string, secrets: string[]): string {
   return safeText(result, 4096)
 }
 
-function observation(value: unknown, provider: UsenetProvider, hash: string, secrets: string[] = []): Observation | undefined {
+function observation(
+  value: unknown,
+  provider: UsenetProvider,
+  hash: string,
+  secrets: string[] = [],
+): Observation | undefined {
   if (!isRecord(value)) return undefined
   if (value.kind === 'no_match') return { kind: 'no_match' }
-  const entryPattern = provider === 'animetosho' ? ANIMETOSHO_ENTRY_PATTERN : AMENZB_ENTRY_PATTERN
+  const { entryPattern } = USENET_PROVIDERS[provider]
   const source = value.kind === 'match' && isRecord(value.match) ? value.match : value
   if (source.provider !== provider || (value.kind !== 'deleted' && source.source_hash !== hash)) return undefined
   if (typeof source.entry_id !== 'string' || !entryPattern.test(source.entry_id)) {
     // Processing and deleted entries can precede a usable provider id.
-    if (value.kind === 'processing' || value.kind === 'deleted') return value.kind === 'deleted'
-      ? { kind: 'deleted', provider, entry_id: '' }
-      : { kind: 'processing', provider, entry_id: '', source_hash: hash }
+    if (value.kind === 'processing' || value.kind === 'deleted')
+      return value.kind === 'deleted'
+        ? { kind: 'deleted', provider, entry_id: '' }
+        : { kind: 'processing', provider, entry_id: '', source_hash: hash }
     return undefined
   }
   const entryId = source.entry_id
@@ -67,39 +86,81 @@ function observation(value: unknown, provider: UsenetProvider, hash: string, sec
   if (value.kind === 'deleted') return { kind: 'deleted', provider, entry_id: source.entry_id }
   const title = typeof source.title === 'string' ? safeMetadata(source.title, secrets) : undefined
   if (source.source_hash !== hash) return undefined
-  if (value.kind === 'processing') return { kind: 'processing', provider, entry_id: source.entry_id, ...(title ? { title } : {}), source_hash: hash }
-  if (value.kind !== 'match' || source.provider !== provider || typeof source.files_complete !== 'boolean') return undefined
-  const number = (input: unknown): input is number => typeof input === 'number' && Number.isSafeInteger(input) && input >= 0
-  const files = Array.isArray(source.files) && source.files.every(file => {
-    if (!isRecord(file) || typeof file.name !== 'string' || file.name.length === 0 || !number(file.size)) return false
-    const name = file.name
-    return !/https?:\/\//i.test(name) && !secrets.some(secret => secret && name.includes(secret))
-  }) ? source.files.map(file => ({ name: file.name as string, size: file.size as number })) : undefined
-  const complete = source.files_complete && files !== undefined && files.length > 0 && source.file_count === files.length
+  if (value.kind === 'processing')
+    return { kind: 'processing', provider, entry_id: source.entry_id, ...(title ? { title } : {}), source_hash: hash }
+  if (value.kind !== 'match' || source.provider !== provider || typeof source.files_complete !== 'boolean')
+    return undefined
+  const number = (input: unknown): input is number =>
+    typeof input === 'number' && Number.isSafeInteger(input) && input >= 0
+  const files =
+    Array.isArray(source.files) &&
+    source.files.every(file => {
+      if (!isRecord(file) || typeof file.name !== 'string' || file.name.length === 0 || !number(file.size)) return false
+      const name = file.name
+      return !/https?:\/\//i.test(name) && !secrets.some(secret => secret && name.includes(secret))
+    })
+      ? source.files.map(file => ({ name: file.name as string, size: file.size as number }))
+      : undefined
+  const complete =
+    source.files_complete && files !== undefined && files.length > 0 && source.file_count === files.length
   return {
     kind: 'match',
     match: {
-      provider, entry_id: source.entry_id, source_hash: hash,
+      provider,
+      entry_id: source.entry_id,
+      source_hash: hash,
       ...(title ? { title } : {}),
       ...(typeof source.nzb_name === 'string' ? { nzb_name: safeMetadata(source.nzb_name, secrets) } : {}),
       ...(number(source.total_bytes) ? { total_bytes: source.total_bytes } : {}),
       ...(number(source.file_count) ? { file_count: source.file_count } : {}),
-      ...(complete ? { files } : {}), files_complete: complete,
+      ...(complete ? { files } : {}),
+      files_complete: complete,
     },
   }
 }
 
 function storedRecord(value: unknown): UsenetCacheRecord | undefined {
-  if (!isRecord(value) || (value.provider !== 'animetosho' && value.provider !== 'amenzb') || typeof value.fingerprint !== 'string' || !FINGERPRINT_PATTERN.test(value.fingerprint) || typeof value.hash !== 'string' || !HASH_PATTERN.test(value.hash)) return undefined
-  if (![value.checkedAt, value.lastAttemptAt, value.retryAt].every(time => typeof time === 'number' && Number.isSafeInteger(time) && time >= 0)) return undefined
+  if (
+    !isRecord(value) ||
+    !isUsenetProvider(value.provider) ||
+    typeof value.fingerprint !== 'string' ||
+    !FINGERPRINT_PATTERN.test(value.fingerprint) ||
+    typeof value.hash !== 'string' ||
+    !INFO_HASH_PATTERN.test(value.hash)
+  )
+    return undefined
+  if (
+    ![value.checkedAt, value.lastAttemptAt, value.retryAt].every(
+      time => typeof time === 'number' && Number.isSafeInteger(time) && time >= 0,
+    )
+  )
+    return undefined
   const lookup = observation(value.lookup, value.provider, value.hash)
-  const failure = isRecord(value.failure) && typeof value.failure.code === 'string' && Object.hasOwn(FAILURE_CODES, value.failure.code)
-    ? { kind: 'failed' as const, code: value.failure.code as UsenetFailureCode, message: `Provider lookup failed (${value.failure.code})` } : undefined
+  const failure =
+    isRecord(value.failure) &&
+    typeof value.failure.code === 'string' &&
+    Object.hasOwn(FAILURE_CODES, value.failure.code)
+      ? {
+          kind: 'failed' as const,
+          code: value.failure.code as UsenetFailureCode,
+          message: `Provider lookup failed (${value.failure.code})`,
+        }
+      : undefined
   if ((!lookup && !failure) || (lookup && !value.checkedAt)) return undefined
-  const streak = typeof value.negativeStreak === 'number' && Number.isSafeInteger(value.negativeStreak) && value.negativeStreak > 0 ? value.negativeStreak : undefined
+  const streak =
+    typeof value.negativeStreak === 'number' && Number.isSafeInteger(value.negativeStreak) && value.negativeStreak > 0
+      ? value.negativeStreak
+      : undefined
   return {
-    provider: value.provider, fingerprint: value.fingerprint, hash: value.hash, checkedAt: value.checkedAt as number, lastAttemptAt: value.lastAttemptAt as number, retryAt: value.retryAt as number,
-    ...(lookup ? { lookup } : {}), ...(failure ? { failure } : {}), ...(streak ? { negativeStreak: streak } : {}),
+    provider: value.provider,
+    fingerprint: value.fingerprint,
+    hash: value.hash,
+    checkedAt: value.checkedAt as number,
+    lastAttemptAt: value.lastAttemptAt as number,
+    retryAt: value.retryAt as number,
+    ...(lookup ? { lookup } : {}),
+    ...(failure ? { failure } : {}),
+    ...(streak ? { negativeStreak: streak } : {}),
   }
 }
 
@@ -135,32 +196,53 @@ export class PersistentUsenetCache {
     this.loaded = true
     const stored = readJson<unknown>(this.file, undefined, 'Usenet cache could not be restored')
     if (stored !== undefined) {
-      if (!isRecord(stored) || stored.version !== 1 || !Array.isArray(stored.records)) log('WARNING', 'Usenet cache could not be restored (invalid schema)')
-      else for (const value of stored.records) {
-        const record = storedRecord(value)
-        if (!record) { log('WARNING', 'Usenet cache ignored an invalid record'); continue }
-        this.restore(record, false)
-      }
+      if (!isRecord(stored) || stored.version !== 1 || !Array.isArray(stored.records))
+        log('WARNING', 'Usenet cache could not be restored (invalid schema)')
+      else
+        for (const value of stored.records) {
+          const record = storedRecord(value)
+          if (!record) {
+            log('WARNING', 'Usenet cache ignored an invalid record')
+            continue
+          }
+          this.restore(record, false)
+        }
     }
     let journaled = 0
     if (existsSync(this.journal)) {
       let lines: string[] = []
-      try { lines = readFileSync(this.journal, 'utf8').split('\n') }
-      catch (error) { log('WARNING', `Usenet cache journal could not be read: ${error instanceof Error ? error.message : 'unknown error'}`) }
+      try {
+        lines = readFileSync(this.journal, 'utf8').split('\n')
+      } catch (error) {
+        log(
+          'WARNING',
+          `Usenet cache journal could not be read: ${error instanceof Error ? error.message : 'unknown error'}`,
+        )
+      }
       for (const line of lines) {
         if (!line.trim()) continue
         // A torn final line from an abrupt exit is expected and skipped.
         let value: unknown
-        try { value = JSON.parse(line) } catch { continue }
+        try {
+          value = JSON.parse(line)
+        } catch {
+          continue
+        }
         const record = storedRecord(value)
-        if (record) { this.restore(record, true); journaled++ }
+        if (record) {
+          this.restore(record, true)
+          journaled++
+        }
       }
     }
     this.bound()
     if (journaled) this.changed()
   }
 
-  get(key: string): UsenetCacheRecord | undefined { this.load(); return this.records.get(key) }
+  get(key: string): UsenetCacheRecord | undefined {
+    this.load()
+    return this.records.get(key)
+  }
 
   set(record: UsenetCacheRecord, settings: ProviderSettings): void {
     this.load()
@@ -169,12 +251,26 @@ export class PersistentUsenetCache {
     try {
       const url = new URL(settings.baseUrl)
       secrets.push(decodeURIComponent(url.username), decodeURIComponent(url.password), ...url.searchParams.values())
-    } catch { /* Invalid provider configuration has no credential fields to extract. */ }
+    } catch {
+      /* Invalid provider configuration has no credential fields to extract. */
+    }
     const persisted: UsenetCacheRecord = {
-      provider: record.provider, fingerprint: record.fingerprint, hash: record.hash,
-      checkedAt: record.checkedAt, lastAttemptAt: record.lastAttemptAt, retryAt: record.retryAt,
+      provider: record.provider,
+      fingerprint: record.fingerprint,
+      hash: record.hash,
+      checkedAt: record.checkedAt,
+      lastAttemptAt: record.lastAttemptAt,
+      retryAt: record.retryAt,
       ...(record.lookup ? { lookup: observation(record.lookup, record.provider, record.hash, secrets) } : {}),
-      ...(record.failure ? { failure: { kind: 'failed', code: record.failure.code, message: `Provider lookup failed (${record.failure.code})` } } : {}),
+      ...(record.failure
+        ? {
+            failure: {
+              kind: 'failed',
+              code: record.failure.code,
+              message: `Provider lookup failed (${record.failure.code})`,
+            },
+          }
+        : {}),
       ...(record.negativeStreak ? { negativeStreak: record.negativeStreak } : {}),
     }
     this.records.set(key, record)
@@ -189,7 +285,10 @@ export class PersistentUsenetCache {
     try {
       appendFileSync(this.journal, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 })
     } catch (error) {
-      log('WARNING', `Usenet cache journal could not be written: ${error instanceof Error ? error.message : 'unknown error'}`)
+      log(
+        'WARNING',
+        `Usenet cache journal could not be written: ${error instanceof Error ? error.message : 'unknown error'}`,
+      )
       this.flush()
     }
   }
@@ -216,19 +315,33 @@ export class PersistentUsenetCache {
     return removed
   }
 
-  get size(): number { this.load(); return this.records.size }
+  get size(): number {
+    this.load()
+    return this.records.size
+  }
 
   private bound(): void {
     if (this.records.size <= USENET_CACHE_LIMIT) return
-    const oldest = [...this.records.entries()].sort((left, right) => left[1].lastAttemptAt - right[1].lastAttemptAt).slice(0, this.records.size - USENET_CACHE_LIMIT)
-    for (const [key] of oldest) { this.records.delete(key); this.persisted.delete(key) }
+    const oldest = [...this.records.entries()]
+      .sort((left, right) => left[1].lastAttemptAt - right[1].lastAttemptAt)
+      .slice(0, this.records.size - USENET_CACHE_LIMIT)
+    for (const [key] of oldest) {
+      this.records.delete(key)
+      this.persisted.delete(key)
+    }
   }
 
-  private changed(): void { this.dirty = true; this.schedule(COMPACT_DELAY_MS) }
+  private changed(): void {
+    this.dirty = true
+    this.schedule(COMPACT_DELAY_MS)
+  }
 
   private schedule(delay: number): void {
     if (this.timer) return
-    this.timer = setTimeout(() => { this.timer = undefined; this.flush() }, delay)
+    this.timer = setTimeout(() => {
+      this.timer = undefined
+      this.flush()
+    }, delay)
     this.timer.unref?.()
   }
 
@@ -245,8 +358,14 @@ export class PersistentUsenetCache {
       this.schedule(WRITE_RETRY_MS)
       return false
     }
-    try { rmSync(this.journal, { force: true }) }
-    catch (error) { log('WARNING', `Usenet cache journal could not be truncated: ${error instanceof Error ? error.message : 'unknown error'}`) }
+    try {
+      rmSync(this.journal, { force: true })
+    } catch (error) {
+      log(
+        'WARNING',
+        `Usenet cache journal could not be truncated: ${error instanceof Error ? error.message : 'unknown error'}`,
+      )
+    }
     return true
   }
 
