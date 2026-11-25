@@ -244,6 +244,19 @@ Reviewed changes stay reviewed across reloads and devices. A first scan or newly
 
 Back up the complete `seadex-data` volume before upgrading or moving to another host. Keep the encryption key and the rest of the data together so your saved integration credentials remain usable. Keep a pre-upgrade backup if you may need to return to an older version.
 
+### Update from the app
+
+When a new version is available, the version label at the bottom of the sidebar says so; on phones, a button with the new version number appears in the header. Select it to see how that release installs:
+
+- **Install and restart**: most releases can replace SeaDex Companion inside the running container. The app downloads the update from the project's GitHub releases, checks it against the release's checksum, and restarts. The page reloads when the new version is ready, usually within a minute. Settings and library data stay where they are. Wait for a running scan or bulk download to finish first.
+- **Needs a new Docker image**: some releases change the container itself, for example the Node.js version or server components. The label turns amber, and the details list what changed and the commands to run on the host. These releases cannot be installed from the app; update the image as described below.
+
+If an update installed from the app fails to start, SeaDex Companion returns to the version you had and explains what happened the next time you open the update details. The Server log has the details.
+
+Updates installed from the app are stored in the `seadex-data` volume and replace SeaDex Companion only, not the image's operating system packages. Pull the image from time to time to receive those security fixes. A newer image takes over from any update installed in the app. Images released before in-app updates existed need one image update first.
+
+### Update the Docker image
+
 For the Compose setup above, update with:
 
 ```bash
@@ -272,6 +285,7 @@ For remote access, prefer a private VPN. If you use a reverse proxy, require HTT
 - Keep the container and host patched.
 - Do not grant untrusted users administrator access; configured integration URLs can reach private services on the application's network.
 - SeaDex Companion changes Sonarr and Radarr only when you enable status tags, and then only those tags. Everything else it does there is read-only.
+- In-app updates are installed only when an administrator selects **Install and restart**. They come from the project's GitHub releases over HTTPS and are checked against the release's checksum before anything is replaced.
 - Back up the persistent `seadex-data` volume before upgrades or host migration.
 
 ## Support and license

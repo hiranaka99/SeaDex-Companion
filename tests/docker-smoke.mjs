@@ -97,10 +97,37 @@ try {
     'A review plan can be used once',
   )
   assert.equal((await request('/api/download-jobs', {})).status, 400, 'Jobs require a review plan')
+  const status = await (await request('/api/update/status')).json()
+  assert.equal(status.managed, true, 'The image starts the server through the update launcher')
+  assert.equal(status.current, status.image)
+  // Stage an in-app update built for this image, as an install does, so the restart
+  // below runs it: the launcher must start the bundle with the image's packages.
+  docker(
+    'exec',
+    '-u',
+    'node',
+    name,
+    'node',
+    '-e',
+    `const fs = require('node:fs'); const dir = '/app/data/app-updates/99.0.0';
+    for (const part of ['dist', 'static', 'runtime.json']) fs.cpSync('/app/' + part, dir + '/' + part, { recursive: true });
+    const pkg = JSON.parse(fs.readFileSync('/app/package.json', 'utf8')); pkg.version = '99.0.0';
+    fs.writeFileSync(dir + '/package.json', JSON.stringify(pkg));
+    fs.writeFileSync('/app/data/app-updates/active.json', JSON.stringify({ version: '99.0.0', previous: null, pending: true, installed_at: '' }));`,
+  )
   // Restart uses the same private container filesystem; no host data is mounted.
   docker('restart', '--time', '15', name)
   base = address()
   await ready()
+  const updated = await (await request('/api/update/status')).json()
+  assert.equal(updated.current, '99.0.0', 'The installed update runs after a restart')
+  assert.equal(updated.image, status.image)
+  assert.equal((await fetch(base)).status, 200, 'The update serves its own frontend')
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (docker('exec', name, 'cat', '/app/data/app-updates/active.json').includes('"pending": false')) break
+    await pause(100)
+  }
+  assert.match(docker('exec', name, 'cat', '/app/data/app-updates/active.json'), /"pending": false/)
   const restored = await request('/api/config')
   assert.equal(restored.status, 200, 'Sessions must survive a restart')
   const config = await restored.json()
@@ -115,7 +142,7 @@ try {
   docker('stop', '--time', '15', name)
   assert.equal(JSON.parse(docker('inspect', name))[0].State.ExitCode, 0)
   console.log(
-    'PASS Docker: non-root startup, health check, static assets, Argon2 authentication, encrypted settings, review-plan enforcement, restart persistence, and graceful shutdown',
+    'PASS Docker: non-root startup, health check, static assets, Argon2 authentication, encrypted settings, review-plan enforcement, in-app update launch, restart persistence, and graceful shutdown',
   )
 } catch (error) {
   if (created) process.stderr.write(docker('logs', name) + '\n')
