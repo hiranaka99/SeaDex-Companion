@@ -131,7 +131,10 @@ export function qbittorrentAdapter(config: Config): DownloadClientAdapter {
     async submit(unit, ownership) {
       await qbAddTorrent(
         config,
-        `magnet:?xt=urn:btih:${unit.source_hash}`,
+        // A private tracker's torrent is added from the .torrent file found through Prowlarr.
+        unit.torrentFile
+          ? { hash: unit.source_hash, file: unit.torrentFile }
+          : `magnet:?xt=urn:btih:${unit.source_hash}`,
         unit.category,
         unit.requestedPaths,
         undefined,

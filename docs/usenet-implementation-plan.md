@@ -6,9 +6,11 @@ Implement exact-source Usenet acquisition in SeaDex Companion through AnimeTosho
 
 The user approved the behavior decisions below. The implementing agent should execute this plan without reopening those decisions. Reinspect current source before editing because line numbers and surrounding implementation can change.
 
+> **Amendment (private-tracker releases through Prowlarr).** The user later approved an extension for releases SeaDex lists on private trackers, which have no public info hash. Section 16 specifies it. It narrows decision 1 and two boundaries below: hash lookups remain the only path for releases with a public hash; for private-tracker releases, a Prowlarr search may *propose* candidates, but nothing is sent unless the candidate's own file list matches the file list SeaDex publishes, byte for byte. Where this section and section 16 disagree, section 16 wins.
+
 ## 1. Required behavior and confirmed decisions
 
-1. Resolve SeaDex's original BitTorrent v1 info hashes through both AnimeTosho NEW and AmeNZB. Do not substitute title searches, release-group searches, or a different encode.
+1. Resolve SeaDex's original BitTorrent v1 info hashes through both AnimeTosho NEW and AmeNZB. Do not substitute title searches, release-group searches, or a different encode. *(Amended: a release without a public hash may be searched through Prowlarr, and is acquired only when a candidate's files match SeaDex's file list exactly; see section 16.)*
 2. Send matched NZBs directly to SABnzbd. Provide progress, pause, resume, remove while preserving files, remove with explicit file deletion, and bulk cancellation for app-owned downloads.
 3. Add a persisted download-mode setting with the exact labels **Torrent only**, **Usenet only**, and **Choose per download**.
 4. Show an explicit Usenet-unavailable result when no matching NZB exists. Distinguish a successful lookup with no match from an unsuccessful lookup.
@@ -22,7 +24,7 @@ The user approved the behavior decisions below. The implementing agent should ex
 ### Boundaries
 
 - SABnzbd owns NNTP connections, article retrieval, repair, and unpacking. Companion must not implement an NNTP downloader.
-- Do not add Prowlarr, NZBHydra2, generic title matching, NZBGet, a plugin registry, automatic posting requests, or new automatic acquisition schedules in this change.
+- Do not add NZBHydra2, generic title matching, NZBGet, a plugin registry, automatic posting requests, or new automatic acquisition schedules in this change. *(Amended: Prowlarr is added for private-tracker releases only, as specified in section 16. Its search results choose candidates; they never decide a match.)*
 - Do not modify Sonarr/Radarr quality profiles or introduce forced-import behavior. Preserve the existing category-based handoff. Document the required SABnzbd connection in Sonarr/Radarr.
 - A source-hash association identifies the source torrent. Do not describe it as independent verification of downloaded bytes. Downloaded-file checksum verification is outside this scope.
 - Preserve library matching, best/alternative classification, exclusions, notifications, unseen release changes, and scan scheduling. Provider availability is runtime acquisition state, not a change to the SeaDex recommendation.
@@ -573,3 +575,87 @@ Recheck provider domains and supported SABnzbd API behavior when implementing; t
 - [Sonarr failed-download handling source](https://github.com/Sonarr/Sonarr/blob/develop/src/NzbDrone.Core/Download/FailedDownloadService.cs)
 
 Observed during planning: AnimeTosho NEW's public hash lookups returned original source hashes and NZB references, including a SeaDex-linked batch. AmeNZB's hash path was verified in its documentation, not through an authenticated lookup. SABnzbd control semantics were inspected in its documentation, not exercised against a live configured downloader. No real Usenet download, repair or library import was started while writing this plan. The original SeaDex API did not resolve in the research environment, so this document makes no catalog-wide mirror-coverage claim.
+
+## 16. Amendment: private-tracker releases through Prowlarr
+
+### Status and purpose
+
+Implemented. SeaDex withholds the info hash of a torrent on a private tracker (its API returns `"<redacted>"`, for example for AnimeBytes), so neither the hash providers above nor qBittorrent magnets can reach it. SeaDex does still list that torrent's files with their exact sizes. This amendment uses the indexers the user has configured in Prowlarr to find the release, and uses the file list to prove that what Prowlarr found is that release.
+
+### Confirmed decisions
+
+1. Prowlarr is optional, off by default, and configured with `prowlarr_enabled`, `prowlarr_url` (including any URL base) and the encrypted secret `prowlarr_key`. For private-tracker releases it is used only while Release preferences include private trackers (`tracker_mode: 'private'`). Public-tracker mode never searches Prowlarr for them, even for owned private-tracker releases that stay visible there.
+2. Releases with a usable public hash still use magnets for torrents and the AnimeTosho/AmeNZB hash chain first for Usenet. *(Amended later: when every enabled hash indexer answered "no NZB" for a hash, and SeaDex lists that torrent's files with sizes, the user may search Prowlarr for it. This works in either tracker mode. The source is the torrent's own file list (`torrent_files`); the same checks, candidates and limits apply as for private-tracker releases. A copy found this way is planned and owned under the real info hash, with `provider: 'prowlarr'`. Availability rows report it as `fallback: 'prowlarr'` until Prowlarr has a result, then as `search: 'prowlarr'`. A failed or still-processing hash lookup never falls back.)*
+3. Title and size from search results only choose which candidates are fetched. At most three candidates are fetched per release, because every fetch through Prowlarr counts as a grab on the indexer.
+4. A candidate is accepted only by its own content:
+   - **Torrent:** the `.torrent` file must hold exactly SeaDex's files: the same multiset of base names and byte sizes, nothing more and nothing less. The real info hash is the SHA-1 of the raw `info` dictionary.
+   - **NZB:** the NZB subjects must name every SeaDex video file with its exact decoded size (the trailing size Nyuu and ngPost write after `yEnc (n/m)`). Extra files such as PAR2 sets are allowed. Obfuscated, repacked or size-less posts never match.
+5. A release that cannot be proven is reported as no match, with the reason. The NZBs that were checked without being proven are listed as candidates. Each shows its title, indexer, reported size, how many episode files match by name and exact size, how many match by name alone (for posts whose subjects list no sizes), and a link to its page on the indexer. The link comes from Prowlarr's `infoUrl`, `commentUrl` or `guid`; links on Prowlarr's own origin, download links, and links with a key-like parameter or the Prowlarr key are never shown. The user may download one candidate after an explicit confirmation in release details. The single-download selection then names it (`nzb`: the candidate's entry ID), and naming it is the acknowledgement. Nothing is searched again; the checked bytes are sent. A chosen NZB is refused for a public release or for the torrent protocol, and reported as `not_searched` once its search result has expired.
+6. A Usenet search runs only when the user asks in release details (**Search Prowlarr**, sent as the availability request's `search` rows, never implied by `refresh`), or for a single explicit download. Bulk reviews use earlier search results only and block unsearched rows with `not_searched`. Private torrent lookups may run in bulk reviews, because they fetch only small `.torrent` files from the user's own tracker account.
+7. qBittorrent receives the checked `.torrent` file itself (multipart upload), not a magnet. Selected-file scopes work as for public torrents; the torrent stays stopped until file priorities are set, because its metadata is already known.
+8. SABnzbd receives the NZB bytes that were checked; submission does not fetch it again while those bytes are in memory.
+
+### Identities
+
+- `PrivateSource` (`shared/contracts.ts`) is attached to a release as `private_sources` only when the release has no usable hash: `{ id, page?, files }`. `page` is the tracker page SeaDex links; `files` is the whole torrent's file list.
+- `id` is `files:` plus the SHA-1 of the sorted `basename\0size` lines (`server/source-files.ts`). It is independent of file order and folder, is never 40 bare hex characters, and so can never be confused with an info hash (`FILES_SOURCE_PATTERN`, `normalizeSourceId` in `shared/ids.ts`).
+- A private torrent is planned, owned and controlled under its **real** info hash from the `.torrent` file. Torrent ledger records never accept a `files:` identity as their source hash; they keep it as `source_alias`, which progress reports so the browser can attach the download to the private release, since the release has no hash of its own.
+- A Usenet copy of a private release is planned and owned under the `files:` identity, with `provider: 'prowlarr'` and an entry ID of the indexer ID plus a digest of the result GUID. The ledger accepts `files:` identities for Usenet records only.
+- `SubmissionUnit.sourceAlias` carries the `files:` identity of a private torrent unit, so one review never sends the same private release through both protocols.
+- `releaseIdentity` is unchanged; `private_sources` does not take part in it or in release-change detection.
+
+### Modules
+
+| Module | Responsibility |
+| --- | --- |
+| `server/prowlarr.ts` | Prowlarr API (`/api/v1/system/status`, `/api/v1/indexer`, `/api/v1/search`) with the key in `X-Api-Key`; download links re-rooted on the configured origin and URL base; download redirects (Prowlarr's per-indexer **Redirect** option) followed up to three hops to http(s) only, without the Prowlarr key, and redirects to magnets refused; tracker-name matching (`AB` → AnimeBytes and others) restricted to private torrent indexers; connection test |
+| `server/torrent-file.ts` | Bounded bencode reader: info hash, file list, private flag, BEP 47 padding files skipped |
+| `server/source-files.ts` | `files:` identity, exact torrent comparison, NZB subject parsing and NZB comparison |
+| `server/private-sources.ts` | Search, candidate ranking and checks, in-flight deduplication, concurrency limit of two, caches and bounded NZB byte retention (128 MB) |
+| `server/download-preflight.ts` | Resolves private torrent rows before ownership is read; plans private Usenet rows by `files:` identity; new block codes `private_no_match`, `private_lookup_failed`, `not_searched` |
+| `server/usenet.ts` | Availability rows for private releases (`search: 'prowlarr'`), never searched without `refresh`; `fetchUsenetNzb` hands Prowlarr entries to the private-source cache |
+| `server/qbittorrent.ts` | `qbAddTorrent` accepts `{ hash, file }` as well as a magnet |
+
+### Caching
+
+Observations live in memory only and are keyed by a credential-free Prowlarr fingerprint plus the source identity. Changing any Prowlarr setting clears them.
+
+| Observation | Kept for |
+| --- | --- |
+| Torrent match (with the `.torrent` file) | 1 hour |
+| Torrent no match | 30 minutes |
+| Usenet match | 12 hours (NZB bytes dropped oldest-first beyond 128 MB, then fetched again and re-checked on submission) |
+| Usenet no match | 6 hours |
+| Failure | 1 minute |
+| Missing indexer | 5 minutes |
+
+**Search again** bypasses a cached Usenet result. A restart forgets every observation; a Usenet copy must then be searched again before a bulk review can send it.
+
+### Failure and unavailable states
+
+- Prowlarr not set up, or public-tracker mode: torrent rows block as `no_torrent` with a hint to set up Prowlarr. Usenet rows block as `no_match` with the same hint, and release details show *Usenet unavailable* with setup guidance.
+- No Prowlarr indexer for the tracker, or no Usenet indexer: `private_no_match`, or `usenet_unconfigured` for Usenet, naming what is missing.
+- Candidates found but none proven: `private_no_match`, or `no_match` for Usenet, saying how many candidates were checked.
+- Prowlarr unreachable, unauthorized or rate limited: `private_lookup_failed`, or `lookup_failed` for Usenet. A failure is never reported as absence.
+
+### Verification
+
+`tests/prowlarr.test.ts` covers the bencode info hash and file list; identity stability; strict torrent and NZB comparisons, including size-less and obfuscated posts; catalog and saved-result handling of private sources, including rejection of a hash-shaped `files` ID; link re-rooting and URL-base enforcement; tracker-to-indexer matching; the end-to-end private torrent flow (tracker ID preferred over a same-size decoy, a single search and a single `.torrent` fetch shared by review and acceptance, multipart upload, real-hash ledger record); refusal of a torrent whose files differ; public-mode and unconfigured refusals without Prowlarr calls; the Usenet flow (no search without a request, `not_searched` in bulk, release-group filtering, exact NZB match, the checked bytes sent to SABnzbd, ownership on re-review); ledger identity rules; secret handling of the API key; attaching private torrent and Usenet progress to their release rows; and unproven candidates (safe indexer link, file-match counts, explicit choice sending the checked bytes, refusal of unknown or misplaced choices).
+
+Not verified against live services: no real Prowlarr instance, AnimeBytes account, Usenet indexer or SABnzbd download was used. The AnimeBytes torrent-ID match relies on Prowlarr exposing the tracker's `torrentid` in a result link (`guid`, `infoUrl` or `commentUrl`). When it does not, a torrent of the same total size is checked instead, and the file comparison still decides. UI changes extend existing components and patterns; they were not produced through the Impeccable workflow required in section 10, and were checked with the existing browser smoke suite rather than a dedicated visual review.
+
+### Known limits
+
+- **What Prowlarr covers:** the UI only offers what Prowlarr's indexers can serve. `GET /api/prowlarr/coverage?trackers=…` returns which of the given SeaDex tracker names have an enabled private torrent indexer, and whether any Usenet indexer exists.
+  - **Torrents:** the library fetches this for the trackers its private releases use and enables the torrent path (`findsPrivateTorrent`) only for covered trackers. Until Prowlarr answers, or when it cannot be reached, nothing is offered.
+  - **Usenet:** availability reads the cached indexer list without waiting. When the list shows no Usenet indexer, private rows report `not_configured` ("Prowlarr has no Usenet indexer.") and public rows get no Prowlarr fallback. While the list is unknown, searches stay offered and the list is refreshed in the background.
+  - **Server checks:** planning still checks both server-side.
+- A candidate whose NZB cannot be fetched is still listed, with its indexer link and the reason, but can never be sent. When every candidate fails for a transient reason, the search counts as failed rather than as no match.
+- Obfuscated Usenet posts cannot be proven and are never offered. PAR2-based verification would need article retrieval, which SABnzbd owns (section 1 boundaries).
+- Search terms follow Sonarr's anime search (`NewznabRequestGenerator`): one text query (`t=search`) per scene title, cleaned with Sonarr's `GetCleanSceneTitle` rules. Those rules drop a leading "The", turn `&` into "and", delete `' . \` ´ ‘ ’`, treat other non-word characters as separators and remove diacritics (`server/search-titles.ts`).
+  - **Titles:** the library title, then Sonarr's `alternateTitles` that apply to the season (captured during scans as `search_titles`), then AniList's romaji and English titles from the scan's metadata cache. Deduplicated after cleaning, at most four.
+  - **Usenet queries:** led by the cleaned release group (`ZR Banished From the Heros Party …`) and restricted to categories 5070 and 5000 for Sonarr, 2000 for Radarr. Every title is searched, as Sonarr does, and candidates are ranked across all answers. Tracker searches stop early only once the tracker's own torrent ID appears.
+  - **Tracker searches:** the titles alone, without categories, as the tracker's own naming decides.
+  - **Not covered:** an indexer that knows the release under none of these titles reports no match.
+- A multi-season private torrent is one source: its Usenet copy is the whole upload, and selecting one season needs the existing whole-source acknowledgement.
+

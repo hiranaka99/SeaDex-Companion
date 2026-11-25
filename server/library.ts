@@ -217,11 +217,25 @@ async function sonarrItems(instance: ArrInstance, ids?: number[]): Promise<Insta
         title: show.title,
         slug: show.titleSlug,
         ...(Array.isArray(show.tags) ? { tags: tagIds(show) } : {}),
+        ...(alternateTitles(show).length ? { alternate_titles: alternateTitles(show) } : {}),
         seasons,
       })
   }
   logScope(instance, series.length, kept)
   return { items, outOfScope }
+}
+
+/** Sonarr's scene titles for a series, as its own indexer searches use them. */
+function alternateTitles(show: JsonObject): { title: string; season: number | null }[] {
+  if (!Array.isArray(show.alternateTitles)) return []
+  return show.alternateTitles.flatMap((entry: JsonObject) => {
+    const title = typeof entry?.title === 'string' ? entry.title.trim() : ''
+    if (!title) return []
+    // Sonarr marks a title that applies to all seasons with -1 or leaves the season out.
+    const raw = entry.sceneSeasonNumber ?? entry.seasonNumber
+    const season = typeof raw === 'number' && raw >= 0 ? raw : null
+    return [{ title: title.slice(0, 200), season }]
+  })
 }
 
 async function radarrItems(instance: ArrInstance, ids?: number[]): Promise<InstanceLibrary> {

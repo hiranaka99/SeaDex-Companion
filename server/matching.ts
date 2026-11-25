@@ -257,6 +257,7 @@ export function releaseDict(
   if (release.tracker_url) result.tracker_url = release.tracker_url
   if (release.selected_files?.length) result.selected_files = [...release.selected_files]
   if (release.torrent_files?.length) result.torrent_files = release.torrent_files
+  if (!result.torrent_available && release.private_sources?.length) result.private_sources = release.private_sources
   if (flags.target) result.target = true
   if (flags.satisfies !== undefined) result.satisfies = flags.satisfies
   if (flags.files_match) result.files_match = true

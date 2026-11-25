@@ -2,6 +2,7 @@ import { isRecord, asRecord } from '../shared/guards.js'
 import type { Release, ResultItem } from '../shared/contracts.js'
 import { torrentHashes, planTorrents } from '../shared/download-plan.js'
 import { sameRelease } from '../shared/releases.js'
+import { FILES_SOURCE_PATTERN } from '../shared/ids.js'
 
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
@@ -10,6 +11,25 @@ const text = (value: unknown): string | null => (typeof value === 'string' ? val
 /** Only absolute web addresses become links; anything else would resolve against this app. */
 const trackerUrl = (value: unknown): string | undefined =>
   typeof value === 'string' && /^https?:\/\//i.test(value) ? value : undefined
+/** Private-tracker sources survive only whole: an ID of the right shape and files with exact sizes. */
+function privateSources(value: unknown): Release['private_sources'] {
+  if (!Array.isArray(value)) return undefined
+  const sources = value.flatMap(raw => {
+    const source = asRecord(raw)
+    const id = typeof source.id === 'string' ? source.id.toLowerCase() : ''
+    const files = (Array.isArray(source.files) ? source.files : []).map(entry => asRecord(entry))
+    if (!FILES_SOURCE_PATTERN.test(id) || !files.length) return []
+    if (!files.every(file => typeof file.name === 'string' && file.name && Number.isSafeInteger(file.length))) return []
+    return [
+      {
+        id,
+        ...(trackerUrl(source.page) ? { page: trackerUrl(source.page) } : {}),
+        files: files.map(file => ({ name: String(file.name), length: Number(file.length) })),
+      },
+    ]
+  })
+  return sources.length ? sources : undefined
+}
 const dictionary = <T>(value: unknown, parse: (value: unknown) => T): Record<string, T> =>
   Object.fromEntries(Object.entries(asRecord(value)).map(([key, entry]) => [key, parse(entry)]))
 
@@ -59,6 +79,8 @@ export function normalizeResults(value: unknown): ResultItem[] {
         }
         release.info_hashes = planTorrents([{ release, category: '' }]).map(torrent => torrent.hash)
         release.torrent_available = release.info_hashes.length > 0
+        const sources = release.torrent_available ? undefined : privateSources(source.private_sources)
+        if (sources) release.private_sources = sources
         // Older results could list one release once per tracker; a group's other releases stay listed.
         const index = releases.findIndex(
           previous => (previous.part || '') === (release.part || '') && sameRelease(previous, release, true),
@@ -119,6 +141,9 @@ export function normalizeResults(value: unknown): ResultItem[] {
         excluded_parts: strings(item.excluded_parts),
         mapping_override: item.mapping_override === true,
         season_mapping_override: item.season_mapping_override === true,
+        ...(strings(item.search_titles).length
+          ? { search_titles: strings(item.search_titles).filter(Boolean).slice(0, 10) }
+          : {}),
         ...(Array.isArray(item.anilist_ids)
           ? { anilist_ids: item.anilist_ids.filter((id): id is number => typeof id === 'number') }
           : {}),

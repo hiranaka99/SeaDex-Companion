@@ -291,7 +291,10 @@ export default function ConfigTab({
     const { protocol } = SERVICES[service]
     return protocol === 'torrent' ? torrentShown : protocol === 'usenet' ? usenetShown : true
   }
-  const shownDownloadServices = SERVICE_IDS.filter(service => SERVICES[service].protocol && isRelevant(service))
+  // Prowlarr serves both download methods, so it is summarized here once it is switched on.
+  const shownDownloadServices = SERVICE_IDS.filter(
+    service => (SERVICES[service].protocol || (service === 'prowlarr' && form.prowlarr_enabled)) && isRelevant(service),
+  )
 
   const selectTab = (tab: SettingsTabId) => {
     setSettingsTab(tab)
@@ -1010,6 +1013,59 @@ export default function ConfigTab({
                 </div>
               </div>
             )}
+            <div>
+              <h3 className={subheading}>Private-tracker releases</h3>
+              <p className="mt-1 mb-3 max-w-[72ch] text-xs text-muted">
+                Prowlarr finds releases SeaDex lists on private trackers, through the indexers you set up in Prowlarr. A
+                torrent or NZB is only sent when its files match the ones SeaDex lists, byte for byte.
+              </p>
+              <div className="grid grid-cols-2 gap-4 max-[1100px]:grid-cols-1">
+                <IntegrationCard
+                  icon={<Icon name="search" size={22} />}
+                  title="Prowlarr"
+                  description="Searches your private trackers and Usenet indexers; requires the Prowlarr API key"
+                  configured={configured.prowlarr}
+                  disabled={!form.prowlarr_enabled}
+                  connection={connection('prowlarr')}
+                  onTest={() => void test('prowlarr')}
+                >
+                  <ToggleRow
+                    label="Find private-tracker releases through Prowlarr"
+                    checked={!!form.prowlarr_enabled}
+                    onChange={checked => set('prowlarr_enabled', checked)}
+                  />
+                  <Field
+                    name="prowlarr_url"
+                    type="url"
+                    label="Server URL"
+                    hint="Include any URL base, such as /prowlarr"
+                    placeholder="http://192.168.1.10:9696"
+                    form={form}
+                    set={set}
+                  />
+                  <Field
+                    name="prowlarr_key"
+                    type="password"
+                    label="API key"
+                    hint="Prowlarr → Settings → General → API Key"
+                    placeholder="Enter the Prowlarr API key"
+                    configured={!!form.prowlarr_key_configured}
+                    onClear={() => setPendingClear('prowlarr_key')}
+                    form={form}
+                    set={set}
+                  />
+                  {form.prowlarr_enabled && (form.tracker_mode || DEFAULT_TRACKER_MODE) === 'public' && (
+                    <p className="m-0 flex items-start gap-1.5 text-xs text-warn" role="note">
+                      <Icon name="info" size={14} className="mt-0.5 shrink-0" />
+                      <span>
+                        Release preferences use public trackers only, so Prowlarr is not used until you include private
+                        trackers there.
+                      </span>
+                    </p>
+                  )}
+                </IntegrationCard>
+              </div>
+            </div>
           </SettingsPanel>
 
           <SettingsPanel base={formId} tab="preferences" active={settingsTab === 'preferences'}>

@@ -1,5 +1,5 @@
 import { rowKey } from './ids.js'
-import type { UsenetProvider } from './usenet-contracts.js'
+import type { UsenetSource } from './usenet-contracts.js'
 
 export type DownloadProtocol = 'torrent' | 'usenet'
 export type DownloadMode = 'torrent_only' | 'usenet_only' | 'choose'
@@ -46,6 +46,11 @@ export interface DownloadImport {
 export interface DownloadSelection extends DownloadSelectionRef {
   identity?: string
   protocol?: DownloadProtocol
+  /**
+   * An NZB found for a private-tracker release that could not be proven to be it, chosen by the user from
+   * the search candidates. Naming it is the user's acknowledgement; it only applies to Usenet.
+   */
+  nzb?: string
 }
 
 export interface DownloadCapabilities {
@@ -74,7 +79,7 @@ export interface PlannedUnit {
   scope_expanded: boolean
   size_bytes: number | null
   approximate: boolean
-  provider?: UsenetProvider
+  provider?: UsenetSource
   nzb_name?: string
   /** Known source files beyond the requested scope (complete provider manifest only). */
   known_extra_files?: string[]
@@ -92,6 +97,9 @@ export interface PreflightBlocked {
     | 'protocol_required'
     | 'mode_conflict'
     | 'no_torrent'
+    | 'private_no_match'
+    | 'private_lookup_failed'
+    | 'not_searched'
     | 'no_match'
     | 'processing'
     | 'incomplete'
@@ -267,6 +275,8 @@ export interface DownloadProgress {
   protocol: DownloadProtocol
   client: DownloadClient
   source_hash: string
+  /** The `files:` identity of the private-tracker release a torrent was found for through Prowlarr. */
+  source_alias?: string
   native_id: string
   phase: DownloadPhase
   /** Client-native state string kept for detail text. */

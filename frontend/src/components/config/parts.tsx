@@ -24,6 +24,8 @@ export type StringField =
   | 'animetosho_url'
   | 'amenzb_url'
   | 'amenzb_key'
+  | 'prowlarr_url'
+  | 'prowlarr_key'
   | 'webhook'
   | ArrTagKey
 export interface FieldProps {

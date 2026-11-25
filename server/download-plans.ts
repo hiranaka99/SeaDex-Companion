@@ -12,6 +12,8 @@ export interface StoredPlanSelection {
   release: number
   identity?: string
   protocol: DownloadProtocol
+  /** An unproven NZB the user chose for a private-tracker release. */
+  nzb?: string
 }
 
 export interface StoredPlan {

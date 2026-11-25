@@ -2,7 +2,8 @@ import { baseGroupKey, resultGroupKey } from '../../shared/ids.js'
 import { seasonTag } from '../../shared/ids.js'
 import { isSeasonUpgradable, upgradeParts } from '../../shared/download-plan.js'
 import { estimateDownloads } from '../../shared/download-estimate.js'
-import type { CardStatus, GroupedCard, ResultItem } from './types.js'
+import { DEFAULT_TRACKER_MODE } from '../../shared/settings.js'
+import type { CardStatus, Config, GroupedCard, Release, ResultItem } from './types.js'
 
 const USENET_PROVIDER_NAMES = { animetosho: 'AnimeTosho', amenzb: 'AmeNZB' } as const
 
@@ -65,7 +66,45 @@ export function upgradeDownloadEstimate(results: ResultItem[]): { bytes: number;
 }
 
 /** Display names for Usenet indexers, in lookup order. */
-export const PROVIDER_LABEL: Record<string, string> = { animetosho: 'AnimeTosho', amenzb: 'AmeNZB' }
+export const PROVIDER_LABEL: Record<string, string> = {
+  animetosho: 'AnimeTosho',
+  amenzb: 'AmeNZB',
+  prowlarr: 'Prowlarr',
+}
+
+/** Prowlarr is set up and Release preferences include private trackers, so private-tracker releases can be found. */
+export function prowlarrReady(config: Config | null | undefined): boolean {
+  return Boolean(
+    config &&
+    (config.tracker_mode || DEFAULT_TRACKER_MODE) === 'private' &&
+    config.prowlarr_enabled &&
+    config.prowlarr_url &&
+    config.prowlarr_key_configured,
+  )
+}
+
+/**
+ * A private-tracker release Prowlarr can look for: SeaDex lists its files but no public torrent, and Prowlarr
+ * has an indexer for its tracker.
+ */
+export const findsPrivateTorrent = (
+  release: Pick<Release, 'torrent_available' | 'private_sources' | 'tracker'>,
+  config: Config | null | undefined,
+) =>
+  !release.torrent_available &&
+  Boolean(release.private_sources?.length) &&
+  prowlarrReady(config) &&
+  Boolean(
+    config?.prowlarr_coverage?.trackers.some(
+      tracker => tracker.trim().toLowerCase() === release.tracker.trim().toLowerCase(),
+    ),
+  )
+
+/** Whether qBittorrent can be sent this release: a public magnet, or a private-tracker torrent found through Prowlarr. */
+export const torrentSendable = (
+  release: Pick<Release, 'torrent_available' | 'private_sources' | 'tracker'>,
+  config: Config | null | undefined,
+) => release.torrent_available || findsPrivateTorrent(release, config)
 
 /** Deduplicated display names for a list of provider ids; empty when unknown. */
 export function providerNames(providers: (string | undefined)[]): string[] {

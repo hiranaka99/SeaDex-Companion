@@ -17,8 +17,17 @@ export function currentDownloadAssociations(
     seen.add(id)
     const release = seasons.find(season => season.key === ref.key)?.releases[ref.release]
     if (!release) return false
+    // A private-tracker release has no hash; its downloads carry the release's file-list identity instead.
+    const privateIds = new Set((release.private_sources || []).map(source => source.id))
     if (progress.protocol === 'usenet')
-      return release.info_hashes.some(hash => hash.toLowerCase() === progress.source_hash.toLowerCase())
+      return (
+        release.info_hashes.some(hash => hash.toLowerCase() === progress.source_hash.toLowerCase()) ||
+        privateIds.has(progress.source_hash)
+      )
+    if (progress.source_alias && privateIds.has(progress.source_alias)) {
+      const wanted = (release.selected_files || []).map(normalizeTorrentPath)
+      return !scope || (wanted.length > 0 && wanted.every(name => scope.has(name)))
+    }
     const source = planTorrents([{ release, category: progress.category }]).find(
       source => source.hash === progress.source_hash.toLowerCase(),
     )
