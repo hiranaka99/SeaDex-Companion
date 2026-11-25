@@ -4,7 +4,7 @@ import { invalidateQbSnapshots } from './qbittorrent.js'
 import { migrateConfig } from './config.js'
 import { SECURITY_HEADERS, sendJson, readJson } from './http-response.js'
 import { handleDownloadRequest } from './download-routes.js'
-import { resetWebhookScanState, queueWebhookScan, webhookScanState, startScheduler, refreshAutocheckSchedule } from './scheduler.js'
+import { resetWebhookScanState, queueWebhookScan, webhookScanState, startScheduler, refreshAutocheckSchedule, isImportAttentionEvent, isLibraryImportEvent, requestImportFollow } from './scheduler.js'
 export * from './scheduler.js'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -22,14 +22,17 @@ import { loadScanHistory } from './history.js'
 import { reviewReleaseChanges, withReleaseChanges } from './release-changes.js'
 import { log, readLogTail } from './logging.js'
 import { DATA_DIR, STATIC_DIR } from './paths.js'
-import { testIntegration } from './integration-tests.js'
+import { arrScopeOptions, isArrService, testIntegration } from './integration-tests.js'
 import { qbEndpointId } from './client-identity.js'
-import { bumpGeneration } from './config-generation.js'
+import { bumpGeneration, currentGeneration } from './config-generation.js'
+import { findArrInstance, instanceSourceKey } from './arr-instances.js'
+import { removeArrTags } from './arr-tags.js'
+import { cardKey } from './hidden.js'
 import { flushUsenetCache, invalidateUsenetLookups } from './usenet.js'
 import { enableUsenetPrefetch, prefetchSavedResults, prefetchUsenetAvailability, stopUsenetPrefetch, usenetPrefetchProgress } from './usenet-prefetch.js'
 import { invalidatePlans } from './download-plans.js'
-import { clearScannedData, loadLastResults, scannedDataInfo } from './results.js'
-import { runScan } from './scan.js'
+import { clearScannedData, loadLastResults, loadResultSettings, scannedDataInfo } from './results.js'
+import { resultSettingsChanged, runScan } from './scan.js'
 import { autocheckState, cancelScan, getState, resultsRevision, setState } from './scan-state.js'
 import { checkForUpdates } from './updates.js'
 import { applyUserRulesToResults, exclusionRuleKey, loadUserRules, saveUserRules, seasonMappingKey, validSeasonMappingIds } from './user-rules.js'
@@ -73,6 +76,18 @@ function serveStatic(pathname: string, response: ServerResponse, head = false): 
   return true
 }
 
+// Reading the saved results on every status poll would be wasteful; the answer only changes with results or settings.
+let settingsFlag: { key: string; changed: boolean } | null = null
+function settingsChangedSinceScan(): boolean {
+  const key = `${resultsRevision()}:${currentGeneration()}`
+  if (settingsFlag?.key !== key) {
+    let changed = false
+    try { changed = resultSettingsChanged(loadConfig(), loadResultSettings()) } catch { /* an unreadable configuration is reported by its own endpoints */ }
+    settingsFlag = { key, changed }
+  }
+  return settingsFlag.changed
+}
+
 async function authenticateWebhook(request: IncomingMessage): Promise<void> {
   const authorization = String(request.headers.authorization || '')
   if (!authorization.startsWith('Basic ')) throw new AuthError(401, 'SeaDex login credentials required')
@@ -96,12 +111,23 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
     return sendJson(response, 200, { status: 'ok' })
   }
 
-  const webhookMatch = path.match(/^\/api\/webhooks\/(sonarr|radarr)$/)
+  const webhookMatch = path.match(/^\/api\/webhooks\/(sonarr|radarr)(?:\/([a-z0-9]+))?$/)
   if (method === 'POST' && webhookMatch) {
     const source = webhookMatch[1] as 'sonarr' | 'radarr'
     await authenticateWebhook(request)
     const data = await readJson(request)
-    const queued = queueWebhookScan(source, data.eventType, source === 'sonarr' ? data.series?.id : data.movie?.id)
+    // An additional instance has its own webhook address, so its item IDs are never confused with another library's.
+    const instance = findArrInstance(webhookMatch[2] ? loadConfig() : {}, webhookMatch[2] || source)
+    if (!instance || instance.kind !== source) return sendJson(response, 404, { error: 'Unknown instance' }, { 'Cache-Control': 'no-store' })
+    if (isImportAttentionEvent(data.eventType)) {
+      requestImportFollow()
+      return sendJson(response, 202, { accepted: true, action: 'import_check' }, { 'Cache-Control': 'no-store' })
+    }
+    const itemId = source === 'sonarr' ? data.series?.id : data.movie?.id
+    const libraryKey = `${instanceSourceKey(instance)}:item${itemId}`
+    // Only import events depend on the results, and Sonarr sends one per imported file of every show.
+    const known = isLibraryImportEvent(source, data.eventType) && resultsForRequest().some(result => result.library_key === libraryKey)
+    const queued = queueWebhookScan(source, data.eventType, itemId, undefined, { instanceId: instance.id, known })
     if (!queued.accepted) { response.writeHead(204, { ...SECURITY_HEADERS, 'Cache-Control': 'no-store' }); response.end(); return }
     return sendJson(response, 202, { accepted: true, action: 'scan_queued', due_at: queued.dueAt }, { 'Cache-Control': 'no-store' })
   }
@@ -246,6 +272,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
       `Discord=${config.webhook ? 'configured' : 'incomplete'}`,
     ].join(', ')
     const secretChanges = [...updatedSecrets.map((key) => `${key} updated`), ...[...clearedSecrets].map((key) => `${key} cleared`)]
+    if (config.arr_instances.length) log('INFO', `Additional instances: ${config.arr_instances.map(instance => `${instance.name}=${instance.url && instance.key ? 'configured' : 'incomplete'}`).join(', ')}`)
     log('INFO', `Configuration saved (${integrationState}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'}; notifications: ${config.notify_enabled ? 'enabled' : 'disabled'}; hidden titles: ${config.hidden.length}${secretChanges.length ? `; credentials: ${secretChanges.join(', ')}` : ''})`)
     return sendJson(response, 200, publicConfig(config))
   }
@@ -270,6 +297,23 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
     }
   }
 
+  if (method === 'POST' && path === '/api/arr/options') {
+    const data = await readJson(request)
+    const service = String(data.service || '').toLowerCase()
+    if (!isArrService(service)) return sendJson(response, 400, { error: 'Unknown Sonarr or Radarr instance' })
+    const submitted = data.config && typeof data.config === 'object' ? data.config as JsonObject : {}
+    try { return sendJson(response, 200, { ok: true, ...await arrScopeOptions(integrationConfig(loadConfig(), service, submitted), service) }, { 'Cache-Control': 'no-store' }) }
+    catch (error) { return sendJson(response, 502, { ok: false, error: error instanceof Error ? error.message : String(error) }) }
+  }
+
+  if (method === 'POST' && path === '/api/arr-tags/remove') {
+    if (getState().running) return sendJson(response, 409, { ok: false, error: 'Wait for the current scan to finish before removing status tags' })
+    const result = await removeArrTags(loadConfig())
+    const failed = Object.entries(result.errors)
+    if (failed.length) return sendJson(response, 502, { ok: false, removed: result.removed, error: failed.map(([name, message]) => `${name}: ${message}`).join('; ') })
+    return sendJson(response, 200, { ok: true, removed: result.removed })
+  }
+
   if (method === 'GET' && path === '/api/status') {
     const state = getState()
     return sendJson(response, 200, {
@@ -278,6 +322,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
       last_run: state.last_run || (!state.running ? loadLastResults()?.last_run ?? null : null), next_check: autocheckState.next,
       usenet_prefetch: usenetPrefetchProgress(),
       results_revision: resultsRevision(),
+      settings_changed: !state.running && settingsChangedSinceScan(),
       webhook_scan: { queued: webhookScanState.dueAt !== null, due_at: webhookScanState.dueAt, sources: [...webhookScanState.sources] },
     })
   }
@@ -337,7 +382,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, url: U
     const hidden = new Set(config.hidden || [])
     if (data.hidden) hidden.add(key); else hidden.delete(key)
     config.hidden = [...hidden].sort(); saveConfig(config)
-    const result = resultsForRequest().find((item) => String(item.group_id ?? item.anilist_id ?? item.title) === key)
+    const result = resultsForRequest().find((item) => cardKey(item) === key)
     log('INFO', `${data.hidden ? 'Hidden' : 'Restored'} library title: ${result?.title || key} (key: ${key}; hidden total: ${config.hidden.length})`)
     return sendJson(response, 200, { ok: true, hidden: config.hidden })
   }

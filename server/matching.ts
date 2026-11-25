@@ -1,21 +1,55 @@
 import { normalizeTorrentPath, torrentHashes } from '../shared/download-plan.js'
-import type { ReleaseCandidate, Release, ChainPart, ChainEntry, LocalSeason, SeaDexEntry, SeaDexSlot, ResolvedPart } from './types.js'
+import { DEFAULT_RELEASE_PREFERENCES } from '../shared/settings.js'
+import type { ReleaseCandidate, Release, ReleasePreferences, ChainPart, ChainEntry, LocalSeason, SeaDexEntry, SeaDexSlot, ResolvedPart } from './types.js'
 
 export function isDownloadable(release: Pick<ReleaseCandidate, 'info_hashes'>): boolean {
   return torrentHashes(release).length > 0
 }
 
-export function pickBest(candidates: ReleaseCandidate[], episodeCount?: number | null): [ReleaseCandidate | null, ReleaseCandidate[]] {
+export const VIDEO_FILE = /\.(?:mkv|mp4|avi|m4v|ts|webm)$/i
+const sameText = (left: unknown, right: unknown) => String(left || '').trim().toLowerCase() === String(right || '').trim().toLowerCase()
+
+/** Average size of one episode file, so a season batch and a single cour compare on the same scale. */
+export function episodeBytes(candidate: ReleaseCandidate, episodeCount?: number | null): number {
+  const parsed = (candidate.source_files || []).map(file => ({ file, episode: episodeFromFilename(file.name) })).filter(item => item.episode !== null)
+  const numbered = parsed.some(item => item.episode!.explicit) ? parsed.filter(item => item.episode!.explicit) : parsed
+  const episodes = new Set(numbered.map(item => `${item.episode!.season ?? ''}:${item.episode!.episode}`)).size
+  if (episodes > 0) return numbered.reduce((total, item) => total + (item.file.length || 0), 0) / episodes
+  return (candidate.size || 0) / (episodeCount && episodeCount > 0 ? episodeCount : candidate.file_count > 0 ? candidate.file_count : 1)
+}
+
+/** Why the saved preferences never target this candidate; undefined when they allow it. */
+export function exclusionReason(candidate: ReleaseCandidate, episodeCount: number | null | undefined, preferences: ReleasePreferences): string | undefined {
+  if (preferences.ignored_groups.some(group => sameText(group, candidate.releaseGroup))) return 'Ignored release group'
+  if (preferences.ignored_trackers.some(tracker => sameText(tracker, candidate.tracker))) return 'Ignored tracker'
+  if (preferences.max_episode_gb > 0 && episodeBytes(candidate, episodeCount) > preferences.max_episode_gb * 1024 ** 3) return `Over ${preferences.max_episode_gb} GB per episode`
+  return undefined
+}
+
+/**
+ * Chooses the download target among the releases SeaDex lists for one season or cour.
+ * With the default preferences this is SeaDex's own pick: the largest best release.
+ * Returns no target, but every candidate, when the preferences exclude them all.
+ */
+export function pickBest(candidates: ReleaseCandidate[], episodeCount?: number | null, preferences: ReleasePreferences = DEFAULT_RELEASE_PREFERENCES): [ReleaseCandidate | null, ReleaseCandidate[]] {
   if (!candidates.length) return [null, []]
-  const flagged = candidates.filter((candidate) => candidate.is_best)
-  let pool = flagged.length ? flagged : [...candidates]
+  const anyFlagged = candidates.some((candidate) => candidate.is_best)
+  const countsAsBest = (candidate: ReleaseCandidate) => candidate.is_best || !anyFlagged
+  let pool = candidates.filter((candidate) => !exclusionReason(candidate, episodeCount, preferences) && (countsAsBest(candidate) || preferences.accept_alternatives))
+  if (!pool.length) return [null, [...candidates]]
+  if (preferences.dual_audio && pool.some((candidate) => candidate.dual_audio)) pool = pool.filter((candidate) => candidate.dual_audio)
+  if (pool.some(countsAsBest)) pool = pool.filter(countsAsBest)
   if (episodeCount && episodeCount > 0) {
     const matching = pool.filter((candidate) => candidate.file_count === episodeCount)
     if (matching.length) pool = matching
   }
   const downloadable = pool.filter(isDownloadable)
   const selectedPool = downloadable.length ? downloadable : pool
-  const chosen = selectedPool.reduce((best, candidate) => (candidate.size || 0) > (best.size || 0) ? candidate : best)
+  // An unknown size never wins as the smallest release.
+  const beats = preferences.size === 'smallest'
+    ? (candidate: ReleaseCandidate, best: ReleaseCandidate) => (candidate.size || Infinity) < (best.size || Infinity)
+    : (candidate: ReleaseCandidate, best: ReleaseCandidate) => (candidate.size || 0) > (best.size || 0)
+  const chosen = selectedPool.reduce((best, candidate) => beats(candidate, best) ? candidate : best)
   return [chosen, candidates.filter((candidate) => candidate !== chosen)]
 }
 
@@ -27,7 +61,7 @@ export interface ParsedEpisode {
 
 export function episodeFromFilename(name: string): ParsedEpisode | null {
   const filename = name.split(/[\\/]/).at(-1) || ''
-  if (!/\.(?:mkv|mp4|avi|m4v|ts|webm)$/i.test(filename) || /NCOP|NCED/i.test(filename)) return null
+  if (!VIDEO_FILE.test(filename) || /NCOP|NCED/i.test(filename)) return null
   const standard = filename.match(/S(\d{1,3})E(\d{1,3}(?:\.\d+)?)/i)
   if (standard) return { season: Number(standard[1]), episode: Number(standard[2]), explicit: true }
   const named = filename.match(/\b(?:Episode|Ep\.?)\s*[._-]*\s*(\d{1,3}(?:\.\d+)?)(?=[ ._[\]()-]|$)/i)
@@ -156,7 +190,7 @@ export function scopeReleaseToPart(
   }
 }
 
-export function releaseDict(kind: 'best' | 'alt', release: ReleaseCandidate, part?: string | null, url?: string): Release {
+export function releaseDict(kind: 'best' | 'alt', release: ReleaseCandidate, part?: string | null, url?: string, flags: { target?: boolean; satisfies?: boolean } = {}): Release {
   const result: Release = {
     kind, releaseGroup: release.releaseGroup, tracker: release.tracker, quality: release.quality,
     tags: release.tags || [], dual_audio: Boolean(release.dual_audio), size: release.size || 0,
@@ -166,6 +200,9 @@ export function releaseDict(kind: 'best' | 'alt', release: ReleaseCandidate, par
   if (url) result.url = url
   if (release.selected_files?.length) result.selected_files = [...release.selected_files]
   if (release.torrent_files?.length) result.torrent_files = release.torrent_files
+  if (flags.target) result.target = true
+  if (flags.satisfies !== undefined) result.satisfies = flags.satisfies
+  if (release.excluded_by) result.excluded_by = release.excluded_by
   return result
 }
 

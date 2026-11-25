@@ -1,6 +1,6 @@
 import { releaseIdentity } from '../shared/releases.js'
 import { estimateDownloads } from '../shared/download-estimate.js'
-import { isSeasonUpgradable, normalizeTorrentPath, planTorrents, releaseOwned, torrentHashes } from '../shared/download-plan.js'
+import { isSeasonUpgradable, normalizeTorrentPath, planTorrents, releaseOffered, releaseOwned, torrentHashes } from '../shared/download-plan.js'
 import type { RecommendationSeason } from '../shared/download-plan.js'
 import type { DiskSpaceCheck, DownloadPreflight, DownloadProtocol, PlannedUnit, PreflightBlocked } from '../shared/download-contracts.js'
 import type { PlannedTorrent } from '../shared/download-plan.js'
@@ -75,6 +75,7 @@ export function parseSelections(raw: unknown): { selections: SelectionInput[]; e
 
 const BLOCK_COPY: Record<string, string> = {
   invalid: 'A selected release is unavailable.',
+  excluded_release: 'Your release preferences exclude this release.',
   not_upgradable: 'This season is not marked for an upgrade.',
   owned: 'This release group already owns the current episodes.',
   excluded: 'This cour is excluded from downloads.',
@@ -133,7 +134,7 @@ export async function buildDownloadPlan(
     const season = result as RecommendationSeason
     if (!single) {
       if (!isSeasonUpgradable(season) || season.excluded) { blocked.push({ key: selection.key, release: selection.release, code: 'not_upgradable', reason: BLOCK_COPY.not_upgradable }); continue }
-      if (release.kind !== 'best') { blocked.push({ key: selection.key, release: selection.release, code: 'invalid', reason: BLOCK_COPY.invalid }); continue }
+      if (!releaseOffered(release)) { blocked.push({ key: selection.key, release: selection.release, code: 'invalid', reason: release.excluded_by ? `${BLOCK_COPY.excluded_release} (${release.excluded_by})` : BLOCK_COPY.invalid }); continue }
       const partKey = `${selection.key}\u0000${release.part || ''}`
       if (seenParts.has(partKey)) return { error: [400, 'Choose only one best release per season or cour'] }
       seenParts.add(partKey)
@@ -158,7 +159,7 @@ export async function buildDownloadPlan(
     }
     rows.push({
       key: selection.key, releaseIndex: selection.release, identity: releaseIdentity(release), protocol, result, release,
-      category: downloadCategory(config, result.arr, protocol), label: selectionLabel(result, release),
+      category: downloadCategory(config, result, protocol), label: selectionLabel(result, release),
     })
   }
 

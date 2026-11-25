@@ -83,7 +83,18 @@ export function seasonLabel(r: ResultItem): string {
   return 'Movie'
 }
 
+/** Name of the Sonarr or Radarr instance a result came from. */
+export function sourceName(r: Pick<ResultItem, 'arr' | 'instance_name'>): string {
+  return r.instance_name || r.arr
+}
+
 export function resultGroupKey(r: ResultItem): number | string {
+  // The same anime in an additional instance is a separate card.
+  const base = baseGroupKey(r)
+  return r.instance ? `${r.instance}:${base}` : base
+}
+
+function baseGroupKey(r: ResultItem): number | string {
   if (r.group_id != null) return r.group_id
   if (r.anilist_id != null) return r.anilist_id
   const keyParts = String(r.key || '').split(':')
@@ -100,14 +111,17 @@ export function groupResults(results: ResultItem[]): GroupedCard[] {
   for (const r of results) {
     const gid = resultGroupKey(r)
     if (!map.has(gid)) {
+      const base = baseGroupKey(r)
       map.set(gid, {
+        key: String(gid),
         title: r.title,
         arr: r.arr,
+        source: sourceName(r),
         image: r.image,
         banner: r.banner,
         url: r.url,
         notes: r.notes,
-        anilist_id: gid,
+        anilist_id: base,
         arr_url: r.arr_url,
         seasons: [],
         status: 'upgrade',

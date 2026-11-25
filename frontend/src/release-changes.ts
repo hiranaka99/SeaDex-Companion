@@ -23,6 +23,8 @@ export function releaseChangeDetail(description: string): ChangePresentation {
 export function presentReleaseChange(change: ReleaseChangeDetail): ChangePresentation {
   const { note_change: note, release_replacement: replacement, part } = change
   if (note) return { summary: 'SeaDex note updated', note, part }
+  // The library changed, not the recommendation: say so first, then what changed.
+  if (change.kind === 'regression') return { summary: 'No longer on the best release', release: change.description, part }
   if (replacement) return {
     summary: replacement.torrent_changed ? 'Torrent replaced' : 'Best release changed',
     release: `${replacement.previous} → ${replacement.next}`,

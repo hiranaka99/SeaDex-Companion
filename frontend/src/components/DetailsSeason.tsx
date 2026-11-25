@@ -11,6 +11,7 @@ import type { DetailsDownloadState } from '../useCardDownloads'
 import DetailsQuality from './DetailsQuality'
 import type { DownloadProtocol } from '../api'
 import { releaseIdentity } from '../../../shared/releases'
+import { PREFERENCE_BLOCKED_REASON } from '../../../shared/settings'
 
 export function detailsSeasonName(season: ResultItem): string {
   return season.arr === 'Radarr' || season.season === 0 ? 'Movie' : typeof season.season === 'number' ? `Season ${season.season}` : 'Release'
@@ -55,6 +56,8 @@ export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, 
   const seasonName = detailsSeasonName(r)
   const quality = releaseQuality(r)
   const ignored = Boolean(r.excluded)
+  const mismatchedGroups = [...new Set(Object.values(r.mismatched_by_part || {}).flat())]
+  const blockedByPreferences = Boolean(r.preference_blocked) && (r.status === 'missing' || r.status === 'uncovered')
   const sources = (r.urls?.length ? r.urls : r.url ? [{ label: 'seadex.moe', url: r.url }] : []).filter(source => source.label === 'seadex.moe')
   const activeReleases = Object.entries(dl).filter(([, state]) => state.transfers.some(transfer => transfer.phase !== 'complete')).map(([index]) => index).join(',')
   const releaseSignature = JSON.stringify(r.releases.map(releaseIdentity))
@@ -94,6 +97,7 @@ export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, 
           <span className="details-season-name">{seasonName}</span>
           {split && r.precise_part_ownership ? <span className="details-current-release">Your releases:<span className="details-owned-cours">{groups.filter(group => group.part).map(group => <span key={group.part}>{group.part}: <strong>{currentReleases(r, group.part).join(', ') || 'None found'}</strong></span>)}</span></span> : <CurrentRelease groups={r.have} unscoped={split}/>}
           {(r.missing_episode_count || 0) > 0 && <span className="details-summary-note text-warn">{r.missing_episode_count} episode{r.missing_episode_count === 1 ? '' : 's'} missing</span>}
+          {mismatchedGroups.length > 0 && <span className="details-summary-note text-warn">Your {mismatchedGroups.join(', ')} files differ from the listed release</span>}
           {r.season_mapping_override && <span className="details-summary-note text-muted">Manual season match</span>}
           {ignored && <span className="details-summary-note text-warn">Ignored for bulk</span>}
           {!ignored && !!r.excluded_parts?.length && <span className="details-summary-note text-warn">Ignored for bulk: {r.excluded_parts.join(', ')}</span>}
@@ -103,7 +107,7 @@ export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, 
       </summary>
       <div className="details-season-content">
         {availability?.error && <p className="mb-3 text-xs text-warn wrap-anywhere" role="alert">Usenet refresh failed: {availability.error}. Last-known results remain visible. Re-check the sources to try again.</p>}
-        {!split && (r.status === 'missing' || r.status === 'uncovered') && <p className="mb-3 text-sm text-muted">{quality.kind === 'review' ? 'Confirm the AniList match to check this release.' : r.status === 'uncovered' ? 'This season has no releases on SeaDex.' : 'Not listed on seadex.moe.'}</p>}
+        {!split && (r.status === 'missing' || r.status === 'uncovered') && <p className="mb-3 text-sm text-muted">{quality.kind === 'review' ? 'Confirm the AniList match to check this release.' : blockedByPreferences ? 'SeaDex lists releases for this season, but your release preferences exclude all of them. Each release below says why.' : r.status === 'uncovered' ? 'This season has no releases on SeaDex.' : 'Not listed on seadex.moe.'}</p>}
         {!split && <RecommendationNotes notes={r.notes}/>}
         {groups.length === 0 && r.status !== 'missing' && r.status !== 'uncovered' && <p className="mb-3 text-sm text-muted">No release details are available. Run a new library scan to refresh this title.</p>}
         {groups.map((cour, courIndex) => {
@@ -112,7 +116,7 @@ export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, 
           return <details id={`${sectionId}-cour-${courIndex}`} key={cour.part} className="details-cour" aria-label={`${seasonName} · ${cour.part}`}>
             <summary className="details-summary cursor-pointer"><span className="min-w-0"><span className="details-season-name">{cour.part}</span><CurrentRelease groups={currentReleases(r, cour.part)} unscoped={!r.precise_part_ownership}/>{r.excluded_parts?.includes(cour.part) && !ignored && <span className="details-summary-note text-warn">Ignored for bulk</span>}</span><DetailsQuality status={courStatus}/><Icon name="chevron-right" size={16} className="details-disclosure-chevron text-muted"/></summary>
             <div className="details-cour-content">
-              {cour.unavailable && <p className="mb-3 text-sm text-muted wrap-anywhere">{cour.unavailable}</p>}
+              {cour.unavailable && <p className="mb-3 text-sm text-muted wrap-anywhere">{cour.unavailable === PREFERENCE_BLOCKED_REASON ? 'SeaDex lists releases for this cour, but your release preferences exclude all of them. Each release below says why.' : cour.unavailable}</p>}
               {cour.items.length === 0 && !cour.unavailable && <p className="mb-3 text-sm text-muted">No release details are available for this cour.</p>}
               <RecommendationNotes notes={r.notes_by_part?.[cour.part]}/>
               {renderReleases(cour.items)}
@@ -129,7 +133,7 @@ export default function DetailsSeason({ sectionId, r, config, dl, busyDownload, 
             {exclusion()}
           </div>
         </details>
-        {r.precise_part_ownership && !split && r.have.length > 0 && r.releases.some(rel => rel.kind === 'best' && !releaseOwned(r, rel) && r.have.some(group => group.toLowerCase() === rel.releaseGroup.toLowerCase())) && <p className="mt-3 text-xs text-muted">The release group appears in your files, but complete ownership is not confirmed.</p>}
+        {r.precise_part_ownership && !split && r.have.length > 0 && r.releases.some(rel => rel.kind === 'best' && !releaseOwned(r, rel) && !mismatchedGroups.some(group => group.toLowerCase() === rel.releaseGroup.toLowerCase()) && r.have.some(group => group.toLowerCase() === rel.releaseGroup.toLowerCase())) && <p className="mt-3 text-xs text-muted">The release group appears in your files, but complete ownership is not confirmed.</p>}
       </div>
     </details>
   </section>

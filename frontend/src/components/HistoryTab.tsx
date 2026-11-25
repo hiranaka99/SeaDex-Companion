@@ -12,11 +12,11 @@ type ScanView = 'all' | 'changes' | 'attention'
 
 const SCAN_PAGE = 10
 const ROW_PAGE = 40
-const summaryTone: Record<string, string> = { upgrade: 'text-warn', resolved: 'text-good', changed: 'text-ink', new: 'text-sky', removed: 'text-muted' }
+const summaryTone: Record<string, string> = { regression: 'text-bad', upgrade: 'text-warn', resolved: 'text-good', changed: 'text-ink', new: 'text-sky', removed: 'text-muted' }
 const outcomeLabel: Record<string, string> = { failed: 'Failed', partial: 'Partial', cancelled: 'Cancelled' }
 const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1)
 const needsAttention =(scan: ScanHistoryEntry) => Boolean(scan.error) || (scan.outcome !== undefined && scan.outcome !== 'success') || Object.keys(scan.source_errors || {}).length > 0
-const triggerLabel = (scan: ScanHistoryEntry) => scan.trigger === 'scheduled' ? 'Scheduled' : scan.trigger && scan.trigger !== 'manual' ? scan.trigger.replace(/^./, letter => letter.toUpperCase()) + ' webhook' : 'Manual'
+const triggerLabel = (scan: ScanHistoryEntry) => scan.trigger === 'scheduled' ? 'Scheduled' : scan.trigger === 'import' ? 'Import check' : scan.trigger && scan.trigger !== 'manual' ? scan.trigger.replace(/^./, letter => letter.toUpperCase()) + ' webhook' : 'Manual'
 
 interface ScanEntry { scan: ScanHistoryEntry; changes: ScanHistoryChange[] }
 type CurrentResult = (change: ScanHistoryChange) => ResultItem | undefined

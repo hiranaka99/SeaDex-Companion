@@ -92,6 +92,8 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
   const [copyOverflows, setCopyOverflows] = useState(false)
   const toast = useToast()
   const srcClass = group.arr === 'Sonarr' ? 'sonarr' : 'radarr'
+  // An additional instance is named on the card, so the same anime in two libraries can be told apart.
+  const namedSource = group.source !== group.arr
   const st = group.status === 'review' ? 'partial' : group.status || 'upgrade'
 
   useEffect(() => {
@@ -203,19 +205,21 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
     onRescan()
   }
 
+  // SeaDex does list these seasons; the saved preferences exclude every release, which is not the same as unlisted.
+  const outsidePreferences = group.status === 'missing' && group.seasons.every(season => season.preference_blocked)
   const statusBadge = <div className="library-status-badge" data-library-status={group.status}>
-    <span className="library-status-label"><Icon name={CARD_STATUS[group.status].icon} size={14} className="shrink-0"/><span>{STATUS_LABEL[group.status]}</span></span>
+    <span className="library-status-label"><Icon name={CARD_STATUS[group.status].icon} size={14} className="shrink-0"/><span>{outsidePreferences ? 'Outside your preferences' : STATUS_LABEL[group.status]}</span></span>
     {group.status === 'partial' && upgradableSeasonCount > 0 && <span className="library-status-upgrades"><Icon name="arrow-up" size={13} className="shrink-0"/><span>{upgradableSeasonCount} {group.arr === 'Radarr' ? (upgradableSeasonCount === 1 ? 'movie' : 'movies') : (upgradableSeasonCount === 1 ? 'season' : 'seasons')} upgradable</span></span>}
   </div>
 
   const overview = releaseOverview(group.seasons, group.arr)
   const reviewIndex = group.seasons.findIndex(season => releaseQuality(season).kind === 'review')
   const actionIndex = reviewIndex >= 0 ? reviewIndex : group.seasons.findIndex(isSeasonUpgradable)
-  const managementLinks = detailsOpen ? <nav className="flex flex-wrap items-center gap-2 text-xs" aria-label="Anime links">{group.arr_url && <a className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised hover:no-underline')} href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.arr}</a>}{typeof group.anilist_id === 'number' && <a className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised hover:no-underline')} href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList <Icon name="chevron-right" size={14}/></a>}<button type="button" className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-muted hover:bg-panel-raised hover:text-ink')} onClick={() => { setMappingSeason(null); setMappingOpen(true) }} disabled={!group.seasons[0]?.library_key} title={!group.seasons[0]?.library_key ? 'Run a new scan to enable manual matching' : undefined}><Icon name="refresh" size={14}/>{group.seasons.some((season) => season.mapping_override) ? 'Change manual match' : 'Correct match'}</button>{group.seasons.some((season) => season.mapping_override) && <span className="rounded-full border border-purple/35 bg-purple/10 px-2 py-1 text-xs font-bold text-ink">Manual match</span>}</nav> : null
+  const managementLinks = detailsOpen ? <nav className="flex flex-wrap items-center gap-2 text-xs" aria-label="Anime links">{group.arr_url && <a className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised hover:no-underline')} href={group.arr_url} target="_blank" rel="noopener"><Icon name="server" size={15}/>Open in {group.source}</a>}{typeof group.anilist_id === 'number' && <a className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-accent-bright hover:bg-panel-raised hover:no-underline')} href={`https://anilist.co/anime/${group.anilist_id}`} target="_blank" rel="noopener">Open in AniList <Icon name="chevron-right" size={14}/></a>}<button type="button" className={cx(buttonBase, 'min-h-11 border-line bg-panel px-3 text-xs text-muted hover:bg-panel-raised hover:text-ink')} onClick={() => { setMappingSeason(null); setMappingOpen(true) }} disabled={!group.seasons[0]?.library_key} title={!group.seasons[0]?.library_key ? 'Run a new scan to enable manual matching' : undefined}><Icon name="refresh" size={14}/>{group.seasons.some((season) => season.mapping_override) ? 'Change manual match' : 'Correct match'}</button>{group.seasons.some((season) => season.mapping_override) && <span className="rounded-full border border-purple/35 bg-purple/10 px-2 py-1 text-xs font-bold text-ink">Manual match</span>}</nav> : null
 
   return <>
     <article
-      data-library-key={String(group.anilist_id ?? `${group.arr}:${group.title}`)}
+      data-library-key={group.key}
       data-library-status={group.status}
       data-needs-action={group.status === 'review' || upgradableSeasonCount > 0 ? 'true' : 'false'}
       className={cx(
@@ -265,15 +269,15 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
           <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1">
             {group.arr_url ? (
               <a
-                className="library-card-source touch-target grid size-8 shrink-0 place-items-center rounded-lg transition-colors hover:bg-panel-raised"
+                className={cx('library-card-source touch-target shrink-0 rounded-lg transition-colors hover:bg-panel-raised', namedSource ? 'inline-flex h-8 max-w-36 items-center gap-1.5 px-1.5 hover:no-underline' : 'grid size-8 place-items-center')}
                 href={group.arr_url}
                 target="_blank"
                 rel="noopener"
-                title={`Open ${group.title} in ${group.arr}`}
-                aria-label={`Open ${group.title} in ${group.arr} (new tab)`}
-              ><BrandLogo name={srcClass} size={20}/></a>
+                title={`Open ${group.title} in ${group.source}`}
+                aria-label={`Open ${group.title} in ${group.source} (new tab)`}
+              ><BrandLogo name={srcClass} size={20}/>{namedSource && <span className="min-w-0 truncate text-xs font-semibold text-muted">{group.source}</span>}</a>
             ) : (
-              <span className="library-card-source grid size-8 shrink-0 place-items-center rounded-lg" title={group.arr} role="img" aria-label={`Source: ${group.arr}`}><BrandLogo name={srcClass} size={20}/></span>
+              <span className={cx('library-card-source shrink-0 rounded-lg', namedSource ? 'inline-flex h-8 max-w-36 items-center gap-1.5 px-1.5' : 'grid size-8 place-items-center')} title={group.source} role={namedSource ? undefined : 'img'} aria-label={namedSource ? undefined : `Source: ${group.source}`}><BrandLogo name={srcClass} size={20}/>{namedSource && <span className="min-w-0 truncate text-xs font-semibold text-muted">{group.source}</span>}</span>
             )}
             <button className="touch-target inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold text-accent-bright transition-colors hover:bg-accent/10" type="button" aria-label={`Details for ${group.title}`} onClick={handleOpenDetails}>Details <Icon name="chevron-right" size={15}/></button>
             <button className={cx(ICON_BUTTON, 'touch-target size-8 shrink-0 disabled:cursor-wait', hidden && 'text-warn')} type="button" title={hidden ? 'Show this card' : 'Hide this card'} aria-label={(hidden ? 'Show ' : 'Hide ') + group.title} onClick={handleHide} disabled={hiding}><HideActionIcon hidden={hidden}/></button>
@@ -289,7 +293,7 @@ function Card({ active, openRequested, onOpened, group, index, config, hidden = 
               {group.banner && <div className="anime-details-banner pointer-events-none absolute inset-0 bg-panel bg-cover bg-center" style={{ backgroundImage: `url('${group.banner}')` }} aria-hidden="true"/>}
             <header className="anime-details-header relative flex items-start">
               {group.image && <img src={group.image} alt="" className="anime-details-cover"/>}
-              <div className="min-w-0 flex-1"><h2 id={titleId} className="m-0 text-2xl leading-tight font-extrabold tracking-tight wrap-anywhere max-[600px]:text-xl">{group.title}</h2><p className="mt-1 mb-0 text-xs text-muted wrap-anywhere">{group.arr} · {seasonCount} {group.arr === 'Radarr' ? (seasonCount === 1 ? 'movie' : 'movies') : (seasonCount === 1 ? 'season' : 'seasons')}</p></div>
+              <div className="min-w-0 flex-1"><h2 id={titleId} className="m-0 text-2xl leading-tight font-extrabold tracking-tight wrap-anywhere max-[600px]:text-xl">{group.title}</h2><p className="mt-1 mb-0 text-xs text-muted wrap-anywhere">{group.source} · {seasonCount} {group.arr === 'Radarr' ? (seasonCount === 1 ? 'movie' : 'movies') : (seasonCount === 1 ? 'season' : 'seasons')}</p></div>
               <button ref={closeRef} type="button" className="anime-details-close grid shrink-0 cursor-pointer place-items-center rounded-control border border-line-strong bg-panel text-ink hover:bg-panel-raised" onClick={requestClose} aria-label="Close details"><Icon name="close"/></button>
             </header>
             </div>

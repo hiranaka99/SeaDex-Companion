@@ -1,5 +1,6 @@
 import { USER_RULES_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
+import { sourceKeyOf } from './arr-instances.js'
 import type { JsonObject } from './types.js'
 
 export interface UserRules {
@@ -39,7 +40,7 @@ export function seasonMappingKey(libraryKey: string, season: number): string {
 }
 
 export function libraryItemKey(item: JsonObject): string {
-  return `${String(item.arr || 'Unknown')}:item${String(item.id ?? '')}`
+  return `${sourceKeyOf(item)}:item${String(item.id ?? '')}`
 }
 
 export function exclusionRuleKey(libraryKey: string, season: number | null, part = ''): string {

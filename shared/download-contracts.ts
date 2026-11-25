@@ -22,6 +22,22 @@ export type DownloadPhase =
 
 export interface DownloadSelectionRef { key: string; release: number }
 
+/**
+ * Where a finished download stands with the Sonarr or Radarr instance that should import it.
+ * `waiting`: still downloading. `pending`: finished, import not seen yet. `blocked`: the app
+ * reports a problem. `not_imported`: the app dropped it and the library did not change.
+ */
+export type ImportState = 'waiting' | 'pending' | 'blocked' | 'imported' | 'not_imported'
+
+export interface DownloadImport {
+  state: ImportState
+  /** Display name of the Sonarr or Radarr instance expected to import the download. */
+  app: string
+  /** The app's own explanation of a blocked or missing import. */
+  message?: string
+  completed_at?: string
+}
+
 /** One review row's acquisition intent. The server resolves authority from the saved mode. */
 export interface DownloadSelection extends DownloadSelectionRef {
   identity?: string
@@ -242,6 +258,8 @@ export interface DownloadProgress {
   total_size: number
   speed: number
   error?: string
+  /** Import follow-through for downloads sent after it was introduced; absent for older records. */
+  import?: DownloadImport
   capabilities: DownloadCapabilities
   updated_at: string
 }

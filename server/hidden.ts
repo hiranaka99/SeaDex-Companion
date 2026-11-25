@@ -3,11 +3,13 @@ import { log } from './logging.js'
 import type { JsonObject } from './types.js'
 
 // Match the library's card grouping, including titles without an AniList match.
-function cardKey(result: JsonObject): string {
-  if (result.group_id != null) return String(result.group_id)
-  if (result.anilist_id != null) return String(result.anilist_id)
+export function cardKey(result: JsonObject): string {
+  // Cards of an additional instance are kept apart from the same anime in another library.
+  const prefix = typeof result.instance === 'string' && result.instance ? `${result.instance}:` : ''
+  if (result.group_id != null) return `${prefix}${result.group_id}`
+  if (result.anilist_id != null) return `${prefix}${result.anilist_id}`
   const parts = String(result.key || '').split(':')
-  return `${result.arr}:${parts.length >= 2 ? parts[1] : result.title}`
+  return `${prefix}${result.arr}:${parts.length >= 2 ? parts[1] : result.title}`
 }
 
 function bestReleases(result: JsonObject): string[] {

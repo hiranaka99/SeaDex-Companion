@@ -26,6 +26,8 @@ Connects SeaDex release recommendations to the user's actual Sonarr/Radarr libra
 - Downloads are monitored and controlled from library cards; bulk cancellation remains available.
 - Scan history, configuration, and server logs support ongoing operation and troubleshooting.
 - Scans can run manually, on a configured schedule, or incrementally through Sonarr/Radarr webhooks. Discord notifications are optional.
+- Users may connect several Sonarr and Radarr instances and limit each to part of its library by series type, tag, or root folder. Each instance is scanned and shown separately.
+- Release preferences in Configuration choose the download target among the releases SeaDex lists and decide which owned releases count as best.
 - The intended deployment is self-hosted on a trusted home network. Preserve the repository's private remote-access and persistent-data guidance.
 
 ## Capabilities and Constraints
@@ -33,6 +35,10 @@ Connects SeaDex release recommendations to the user's actual Sonarr/Radarr libra
 - Preserve existing workflows, matching details, and download safeguards. This is an explicit user commitment for future UI work.
 - Preserve the distinctions between Upgradable, Best quality, Partially on SeaDex, and Not on SeaDex, together with matching-review and missing-episode information.
 - Keep split seasons, cours, multi-part releases, current-versus-target sizes, and release identities understandable.
+- Ownership of a release is confirmed by exact file sizes where both sides provide them; a matching group name with different files is not the listed release. Keep verified, mismatched, and unverified ownership distinct.
+- Preferences never hide a release. A release they exclude stays listed with its reason and remains available for an explicit single download; bulk download never offers it.
+- Finished downloads are followed until Sonarr or Radarr imports them. This is read-only: the app reports the queue's own reason and never imports, retries, or removes anything there.
+- Writing to Sonarr or Radarr is limited to the optional status tags, which are off by default. Nothing else in those apps is changed.
 - Downloads require configured qBittorrent access and are limited to supported public releases. Preserve missing-episode file selection where possible.
 - Bulk review deduplicates shared torrents and selected files, skips existing hashes, and checks download-disk space where supported. Low-space warnings require acknowledgement.
 - Estimates do not reserve space or include torrent overhead or library-import copies. Unavailable size or disk-space information must remain explicit.

@@ -5,6 +5,8 @@ import { applyUserRulesToResults } from './user-rules.js'
 import { describeResultChange, matchPreviousResult } from './history.js'
 import { fetchWithTimeout, sleep, scanRequests } from './http.js'
 import { log, errorMessage } from './logging.js'
+import { sourceNameOf } from './arr-instances.js'
+import type { ImportProblem } from './import-follow.js'
 import type { Config, JsonObject } from './types.js'
 
 export function loadNotified(file = NOTIFIED_FILE): Set<string> { return loadStringSet(file, 'Could not read notification history') }
@@ -55,7 +57,9 @@ function alternativeSummary(result: JsonObject): string {
 export function discordMessageBody(result: JsonObject): JsonObject {
   const title = truncateText(`${result.title || 'Unknown title'}${seasonSuffix(result)}`, 256)
   const info = bestReleaseInfo(result)
-  const details = (Array.isArray(result.change_details) ? result.change_details : []).map(String).filter(Boolean)
+  const regression = typeof result.regression === 'string' ? result.regression : ''
+  const mismatched = [...new Set(Object.values((result.mismatched_by_part || {}) as Record<string, string[]>).flat().map(String))]
+  const details = regression ? [regression] : (Array.isArray(result.change_details) ? result.change_details : []).map(String).filter(Boolean)
   const fields: Array<{ name: string; value: string; inline?: boolean }> = []
   if (details.length) fields.push({ name: 'What changed', value: truncateText(details.join('\n'), 1024) })
   fields.push({ name: 'Have', value: truncateText((result.have || []).map(String).join(', ') || '—', 300), inline: true })
@@ -67,15 +71,18 @@ export function discordMessageBody(result: JsonObject): JsonObject {
   if (notes && notes !== '-') fields.push({ name: 'Notes', value: truncateText(notes, 1024) })
   const embed: JsonObject = {
     title,
-    color: DISCORD_EMBED_COLORS[String(result.status || '')] ?? 0x5865f2,
-    author: { name: `SeaDex · ${String(result.arr || 'Library')}` },
+    color: regression ? 0xed4245 : DISCORD_EMBED_COLORS[String(result.status || '')] ?? 0x5865f2,
+    author: { name: `SeaDex · ${result.arr ? sourceNameOf(result) : 'Library'}` },
     fields,
     footer: { text: 'seadex.moe' },
     timestamp: new Date().toISOString(),
   }
   if (result.url) embed.url = String(result.url)
   if (result.image) embed.thumbnail = { url: String(result.image) }
-  const content = info.group ? `${title} — new best release ${info.group}` : `${title} — upgrade available`
+  // A regression or a file mismatch is not a new recommendation, so the headline says what happened instead.
+  const content = regression ? `${title} — no longer on its best release`
+    : mismatched.length ? `${title} — your ${mismatched.join(', ')} files differ from the listed release`
+    : info.group ? `${title} — new best release ${info.group}` : `${title} — upgrade available`
   return { content: truncateText(content, 1900), embeds: [embed] }
 }
 
@@ -107,6 +114,31 @@ export interface NotificationDependencies {
   save?: typeof saveNotified
   send?: typeof sendToDiscord
   previous?: JsonObject[]
+  /** Result keys that lost their best release because the library files changed, with what changed. */
+  regressions?: Record<string, string>
+}
+
+/** One notification for a finished download that Sonarr or Radarr did not import. */
+export async function sendImportProblem(config: Config, problem: ImportProblem): Promise<boolean> {
+  if (!config.webhook) return false
+  const season = problem.season ? ` (S${String(problem.season).padStart(2, '0')})` : ''
+  const title = truncateText(`${problem.title}${season}`, 256)
+  const headline = problem.state === 'blocked' ? `${problem.app} is not importing a finished download` : `A finished download was not imported by ${problem.app}`
+  const fields = [
+    ...(problem.releaseGroup ? [{ name: 'Release', value: truncateText(problem.releaseGroup, 300), inline: true }] : []),
+    ...(problem.message ? [{ name: `${problem.app} reports`, value: truncateText(problem.message, 1024) }] : []),
+  ]
+  try {
+    const response = await fetchWithTimeout(config.webhook, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: truncateText(`${title} — ${headline}`, 1900), embeds: [{ title, color: 0xe67e22, author: { name: `SeaDex · ${problem.app}` }, fields, footer: { text: 'SeaDex Companion' }, timestamp: new Date().toISOString() }] }),
+    }, 30_000)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return true
+  } catch (error) {
+    log('ERROR', `Discord webhook failed for the import problem of ${problem.title}: ${errorMessage(error)}`)
+    return false
+  }
 }
 
 export async function autoNotifyNew(config: Config, dependencies: NotificationDependencies = {}): Promise<number> {
@@ -144,7 +176,9 @@ export async function autoNotifyNew(config: Config, dependencies: NotificationDe
     return 0
   }
   const previous = dependencies.previous || []
+  const regressions = dependencies.regressions || {}
   const payload = fresh.map((result) => {
+    if (regressions[result.key]) return { ...result, regression: regressions[result.key] }
     if (!previous.length) return result
     const details = describeResultChange(matchPreviousResult(previous, result), result)
     return details.length ? { ...result, change_details: details } : result

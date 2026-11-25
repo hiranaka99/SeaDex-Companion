@@ -2,16 +2,17 @@ import { HISTORY_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
 import { titleKey } from './anilist.js'
 import type { JsonObject, ScanTrigger } from './types.js'
-import { describeReleaseChanges } from '../shared/release-changes.js'
+import { describeRegression, describeReleaseChanges } from '../shared/release-changes.js'
+import { sourceKeyOf, sourceNameOf } from './arr-instances.js'
 import type { ReleaseChangeDetail, ResultItem } from '../shared/contracts.js'
 
 function resultIdentity(result: JsonObject): string {
-  const base = String(result.library_key || `${result.arr || 'Unknown'}:${result.group_id ?? result.anilist_id ?? result.title ?? 'unknown'}`)
+  const base = String(result.library_key || `${sourceKeyOf(result)}:${result.group_id ?? result.anilist_id ?? result.title ?? 'unknown'}`)
   return `${base}:${Number(result.season || 0)}`
 }
 
 function resultFallbackIdentity(result: JsonObject): string {
-  return `${String(result.arr || 'Unknown')}:${titleKey(String(result.title || 'unknown'))}:${Number(result.season || 0)}`
+  return `${sourceKeyOf(result)}:${titleKey(String(result.title || 'unknown'))}:${Number(result.season || 0)}`
 }
 
 function automationStatus(result: JsonObject): string {
@@ -72,12 +73,16 @@ export function describeResultChange(previous: JsonObject | null, current: JsonO
   for (const label of previousUnavailable) if (!currentUnavailable.has(label)) details.push(`${label} now covered`)
   for (const label of currentUnavailable) if (!previousUnavailable.has(label)) details.push(`${label} no longer available on SeaDex`)
   if (String(previous.notes || '').trim() !== String(current.notes || '').trim()) details.push('seadex.moe notes updated')
+  const mismatched = (result: JsonObject) => [...new Set(Object.values((result.mismatched_by_part || {}) as Record<string, string[]>).flat())].sort()
+  const nowMismatched = mismatched(current).filter(group => !mismatched(previous).includes(group))
+  if (nowMismatched.length) details.push(`Your ${nowMismatched.join(', ')} files differ from the listed release`)
+  if (!previous.preference_blocked && current.preference_blocked) details.push('No listed release fits your release preferences')
   if (!details.length) details.push(...describeReleaseChanges(previous as ResultItem, current as ResultItem).map(change => change.description))
   return details.slice(0, 6)
 }
 
 export interface ScanHistoryChange extends JsonObject {
-  type: 'new' | 'upgrade' | 'resolved' | 'changed' | 'removed'
+  type: 'new' | 'upgrade' | 'resolved' | 'changed' | 'removed' | 'regression'
   details: string[]
   release_changes?: ReleaseChangeDetail[]
 }
@@ -95,7 +100,17 @@ export interface ScanHistoryEntry extends JsonObject {
   changes: ScanHistoryChange[]
 }
 
-export function buildScanHistoryEntry(previous: JsonObject[], current: JsonObject[], runAt: string, trigger: ScanTrigger = 'manual', metadata: { durationSeconds?: number; scannedTitles?: number; sourceErrors?: Record<string, string>; outcome?: ScanHistoryEntry['outcome']; error?: string } = {}): ScanHistoryEntry {
+export interface ScanHistoryMetadata {
+  durationSeconds?: number
+  scannedTitles?: number
+  sourceErrors?: Record<string, string>
+  outcome?: ScanHistoryEntry['outcome']
+  error?: string
+  /** The results were computed under different preferences, so status moves are not regressions. */
+  settingsChanged?: boolean
+}
+
+export function buildScanHistoryEntry(previous: JsonObject[], current: JsonObject[], runAt: string, trigger: ScanTrigger = 'manual', metadata: ScanHistoryMetadata = {}): ScanHistoryEntry {
   const { byKey: before, byFallback: beforeByFallback } = previousResultIndex(previous)
   const after = new Map(current.map((result) => [resultIdentity(result), result]))
   const matchedBefore = new Set<string>()
@@ -106,7 +121,7 @@ export function buildScanHistoryEntry(previous: JsonObject[], current: JsonObjec
   }, {})
   const changes: ScanHistoryChange[] = []
   const describe = (result: JsonObject) => ({
-    library_key: result.library_key, key: resultIdentity(result), title: String(result.title || 'Unknown title'), arr: String(result.arr || ''),
+    library_key: result.library_key, key: resultIdentity(result), title: String(result.title || 'Unknown title'), arr: result.arr ? sourceNameOf(result) : '',
     season: Number(result.season || 0), best_group: result.best_group || null,
   })
   for (const [key, result] of after) {
@@ -118,13 +133,15 @@ export function buildScanHistoryEntry(previous: JsonObject[], current: JsonObjec
       const from = automationStatus(old)
       const releaseChanges = describeReleaseChanges(old as ResultItem, result as ResultItem)
       if (from === to && String(old.best_group || '') === String(result.best_group || '') && !releaseChanges.length) continue
-      const type = from !== 'upgrade' && to === 'upgrade' ? 'upgrade'
+      const regression = metadata.settingsChanged ? null : describeRegression(old as ResultItem, result as ResultItem)
+      const type = regression ? 'regression' : from !== 'upgrade' && to === 'upgrade' ? 'upgrade'
         : from === 'upgrade' && to !== 'upgrade' ? 'resolved' : 'changed'
-      const details = releaseChanges.length ? releaseChanges.map(change => change.description)
+      const listed = regression ? [regression] : releaseChanges
+      const details = listed.length ? listed.map(change => change.description)
         : type === 'resolved' ? [] : describeResultChange(old, result)
       changes.push({
         type, ...describe(result), from, to, details,
-        ...(releaseChanges.length ? { release_changes: releaseChanges } : {}),
+        ...(listed.length ? { release_changes: listed } : {}),
       })
     }
   }
@@ -141,7 +158,7 @@ export function loadScanHistory(file = HISTORY_FILE): ScanHistoryEntry[] {
     : []
 }
 
-export function recordScanHistory(previous: JsonObject[], current: JsonObject[], runAt: string, file = HISTORY_FILE, trigger: ScanTrigger = 'manual', metadata: { durationSeconds?: number; scannedTitles?: number; sourceErrors?: Record<string, string>; outcome?: ScanHistoryEntry['outcome']; error?: string } = {}): ScanHistoryEntry {
+export function recordScanHistory(previous: JsonObject[], current: JsonObject[], runAt: string, file = HISTORY_FILE, trigger: ScanTrigger = 'manual', metadata: ScanHistoryMetadata = {}): ScanHistoryEntry {
   const entry = buildScanHistoryEntry(previous, current, runAt, trigger, metadata)
   writeJsonAtomic(file, { version: 1, scans: [entry, ...loadScanHistory(file)].slice(0, 30) }, true)
   return entry

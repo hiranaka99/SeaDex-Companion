@@ -33,8 +33,8 @@ test('Radarr includes non-theatrical releases and reads legacy movie-file owners
   try {
     const { items } = await loadLocalLibrary({ ...DEFAULT_CONFIG, radarr_url: 'http://radarr.test', radarr_key: 'fixture' })
     assert.deepEqual(items.map(item => item.id), [1, 2, 3, 6])
-    assert.deepEqual(items.find(item => item.id === 3)?.seasons[0], { groups: ['Best group'], size: 123 })
-    assert.deepEqual(items.find(item => item.id === 6)?.seasons[0], { groups: ['Another group'], size: 456 })
+    assert.deepEqual(items.find(item => item.id === 3)?.seasons[0], { groups: ['Best group'], size: 123, files: [{ size: 123, episodes: [], group: 'Best group' }] })
+    assert.deepEqual(items.find(item => item.id === 6)?.seasons[0], { groups: ['Another group'], size: 456, files: [{ size: 456, episodes: [], group: 'Another group' }] })
   } finally { globalThis.fetch = original }
 })
 
@@ -46,7 +46,7 @@ test('empty Radarr statistics cannot hide an already-owned best movie file', asy
   }])) as typeof fetch
   try {
     const { items } = await loadLocalLibrary({ ...DEFAULT_CONFIG, radarr_url: 'http://radarr.test', radarr_key: 'fixture' })
-    assert.deepEqual(items[0].seasons[0], { groups: ['Best group'], size: 123 })
+    assert.deepEqual(items[0].seasons[0], { groups: ['Best group'], size: 123, files: [{ size: 123, episodes: [], group: 'Best group' }] })
     const result = assessSeason(items[0], 0, items[0].seasons[0],
       [{ season: 1, id: 42, ids: [42], parts: [{ id: 42, episodeCount: 1 }] }],
       new Map([[42, { url: 'https://seadex.moe/42/', notes: '', seasons: { 0: { candidates: [{
