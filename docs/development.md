@@ -4,7 +4,7 @@ This guide covers source builds, local development, testing, and release publica
 
 ## Run from source
 
-Requires **Node.js 24+**.
+Requires **Node.js 26+**.
 
 ```bash
 npm ci

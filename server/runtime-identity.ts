@@ -56,12 +56,12 @@ export function isRuntimeIdentity(value: unknown): value is RuntimeIdentity {
   const record = value as Partial<RuntimeIdentity> | null
   return Boolean(
     record &&
-      record.format === 1 &&
-      typeof record.node === 'string' &&
-      typeof record.image === 'string' &&
-      typeof record.launcher === 'string' &&
-      record.dependencies &&
-      typeof record.dependencies === 'object',
+    record.format === 1 &&
+    typeof record.node === 'string' &&
+    typeof record.image === 'string' &&
+    typeof record.launcher === 'string' &&
+    record.dependencies &&
+    typeof record.dependencies === 'object',
   )
 }
 

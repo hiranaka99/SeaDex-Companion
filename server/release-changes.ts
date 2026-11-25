@@ -17,13 +17,13 @@ export function loadReleaseChanges(file = RELEASE_CHANGES_FILE): ChangeStore {
         (changes as unknown[]).filter((change): change is ReleaseChange =>
           Boolean(
             change &&
-              typeof change === 'object' &&
-              typeof (change as ReleaseChange).id === 'string' &&
-              typeof (change as ReleaseChange).description === 'string' &&
-              ['best', 'alternative', 'updated', 'removed', 'regression'].includes((change as ReleaseChange).kind) &&
-              typeof (change as ReleaseChange).detected_at === 'string' &&
-              Number.isFinite(Date.parse((change as ReleaseChange).detected_at)) &&
-              ((change as ReleaseChange).part === undefined || typeof (change as ReleaseChange).part === 'string'),
+            typeof change === 'object' &&
+            typeof (change as ReleaseChange).id === 'string' &&
+            typeof (change as ReleaseChange).description === 'string' &&
+            ['best', 'alternative', 'updated', 'removed', 'regression'].includes((change as ReleaseChange).kind) &&
+            typeof (change as ReleaseChange).detected_at === 'string' &&
+            Number.isFinite(Date.parse((change as ReleaseChange).detected_at)) &&
+            ((change as ReleaseChange).part === undefined || typeof (change as ReleaseChange).part === 'string'),
           ),
         ),
       ]),
