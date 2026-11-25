@@ -5,6 +5,7 @@ import {
   qbControlTorrents,
   qbGetDownloadStorage,
   qbGetTorrents,
+  qbReadTorrents,
   QbittorrentAmbiguousError,
 } from './qbittorrent.js'
 import { qbEndpointId } from './client-identity.js'
@@ -113,10 +114,9 @@ export function qbittorrentAdapter(config: Config): DownloadClientAdapter {
     nativeIdIsSourceHash: true,
     notControllable: 'This torrent is no longer in qBittorrent.',
     async read(records) {
-      const torrents = await qbGetTorrents(
+      const torrents = await qbReadTorrents(
         config,
         records.map(record => record.native_id || record.source_hash),
-        true,
       )
       return { jobs: new Map(torrents.map(torrent => [torrentHash(torrent), liveTorrent(torrent)])), complete: true }
     },

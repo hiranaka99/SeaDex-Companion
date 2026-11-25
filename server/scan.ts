@@ -1,7 +1,7 @@
 import { seasonTag } from '../shared/ids.js'
 import { errorMessage } from '../shared/errors.js'
 import { assessSeason, resolveSeasonChainEntry, type AssessmentSettings } from './assessment.js'
-import { beginScan, endScan, getState, setState } from './scan-state.js'
+import { beginScan, endScan, getState, setNormalizedResults, setState } from './scan-state.js'
 import { scanRequests } from './http.js'
 import { log, timestamp } from './logging.js'
 import { HISTORY_FILE } from './paths.js'
@@ -215,9 +215,12 @@ async function performScan(
       return !['Sonarr', 'Radarr'].includes(String(result.arr || ''))
     })
     const results: ResultItem[] = []
+    // The snapshot shown while scanning; each title's seasons are normalized once, as they are added.
+    let published = normalizeResults(retainedResults)
     stage = 'resolving library titles'
     for (const [itemIndex, item] of items.entries()) {
       if (controller.signal.aborted) throw new DOMException('Scan cancelled', 'AbortError')
+      const firstResult = results.length
       setState({ progress: itemIndex, message: `Resolving: ${item.title}` })
       const arrUrl = arrItemUrl(config, item)
       const libraryKey = libraryItemKey(item)
@@ -292,7 +295,8 @@ async function performScan(
         result.group_id = groupId
         results.push(result)
       }
-      setState({ progress: itemIndex + 1, results: [...retainedResults, ...results] })
+      published = [...published, ...normalizeResults(results.slice(firstResult))]
+      setNormalizedResults(published, { progress: itemIndex + 1 })
     }
     if (controller.signal.aborted) throw new DOMException('Scan cancelled', 'AbortError')
     const lastRun = timestamp()

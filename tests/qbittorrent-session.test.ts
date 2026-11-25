@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
 import { afterEach, beforeEach, describe, test } from 'node:test'
 import { DEFAULT_CONFIG } from '../server/config.js'
-import { qbAddTorrent, qbControlTorrents, qbGetTorrents, resetQbRuntime } from '../server/qbittorrent.js'
+import {
+  qbAddTorrent,
+  qbControlTorrents,
+  qbGetTorrents,
+  qbReadTorrents,
+  resetQbRuntime,
+} from '../server/qbittorrent.js'
 
 const config = {
   ...DEFAULT_CONFIG,
@@ -240,4 +246,33 @@ describe('qBittorrent session cookies', () => {
     assert.equal(logins, 3)
     assert.equal(requests, 2, 'An unrecoverable 403 must not cause an unbounded retry loop')
   })
+})
+
+test('progress reads ask qBittorrent only for the tracked torrents', async () => {
+  const originalFetch = globalThis.fetch
+  resetQbRuntime()
+  const reads: string[] = []
+  const seeding = [{ hash }, { hash: otherHash }, { hash: 'c'.repeat(40) }]
+  globalThis.fetch = (async input => {
+    const url = new URL(String(input))
+    if (url.pathname.endsWith('/auth/login')) return new Response('Ok.', { headers: { 'Set-Cookie': 'SID=read' } })
+    const wanted = url.searchParams.get('hashes')?.split('|')
+    reads.push(wanted ? wanted.join('|') : '*')
+    return Response.json(wanted ? seeding.filter(torrent => wanted.includes(torrent.hash)) : seeding)
+  }) as typeof fetch
+  try {
+    assert.deepEqual(
+      (await qbReadTorrents(config, [hash.toUpperCase(), otherHash, hash])).map(torrent => torrent.hash),
+      [hash, otherHash],
+    )
+    assert.deepEqual(reads, [`${hash}|${otherHash}`])
+    assert.deepEqual(await qbReadTorrents(config, []), [])
+    assert.equal(reads.length, 1, 'Nothing tracked needs no request')
+    const many = Array.from({ length: 101 }, (_, index) => index.toString(16).padStart(40, '0'))
+    assert.deepEqual(await qbReadTorrents(config, many), [])
+    assert.equal(reads.at(-1), '*', 'A large set reads the whole list instead of building a long URL')
+  } finally {
+    globalThis.fetch = originalFetch
+    resetQbRuntime()
+  }
 })
