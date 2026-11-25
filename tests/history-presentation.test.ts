@@ -51,8 +51,8 @@ test('library and history lead with the actual edit and keep its release identit
 test('history only shows a status transition when the status actually changed', () => {
   assert.equal(historyStatus(change()), 'Still upgradable')
   assert.equal(historyStatus(change({ from: 'best', to: 'best' })), 'Still best quality')
-  assert.equal(historyStatus(change({ type: 'resolved', to: 'best' })), 'Upgradable → Best quality')
-  assert.equal(historyStatus(change({ type: 'new', from: null })), 'Upgradable')
+  assert.equal(historyStatus(change({ type: 'resolved', to: 'best' })), 'Upgrade available → Best owned')
+  assert.equal(historyStatus(change({ type: 'new', from: null })), 'Upgrade available')
   assert.equal(historyStatus(change({ type: 'removed', to: null })), null)
 })
 

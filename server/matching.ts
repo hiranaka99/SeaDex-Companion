@@ -1,7 +1,7 @@
 import { normalizeInfoHash } from '../shared/ids.js'
 import { normalizeTorrentPath, torrentHashes } from '../shared/download-plan.js'
 import { DEFAULT_RELEASE_PREFERENCES } from '../shared/settings.js'
-import { VIDEO_FILE, sameRelease } from '../shared/releases.js'
+import { VIDEO_FILE, sameRelease, episodeFromFilename, type ParsedEpisode } from '../shared/releases.js'
 import type {
   ReleaseCandidate,
   Release,
@@ -18,7 +18,7 @@ export function isDownloadable(release: Pick<ReleaseCandidate, 'info_hashes'>): 
   return torrentHashes(release).length > 0
 }
 
-export { VIDEO_FILE }
+export { VIDEO_FILE, episodeFromFilename, type ParsedEpisode }
 const sameText = (left: unknown, right: unknown) =>
   String(left || '')
     .trim()
@@ -89,25 +89,6 @@ export function pickBest(
       : (candidate: ReleaseCandidate, best: ReleaseCandidate) => (candidate.size || 0) > (best.size || 0)
   const chosen = selectedPool.reduce((best, candidate) => (beats(candidate, best) ? candidate : best))
   return [chosen, candidates.filter(candidate => candidate !== chosen)]
-}
-
-export interface ParsedEpisode {
-  episode: number
-  season: number | null
-  explicit: boolean
-}
-
-export function episodeFromFilename(name: string): ParsedEpisode | null {
-  const filename = name.split(/[\\/]/).at(-1) || ''
-  if (!VIDEO_FILE.test(filename) || /NCOP|NCED/i.test(filename)) return null
-  const standard = filename.match(/S(\d{1,3})E(\d{1,3}(?:\.\d+)?)/i)
-  if (standard) return { season: Number(standard[1]), episode: Number(standard[2]), explicit: true }
-  const named = filename.match(/\b(?:Episode|Ep\.?)\s*[._-]*\s*(\d{1,3}(?:\.\d+)?)(?=[ ._[\]()-]|$)/i)
-  if (named) return { season: null, episode: Number(named[1]), explicit: true }
-  // Unlabelled absolute episode numbers are common in whole-season encodes.
-  // Only use these when no explicitly numbered episodes exist in the torrent.
-  const absolute = filename.match(/(?:^|[\s_-])(\d{1,3}(?:\.\d+)?)(?=[\s(.\]]|$)/)
-  return absolute ? { season: null, episode: Number(absolute[1]), explicit: false } : null
 }
 
 function extraBelongsToPart(name: string, partNumber: number): boolean {

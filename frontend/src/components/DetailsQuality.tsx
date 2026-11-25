@@ -11,15 +11,19 @@ export const QUALITY_ICONS: Record<QualityStatus['kind'], IconName> = {
   incomplete: 'alert',
 }
 
+/** The same tones as the library card: green owned, blue upgrade, amber attention, muted absence. */
+export const QUALITY_TONES: Record<QualityStatus['kind'], string> = {
+  best: 'text-good',
+  upgrade: 'text-accent-bright',
+  review: 'text-warn',
+  partial: 'text-warn',
+  missing: 'text-muted',
+  incomplete: 'text-warn',
+}
+
 export default function DetailsQuality({ status }: { status: QualityStatus }) {
   return (
-    <span
-      className={cx(
-        'details-quality',
-        status.kind === 'best' ? 'text-good' : status.kind === 'missing' ? 'text-muted' : 'text-warn',
-      )}
-      data-quality={status.kind}
-    >
+    <span className={cx('details-quality', QUALITY_TONES[status.kind])} data-quality={status.kind}>
       <Icon name={QUALITY_ICONS[status.kind]} size={15} />
       <span>{status.label}</span>
     </span>

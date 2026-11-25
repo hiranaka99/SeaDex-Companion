@@ -315,11 +315,17 @@ export default function AnimeTab({
     { value: '', label: 'Any coverage' },
     { value: 'partial', label: 'Partially on SeaDex' },
     { value: 'missing', label: 'Not on SeaDex' },
-    { value: 'best', label: 'Best quality' },
+    { value: 'best', label: 'Best owned' },
   ]
   const statusFilters: { value: string; label: string; count: number; tone: string; icon: IconName }[] = [
     { value: '', label: 'All', count: coverageGroups.length, tone: 'text-ink', icon: 'library' },
-    { value: 'upgrade', label: 'Upgradable', count: counts.upgrade, tone: 'text-accent-bright', icon: 'arrow-up' },
+    {
+      value: 'upgrade',
+      label: 'Upgrade available',
+      count: counts.upgrade,
+      tone: 'text-accent-bright',
+      icon: 'arrow-up',
+    },
     { value: 'review', label: 'Match needs review', count: counts.review, tone: 'text-warn', icon: 'search' },
     { value: 'episodes', label: 'Episodes missing', count: counts.episodes, tone: 'text-warn', icon: 'alert' },
   ]
