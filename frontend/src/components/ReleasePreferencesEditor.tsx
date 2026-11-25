@@ -17,15 +17,11 @@ interface Props {
 
 const TRACKER_MODES: [TrackerMode, string, string][] = [
   [
-    'public',
-    'Public trackers only',
-    'Releases that need a private-tracker account are left out. This is SeaDex Companion’s default.',
-  ],
-  [
     'private',
     'Include private trackers',
-    'Releases from private trackers are listed too. You download those from the tracker yourself.',
+    'Releases from private trackers are listed too. You download those from the tracker yourself. This is SeaDex Companion’s default.',
   ],
+  ['public', 'Public trackers only', 'Releases that need a private-tracker account are left out.'],
 ]
 
 const TARGETS: [ReleasePreferences['size'], string, string][] = [

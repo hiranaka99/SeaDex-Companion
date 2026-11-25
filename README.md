@@ -14,7 +14,7 @@ SeaDex Companion compares your **Sonarr** and **Radarr** anime libraries with th
 - See all seasons of an anime together, with clear upgrade and ownership summaries.
 - Compare your current release groups, episode coverage, and file sizes with SeaDex recommendations.
 - Confirm that your files are the exact release SeaDex lists, not just a release by the same group.
-- Work with public trackers only (the default), or include releases from private trackers.
+- Include releases from private trackers (the default), or work with public trackers only.
 - Set release preferences: smaller or larger releases, dual audio, a size limit per episode, and groups or trackers to leave out.
 - Scan several Sonarr and Radarr instances, and limit each one to its anime by series type, tag, or root folder.
 - Find titles by name, release group, source, or upgrade status.
@@ -132,7 +132,7 @@ If your files are changed after import, for example remuxed or stripped of track
 
 SeaDex often lists more than one best release for a season, such as a remux and a smaller encode. Under **Configuration → Release preferences** you choose which one SeaDex Companion targets:
 
-- **Trackers**: **Public trackers only** (the default) leaves out every release that has no public torrent, such as releases on AnimeBytes. They do not appear in results, release details, bulk downloads, or notifications, and the best release available on a public tracker becomes the target. A season SeaDex lists only on private trackers shows **No public release**. Choose **Include private trackers** to list those releases too; you download them from the tracker yourself.
+- **Trackers**: **Include private trackers** (the default) lists releases from every tracker SeaDex indexes. Releases on private trackers, such as AnimeBytes, have no public torrent, so you download them from the tracker yourself. Choose **Public trackers only** to leave out every release that has no public torrent. Those releases then do not appear in results, release details, bulk downloads, or notifications, and the best release available on a public tracker becomes the target. A season SeaDex lists only on private trackers shows **No public release**.
 - **Download target**: the largest release (the default) or the smallest.
 - **Prefer dual audio**: whenever a dual-audio release is listed for a season, it becomes the target.
 - **Size limit per episode**: releases above this average episode size are never offered. Movies are not limited.
