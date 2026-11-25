@@ -44,7 +44,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       {createPortal(
         <div
-          className="pointer-events-none fixed top-4 right-4 z-[100] app-scrollbar flex max-h-[calc(100dvh-12rem)] w-[min(380px,calc(100vw-2rem))] flex-col overflow-y-auto gap-2 max-[900px]:top-auto max-[900px]:bottom-24"
+          className={cx(
+            'pointer-events-none fixed right-4 z-[100] app-scrollbar flex max-h-[calc(100dvh-12rem)] w-[min(380px,calc(100vw-2rem))] flex-col overflow-y-auto gap-2',
+            // Inside a modal the top-right corner holds its close button, so notifications stack at the bottom.
+            host === document.body ? 'top-4 max-[900px]:top-auto max-[900px]:bottom-24' : 'bottom-4',
+          )}
           aria-live="polite"
           aria-atomic="true"
         >
@@ -84,7 +88,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               </div>
               <button
                 type="button"
-                className="touch-target pointer-events-auto grid size-6 shrink-0 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink"
+                className="touch-target pointer-events-auto grid size-8 shrink-0 cursor-pointer place-items-center rounded-lg text-muted hover:bg-panel hover:text-ink"
                 onClick={() => setItems(current => current.filter(currentItem => currentItem.id !== item.id))}
                 aria-label="Dismiss notification"
               >

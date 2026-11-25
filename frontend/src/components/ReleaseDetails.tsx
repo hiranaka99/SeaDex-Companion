@@ -1,4 +1,4 @@
-import { normalizeTorrentPath as normalizeFile, releaseFilesMatch } from '../../../shared/download-plan'
+import { normalizeTorrentPath as normalizeFile, releaseFilesMatch, releaseOwned } from '../../../shared/download-plan'
 import { useMemo } from 'react'
 import type { Config, Release, ResultItem } from '../types'
 import { formatBytes, formatEta, providerNames, seasonLabel, sizeDelta } from '../utils'
@@ -6,7 +6,8 @@ import { buttonBase, cx, downloadTextTone } from '../styles'
 import Icon from './Icons'
 import { DownloadActions, ImportStatusLine, clientName, phaseLabel, type DownloadEntry } from './DownloadsPanel'
 import { estimateDownloads } from '../../../shared/download-estimate'
-import type { DownloadPhase, DownloadProtocol, UsenetAvailabilityResult } from '../api'
+import type { DiskSpaceCheck, DownloadPhase, DownloadProtocol, UsenetAvailabilityResult } from '../api'
+import { DiskLine } from './PlanReview'
 import type { DetailsDownloadState } from '../useCardDownloads'
 import { releaseIdentity } from '../../../shared/releases'
 import { displayDateTime } from '../datetime'
@@ -30,6 +31,13 @@ interface Props {
   onProtocol: (protocol: DownloadProtocol) => void
   onRefreshAvailability: () => void
   onDownload: () => void
+  /** Disk checks of a send that stopped because a client reported too little free space. */
+  lowSpace: DiskSpaceCheck[] | null
+  onSendAnyway: () => void
+  onCancelLowSpace: () => void
+  /** Why the last send of this release failed. */
+  sendError: string | null
+  onDismissSendError: () => void
   onPause: (entry: DownloadEntry) => void
   onResume: (entry: DownloadEntry) => void
   onRemove: (entry: DownloadEntry) => void
@@ -148,6 +156,11 @@ export default function ReleaseDetails({
   onProtocol,
   onRefreshAvailability,
   onDownload,
+  lowSpace,
+  onSendAnyway,
+  onCancelLowSpace,
+  sendError,
+  onDismissSendError,
   onPause,
   onResume,
   onRemove,
@@ -172,6 +185,8 @@ export default function ReleaseDetails({
   const usenetUsable = usenet?.usable === true
   const protocolUsable = chosen === 'torrent' ? torrentUsable : usenetUsable
   const disabled = inClient || complete || !protocolUsable
+  /** Owning this release already; sending it again is a deliberate re-download, not an upgrade. */
+  const owned = releaseOwned(r, rel)
 
   const fileScope = useMemo(() => {
     const estimate = estimateDownloads([{ release: rel, category: '' }])
@@ -292,12 +307,19 @@ export default function ReleaseDetails({
           ? 'Usenet unavailable'
           : 'Unavailable'
         : chosen === 'usenet'
-          ? 'Download on Usenet'
+          ? owned
+            ? 'Re-download on Usenet'
+            : 'Download on Usenet'
           : fileScope.selected
-            ? `Download ${fileScope.files.length} file${fileScope.files.length === 1 ? '' : 's'}`
-            : 'Download release'
+            ? `${owned ? 'Re-download' : 'Download'} ${fileScope.files.length} file${fileScope.files.length === 1 ? '' : 's'}`
+            : owned
+              ? 'Re-download'
+              : 'Download release'
 
-  const tags = [...new Set([...(rel.dual_audio ? ['Dual Audio'] : []), ...(rel.tags || [])])]
+  // The kind label already says BEST, so a SeaDex "Best" tag would repeat it.
+  const tags = [...new Set([...(rel.dual_audio ? ['Dual Audio'] : []), ...(rel.tags || [])])].filter(
+    tag => !(isBest && tag.trim().toLowerCase() === 'best'),
+  )
   const sameGroup = (group: string) => group.trim().toLowerCase() === rel.releaseGroup.trim().toLowerCase()
   const verified = releaseFilesMatch(r, rel)
   // The library holds another release this group lists for the same season or cour.
@@ -310,6 +332,21 @@ export default function ReleaseDetails({
   // Naming the target only helps where several releases compete for the same season or cour.
   const competing = r.releases.filter(other => (other.part || '') === (rel.part || '')).length > 1
   const targeted = Boolean(rel.target) && competing && !verified && !complete && !inClient
+  /**
+   * One release per row is the recommended action: the preferred target, or SeaDex's best release when nothing is
+   * targeted. Owned and excluded releases stay available but never look like the next step.
+   */
+  const recommended =
+    !owned && !rel.excluded_by && (rel.target === true || (isBest && !r.releases.some(other => other.target)))
+  const buttonTone = complete
+    ? 'border-good/40 bg-good/12 text-good'
+    : disabled
+      ? 'border-line bg-panel-raised text-muted'
+      : owned
+        ? 'border-line bg-transparent text-muted enabled:hover:bg-panel-raised enabled:hover:text-ink'
+        : recommended
+          ? 'border-transparent bg-accent text-on-accent enabled:hover:bg-accent-bright'
+          : 'border-line-strong bg-panel text-ink enabled:hover:bg-panel-raised'
   const statusCopy = complete ? `Download completed in ${clientName(transfers[0].client)}` : ''
   const usenetCategory = r.arr === 'Sonarr' ? config?.sabnzbd_sonarr_category : config?.sabnzbd_radarr_category
 
@@ -543,18 +580,15 @@ export default function ReleaseDetails({
             className={cx(
               buttonBase,
               'release-download-button min-h-11 min-w-0 max-w-full justify-center px-3 text-xs max-[600px]:w-full',
-              complete
-                ? 'border-good/40 bg-good/12 text-good'
-                : disabled
-                  ? 'border-line bg-panel-raised text-muted'
-                  : chosen === 'usenet'
-                    ? 'border-sky/40 bg-sky/12 text-sky enabled:hover:bg-sky/20'
-                    : 'border-good/40 bg-good/12 text-good enabled:hover:bg-good/20',
+              buttonTone,
             )}
-            disabled={disabled || sendLocked}
+            disabled={disabled || sendLocked || lowSpace !== null}
             aria-busy={sending}
             title={buttonTitle}
-            aria-label={`${buttonTitle} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`}
+            // The accessible name starts with the visible label so voice control can target it.
+            aria-label={`${buttonLabel} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`}
+            aria-description={buttonTitle}
+            data-recommended={recommended || undefined}
             onClick={onDownload}
           >
             {sending ? (
@@ -573,6 +607,81 @@ export default function ReleaseDetails({
           </button>
         )}
       </div>
+      {lowSpace && (
+        <div className="release-alert release-alert-warn mt-3" role="alert">
+          <p className="m-0 flex items-start gap-1.5 text-sm font-semibold text-warn">
+            <Icon name="alert" size={15} className="mt-0.5 shrink-0" />
+            <span>Not enough free space for this release</span>
+          </p>
+          <ul className="mt-2 mb-0 list-none divide-y divide-line p-0">
+            {lowSpace
+              .filter(check => check.sufficient === false)
+              .map((check, index) => (
+                <DiskLine key={`${check.client}-${index}`} check={check} />
+              ))}
+          </ul>
+          <p className="mt-2 mb-0 text-xs text-muted">
+            The download stalls when the disk fills up and resumes once space is freed.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className={cx(
+                buttonBase,
+                'min-h-11 border-warn/45 bg-warn/12 px-3 text-xs text-warn enabled:hover:bg-warn/20',
+              )}
+              onClick={onSendAnyway}
+              disabled={sendLocked}
+            >
+              <Icon name="download" size={15} />
+              Send anyway
+            </button>
+            <button
+              type="button"
+              className={cx(
+                buttonBase,
+                'min-h-11 border-line bg-panel px-3 text-xs text-ink enabled:hover:bg-panel-raised',
+              )}
+              onClick={onCancelLowSpace}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {sendError && !lowSpace && (
+        <div className="release-alert release-alert-bad mt-3" role="alert">
+          <p className="m-0 flex items-start gap-1.5 text-sm font-semibold text-bad">
+            <Icon name="alert" size={15} className="mt-0.5 shrink-0" />
+            <span>Could not send this release</span>
+          </p>
+          <p className="mt-1 mb-0 text-xs text-ink wrap-anywhere">{sendError}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className={cx(
+                buttonBase,
+                'min-h-11 border-line-strong bg-panel px-3 text-xs text-ink enabled:hover:bg-panel-raised',
+              )}
+              onClick={onDownload}
+              disabled={sendLocked || disabled}
+            >
+              <Icon name="refresh" size={15} />
+              Try again
+            </button>
+            <button
+              type="button"
+              className={cx(
+                buttonBase,
+                'min-h-11 border-transparent bg-transparent px-3 text-xs text-muted enabled:hover:text-ink',
+              )}
+              onClick={onDismissSendError}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
       {fileScope.files.length > 0 && !inClient && !complete && chosen !== 'usenet' && (
         <details className="mt-3 min-w-0">
           <summary className="touch-target flex min-h-8 cursor-pointer items-center gap-1.5 rounded-md text-xs font-semibold text-accent-bright">
