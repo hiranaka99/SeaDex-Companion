@@ -22,7 +22,8 @@ import {
   orderedPartReleases,
   releaseDict,
 } from './matching.js'
-import { verifyPart } from './verification.js'
+import { verifyPart, type PartVerification } from './verification.js'
+import { sameRelease } from '../shared/releases.js'
 import { sourceKeyOf } from './arr-instances.js'
 import { DEFAULT_RELEASE_PREFERENCES, PREFERENCE_BLOCKED_REASON } from '../shared/settings.js'
 
@@ -363,14 +364,16 @@ export function assessSeason({
 
   // Ownership: release group names, corrected by the file-size fingerprint of each listed release.
   const candidatesOf = (part: ResolvedPart) => [part.best, ...part.alts]
-  const verification = resolved.map(part =>
-    settings.verify && (parts.length === 1 || part.episodeNumbers)
-      ? verifyPart(local, part.episodeNumbers, partOwnership.owned[part.label || ''] || [], candidatesOf(part))
-      : { verified: [], mismatched: [] },
+  const verification = resolved.map(
+    (part): PartVerification =>
+      settings.verify && (parts.length === 1 || part.episodeNumbers)
+        ? verifyPart(local, part.episodeNumbers, partOwnership.owned[part.label || ''] || [], candidatesOf(part))
+        : { verified: [], mismatched: [], other: [], matches: [] },
   )
   const ownedByPart = resolved.map((part, index) => {
     const owned = new Set<string>((partOwnership.owned[part.label || ''] || []).map(groupKey))
-    for (const group of verification[index].mismatched) owned.delete(groupKey(group))
+    // Holding another of a group's releases is not holding the group's best release.
+    for (const group of [...verification[index].mismatched, ...verification[index].other]) owned.delete(groupKey(group))
     for (const group of verification[index].verified) owned.add(groupKey(group))
     return owned
   })
@@ -396,7 +399,17 @@ export function assessSeason({
             .filter(release => isBestKind(part, release) || preferences.accept_alternatives)
             .map(release => groupKey(release.releaseGroup)),
         )
-  const settled = resolved.map((part, index) => [...settlingGroups(part)].some(group => ownedByPart[index].has(group)))
+  // A group can list several releases, so a release settles its part by itself, not by its group name.
+  const releaseSettles = (part: ResolvedPart, release: ReleaseCandidate) =>
+    preferences.strict && !part.blocked
+      ? sameRelease(release, part.best, true)
+      : preferences.accept_alternatives ||
+        candidatesOf(part).some(listing => isBestKind(part, listing) && sameRelease(listing, release, true))
+  const settled = resolved.map(
+    (part, index) =>
+      [...settlingGroups(part)].some(group => ownedByPart[index].has(group)) ||
+      verification[index].matches.some(release => releaseSettles(part, release)),
+  )
   // A part whose releases are all excluded has nothing to offer unless the library already settles it.
   const dormant = resolved.map((part, index) => Boolean(part.blocked) && !settled[index])
   resolved.forEach((part, index) => {
@@ -404,16 +417,19 @@ export function assessSeason({
     outcomes[resolvedOutcome[index]] = 'uncovered'
     unavailableParts.push({ label: partName(part.label), reason: PREFERENCE_BLOCKED_REASON })
   })
-  const listReleases = (part: ResolvedPart, primary: ReleaseCandidate) =>
-    orderedPartReleases(primary, part.alts).map(([, release]) => {
+  const listReleases = (part: ResolvedPart, primary: ReleaseCandidate) => {
+    const matches = verification[resolved.indexOf(part)].matches
+    return orderedPartReleases(primary, part.alts).map(([, release]) => {
       const kind = isBestKind(part, release) ? 'best' : 'alt'
-      const satisfies = settlingGroups(part).has(groupKey(release.releaseGroup))
+      const satisfies = releaseSettles(part, release)
       return releaseDict(kind, release, part.label, part.source.url, {
-        target: !part.blocked && groupKey(release.releaseGroup) === groupKey(part.best.releaseGroup),
+        target: !part.blocked && sameRelease(release, part.best, true),
         // Stored only where it departs from the kind, which is what older results imply.
         ...(satisfies !== (kind === 'best') ? { satisfies } : {}),
+        ...(matches.some(match => sameRelease(match, release)) ? { files_match: true } : {}),
       })
     })
+  }
   const active = resolved.filter((_, index) => !dormant[index])
   if (!active.length) {
     const status = outcomes.includes('missing') ? 'missing' : 'uncovered'

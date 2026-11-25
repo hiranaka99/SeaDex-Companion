@@ -41,10 +41,11 @@ function targetOwned(results: ResultItem[], target: LibraryTarget): boolean | nu
     item => item.library_key === target.key && Number(item.season || 0) === Number(target.season || 0),
   )
   if (!result) return null
-  const release = result.releases.find(
+  // A group can list several releases for one part; holding any of them is an import of the group's files.
+  const releases = result.releases.filter(
     candidate => (candidate.part || '') === target.part && groupKey(candidate.releaseGroup) === groupKey(target.group),
   )
-  if (release) return releaseOwned(result, release)
+  if (releases.length) return releases.some(release => releaseOwned(result, release))
   // The recommendation changed since the download was sent; the files themselves still tell.
   const groups =
     (target.part && result.precise_part_ownership ? result.owned_by_part?.[target.part] : result.have) || []

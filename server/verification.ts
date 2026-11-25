@@ -4,11 +4,15 @@ import type { LocalFile, LocalSeason, ReleaseCandidate } from './types.js'
 export interface PartVerification {
   /** Release groups whose listed files are exactly the files in the library. */
   verified: string[]
-  /** Release groups the library files are named after, although their sizes differ from the listed release. */
+  /** Release groups the library files are named after, although their sizes differ from every release the group has listed. */
   mismatched: string[]
+  /** Release groups the library files are named after, whose files are another of the group's listed releases, not its best one. */
+  other: string[]
+  /** The listed releases whose video files are exactly the files in the library. */
+  matches: ReleaseCandidate[]
 }
 
-const NONE: PartVerification = { verified: [], mismatched: [] }
+const none = (): PartVerification => ({ verified: [], mismatched: [], other: [], matches: [] })
 const key = (group: string) => group.trim().toLowerCase()
 
 /** Exact sizes of the video files a release lists. Extras and subtitles never identify an episode. */
@@ -36,32 +40,41 @@ export function verifyPart(
   candidates: ReleaseCandidate[],
 ): PartVerification {
   const files: LocalFile[] = local.files || []
-  if (!files.length || !candidates.length) return NONE
+  if (!files.length || !candidates.length) return none()
   const expected = episodeNumbers ? new Set(episodeNumbers) : null
   const partFiles = expected ? files.filter(file => file.episodes.some(episode => expected.has(episode))) : files
-  if (!partFiles.length || partFiles.some(file => !(file.size > 0))) return NONE
+  if (!partFiles.length || partFiles.some(file => !(file.size > 0))) return none()
   const covered = new Set(partFiles.flatMap(file => file.episodes))
   const complete = expected ? [...expected].every(episode => covered.has(episode)) : true
+  const holds = (sizes: Set<number>) => sizes.size > 0 && complete && partFiles.every(file => sizes.has(file.size))
 
+  const matches = candidates.filter(candidate => holds(listedSizes([candidate])))
   const byGroup = new Map<string, ReleaseCandidate[]>()
   for (const candidate of candidates)
     byGroup.set(key(candidate.releaseGroup), [...(byGroup.get(key(candidate.releaseGroup)) || []), candidate])
   const owners = new Set(namedOwners.map(key))
   const verified: string[] = []
   const mismatched: string[] = []
+  const other: string[] = []
   for (const [group, releases] of byGroup) {
     // A group's best release is the one that has to be owned; its other uploads are different releases.
     const flagged = releases.filter(release => release.is_best)
     const sizes = listedSizes(flagged.length ? flagged : releases)
     if (!sizes.size) continue
     const name = releases[0].releaseGroup
-    if (complete && partFiles.every(file => sizes.has(file.size))) {
+    if (holds(sizes)) {
       verified.push(name)
       continue
     }
     if (!owners.has(group)) continue
+    if (matches.some(match => key(match.releaseGroup) === group)) {
+      other.push(name)
+      continue
+    }
     const groupFiles = partFiles.filter(file => key(file.group) === group)
     if (groupFiles.length && !groupFiles.every(file => sizes.has(file.size))) mismatched.push(name)
   }
-  return verified.length || mismatched.length ? { verified, mismatched } : NONE
+  return verified.length || mismatched.length || other.length || matches.length
+    ? { verified, mismatched, other, matches }
+    : none()
 }
