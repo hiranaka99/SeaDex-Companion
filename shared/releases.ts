@@ -19,6 +19,50 @@ export function releaseIdentity(release: {
 
 export const VIDEO_FILE = /\.(?:mkv|mp4|avi|m4v|ts|webm)$/i
 
+export interface ParsedEpisode {
+  episode: number
+  season: number | null
+  explicit: boolean
+}
+
+export function episodeFromFilename(name: string): ParsedEpisode | null {
+  const filename = name.split(/[\\/]/).pop() || ''
+  if (!VIDEO_FILE.test(filename) || /NCOP|NCED/i.test(filename)) return null
+  const standard = filename.match(/S(\d{1,3})E(\d{1,3}(?:\.\d+)?)/i)
+  if (standard) return { season: Number(standard[1]), episode: Number(standard[2]), explicit: true }
+  const named = filename.match(/\b(?:Episode|Ep\.?)\s*[._-]*\s*(\d{1,3}(?:\.\d+)?)(?=[ ._[\]()-]|$)/i)
+  if (named) return { season: null, episode: Number(named[1]), explicit: true }
+  // Unlabelled absolute episode numbers are common in whole-season encodes.
+  // Only use these when no explicitly numbered episodes exist in the torrent.
+  const absolute = filename.match(/(?:^|[\s_-])(\d{1,3}(?:\.\d+)?)(?=[\s(.\]]|$)/)
+  return absolute ? { season: null, episode: Number(absolute[1]), explicit: false } : null
+}
+
+/**
+ * Episode ranges a file list covers, such as "Eps 13–24" or "Ep 5". Null unless every video file names its
+ * episode, so a partial parse never understates what a download contains.
+ */
+export function episodeRangeLabel(names: string[]): string | null {
+  // Creditless openings and endings are extras, not episodes.
+  const parsed = names.filter(name => VIDEO_FILE.test(name) && !/NCOP|NCED/i.test(name)).map(episodeFromFilename)
+  if (!parsed.length || parsed.some(episode => !episode)) return null
+  const explicit = parsed.some(episode => episode!.explicit)
+  const numbers = [
+    ...new Set(parsed.filter(episode => !explicit || episode!.explicit).map(episode => episode!.episode)),
+  ]
+  if (!numbers.length || numbers.some(number => !Number.isInteger(number))) return null
+  numbers.sort((a, b) => a - b)
+  const ranges: string[] = []
+  for (let index = 0; index < numbers.length; ) {
+    let end = index
+    while (end + 1 < numbers.length && numbers[end + 1] === numbers[end] + 1) end++
+    ranges.push(end > index ? `${numbers[index]}–${numbers[end]}` : String(numbers[index]))
+    index = end + 1
+  }
+  if (ranges.length > 3) return null
+  return `${numbers.length === 1 ? 'Ep' : 'Eps'} ${ranges.join(', ')}`
+}
+
 type ListedFile = { name: string; length: number }
 interface Listing {
   releaseGroup: string

@@ -8,16 +8,16 @@ const TONES: Record<string, { classes: string; color: string; label: string; ico
   upgrade: {
     classes: 'border-line-strong bg-accent/15',
     color: 'var(--color-accent-bright)',
-    label: 'Upgradable',
+    label: 'Upgrade available',
     icon: 'arrow-up',
   },
   best: {
     classes: 'border-good/35 bg-good/12',
     color: 'var(--color-good)',
-    label: 'BEST release owned',
+    label: 'Best owned',
     icon: 'check',
   },
-  alt: { classes: 'border-bad/35 bg-bad/12', color: 'var(--color-bad)', label: 'ALT release owned', icon: 'info' },
+  alt: { classes: 'border-bad/35 bg-bad/12', color: 'var(--color-bad)', label: 'Alternative owned', icon: 'info' },
   missing: {
     classes: 'border-dashed border-line-strong bg-canvas-soft',
     color: 'var(--color-muted)',

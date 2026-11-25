@@ -21,8 +21,8 @@ export function usenetPauseText(
 
 /** Badge text shown on each card banner. */
 export const STATUS_LABEL: Record<CardStatus, string> = {
-  upgrade: 'Upgradable',
-  best: 'Best quality',
+  upgrade: 'Upgrade available',
+  best: 'Best owned',
   missing: 'Not on SeaDex',
   partial: 'Partially on SeaDex',
   review: 'Match needs review',

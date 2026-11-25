@@ -88,7 +88,7 @@ test('a complete best alternative for each cour is sufficient, even with multipl
     releases: [...split.releases, { ...best, part: 'Cour 2', releaseGroup: 'Another best' }],
   }
   assert.equal(releaseQuality(owned).label, 'Best owned')
-  assert.equal(releaseOverview([owned], 'Sonarr').title, 'You have the best release')
+  assert.equal(releaseOverview([owned], 'Sonarr').title, 'Best release owned')
   assert.equal(
     releaseQuality({ ...owned, excluded: true, excluded_parts: ['Cour 2'] }).kind,
     'best',
@@ -147,9 +147,10 @@ test('missing episodes and uncertain mappings override best group names', () => 
 })
 
 test('summaries use movie terminology and do not claim ownership without release evidence', () => {
+  const movie = { ...season, arr: 'Radarr' as const, season: 0 }
   assert.equal(
-    releaseOverview([{ ...season, arr: 'Radarr', season: 0 }], 'Radarr').description,
-    'Your movie matches SeaDex recommendations.',
+    releaseOverview([movie, { ...movie, key: 'other' }], 'Radarr').title,
+    'Best releases owned for all 2 movies',
   )
   assert.equal(releaseQuality({ ...season, releases: [] }).kind, 'partial')
   const missing = { ...season, status: 'missing' as const, releases: [] }

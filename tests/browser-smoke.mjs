@@ -840,7 +840,7 @@ const wait = async expression => {
 }
 const click = async text => {
   const found = await evaluate(
-    `(() => { if (${JSON.stringify(text)} === 'Bulk cancel') { const menu = document.querySelector('.library-more-actions'); if (menu?.getClientRects().length && !menu.open) menu.querySelector('summary').click() }; if (['Correct match', 'Change manual match'].includes(${JSON.stringify(text)})) { const management = document.querySelector('dialog[open] .details-management'); if (management && !management.open) management.querySelector('summary').click() }; const button = [...document.querySelectorAll('button, summary')].find(button => button.getClientRects().length && button.textContent.trim() === ${JSON.stringify(text)}); if (!button) return false; button.focus(); button.click(); return true })()`,
+    `(() => { if (${JSON.stringify(text)} === 'Bulk cancel') { const menu = document.querySelector('.library-more-actions'); if (menu?.getClientRects().length && !menu.open) menu.querySelector('summary').click() }; const button = [...document.querySelectorAll('button, summary')].find(button => button.getClientRects().length && button.textContent.trim() === ${JSON.stringify(text)}); if (!button) return false; button.focus(); button.click(); return true })()`,
   )
   assert.ok(found, 'Visible button: ' + text)
   await pause(100)
@@ -1152,7 +1152,7 @@ try {
     await wait(`document.querySelector('dialog [aria-label="What changed"]')`)
     await evaluate(`document.querySelector('dialog [aria-label="What changed"]').open = true`)
     assert.ok(
-      await evaluate(`document.querySelector('dialog [aria-label="What changed"]').textContent.includes('S02')`),
+      await evaluate(`document.querySelector('dialog [aria-label="What changed"]').textContent.includes('Season 2')`),
     )
     assert.ok(
       await evaluate(
@@ -1267,9 +1267,9 @@ try {
     )
     assert.ok(
       await evaluate(
-        `document.querySelector('.release-row').textContent.includes('Season release') && document.querySelector('.release-row').textContent.includes('200 B')`,
+        `document.querySelector('.release-row').textContent.includes('Full release') && document.querySelector('.release-row').textContent.includes('200 B') && document.querySelector('.release-row').textContent.includes('Download size')`,
       ),
-      'Season release size remains separately labelled',
+      'The full release size stays separate from the labelled download size',
     )
     await evaluate(`document.querySelector('.release-row details').querySelector('summary').click()`)
     assert.ok(
@@ -1360,6 +1360,29 @@ try {
       ),
       'Owned releases remain visible while season details start collapsed',
     )
+    assert.ok(
+      await evaluate(
+        `document.querySelectorAll('.details-season-disclosure')[1].open && !document.querySelector('.release-row[data-owned]')?.closest('details').open`,
+      ),
+      'The season with an upgrade opens with Details; the owned one stays compact',
+    )
+    const sendsBeforeRedownload = singleRequests.length
+    await evaluate(`document.querySelector('.details-season-disclosure > summary').click()`)
+    await evaluate(
+      `(() => { const button = document.querySelector('.release-row[data-owned] .release-download-button'); button.focus(); button.click() })()`,
+    )
+    await wait(`document.activeElement?.textContent.trim() === 'Re-download anyway'`)
+    assert.ok(
+      await evaluate(
+        `document.querySelector('.release-row[data-owned] .release-alert').textContent.includes('You already have this release') && document.querySelector('.release-row[data-owned] .release-download-button').disabled`,
+      ),
+      'Re-downloading an owned release asks first',
+    )
+    await evaluate(
+      `[...document.querySelectorAll('.release-row[data-owned] .release-alert button')].find(button => button.textContent.trim() === 'Keep current files').click()`,
+    )
+    await wait(`!document.querySelector('.release-row[data-owned] .release-alert')`)
+    assert.equal(singleRequests.length, sendsBeforeRedownload, 'Keeping current files sends nothing')
     await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 900, deviceScaleFactor: 1, mobile: true })
     await evaluate(`document.documentElement.style.fontSize='32px'`)
     await pause(150)
@@ -1386,7 +1409,7 @@ try {
     await wait(`document.querySelector('dialog[open] section[aria-label="Movie"]')`)
     assert.ok(
       await evaluate(
-        `document.querySelector('dialog[open]').textContent.includes('Movie release') && !document.querySelector('dialog[open]').textContent.includes('Season 0')`,
+        `document.querySelector('dialog[open] .details-season-name').textContent === 'Movie' && document.querySelector('dialog[open] .details-season-disclosure').open && !document.querySelector('dialog[open]').textContent.includes('Season 0')`,
       ),
       'Movie details use movie terminology',
     )
@@ -1442,7 +1465,7 @@ try {
       await wait(`document.querySelector('.details-verdict[data-quality="best"]')`)
       assert.equal(
         await evaluate(`document.querySelector('.details-verdict h3').textContent`),
-        'You have the best releases',
+        'Best releases owned for all 4 seasons',
       )
       assert.ok(
         await evaluate(`[...document.querySelectorAll('.details-season-disclosure')].every(details => !details.open)`),
@@ -1539,14 +1562,13 @@ try {
     await evaluate(`document.querySelector('button[aria-label="Details for Example anime"]').click()`)
     await wait(`document.querySelector('.details-season-disclosure > summary')`)
     assert.ok(
-      await evaluate(`!document.body.textContent.includes('Usenet source found')`),
-      'Usenet sources stay unchecked until a season is expanded',
+      await evaluate(`document.querySelector('.details-season-disclosure').open`),
+      "A title's only season opens with Details",
     )
-    await evaluate(`document.querySelector('.details-season-disclosure > summary').click()`)
     await wait(`document.body.textContent.includes('Usenet source found')`)
     assert.ok(
       await evaluate(
-        `document.querySelectorAll('.release-row').length === 2 && [...document.querySelectorAll('.release-row')].every(row => row.textContent.includes('Usenet source found') && row.textContent.includes('12 file source'))`,
+        `document.querySelectorAll('.release-row').length === 2 && [...document.querySelectorAll('.release-row')].every(row => row.textContent.includes('Usenet source found') && row.textContent.includes('· 12 files'))`,
       ),
       'Every release reports its Usenet source with the provider file count',
     )
@@ -2465,7 +2487,7 @@ try {
     await click('Scan history')
     await wait(`document.body.textContent.includes('Still upgradable')`)
     assert.ok(
-      await evaluate(`!document.body.textContent.includes('Upgradable → Upgradable')`),
+      await evaluate(`!document.body.textContent.includes('Upgrade available → Upgrade available')`),
       'History omits unchanged status transitions',
     )
     assert.ok(
@@ -2779,6 +2801,26 @@ try {
       'Send anyway carries the low-space acknowledgement',
     )
     await dismissToasts()
+    singleSendMode = 'ok'
+    preflightMode = 'unavailable'
+    const beforeUnknownSpace = singleRequests.length
+    await sendFirstRelease()
+    await wait(
+      `document.querySelector('dialog[open] .release-alert')?.textContent.includes('Free space could not be checked')`,
+    )
+    await pause(200)
+    assert.equal(singleRequests.length, beforeUnknownSpace, 'A client that reports no free space pauses a single send')
+    assert.ok(
+      await evaluate(
+        `document.querySelector('dialog[open] .release-alert').textContent.includes('did not report free space')`,
+      ),
+      'The pause names the client that did not report free space',
+    )
+    await evaluate(
+      `[...document.querySelectorAll('dialog[open] .release-alert button')].find(button => button.textContent.trim() === 'Cancel').click()`,
+    )
+    await wait(`!document.querySelector('dialog[open] .release-alert')`)
+    assert.equal(singleRequests.length, beforeUnknownSpace, 'Cancelling the pause sends nothing')
     singleSendMode = 'unknown'
     preflightMode = 'enough'
     await sendFirstRelease()
@@ -2796,7 +2838,7 @@ try {
     singleSendMode = 'ok'
     preflightMode = 'enough'
     await sendFirstRelease()
-    await wait(`document.body.textContent.includes('Sent S01 · Example to qBittorrent')`)
+    await wait(`document.body.textContent.includes('Sent S01 · Example to qBittorrent · 1000 B free')`)
     await dismissToasts()
     await key('Escape')
     await wait(`document.querySelectorAll('dialog[open]').length === 0`)
@@ -3593,7 +3635,7 @@ try {
         )
         assert.ok(
           await evaluate(
-            `(() => { const rows = [...document.querySelectorAll('article > div > ul > li')]; return rows.length === 6 && rows.every(row => row.scrollWidth <= row.clientWidth + 1) && !rows.some(row => row.textContent.includes('Upgradable → Upgradable')) })()`,
+            `(() => { const rows = [...document.querySelectorAll('article > div > ul > li')]; return rows.length === 6 && rows.every(row => row.scrollWidth <= row.clientWidth + 1) && !rows.some(row => row.textContent.includes('Upgrade available → Upgrade available')) })()`,
           ),
           'History details and long names remain readable without clipping',
         )
@@ -3780,7 +3822,7 @@ try {
     await click('Details')
     await wait(`document.querySelector('button[aria-label="Change Season 2 match"]')`)
     assert.ok(
-      await evaluate(`document.querySelector('a[aria-label="Open Season 2 in AniList"]').href.endsWith('/200')`),
+      await evaluate(`document.querySelector('a[aria-label^="Open Season 2 in AniList"]').href.endsWith('/200')`),
     )
     await evaluate(`document.querySelector('button[aria-label="Change Season 2 match"]').click()`)
     await wait(`document.querySelector('[aria-label="Selected AniList entries"] li')`)
