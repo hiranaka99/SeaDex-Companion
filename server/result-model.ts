@@ -7,6 +7,9 @@ const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 const number = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
 const text = (value: unknown): string | null => (typeof value === 'string' ? value : null)
+/** Only absolute web addresses become links; anything else would resolve against this app. */
+const trackerUrl = (value: unknown): string | undefined =>
+  typeof value === 'string' && /^https?:\/\//i.test(value) ? value : undefined
 const dictionary = <T>(value: unknown, parse: (value: unknown) => T): Record<string, T> =>
   Object.fromEntries(Object.entries(asRecord(value)).map(([key, entry]) => [key, parse(entry)]))
 
@@ -33,6 +36,7 @@ export function normalizeResults(value: unknown): ResultItem[] {
           torrent_available: torrentHashes({ info_hashes: hashes }).length > 0,
           ...(text(source.part) ? { part: String(source.part) } : {}),
           ...(text(source.url) ? { url: String(source.url) } : {}),
+          ...(trackerUrl(source.tracker_url) ? { tracker_url: trackerUrl(source.tracker_url) } : {}),
           ...(strings(source.selected_files).length ? { selected_files: strings(source.selected_files) } : {}),
           ...(source.target === true ? { target: true } : {}),
           ...(typeof source.satisfies === 'boolean' ? { satisfies: source.satisfies } : {}),

@@ -38,6 +38,8 @@ export interface ScanState {
 export interface ReleaseCandidate {
   releaseGroup: string
   tracker: string
+  /** The release's own page on its tracker, when SeaDex lists one. */
+  tracker_url?: string
   quality: string
   tags: string[]
   dual_audio?: boolean
