@@ -272,6 +272,20 @@ const cancelableFor = (item, index) => ({
   size: 200,
   capabilities,
 })
+// A cancelable row as the progress feed reports it; no associations, so it never attaches to a card.
+const progressForCancelable = item => ({
+  ...item,
+  source_hash: item.native_id,
+  state: item.phase === 'queued' ? 'Queued' : 'Downloading',
+  labels: item.associations,
+  tracker: '',
+  associations: [],
+  progress: 0.5,
+  downloaded: 100,
+  total_size: 200,
+  speed: 0,
+  updated_at: '2026-11-20T10:00:00.000Z',
+})
 let preflightMode = 'low'
 let singleSendMode = 'ok'
 let availabilityMode = 'available'
@@ -494,7 +508,11 @@ const server = createServer(async (req, res) => {
     } else if (path === '/api/downloads')
       response = {
         ok: true,
-        downloads: progressOverrides || (progressMode === 'absent' ? {} : { [progressRecord()]: progressFor() }),
+        downloads: {
+          ...(progressOverrides || (progressMode === 'absent' ? {} : { [progressRecord()]: progressFor() })),
+          // The server derives its cancellation list from this same progress read.
+          ...Object.fromEntries(cancelableDownloads.map(item => [item.record_id, progressForCancelable(item)])),
+        },
       }
     else if (path === '/api/logs') {
       if (logFailure) {
@@ -845,6 +863,10 @@ const click = async text => {
   assert.ok(found, 'Visible button: ' + text)
   await pause(100)
 }
+const cancelButtonShown = `[...document.querySelectorAll('button')].some(button => button.getClientRects().length && button.textContent.trim() === 'Cancel downloads')`
+// Fixture download state changed server-side: re-read progress now instead of waiting for the next poll.
+const refreshDownloadProgress = () =>
+  evaluate(`window.dispatchEvent(new Event('seadex:download-progress-invalidated'))`)
 const openSettingsTab = async label => {
   const found = await evaluate(
     `(() => { const tab = [...document.querySelectorAll('[role=tab]')].find(tab => tab.getClientRects().length && tab.textContent.trim() === ${JSON.stringify(label)}); if (!tab) return false; tab.focus(); tab.click(); return true })()`,
@@ -3113,7 +3135,12 @@ try {
       'Per-item failure details remain available after closing review',
     )
     failBulk = false
+    await refreshDownloadProgress()
+    await pause(300)
+    assert.ok(!(await evaluate(cancelButtonShown)), 'Cancel downloads stays hidden while no download can be cancelled')
     cancelableDownloads = [example, movie].map(cancelableFor)
+    await refreshDownloadProgress()
+    await wait(cancelButtonShown)
     await click('Cancel downloads')
     await wait(`document.querySelector('dialog[open]')?.textContent.includes('Radarr movie')`)
     assert.ok(
@@ -3541,6 +3568,8 @@ try {
       0,
     ),
   ]
+  await refreshDownloadProgress()
+  await wait(cancelButtonShown)
   await click('Cancel downloads')
   await wait(`document.querySelector('dialog[open]')?.textContent.includes('VeryLongUnbroken')`)
   assert.ok(
