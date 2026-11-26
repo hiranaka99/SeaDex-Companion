@@ -359,7 +359,7 @@ export function IntegrationCard({
 }) {
   const badge =
     connection.phase === 'success'
-      ? ['bg-good/10 text-ink border-good/25', connection.message || 'Connected']
+      ? ['bg-good/10 text-ink border-good/25', 'Connected']
       : connection.phase === 'error'
         ? ['bg-bad/10 text-ink border-bad/25', 'Connection failed']
         : disabled
@@ -379,7 +379,7 @@ export function IntegrationCard({
         </div>
         <span
           className={cx(
-            'max-w-full rounded-full border max-[600px]:col-start-2 max-[600px]:w-fit px-2.5 py-1 text-xs font-semibold',
+            'max-w-full rounded-full border whitespace-nowrap max-[600px]:col-start-2 max-[600px]:w-fit px-2.5 py-1 text-xs font-semibold',
             badge[0],
           )}
           title={badge[1]}
@@ -409,6 +409,9 @@ export function IntegrationCard({
           {footerAction}
         </div>
         {connection.phase === 'error' && <p className="mt-2 mb-0 text-center text-xs text-bad">{connection.message}</p>}
+        {connection.phase === 'success' && connection.message && (
+          <p className="mt-2 mb-0 text-center text-xs text-muted">{connection.message}</p>
+        )}
       </div>
     </section>
   )
