@@ -1,5 +1,15 @@
 import { errorMessage } from '../../../shared/errors.js'
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react'
 import { ResultItem, Config, Release, Status, GroupedCard, CardStatus, LibraryFilterRequest } from '../types'
 import {
   groupResults,
@@ -34,6 +44,8 @@ import { upgradeParts } from '../../../shared/download-plan'
 import { releaseResultIdentity } from '../../../shared/release-changes'
 import { useLibraryFilters, type LibrarySort, type LibraryStatusFilter } from '../useLibraryFilters'
 import { STATUS_MEANING, STATUS_ORDER, STATUS_PRESENTATION } from '../status-presentation'
+import { getDownloadSnapshot, subscribeDownloads } from '../download-store'
+import { isCancelable } from '../../../shared/download-contracts'
 
 interface Props {
   active: boolean
@@ -477,6 +489,9 @@ export default function AnimeTab({
     [results],
   )
   const hasUpgrades = upgradeSeasonCount > 0
+  // Offer cancellation only while a client reports something the review would list.
+  const downloadSnapshot = useSyncExternalStore(subscribeDownloads, getDownloadSnapshot)
+  const hasCancelable = Object.values(downloadSnapshot).some(isCancelable)
   const [space, setSpace] = useState<api.DownloadSpaceLocation[]>([])
   useEffect(() => {
     if (!active || loading || !hasUpgrades) return
@@ -606,16 +621,18 @@ export default function AnimeTab({
             <Icon name="download" size={17} />
             <span>Bulk download</span>
           </button>
-          <button
-            type="button"
-            className="library-cancel-downloads touch-target inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-control px-3 text-sm font-semibold text-muted transition-colors hover:bg-bad/10 hover:text-bad disabled:cursor-not-allowed disabled:opacity-50"
-            title="Review and cancel downloads that have not finished"
-            onClick={() => openBulkReview('cancel')}
-            disabled={status.running || bulk.busy !== null || bulkOperationActive}
-          >
-            <Icon name="trash" size={17} />
-            <span className="max-[600px]:sr-only">Cancel downloads</span>
-          </button>
+          {hasCancelable && (
+            <button
+              type="button"
+              className="library-cancel-downloads touch-target inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-control px-3 text-sm font-semibold text-muted transition-colors hover:bg-bad/10 hover:text-bad disabled:cursor-not-allowed disabled:opacity-50"
+              title="Review and cancel downloads that have not finished"
+              onClick={() => openBulkReview('cancel')}
+              disabled={status.running || bulk.busy !== null || bulkOperationActive}
+            >
+              <Icon name="trash" size={17} />
+              <span className="max-[600px]:sr-only">Cancel downloads</span>
+            </button>
+          )}
         </div>
       </header>
 
