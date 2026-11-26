@@ -42,9 +42,14 @@ function previousResultIndex(previous: ResultItem[]): {
   }
 }
 
-export function matchPreviousResult(previous: ResultItem[], current: ResultItem): ResultItem | null {
+/**
+ * Finds the earlier result of each current one. The previous results are indexed once, so matching a whole
+ * library costs one pass instead of one pass per result.
+ */
+export function previousResultMatcher(previous: ResultItem[]): (current: ResultItem) => ResultItem | null {
   const index = previousResultIndex(previous)
-  return index.byKey.get(resultIdentity(current)) || index.byFallback.get(resultFallbackIdentity(current)) || null
+  return current =>
+    index.byKey.get(resultIdentity(current)) || index.byFallback.get(resultFallbackIdentity(current)) || null
 }
 
 function releaseGroupSet(result: ResultItem): Set<string> {

@@ -2,7 +2,7 @@ import { NOTIFIED_FILE } from './paths.js'
 import { loadStringSet, writeJsonAtomic } from './persistence.js'
 import { scanState } from './scan-state.js'
 import { applyUserRulesToResults } from './user-rules.js'
-import { describeResultChange, matchPreviousResult } from './history.js'
+import { describeResultChange, previousResultMatcher } from './history.js'
 import { fetchWithTimeout, sleep, scanRequests } from './http.js'
 import { log } from './logging.js'
 import { errorMessage } from '../shared/errors.js'
@@ -238,10 +238,11 @@ export async function autoNotifyNew(config: Config, dependencies: NotificationDe
   if (!fresh.length) return skip('INFO', 'Discord notifications: no new upgrades to send')
   const previous = dependencies.previous || []
   const regressions = dependencies.regressions || {}
+  const previousOf = previousResultMatcher(previous)
   const payload: NotifiedResult[] = fresh.map(result => {
     if (regressions[result.key]) return { ...result, regression: regressions[result.key] }
     if (!previous.length) return result
-    const details = describeResultChange(matchPreviousResult(previous, result), result)
+    const details = describeResultChange(previousOf(result), result)
     return details.length ? { ...result, change_details: details } : result
   })
   const delivered: NotifiedResult[] = []

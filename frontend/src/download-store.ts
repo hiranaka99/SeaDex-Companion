@@ -42,6 +42,8 @@ export function currentDownloadAssociations(
 const listeners = new Set<() => void>()
 let snapshot: Record<string, DownloadProgress> = {}
 let unavailableClients: api.AllDownloadProgress['unavailable_clients']
+/** The answer the snapshot was built from, to tell a changed answer from a repeated one. */
+let serialized = ''
 let timer: number | undefined
 let polling = false
 let generation = 0
@@ -54,6 +56,9 @@ const emit = () => {
 export const getDownloadSnapshot = () => snapshot
 export const getUnavailableClients = () => unavailableClients
 
+/** A background tab reads nothing; it catches up as soon as it is shown again. */
+const pageHidden = () => typeof document !== 'undefined' && document.hidden
+
 export function refreshDownloads(): Promise<void> {
   if (pending) return pending
   const current = generation
@@ -61,6 +66,10 @@ export function refreshDownloads(): Promise<void> {
     .getAllDownloadProgress()
     .then(all => {
       if (current !== generation) return
+      // Every card reads this snapshot, so an unchanged answer keeps the same object and renders nothing.
+      const next = JSON.stringify([all.downloads, all.unavailable_clients])
+      if (next === serialized) return
+      serialized = next
       snapshot = all.downloads
       unavailableClients = all.unavailable_clients
       emit()
@@ -72,12 +81,19 @@ export function refreshDownloads(): Promise<void> {
   return request
 }
 
+const POLL_MS = 3000
+
 function schedule(): void {
   timer = undefined
+  // The first read goes ahead even in the background, so a tab opened there is ready when it is shown.
+  if (pageHidden() && serialized) {
+    timer = window.setTimeout(schedule, POLL_MS)
+    return
+  }
   void refreshDownloads()
     .catch(() => {})
     .finally(() => {
-      if (listeners.size) timer = window.setTimeout(schedule, 3000)
+      if (listeners.size) timer = window.setTimeout(schedule, POLL_MS)
       else polling = false
     })
 }
@@ -126,4 +142,8 @@ if (typeof window !== 'undefined')
     generation += 1
     pending = undefined
     if (listeners.size) void refreshDownloads().catch(() => {})
+  })
+if (typeof document !== 'undefined')
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && listeners.size) void refreshDownloads().catch(() => {})
   })
