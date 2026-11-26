@@ -311,6 +311,25 @@ export interface AllDownloadProgress {
   unavailable_clients?: DownloadClient[]
 }
 
+const CANCELABLE_PHASES: Partial<Record<DownloadPhase, true>> = {
+  queued: true,
+  downloading: true,
+  paused: true,
+  verifying: true,
+  repairing: true,
+  unpacking: true,
+  post_processing: true,
+  error: true,
+  missing: true,
+}
+
+/** An unfinished or failed acquisition, in a phase the bulk cancellation review offers to remove. */
+export const cancelablePhase = (phase: DownloadPhase): boolean => CANCELABLE_PHASES[phase] === true
+
+/** Whether the bulk cancellation review would list this download. */
+export const isCancelable = (view: Pick<DownloadProgress, 'phase' | 'capabilities'>): boolean =>
+  cancelablePhase(view.phase) && view.capabilities.remove
+
 export interface CancelableDownload {
   record_id: string
   protocol: DownloadProtocol

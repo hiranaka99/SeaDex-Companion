@@ -7,9 +7,9 @@ import type {
   DownloadCapabilities,
   DownloadClient,
   DownloadImport,
-  DownloadPhase,
   DownloadProgress,
 } from '../shared/download-contracts.js'
+import { cancelablePhase, isCancelable } from '../shared/download-contracts.js'
 import { arrInstances, parseLibraryKey } from './arr-instances.js'
 import {
   downloadRecords,
@@ -317,24 +317,12 @@ export async function collectDownloadProgress(config: Config): Promise<AllDownlo
   return (await readDownloadProgress(config, downloadRecords())).progress
 }
 
-const CANCELABLE_PHASES: Partial<Record<DownloadPhase, true>> = {
-  queued: true,
-  downloading: true,
-  paused: true,
-  verifying: true,
-  repairing: true,
-  unpacking: true,
-  post_processing: true,
-  error: true,
-  missing: true,
-}
-
 export async function listCancelable(config: Config): Promise<CancelableDownloads> {
   const progress = await collectDownloadProgress(config)
   const results = resultsForRequest()
   const items: CancelableDownload[] = []
   for (const view of Object.values(progress.downloads)) {
-    if (!CANCELABLE_PHASES[view.phase] || !view.capabilities.remove) continue
+    if (!isCancelable(view)) continue
     const associations = associationTitles(results, view.record_id)
     items.push({
       record_id: view.record_id,
@@ -400,7 +388,7 @@ export async function cancelRecords(
       refuse('This download belongs to a different client URL.')
       continue
     }
-    if (!CANCELABLE_PHASES[view.phase]) {
+    if (!cancelablePhase(view.phase)) {
       if (wanted) refuse(view.error || 'This download already finished.')
       continue
     }
