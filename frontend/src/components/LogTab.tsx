@@ -103,7 +103,14 @@ export default function LogTab({ active }: Props) {
     if (!active) return
     let timer = 0
     let current = true
+    let loaded = false
     const load = async () => {
+      // After the first read, a background tab reads nothing; the next tick after it is shown catches up.
+      if (document.hidden && loaded) {
+        timer = window.setTimeout(load, 3000)
+        return
+      }
+      loaded = true
       try {
         const data = await api.getLogs(LOG_LIMIT)
         if (current) {
