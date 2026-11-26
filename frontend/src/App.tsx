@@ -1,13 +1,10 @@
 import { errorMessage } from '../../shared/errors.js'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import TopBar from './components/TopBar'
 import AnimeTab from './components/AnimeTab'
-import ConfigTab from './components/ConfigTab'
-import LogTab from './components/LogTab'
 import AuthPage from './components/AuthPage'
 import ConfirmDialog from './components/ConfirmDialog'
 import OperationCenter from './components/OperationCenter'
-import HistoryTab from './components/HistoryTab'
 import SidebarResizer from './components/SidebarResizer'
 import ErrorBoundary, { PageErrorFallback } from './components/ErrorBoundary'
 import { useToast } from './components/Toast'
@@ -18,6 +15,53 @@ import { useHashTab } from './useHashTab'
 import { useLibraryData } from './useLibraryData'
 import { useProwlarrCoverage } from './useProwlarrCoverage'
 import { useSidebar } from './useSidebar'
+
+/**
+ * A page whose code is fetched separately from the library, which is what almost every visit opens, so it is
+ * neither parsed nor run before the library shows. `preload` fetches it ahead of its first use. Once the code
+ * has arrived the page renders like any other component, with no placeholder; a page opened before that
+ * shows the loading placeholder, and one that cannot be fetched says how to recover.
+ */
+function lazyPage<Props extends object>(load: () => Promise<{ default: ComponentType<Props> }>) {
+  let Loaded: ComponentType<Props> | undefined
+  let request: Promise<{ default: ComponentType<Props> }> | undefined
+  const preload = () =>
+    (request ??= load().then(
+      module => {
+        Loaded = module.default
+        return module
+      },
+      () => {
+        request = undefined
+        throw new Error('This page could not be loaded. Reload to get the current version of SeaDex Companion.')
+      },
+    ))
+  const Deferred = lazy(preload)
+  function Page(props: Props) {
+    // Chosen once per mount: changing the component later would discard what the page holds, such as a draft.
+    const [Component] = useState<ComponentType<Props>>(() => Loaded ?? Deferred)
+    return <Component {...props} />
+  }
+  return Object.assign(Page, { preload })
+}
+const HistoryTab = lazyPage(() => import('./components/HistoryTab'))
+const ConfigTab = lazyPage(() => import('./components/ConfigTab'))
+const LogTab = lazyPage(() => import('./components/LogTab'))
+const DEFERRED_PAGES = { history: HistoryTab, config: ConfigTab, log: LogTab }
+
+/** The page named by the address the app was opened at, fetched alongside the sign-in check. */
+const openingPage: Promise<unknown> = (() => {
+  const name = window.location.hash.slice(1).split('?')[0]
+  const page = Object.entries(DEFERRED_PAGES).find(([id]) => id === name)?.[1]
+  // A page that cannot be fetched reports that where it would have appeared.
+  return page ? page.preload().catch(() => {}) : Promise.resolve()
+})()
+
+const pageLoading = (
+  <p className="py-16 text-center text-sm text-muted" role="status">
+    Loading…
+  </p>
+)
 
 interface AuthenticatedAppProps {
   username: string
@@ -39,6 +83,12 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   // The library also needs what Prowlarr's indexers cover; settings keep the plain saved configuration.
   const libraryConfig = useProwlarrCoverage(config, library.results)
   const busy = status.running || bulk.running
+
+  // Fetch the other pages as soon as the app is up, so opening one neither waits for the network nor shows
+  // a placeholder.
+  useEffect(() => {
+    for (const page of Object.values(DEFERRED_PAGES)) void page.preload().catch(() => {})
+  }, [])
 
   const handleResultOpened = useCallback(() => setOpenResultKey(null), [])
   const handleOpenHistoryResult = useCallback(
@@ -173,20 +223,22 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
                 <ErrorBoundary
                   fallback={(error, reset) => <PageErrorFallback error={error} reset={reset} what="Scan history" />}
                 >
-                  <HistoryTab
-                    active={tab === 'history'}
-                    results={library.results}
-                    resultsLoading={library.resultsLoading}
-                    resultsError={library.resultsError}
-                    scanDisabled={busy}
-                    onScan={() => void handleScan()}
-                    onOpenResult={handleOpenHistoryResult}
-                    onOpenLibrary={filter => {
-                      setLibraryFilter(current => ({ ...filter, id: (current?.id ?? 0) + 1 }))
-                      changeTab('anime')
-                    }}
-                    onOpenLog={() => changeTab('log')}
-                  />
+                  <Suspense fallback={pageLoading}>
+                    <HistoryTab
+                      active={tab === 'history'}
+                      results={library.results}
+                      resultsLoading={library.resultsLoading}
+                      resultsError={library.resultsError}
+                      scanDisabled={busy}
+                      onScan={() => void handleScan()}
+                      onOpenResult={handleOpenHistoryResult}
+                      onOpenLibrary={filter => {
+                        setLibraryFilter(current => ({ ...filter, id: (current?.id ?? 0) + 1 }))
+                        changeTab('anime')
+                      }}
+                      onOpenLog={() => changeTab('log')}
+                    />
+                  </Suspense>
                 </ErrorBoundary>
               </div>
             )}
@@ -195,21 +247,23 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
                 <ErrorBoundary
                   fallback={(error, reset) => <PageErrorFallback error={error} reset={reset} what="Configuration" />}
                 >
-                  <ConfigTab
-                    active={tab === 'config'}
-                    scanDisabled={busy}
-                    footerTarget={configFooterTarget}
-                    loadError={library.configError}
-                    onRetry={() => void library.loadConfig()}
-                    config={config}
-                    status={status}
-                    username={username}
-                    knownTrackers={knownTrackers}
-                    onRunScan={handleScan}
-                    onAccountUpdated={onAccountUpdated}
-                    onSaved={library.applySavedConfig}
-                    onScannedDataCleared={library.clearResults}
-                  />
+                  <Suspense fallback={pageLoading}>
+                    <ConfigTab
+                      active={tab === 'config'}
+                      scanDisabled={busy}
+                      footerTarget={configFooterTarget}
+                      loadError={library.configError}
+                      onRetry={() => void library.loadConfig()}
+                      config={config}
+                      status={status}
+                      username={username}
+                      knownTrackers={knownTrackers}
+                      onRunScan={handleScan}
+                      onAccountUpdated={onAccountUpdated}
+                      onSaved={library.applySavedConfig}
+                      onScannedDataCleared={library.clearResults}
+                    />
+                  </Suspense>
                 </ErrorBoundary>
               </div>
             )}
@@ -217,7 +271,9 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
               <ErrorBoundary
                 fallback={(error, reset) => <PageErrorFallback error={error} reset={reset} what="The server log" />}
               >
-                <LogTab active={tab === 'log'} />
+                <Suspense fallback={pageLoading}>
+                  <LogTab active={tab === 'log'} />
+                </Suspense>
               </ErrorBoundary>
             )}
           </div>
@@ -242,7 +298,7 @@ export default function App() {
   const refreshAuth = useCallback(async () => {
     const request = ++authRequest.current
     try {
-      const status = await api.getAuthStatus()
+      const [status] = await Promise.all([api.getAuthStatus(), openingPage])
       if (request !== authRequest.current) return
       setAuth(status)
       setLoadError('')

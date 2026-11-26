@@ -1,7 +1,13 @@
 import { saveCache } from './results.js'
 import { alSearch } from './anilist-client.js'
 import { scanRequests } from './http.js'
-import { freshCache, loadAniListMedia, metadataFetchedAt, type MetadataDependencies } from './anilist-metadata.js'
+import {
+  freshCache,
+  loadAniListMedia,
+  metadataFetchedAt,
+  METADATA_BATCH_SIZE,
+  type MetadataDependencies,
+} from './anilist-metadata.js'
 export { alMedia, alSearch } from './anilist-client.js'
 import type { JsonObject, ChainPart, ChainEntry } from './types.js'
 
@@ -265,7 +271,7 @@ export async function anilistChain(
   const seen = new Set<number>([base.id])
   const queue = [base.id as number]
   while (queue.length && nodes.size < 50) {
-    const ids = queue.splice(0, Math.min(25, 50 - nodes.size))
+    const ids = queue.splice(0, Math.min(METADATA_BATCH_SIZE, 50 - nodes.size))
     const records = await loadAniListMedia(ids, cache, dependencies)
     for (const id of ids) {
       const data = records.get(id)

@@ -91,6 +91,36 @@ function logScope(instance: ArrInstance, total: number, kept: number): void {
     )
 }
 
+/** Series whose episodes are requested from one Sonarr at the same time; each needs two requests. */
+const SERIES_CONCURRENCY = 4
+
+/**
+ * Runs `work` over the items with at most `limit` in flight and returns the results in input order.
+ * The first failure is thrown and no further item is started.
+ */
+async function mapLimited<Item, Result>(
+  items: Item[],
+  limit: number,
+  work: (item: Item) => Promise<Result>,
+): Promise<Result[]> {
+  const results = new Array<Result>(items.length)
+  let next = 0
+  let failed = false
+  const worker = async () => {
+    while (!failed && next < items.length) {
+      const index = next++
+      try {
+        results[index] = await work(items[index])
+      } catch (error) {
+        failed = true
+        throw error
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
+}
+
 async function sonarrItems(instance: ArrInstance, ids?: number[]): Promise<InstanceLibrary> {
   const items: LocalItem[] = [],
     outOfScope: OutOfScopeItem[] = [],
@@ -99,6 +129,7 @@ async function sonarrItems(instance: ArrInstance, ids?: number[]): Promise<Insta
   const series = (await api(`${base}/series`, instance.key, {}, true)) as JsonObject[]
   const inScope = await scopeFilter(instance, base)
   let kept = 0
+  const wanted: JsonObject[] = []
   for (const show of series) {
     if (!inScope(show)) {
       outOfScope.push({ instance: instance.id, id: Number(show.id), tags: tagIds(show) })
@@ -106,6 +137,9 @@ async function sonarrItems(instance: ArrInstance, ids?: number[]): Promise<Insta
     }
     kept += 1
     if (ids?.length && !ids.includes(Number(show.id))) continue
+    wanted.push(show)
+  }
+  const loaded = await mapLimited(wanted, SERIES_CONCURRENCY, async (show): Promise<LocalItem | null> => {
     const [episodes, episodeFiles] = (await Promise.all([
       api(`${base}/episode?seriesId=${show.id}`, instance.key, {}, true),
       api(`${base}/episodefile?seriesId=${show.id}`, instance.key, {}, true),
@@ -209,18 +243,19 @@ async function sonarrItems(instance: ArrInstance, ids?: number[]): Promise<Insta
           : {}),
       }
     }
-    if (Object.keys(seasons).length)
-      items.push({
-        arr: 'Sonarr',
-        ...instanceFields(instance),
-        id: show.id,
-        title: show.title,
-        slug: show.titleSlug,
-        ...(Array.isArray(show.tags) ? { tags: tagIds(show) } : {}),
-        ...(alternateTitles(show).length ? { alternate_titles: alternateTitles(show) } : {}),
-        seasons,
-      })
-  }
+    if (!Object.keys(seasons).length) return null
+    return {
+      arr: 'Sonarr',
+      ...instanceFields(instance),
+      id: show.id,
+      title: show.title,
+      slug: show.titleSlug,
+      ...(Array.isArray(show.tags) ? { tags: tagIds(show) } : {}),
+      ...(alternateTitles(show).length ? { alternate_titles: alternateTitles(show) } : {}),
+      seasons,
+    }
+  })
+  for (const item of loaded) if (item) items.push(item)
   logScope(instance, series.length, kept)
   return { items, outOfScope }
 }

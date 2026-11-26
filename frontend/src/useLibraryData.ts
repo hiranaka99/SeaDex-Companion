@@ -21,6 +21,11 @@ const POLL_SCANNING_MS = 1500
 const POLL_PREFETCHING_MS = 4000
 const POLL_IDLE_MS = 10_000
 const POLL_RETRY_MS = 3000
+/**
+ * A running scan publishes results after every title. The whole list is reloaded this often at most,
+ * and once more when the scan ends; reloading it for every title would download the library hundreds of times.
+ */
+const SCAN_RESULTS_REFRESH_MS = 10_000
 
 /**
  * Server state the whole app reads: scan status (polled), scan results (reloaded when their
@@ -46,6 +51,7 @@ export function useLibraryData() {
   const pollGeneration = useRef(0)
   const resultsRequest = useRef(0)
   const lastLoadedRevision = useRef<string | undefined>(undefined)
+  const lastResultsLoad = useRef(0)
   const scanWasRunning = useRef(false)
   const statusInitialized = useRef(false)
   const lastSeenRun = useRef<string | null>(null)
@@ -85,6 +91,11 @@ export function useLibraryData() {
       const pollAgainIn = (delay: number) => {
         pollTimer.current = window.setTimeout(() => void pollStatus(generation), delay)
       }
+      // Once it has its first answer, a background tab asks nothing; showing it again polls at once.
+      if (document.hidden && statusInitialized.current) {
+        pollAgainIn(POLL_IDLE_MS)
+        return
+      }
       try {
         const next = await api.getStatus()
         if (!current()) return
@@ -100,8 +111,11 @@ export function useLibraryData() {
         setStatus(next)
         setStatusError('')
         setLastStatusUpdate(new Date())
-        if (!next.results_revision || next.results_revision !== lastLoadedRevision.current) {
-          if (await loadResults(generation)) lastLoadedRevision.current = next.results_revision
+        const resultsChanged = !next.results_revision || next.results_revision !== lastLoadedRevision.current
+        const resultsDue = !next.running || Date.now() - lastResultsLoad.current >= SCAN_RESULTS_REFRESH_MS
+        if (resultsChanged && resultsDue && (await loadResults(generation))) {
+          lastLoadedRevision.current = next.results_revision
+          lastResultsLoad.current = Date.now()
         }
         if (!current()) return
         pollAgainIn(
@@ -143,10 +157,18 @@ export function useLibraryData() {
     const generation = ++pollGeneration.current
     void loadConfig()
     void pollStatus(generation)
+    const catchUp = () => {
+      if (document.hidden) return
+      if (pollTimer.current) window.clearTimeout(pollTimer.current)
+      pollTimer.current = null
+      void pollStatus(++pollGeneration.current)
+    }
+    document.addEventListener('visibilitychange', catchUp)
     return () => {
       mounted.current = false
       pollGeneration.current += 1
       if (pollTimer.current) window.clearTimeout(pollTimer.current)
+      document.removeEventListener('visibilitychange', catchUp)
     }
   }, [loadConfig, pollStatus])
 

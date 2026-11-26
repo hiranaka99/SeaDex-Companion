@@ -16,12 +16,12 @@ import { libraryRoutes } from './library-routes.js'
 import { onRestartRequest } from './lifecycle.js'
 import { log } from './logging.js'
 import { DATA_DIR, STATIC_DIR } from './paths.js'
-import { loadLastResults } from './results.js'
+import { flushCache, loadLastResults } from './results.js'
 import { matchRoute, type Route } from './router.js'
 import { scanRoutes } from './scan-routes.js'
 import { startScheduler } from './scheduler.js'
 import { APP_VERSION, reportUpdateState } from './updates.js'
-import { serveStatic } from './static-files.js'
+import { serveStatic, warmStaticCompression } from './static-files.js'
 import { flushUsenetCache, invalidateUsenetLookups } from './usenet.js'
 import { enableUsenetPrefetch, prefetchUsenetAvailability, stopUsenetPrefetch } from './usenet-prefetch.js'
 import { errorMessage } from '../shared/errors.js'
@@ -110,6 +110,11 @@ function main(): void {
       clearTimeout(deadline)
       if (error) log('ERROR', `Shutdown failed: ${error.message}`)
       else log('INFO', 'Server stopped')
+      try {
+        flushCache()
+      } catch (error) {
+        log('ERROR', `AniList cache could not be saved: ${errorMessage(error)}`)
+      }
       const cacheSaved = flushUsenetCache()
       process.exit(restart ? RESTART_EXIT_CODE : error || !cacheSaved ? 1 : 0)
     })
@@ -124,6 +129,7 @@ function main(): void {
     )
     // Tells the launcher this version started, so it is kept instead of rolled back.
     process.send?.({ type: READY_MESSAGE, version: APP_VERSION })
+    warmStaticCompression()
     try {
       reportRestoredState()
       reportUpdateState()

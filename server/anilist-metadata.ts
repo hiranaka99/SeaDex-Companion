@@ -4,11 +4,12 @@ import { saveCache } from './results.js'
 import type { JsonObject } from './types.js'
 
 export const ANILIST_CACHE_TTL = 24 * 60 * 60 * 1000
-const BATCH_SIZE = 25
+/** AniList returns at most 50 entries per page; a full page halves the paced requests of a metadata refresh. */
+export const METADATA_BATCH_SIZE = 50
 const MEDIA_FIELDS =
   'id format season seasonYear episodes title{romaji english native} coverImage{large extraLarge} bannerImage relations{edges{relationType node{id type}}}'
 const MEDIA_QUERY = `query($id:Int){Media(id:$id,type:ANIME){${MEDIA_FIELDS}}}`
-const BATCH_QUERY = `query($ids:[Int]){Page(page:1,perPage:${BATCH_SIZE}){media(id_in:$ids,type:ANIME){${MEDIA_FIELDS}}}}`
+const BATCH_QUERY = `query($ids:[Int]){Page(page:1,perPage:${METADATA_BATCH_SIZE}){media(id_in:$ids,type:ANIME){${MEDIA_FIELDS}}}}`
 
 export interface MetadataDependencies {
   media?: typeof alMedia
@@ -37,9 +38,9 @@ export async function loadAniListMedia(
     const cached = cache[`media:v1:${id}`]
     return refresh.has(id) || !freshCache(cached, now()) || !(cached.media === null || cached.media?.id === id)
   })
-  for (let offset = 0; offset < missing.length; offset += BATCH_SIZE) {
+  for (let offset = 0; offset < missing.length; offset += METADATA_BATCH_SIZE) {
     scanRequests.getStore()?.throwIfAborted()
-    const batchIds = missing.slice(offset, offset + BATCH_SIZE)
+    const batchIds = missing.slice(offset, offset + METADATA_BATCH_SIZE)
     // Keep support for integrations supplying a single-entry transport.
     const records =
       dependencies.media && !dependencies.batch
