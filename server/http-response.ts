@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { JsonObject } from './types.js'
+import { acceptedEncoding, compress, COMPRESS_MIN_BYTES } from './compression.js'
 import { HttpError } from './http-error.js'
 import { errorMessage } from '../shared/errors.js'
 import { isRecord } from '../shared/guards.js'
@@ -18,22 +19,36 @@ export function clientAddress(request: IncomingMessage): string {
   return request.socket.remoteAddress || 'unknown'
 }
 
-/** JSON responses are never cached unless a header says otherwise. */
+/**
+ * JSON responses are never cached unless a header says otherwise. Larger bodies are compressed for browsers
+ * that accept it: scan results run to megabytes of repetitive text.
+ */
 export function sendJson(
   response: ServerResponse,
   status: number,
   value: unknown,
   headers: Record<string, string> = {},
 ): void {
-  const body = JSON.stringify(value)
-  response.writeHead(status, {
+  const body = Buffer.from(JSON.stringify(value), 'utf8')
+  const base = {
     ...SECURITY_HEADERS,
     'Content-Type': 'application/json; charset=utf-8',
-    'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
-    ...headers,
-  })
-  response.end(body)
+  }
+  const encoding = body.length >= COMPRESS_MIN_BYTES ? acceptedEncoding(response.req?.headers['accept-encoding']) : null
+  if (!encoding) {
+    response.writeHead(status, { ...base, 'Content-Length': body.length, ...headers })
+    response.end(body)
+    return
+  }
+  // The headers go out now, so a later failure in the same request cannot start a second response.
+  response.writeHead(status, { ...base, 'Content-Encoding': encoding, Vary: 'Accept-Encoding', ...headers })
+  compress(body, encoding, 'fast').then(
+    compressed => {
+      if (!response.writableEnded) response.end(compressed)
+    },
+    () => response.destroy(),
+  )
 }
 
 /** A bodiless success or redirect-free acknowledgement. */

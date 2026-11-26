@@ -1,4 +1,4 @@
-import { refreshDownloads, subscribeDownloads } from '../frontend/src/download-store.js'
+import { getDownloadSnapshot, refreshDownloads, subscribeDownloads } from '../frontend/src/download-store.js'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
@@ -55,7 +55,14 @@ test('download-store subscribers share polling and unsubscribe independently', a
       clears += 1
     },
   } as unknown as Window & typeof globalThis
-  globalThis.fetch = (async () => Response.json({ ok: true, downloads: {} })) as typeof fetch
+  // Subscribers hear about changed answers only, so every read reports a different unreachable client.
+  let reads = 0
+  globalThis.fetch = (async () =>
+    Response.json({
+      ok: true,
+      downloads: {},
+      unavailable_clients: [++reads % 2 ? 'qbittorrent' : 'sabnzbd'],
+    })) as typeof fetch
   let firstCalls = 0,
     secondCalls = 0
   const unsubscribeFirst = subscribeDownloads(() => {
@@ -83,6 +90,59 @@ test('download-store subscribers share polling and unsubscribe independently', a
     unsubscribeSecond()
     globalThis.fetch = originalFetch
     globalThis.window = originalWindow
+    invalidateDownloadProgress()
+  }
+})
+
+test('an unchanged download answer keeps the snapshot and notifies nobody, and a hidden page does not poll', async () => {
+  const originalFetch = globalThis.fetch,
+    originalWindow = globalThis.window,
+    originalDocument = globalThis.document
+  let tick!: () => void
+  globalThis.window = {
+    setTimeout: (callback: () => void) => {
+      tick = callback
+      return 1
+    },
+    clearTimeout: () => {},
+  } as unknown as Window & typeof globalThis
+  let reads = 0,
+    speed = 10
+  globalThis.fetch = (async () => {
+    reads += 1
+    return Response.json({ ok: true, downloads: { 't:record': { record_id: 't:record', speed } } })
+  }) as typeof fetch
+  let notified = 0
+  const unsubscribe = subscribeDownloads(() => {
+    notified += 1
+  })
+  try {
+    await refreshDownloads()
+    const first = getDownloadSnapshot()
+    assert.equal(notified, 1)
+    await refreshDownloads()
+    assert.equal(notified, 1, 'A repeated answer renders nothing')
+    assert.equal(getDownloadSnapshot(), first, 'The snapshot object is kept while nothing changed')
+    speed = 20
+    await refreshDownloads()
+    assert.equal(notified, 2)
+    assert.notEqual(getDownloadSnapshot(), first)
+
+    await new Promise(resolve => setImmediate(resolve))
+    const before = reads
+    globalThis.document = { hidden: true } as unknown as Document
+    tick()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(reads, before, 'A hidden page keeps its timer but reads nothing')
+    globalThis.document = { hidden: false } as unknown as Document
+    tick()
+    await refreshDownloads()
+    assert.equal(reads, before + 1, 'Polling resumes once the page is shown')
+  } finally {
+    unsubscribe()
+    globalThis.fetch = originalFetch
+    globalThis.window = originalWindow
+    globalThis.document = originalDocument
     invalidateDownloadProgress()
   }
 })

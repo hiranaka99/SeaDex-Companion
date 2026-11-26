@@ -5,10 +5,10 @@ import { beginScan, endScan, getState, setNormalizedResults, setState } from './
 import { scanRequests } from './http.js'
 import { log, timestamp } from './logging.js'
 import { HISTORY_FILE } from './paths.js'
-import { loadCache, loadLastResults, saveLastResults } from './results.js'
+import { flushCache, loadCache, loadLastResults, saveLastResults } from './results.js'
 import { normalizeResults } from './result-model.js'
 import { loadUserRules, libraryItemKey, seasonMappingKey, applyUserRulesToResults } from './user-rules.js'
-import { matchPreviousResult, recordScanHistory } from './history.js'
+import { previousResultMatcher, recordScanHistory } from './history.js'
 import { seadexBest } from './catalog.js'
 import { loadLocalLibrary, arrItemUrl, isScopedScan, scopeIds, type LibraryLoad } from './library.js'
 import { anilistChain, anilistSeason } from './anilist.js'
@@ -367,12 +367,14 @@ async function performScan(
     stage = 'sending notifications'
     if (!Object.keys(sourceErrors).length) {
       const regressions: Record<string, string> = {}
-      if (!settingsChanged)
+      if (!settingsChanged) {
+        const previousOf = previousResultMatcher(previousResults)
         for (const result of finalResults) {
-          const old = matchPreviousResult(previousResults, result) as ResultItem | null
+          const old = previousOf(result)
           const regression = old ? describeRegression(old, result) : null
           if (regression) regressions[result.key] = regression.description
         }
+      }
       try {
         await dependencies.autoNotifyNew(config, { previous: previousResults, regressions })
       } catch (error) {
@@ -427,6 +429,12 @@ async function performScan(
       }
     }
   } finally {
+    try {
+      // Metadata fetched by this scan is kept however the scan ended.
+      flushCache()
+    } catch (error) {
+      log('WARNING', `AniList cache could not be saved: ${errorMessage(error)}`)
+    }
     endScan(controller)
     setState({ running: false })
   }

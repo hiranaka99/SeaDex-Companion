@@ -3,15 +3,19 @@ import { scryptSync } from 'node:crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { request as httpRequest } from 'node:http'
+import { createServer as createHttpServer, request as httpRequest } from 'node:http'
 import { once } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, test } from 'node:test'
+import { sendJson } from '../server/http-response.js'
 
 let child: ChildProcessWithoutNullStreams
 let baseUrl = ''
 let dataDir = ''
+/** Large and repetitive enough to be worth compressing. */
+const SCRIPT = "console.log('SeaDex Companion');\n".repeat(200)
+const FONT = Buffer.alloc(4096, 'font-table-data ')
 
 async function availablePort(): Promise<number> {
   const server = createServer()
@@ -42,6 +46,10 @@ before(async () => {
   const staticDir = join(dataDir, 'static')
   mkdirSync(staticDir)
   writeFileSync(join(staticDir, 'index.html'), '<!doctype html><title>Test</title>')
+  mkdirSync(join(staticDir, 'assets'))
+  mkdirSync(join(staticDir, 'fonts'))
+  writeFileSync(join(staticDir, 'assets', 'app-0a1b2c3d.js'), SCRIPT)
+  writeFileSync(join(staticDir, 'fonts', 'text.ttf'), FONT)
   writeFileSync(
     join(dataDir, 'auth-artwork.json'),
     JSON.stringify({
@@ -400,5 +408,74 @@ test('malformed request targets return 400 without terminating the server', asyn
     assert.equal(status, 400)
     assert.equal((await fetch(baseUrl + '/healthz')).status, 200)
     assert.equal(child.exitCode, null)
+  }
+})
+
+test('built files are compressed, and unchanged ones are not downloaded again', async () => {
+  const script = await fetch(`${baseUrl}/assets/app-0a1b2c3d.js`, { headers: { 'Accept-Encoding': 'br, gzip' } })
+  assert.equal(script.headers.get('content-encoding'), 'br')
+  assert.match(script.headers.get('cache-control') || '', /immutable/)
+  assert.equal(script.headers.get('vary'), 'Accept-Encoding')
+  assert.ok(Number(script.headers.get('content-length')) < SCRIPT.length / 4, 'The compressed script is far smaller')
+  assert.equal(await script.text(), SCRIPT)
+  const gzipped = await fetch(`${baseUrl}/assets/app-0a1b2c3d.js`, { headers: { 'Accept-Encoding': 'gzip, br;q=0' } })
+  assert.equal(gzipped.headers.get('content-encoding'), 'gzip')
+  assert.equal(await gzipped.text(), SCRIPT)
+  const plain = await fetch(`${baseUrl}/assets/app-0a1b2c3d.js`, { headers: { 'Accept-Encoding': 'identity' } })
+  assert.equal(plain.headers.get('content-encoding'), null)
+  assert.equal(plain.headers.get('content-length'), String(SCRIPT.length))
+  assert.equal(await plain.text(), SCRIPT)
+
+  const font = await fetch(`${baseUrl}/fonts/text.ttf`, { headers: { 'Accept-Encoding': 'br' } })
+  assert.equal(font.headers.get('content-type'), 'font/ttf')
+  assert.equal(font.headers.get('content-encoding'), 'br')
+  assert.equal(font.headers.get('cache-control'), 'no-cache', 'Files that keep their name are checked on every load')
+  assert.deepEqual(Buffer.from(await font.arrayBuffer()), FONT)
+  const tag = font.headers.get('etag')
+  assert.ok(tag)
+  const unchanged = await fetch(`${baseUrl}/fonts/text.ttf`, { headers: { 'If-None-Match': tag } })
+  assert.equal(unchanged.status, 304)
+  assert.equal(unchanged.headers.get('x-content-type-options'), 'nosniff')
+  assert.equal((await unchanged.arrayBuffer()).byteLength, 0)
+  writeFileSync(join(dataDir, 'static', 'fonts', 'text.ttf'), Buffer.alloc(5000, 'new-font-table '))
+  const replaced = await fetch(`${baseUrl}/fonts/text.ttf`, { headers: { 'If-None-Match': tag } })
+  assert.equal(replaced.status, 200, 'A replaced file is downloaded even by a browser holding the old one')
+  assert.equal((await replaced.arrayBuffer()).byteLength, 5000)
+
+  const page = await fetch(`${baseUrl}/`, { headers: { 'Accept-Encoding': 'br' } })
+  assert.equal(page.headers.get('content-encoding'), null, 'A tiny file is sent as it is')
+  assert.equal(page.headers.get('cache-control'), 'no-cache')
+  assert.equal((await fetch(`${baseUrl}/`, { headers: { 'If-None-Match': page.headers.get('etag')! } })).status, 304)
+})
+
+test('large JSON answers are compressed for browsers that accept it', async () => {
+  const large = { results: Array.from({ length: 200 }, (_, index) => ({ key: `Sonarr:${index}:1`, title: 'Anime' })) }
+  const server = createHttpServer((request, response) =>
+    sendJson(response, 200, request.url === '/large' ? large : { ok: true }, { 'X-Extra': 'kept' }),
+  )
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.ok(address && typeof address !== 'string')
+  const origin = `http://127.0.0.1:${address.port}`
+  try {
+    for (const encoding of ['br', 'gzip']) {
+      const response = await fetch(`${origin}/large`, { headers: { 'Accept-Encoding': encoding } })
+      assert.equal(response.headers.get('content-encoding'), encoding)
+      assert.equal(response.headers.get('vary'), 'Accept-Encoding')
+      assert.equal(response.headers.get('cache-control'), 'no-store')
+      assert.equal(response.headers.get('x-extra'), 'kept')
+      assert.deepEqual(await response.json(), large)
+    }
+    const plain = await fetch(`${origin}/large`, { headers: { 'Accept-Encoding': 'identity' } })
+    assert.equal(plain.headers.get('content-encoding'), null)
+    assert.equal(plain.headers.get('content-length'), String(Buffer.byteLength(JSON.stringify(large))))
+    assert.deepEqual(await plain.json(), large)
+    const small = await fetch(`${origin}/small`, { headers: { 'Accept-Encoding': 'br, gzip' } })
+    assert.equal(small.headers.get('content-encoding'), null, 'A short answer is sent as it is')
+    assert.deepEqual(await small.json(), { ok: true })
+  } finally {
+    server.close()
+    await once(server, 'close')
   }
 })

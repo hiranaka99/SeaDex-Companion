@@ -1,5 +1,5 @@
 import { isRecord } from '../shared/guards.js'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { arrBaseUrl } from './arr-urls.js'
 import { DEFAULT_SCAN_SCHEDULE, normalizeScanSchedule } from './config-schedule.js'
 import {
@@ -10,7 +10,7 @@ import {
   type EncryptedSecretsPayload,
   type SecretValues,
 } from './config-secrets.js'
-import { CONFIG_FILE, ENCRYPTED_SECRETS_FILE } from './paths.js'
+import { CONFIG_FILE, ENCRYPTED_SECRETS_FILE, SECRETS_KEY_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
 import { log } from './logging.js'
 import { DEFAULT_DATETIME_FORMAT, isValidDateTimeFormat } from '../shared/datetime-format.js'
@@ -95,7 +95,31 @@ export function sabnzbdApiUrl(config: Config): string {
   return base ? `${base.replace(/\/api$/i, '')}/api` : ''
 }
 
+/** Identifies one version of a file on disk; empty when it does not exist. */
+function fileVersion(file: string): string {
+  try {
+    const stat = statSync(file)
+    return `${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * The configuration as last read, kept until the configuration, the encryption key or the legacy secrets
+ * file changes. The scheduler and most requests ask for it, and reading it means parsing and decrypting.
+ */
+let loadedConfig: { version: string; config: Config } | null = null
+
+/** The saved configuration. Every caller gets its own copy, so changing it never affects another reader. */
 export function loadConfig(): Config {
+  // Taken before reading, so a file replaced during the read is read again next time.
+  const version = [CONFIG_FILE, SECRETS_KEY_FILE, ENCRYPTED_SECRETS_FILE].map(fileVersion).join('|')
+  if (loadedConfig?.version !== version) loadedConfig = { version, config: readConfig() }
+  return structuredClone(loadedConfig.config)
+}
+
+function readConfig(): Config {
   const raw = readJson<unknown>(CONFIG_FILE, {}, 'Could not read config')
   const stored: Partial<Config> & {
     autocheck_minutes?: number
@@ -168,6 +192,7 @@ export function saveConfig(config: Config): void {
   const previous = readJson<JsonObject | null>(CONFIG_FILE, null)
   const mayCreateKey = !existsSync(ENCRYPTED_SECRETS_FILE) && !previous?._secrets
   stored._secrets = Object.keys(secrets).length ? encryptSecretValues(secrets, loadSecretKey(mayCreateKey)) : null
+  loadedConfig = null
   writeJsonAtomic(CONFIG_FILE, stored, true, 0o600)
 }
 

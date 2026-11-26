@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { localItems } from '../server/library.js'
+import { CACHE_FILE, CONFIG_FILE, SECRETS_KEY_FILE } from '../server/paths.js'
+import { flushCache, loadCache, saveCache } from '../server/results.js'
+import { resultItem } from './support/results.js'
 import { createAniListClient } from '../server/anilist-client.js'
 import { anilistChain, anilistSeason } from '../server/anilist.js'
 import { ANILIST_CACHE_TTL, loadAniListMedia } from '../server/anilist-metadata.js'
-import { DEFAULT_CONFIG } from '../server/config.js'
-import { buildScanHistoryEntry } from '../server/history.js'
+import { DEFAULT_CONFIG, loadConfig, saveConfig } from '../server/config.js'
+import { buildScanHistoryEntry, previousResultMatcher } from '../server/history.js'
 import { scanRequests } from '../server/http.js'
 import { createScanService, type ScanDependencies } from '../server/scan.js'
 import { getState, setState } from '../server/scan-state.js'
@@ -26,7 +31,7 @@ test('metadata batches deduplicate IDs, respect batch size, and preserve manual 
     batches: number[][] = []
   const dependencies = {
     batch: async (query: string, variables: JsonObject) => {
-      assert.match(query, /Page\(page:1,perPage:25\)/)
+      assert.match(query, /Page\(page:1,perPage:50\)/)
       assert.match(query, /media\(id_in:\$ids,type:ANIME\)/)
       batches.push(variables.ids)
       return [...variables.ids].reverse().map(id => media(id))
@@ -38,7 +43,7 @@ test('metadata batches deduplicate IDs, respect batch size, and preserve manual 
   const loaded = await loadAniListMedia([...ids, ...ids, 0, -1, NaN], cache, dependencies)
   assert.deepEqual(
     batches.map(batch => batch.length),
-    [25, 25, 10],
+    [50, 10],
   )
   assert.equal(loaded.size, 60)
   const season = await anilistSeason([3, 1, 2], cache, dependencies)
@@ -47,9 +52,9 @@ test('metadata batches deduplicate IDs, respect batch size, and preserve manual 
     season?.parts.map(part => part.title),
     ['Anime 3', 'Anime 1', 'Anime 2'],
   )
-  assert.equal(batches.length, 3, 'Manual matches reuse shared raw metadata')
+  assert.equal(batches.length, 2, 'Manual matches reuse shared raw metadata')
   await anilistChain('Saved metadata', JSON.parse(JSON.stringify(cache)), dependencies, 2)
-  assert.equal(batches.length, 3, 'Raw metadata survives cache reloads')
+  assert.equal(batches.length, 2, 'Raw metadata survives cache reloads')
 })
 
 test('overlapping chains and manual matches share metadata while retaining traversal order', async () => {
@@ -262,7 +267,7 @@ function scanFixture(overrides: ScanDependencies) {
   })
 }
 
-test('a 100-title scan refreshes metadata in four paced requests and reuses it on the next scan', async () => {
+test('a 100-title scan refreshes metadata in two paced requests and reuses it on the next scan', async () => {
   const before = getState(),
     cache: JsonObject = {},
     batches: number[][] = []
@@ -305,15 +310,15 @@ test('a 100-title scan refreshes metadata in four paced requests and reuses it o
     assert.ok(getState().results.every(result => result.match_status === 'matched'))
     assert.deepEqual(
       batches.map(batch => batch.length),
-      [25, 25, 25, 25],
+      [50, 50],
     )
-    assert.equal(clock - 1_000_000, 6300, 'Four requests retain three full 2.1-second pacing intervals')
+    assert.equal(clock - 1_000_000, 2100, 'Two requests retain one full 2.1-second pacing interval')
     await service.run(DEFAULT_CONFIG)
-    assert.equal(batches.length, 4, 'The warm scan needs no additional AniList requests')
+    assert.equal(batches.length, 2, 'The warm scan needs no additional AniList requests')
     clock += ANILIST_CACHE_TTL
     await service.run(DEFAULT_CONFIG)
     assert.equal(getState().error, null)
-    assert.equal(batches.length, 8, 'Daily expiry still refreshes all metadata')
+    assert.equal(batches.length, 4, 'Daily expiry still refreshes all metadata')
   } finally {
     setState(before)
   }
@@ -615,5 +620,120 @@ test('scan history records torrent replacements once and ignores private-tracker
     assert.deepEqual(history[5].changes, [], 'Reloading the saved baseline must not repeat the replacement')
   } finally {
     setState(before)
+  }
+})
+
+test('a scan end matches every result to its earlier one from a single index', () => {
+  const results = Array.from({ length: 3000 }, (_, index) =>
+    resultItem({
+      key: `Sonarr:${index}:1:Group`,
+      library_key: `Sonarr:item${index}`,
+      arr: 'Sonarr',
+      title: `Anime ${index}`,
+      season: 1,
+    }),
+  )
+  const started = performance.now()
+  const previousOf = previousResultMatcher(results)
+  const matched = results.filter(result => previousOf(result) === result).length
+  assert.equal(matched, results.length)
+  assert.equal(previousOf(resultItem({ arr: 'Radarr', title: 'Unknown', season: 0 })), null)
+  // Rebuilding the index for each result took seconds at this size.
+  assert.ok(performance.now() - started < 1000, 'Matching a large library must not be quadratic')
+})
+
+test('AniList metadata is written when a scan ends instead of after every title', async () => {
+  const saved = existsSync(CACHE_FILE) ? readFileSync(CACHE_FILE) : null
+  const before = getState()
+  try {
+    rmSync(CACHE_FILE, { force: true })
+    const cache: JsonObject = {}
+    for (let id = 1; id <= 100; id++) {
+      cache[`media:v1:${id}`] = { media: media(id), fetched_at: 1 }
+      saveCache(cache)
+    }
+    assert.equal(existsSync(CACHE_FILE), false, 'Saving marks the cache without rewriting the file')
+    assert.equal(flushCache(), true)
+    assert.equal(Object.keys(loadCache()).length, 100)
+    assert.equal(flushCache(), false, 'Nothing is written again until the metadata changes')
+
+    rmSync(CACHE_FILE, { force: true })
+    const scanned: JsonObject = { 'lookup:v3:Anime': { id: 1 } }
+    const service = scanFixture({
+      localItems: async () => [{ arr: 'Sonarr', id: 1, title: 'Anime', seasons: { 1: { groups: [], size: 0 } } }],
+      loadCache: () => scanned,
+      // The default persistence is used, so the cache is saved the way a real scan saves it.
+      anilistChain: (title, cached, dependencies, id, options) =>
+        anilistChain(title, cached, { ...dependencies, batch: async () => [media(1)] }, id, options),
+    })
+    setState({ results: [], error: null })
+    await service.run(DEFAULT_CONFIG)
+    assert.equal(getState().error, null)
+    assert.ok(loadCache()['chain:v8:1'], 'The finished scan left its metadata on disk')
+  } finally {
+    flushCache()
+    if (saved) writeFileSync(CACHE_FILE, saved)
+    else rmSync(CACHE_FILE, { force: true })
+    setState(before)
+  }
+})
+
+test('Sonarr series are read four at a time and keep the library order', async () => {
+  const originalFetch = globalThis.fetch
+  let active = 0,
+    peak = 0
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = new URL(String(input))
+    if (url.pathname === '/api') return Response.json({ current: 'v3' })
+    if (url.pathname.endsWith('/series'))
+      return Response.json(
+        Array.from({ length: 12 }, (_, index) => ({
+          id: index + 1,
+          title: `Show ${index + 1}`,
+          titleSlug: `show-${index + 1}`,
+          seasons: [{ seasonNumber: 1, statistics: {} }],
+        })),
+      )
+    if (!url.pathname.endsWith('/episode')) return Response.json([])
+    active += 1
+    peak = Math.max(peak, active)
+    // Later series answer first, so the order of the result cannot come from the order of the answers.
+    await new Promise(resolve => setTimeout(resolve, Number(url.searchParams.get('seriesId')) % 4 === 1 ? 20 : 2))
+    active -= 1
+    return Response.json([{ seasonNumber: 1, episodeNumber: 1, episodeFileId: 0, airDate: '2024-01-05T09:00:00Z' }])
+  }) as typeof fetch
+  try {
+    const items = await localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key' })
+    assert.deepEqual(
+      items.map(item => item.id),
+      Array.from({ length: 12 }, (_, index) => index + 1),
+    )
+    assert.equal(peak, 4)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('the configuration is read once per file version and every reader gets its own copy', () => {
+  const files = [CONFIG_FILE, SECRETS_KEY_FILE]
+  const saved = files.map(file => (existsSync(file) ? readFileSync(file) : null))
+  try {
+    saveConfig({ ...DEFAULT_CONFIG, sonarr_url: 'http://first', sonarr_key: 'secret', hidden: ['a'] })
+    const first = loadConfig()
+    assert.equal(first.sonarr_key, 'secret')
+    first.hidden.push('changed by a caller')
+    first.sonarr_scope.include_tags.push('changed by a caller')
+    assert.deepEqual(loadConfig().hidden, ['a'], 'One reader cannot change what another reads')
+    assert.deepEqual(loadConfig().sonarr_scope.include_tags, [])
+    saveConfig({ ...loadConfig(), sonarr_url: 'http://second' })
+    assert.equal(loadConfig().sonarr_url, 'http://second', 'A saved change is read at once')
+    writeFileSync(CONFIG_FILE, JSON.stringify({ sonarr_url: 'http://edited-by-hand' }))
+    assert.equal(loadConfig().sonarr_url, 'http://edited-by-hand', 'A file changed outside the app is read again')
+  } finally {
+    files.forEach((file, index) => {
+      const data = saved[index]
+      if (data) writeFileSync(file, data)
+      else rmSync(file, { force: true })
+    })
   }
 })
