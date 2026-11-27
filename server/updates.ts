@@ -30,6 +30,7 @@ import {
   type RuntimeIdentity,
 } from './runtime-identity.js'
 import { unpackTarGz } from './tar.js'
+import type { JsonObject } from './types.js'
 import { errorMessage } from '../shared/errors.js'
 import type { UpdateInfo, UpdateInstallMode, UpdateStatus } from '../shared/update-contracts.js'
 
@@ -143,9 +144,9 @@ async function download(url: string, maxBytes: number, timeout: number): Promise
 
 async function checkRelease(): Promise<{ check: ReleaseCheck; ttl: number }> {
   const none: ReleaseCheck = { latest: null, url: null, install: null, manifest: null, assets: [] }
-  let release: any
+  let release: JsonObject | null
   try {
-    release = await api(GITHUB_RELEASES_URL)
+    release = (await api(GITHUB_RELEASES_URL)) as JsonObject | null
   } catch {
     /* GitHub unreachable or rate limited; keep reporting up to date. */
     return { check: none, ttl: UPDATE_CHECK_RETRY_TTL }
@@ -153,8 +154,11 @@ async function checkRelease(): Promise<{ check: ReleaseCheck; ttl: number }> {
   const tag = String(release?.tag_name || '').replace(/^v/, '')
   if (!tag || !VERSION_PATTERN.test(tag) || compareVersions(tag, APP_VERSION) <= 0)
     return { check: none, ttl: UPDATE_CHECK_TTL }
-  const assets: ReleaseAsset[] = (Array.isArray(release.assets) ? release.assets : [])
-    .map((asset: any) => ({ name: String(asset?.name || ''), url: String(asset?.browser_download_url || '') }))
+  const assets: ReleaseAsset[] = (Array.isArray(release?.assets) ? release.assets : [])
+    .map((asset: JsonObject | null) => ({
+      name: String(asset?.name || ''),
+      url: String(asset?.browser_download_url || ''),
+    }))
     .filter((asset: ReleaseAsset) => asset.name && asset.url)
   const manifestAsset = assets.find(asset => asset.name === UPDATE_MANIFEST_ASSET)
   let manifest: unknown = null
@@ -170,7 +174,7 @@ async function checkRelease(): Promise<{ check: ReleaseCheck; ttl: number }> {
   return {
     check: {
       latest: tag,
-      url: String(release.html_url || RELEASES_URL),
+      url: String(release?.html_url || RELEASES_URL),
       install,
       manifest: install.mode === 'in_app' ? (manifest as UpdateManifest) : null,
       assets,

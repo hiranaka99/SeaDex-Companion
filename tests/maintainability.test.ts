@@ -261,7 +261,7 @@ test('metadata loading does not block status reads or controls for another torre
     entered = resolve
   })
   const controls: string[] = []
-  globalThis.fetch = (async (input, init) => {
+  globalThis.fetch = async (input, init) => {
     const url = new URL(String(input))
     if (url.pathname.endsWith('/auth/login')) return new Response('Ok.', { headers: { 'Set-Cookie': 'SID=test' } })
     if (url.pathname.endsWith('/torrents/files')) {
@@ -273,7 +273,7 @@ test('metadata loading does not block status reads or controls for another torre
       return Response.json(url.searchParams.has('hashes') ? [] : [{ hash: b }])
     if (url.pathname.endsWith('/torrents/stop')) controls.push(new URLSearchParams(String(init?.body)).get('hashes')!)
     return new Response('Ok.')
-  }) as typeof fetch
+  }
   const config = {
     ...DEFAULT_CONFIG,
     qbittorrent_url: 'http://metadata.test',

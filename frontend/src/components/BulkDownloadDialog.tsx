@@ -345,11 +345,7 @@ export default function BulkDownloadDialog({
                   className="touch-target cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 rounded-full border border-accent/50 bg-accent/12 px-3 py-1.5 font-extrabold text-accent-bright transition-colors hover:bg-accent/20"
                   disabled={locked || !review.ready.length}
                   title="Use qBittorrent for every eligible group"
-                  onClick={() =>
-                    setProtocols(
-                      Object.fromEntries(review.ready.map(group => [group.id, 'torrent' as DownloadProtocol])),
-                    )
-                  }
+                  onClick={() => setProtocols(Object.fromEntries(review.ready.map(group => [group.id, 'torrent'])))}
                 >
                   All torrents
                 </button>

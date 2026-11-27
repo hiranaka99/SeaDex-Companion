@@ -40,7 +40,7 @@ export function normalizeScanSchedule(value: unknown, legacyMinutes?: number): C
   const weekdays = rawWeekdays
     .map(Number)
     .filter(day => Number.isInteger(day) && day >= 0 && day <= 6)
-    .sort()
+    .sort((left, right) => left - right)
   if (
     requestedEnabled &&
     mode === 'weekly' &&

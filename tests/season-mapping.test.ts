@@ -20,7 +20,7 @@ import { resetRuntimeForTests } from './support/runtime.js'
 import { createScanService } from '../server/scan.js'
 import { resetWebhookScanState } from '../server/scheduler.js'
 import { upgradeParts } from '../shared/download-plan.js'
-import { JsonObject, ReleaseCandidate } from '../server/types.js'
+import type { JsonObject, LocalItem, ReleaseCandidate, SeaDexEntry } from '../server/types.js'
 
 function node(
   id: number,
@@ -60,7 +60,7 @@ function release(group: string, count: number, best = false, hashCharacter = 'a'
   }
 }
 
-function seadexEntry(alid: number, candidate: ReleaseCandidate, bucket = 0): JsonObject {
+function seadexEntry(alid: number, candidate: ReleaseCandidate, bucket = 0): SeaDexEntry {
   return { url: `https://seadex.moe/${alid}/`, notes: '-', seasons: { [bucket]: { candidates: [candidate] } } }
 }
 
@@ -70,9 +70,9 @@ async function makeChain(nodes: Map<number, JsonObject>) {
     'Test Series',
     {},
     {
-      lookup: (async () => ({ id: baseId, cover: `cover-${baseId}`, banner: `banner-${baseId}` })) as any,
-      media: (async (_query: string, variables: JsonObject) => nodes.get(variables.id) || {}) as any,
-      persist: (() => undefined) as any,
+      lookup: async () => ({ id: baseId, cover: `cover-${baseId}`, banner: `banner-${baseId}` }),
+      media: async (_query: string, variables: JsonObject) => nodes.get(variables.id) || {},
+      persist: () => undefined,
     },
   )
 }
@@ -384,19 +384,19 @@ describe('release selection and combined cours', () => {
     })
     let calls = 0
     const scan = createScanService({
-      seadexBest: (async () => new Map()) as any,
-      localItems: (async () => [
+      seadexBest: async () => new Map(),
+      localItems: async () => [
         { arr: 'Sonarr', id: 1, title: 'First', seasons: { 1: { groups: ['A'], size: 100 } } },
         { arr: 'Sonarr', id: 2, title: 'Second', seasons: { 1: { groups: ['B'], size: 200 } } },
-      ]) as any,
-      anilistChain: (async () => {
+      ],
+      anilistChain: async () => {
         calls += 1
         if (calls === 2) {
           secondItemStarted()
           await secondItemCanFinish
         }
         return []
-      }) as any,
+      },
       loadCache: () => ({}),
       saveLastResults: () => undefined,
       autoNotifyNew: async () => 0,
@@ -427,10 +427,10 @@ describe('release selection and combined cours', () => {
     )
     const previous = getState().results
     await createScanService({
-      seadexBest: (async () => new Map()) as any,
-      localItems: (async () => {
+      seadexBest: async () => new Map(),
+      localItems: async () => {
         throw new Error('Sonarr unavailable')
-      }) as any,
+      },
       loadCache: () => ({}),
       saveLastResults: () => assert.fail('failed scans must not be saved'),
       autoNotifyNew: async () => 0,
@@ -485,11 +485,11 @@ describe('release selection and combined cours', () => {
   test('preserves results from an unavailable integration', async () => {
     setState({ results: [{ key: 'radarr-old', library_key: 'Radarr:item1', title: 'Movie', arr: 'Radarr' }] })
     const originalFetch = globalThis.fetch
-    globalThis.fetch = (async (input: string | URL | Request) => {
+    globalThis.fetch = async (input: string | URL | Request) => {
       if (String(input).includes('radarr')) return new Response('offline', { status: 503 })
       if (String(input).endsWith('/api')) return Response.json({ current: 'v3', deprecated: [] })
       return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }) as typeof fetch
+    }
     try {
       await createScanService({
         seadexBest: async () => new Map(),
@@ -584,7 +584,7 @@ describe('release selection and combined cours', () => {
     const [best, alternatives] = pickBest([ttga, yurasuka], 13)
     assert.equal(best?.releaseGroup, 'TTGA')
     assert.deepEqual(
-      orderedPartReleases(best!, alternatives).map(([kind, item]) => [kind, item.releaseGroup]),
+      orderedPartReleases(best, alternatives).map(([kind, item]) => [kind, item.releaseGroup]),
       [
         ['best', 'TTGA'],
         ['alt', 'YURASUKA'],
@@ -779,11 +779,15 @@ describe('release selection and combined cours', () => {
   })
 })
 
-async function scanWith(best: Map<number, JsonObject>, chain: JsonObject[], items: JsonObject[]): Promise<void> {
+async function scanWith(
+  best: Map<number, SeaDexEntry>,
+  chain: Awaited<ReturnType<typeof anilistChain>>,
+  items: LocalItem[],
+): Promise<void> {
   await createScanService({
-    seadexBest: (async () => best) as any,
-    localItems: (async () => items) as any,
-    anilistChain: (async () => chain) as any,
+    seadexBest: async () => best,
+    localItems: async () => items,
+    anilistChain: async () => chain,
     loadCache: () => ({}),
     saveLastResults: () => undefined,
     autoNotifyNew: async () => 0,
@@ -794,7 +798,7 @@ describe('update checking', () => {
   test('reports a newer GitHub release and caches the result', async () => {
     const originalFetch = globalThis.fetch
     let calls = 0
-    globalThis.fetch = (async () => {
+    globalThis.fetch = async () => {
       calls += 1
       return new Response(
         JSON.stringify({
@@ -803,7 +807,7 @@ describe('update checking', () => {
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       )
-    }) as typeof fetch
+    }
     try {
       resetUpdateCheck()
       const first = await checkForUpdates()
@@ -822,18 +826,18 @@ describe('update checking', () => {
     const originalFetch = globalThis.fetch
     try {
       resetUpdateCheck()
-      globalThis.fetch = (async () =>
+      globalThis.fetch = async () =>
         new Response(
           JSON.stringify({
             tag_name: 'v1.0.0',
             html_url: 'https://github.com/hiranaka99/SeaDex-Companion/releases/tag/v1.0.0',
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
-        )) as typeof fetch
+        )
       assert.equal((await checkForUpdates()).latest, null)
 
       resetUpdateCheck()
-      globalThis.fetch = (async () => new Response('unavailable', { status: 503 })) as typeof fetch
+      globalThis.fetch = async () => new Response('unavailable', { status: 503 })
       assert.equal((await checkForUpdates()).latest, null)
     } finally {
       globalThis.fetch = originalFetch

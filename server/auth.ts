@@ -357,7 +357,10 @@ export function logout(request: IncomingMessage): void {
 function requestIsSecure(request: IncomingMessage): boolean {
   const forwarded = request.headers['x-forwarded-proto']
   const protocol = Array.isArray(forwarded) ? forwarded[0] : forwarded
-  return protocol?.split(',')[0]?.trim().toLowerCase() === 'https' || Boolean((request.socket as any).encrypted)
+  return (
+    protocol?.split(',')[0]?.trim().toLowerCase() === 'https' ||
+    Boolean((request.socket as { encrypted?: boolean }).encrypted)
+  )
 }
 
 export function sessionCookie(request: IncomingMessage, token: string): string {

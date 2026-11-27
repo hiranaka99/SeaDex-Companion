@@ -67,6 +67,8 @@ function jumpToDetails(id: string) {
     target.focus({ preventScroll: true })
     // A short tint marks where the jump landed, then fades instead of leaving a focus ring around the section.
     target.classList.remove('details-landing')
+    // Reading offsetWidth forces a reflow so the animation restarts when the class is added again.
+    // oxlint-disable-next-line typescript/no-meaningless-void-operator -- the read is the side effect.
     void target.offsetWidth
     target.classList.add('details-landing')
     target.addEventListener('animationend', () => target.classList.remove('details-landing'), { once: true })

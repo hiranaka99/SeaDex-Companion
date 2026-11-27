@@ -157,7 +157,9 @@ export async function syncArrTags(config: Config, input: TagSyncInput): Promise<
 
 /** Removes every configured status tag from every title, for people who turn the feature off. */
 export async function removeArrTags(config: Config): Promise<{ removed: number; errors: Record<string, string> }> {
-  const labels = (Object.values(TAG_SETTINGS) as ArrTagKey[]).map(key => config[key]).filter(Boolean)
+  const labels = Object.values<ArrTagKey>(TAG_SETTINGS)
+    .map(key => config[key])
+    .filter(Boolean)
   const errors: Record<string, string> = {}
   let removed = 0
   for (const instance of configuredArrInstances(config)) {

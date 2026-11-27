@@ -9,8 +9,8 @@ import {
 } from './download-store'
 import * as api from './api'
 import { releaseIdentity } from '../../shared/releases'
-import type { Release, ResultItem } from './types'
-import type { GroupedCard } from './types'
+import type { Release, ResultItem, GroupedCard } from './types'
+
 import type { DownloadEntry } from './components/DownloadsPanel'
 import { toDownloadEntry, clientName, importUnsettled } from './components/DownloadsPanel'
 import { formatBytes, seasonLabel } from './utils'

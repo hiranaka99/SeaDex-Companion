@@ -191,7 +191,7 @@ function install(state: FakeState): () => void {
   purgeTestDataDir()
   // Requests to the fake indexers need no spacing.
   searchScheduler.options.minIntervalMs = 0
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     state.calls.push(`${init?.method || 'GET'} ${url.href}`)
     if (url.origin === PROWLARR) {
@@ -282,7 +282,7 @@ function install(state: FakeState): () => void {
       if (mode === 'history') return Response.json({ history: { slots: [] } })
     }
     throw new Error(`unexpected request: ${url.href}`)
-  }) as typeof fetch
+  }
   return () => {
     globalThis.fetch = original
     Object.assign(searchScheduler.options, pacing)
@@ -794,10 +794,10 @@ test('a public release with no NZB names the hash indexers that were asked, neve
   const original = globalThis.fetch
   const asked: string[] = []
   resetUsenetLookups()
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = async (input: RequestInfo | URL) => {
     asked.push(String(input))
     return new Response('not found', { status: 404 })
-  }) as typeof fetch
+  }
   try {
     const state = await resolveUsenetHash(prowlarrConfig({ download_mode: 'usenet_only' }), 'c'.repeat(40))
     assert.equal(state.state, 'no_match')
@@ -828,10 +828,8 @@ test('a public release the hash indexers lack can be searched on Prowlarr and se
   const restore = install(state)
   const routed = globalThis.fetch
   // AnimeTosho has no entry for the hash.
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
-    String(input).includes('animetosho')
-      ? new Response('missing', { status: 404 })
-      : routed(input, init)) as typeof fetch
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) =>
+    String(input).includes('animetosho') ? new Response('missing', { status: 404 }) : routed(input, init)
   try {
     // Public releases are searchable even in public-tracker mode.
     const config = prowlarrConfig({ download_mode: 'usenet_only', tracker_mode: 'public' })
@@ -918,11 +916,11 @@ test('Usenet searches ask each Usenet indexer by title and by release group, and
   }
   const restore = install(state)
   const routed = globalThis.fetch
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     if (url.pathname === '/2/api') queries.push(url.searchParams)
     return routed(input, init)
-  }) as typeof fetch
+  }
   try {
     const config = prowlarrConfig({ download_mode: 'usenet_only' })
     const results = privateResults({ releaseGroup: '-ZR-' })

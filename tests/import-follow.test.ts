@@ -376,10 +376,10 @@ test('import problems are only sent when that notification is enabled', async ()
 
   const original = globalThis.fetch
   const sent: { content: string; embeds: { fields: { name: string; value: string }[] }[] }[] = []
-  globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
     sent.push(JSON.parse(String(init?.body)))
     return new Response(null, { status: 204 })
-  }) as typeof fetch
+  }
   try {
     assert.equal(await sendImportProblem(config, state.problems[0]), true)
     assert.equal(sent[0].content, 'Show (S01) — A finished download was not imported by Sonarr')
@@ -397,12 +397,12 @@ test('download progress reports the import state with the name of the instance',
   const original = globalThis.fetch
   resetQbRuntime()
   let torrentState = { hash: 'c'.repeat(40), state: 'downloading', progress: 0.4, size: 1000 }
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = async (input: RequestInfo | URL) => {
     const url = new URL(String(input))
     if (url.pathname.endsWith('/auth/login')) return new Response('Ok.', { headers: { 'Set-Cookie': 'SID=test' } })
     if (url.pathname.endsWith('/torrents/info')) return Response.json([torrentState])
     return new Response('Ok.')
-  }) as typeof fetch
+  }
   try {
     const download = record({
       source_hash: 'c'.repeat(40),
@@ -504,7 +504,7 @@ function finder(t: TestContext): { fetched: string[] } {
   forgetSearches()
   searchScheduler.options.minIntervalMs = 0
   const fetched: string[] = []
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = async (input: RequestInfo | URL) => {
     const url = new URL(String(input))
     if (url.origin !== PROWLARR) return new Response('not found', { status: 404 })
     if (url.pathname === '/api/v1/indexer')
@@ -516,7 +516,7 @@ function finder(t: TestContext): { fetched: string[] } {
       return new Response(nzbOf(link === 'second'))
     }
     throw new Error(`unexpected request: ${url.pathname}`)
-  }) as typeof fetch
+  }
   t.after(() => {
     globalThis.fetch = original
     Object.assign(searchScheduler.options, pacing)
@@ -623,10 +623,10 @@ test('a near-exact download whose import shows a size mismatch rejects its candi
 
   const original = globalThis.fetch
   const sent: { content: string; embeds: { fields: { name: string; value: string }[] }[] }[] = []
-  globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
     sent.push(JSON.parse(String(init?.body)))
     return new Response(null, { status: 204 })
-  }) as typeof fetch
+  }
   try {
     assert.equal(await sendImportProblem(config, state.problems[0]), true)
   } finally {

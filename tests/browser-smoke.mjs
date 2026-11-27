@@ -411,7 +411,7 @@ const jobUnit = unit => ({
 })
 const saved = []
 const errors = []
-const server = createServer(async (req, res) => {
+async function handleRequest(req, res) {
   const path = new URL(req.url, 'http://localhost').pathname
   if (path.startsWith('/api/')) {
     res.setHeader('Content-Type', 'application/json')
@@ -818,7 +818,8 @@ const server = createServer(async (req, res) => {
     }[extname(file)] || 'application/octet-stream',
   )
   res.end(readFileSync(file))
-})
+}
+const server = createServer((req, res) => void handleRequest(req, res))
 server.listen(0, '127.0.0.1')
 await once(server, 'listening')
 const base = `http://127.0.0.1:${server.address().port}`

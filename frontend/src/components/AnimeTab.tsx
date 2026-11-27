@@ -9,8 +9,9 @@ import {
   useState,
   useSyncExternalStore,
   type ReactNode,
+  Fragment,
 } from 'react'
-import { ResultItem, Config, Release, Status, GroupedCard, CardStatus, LibraryFilterRequest } from '../types'
+import { ResultItem, Config, Release, Status, GroupedCard, LibraryFilterRequest } from '../types'
 import {
   groupResults,
   seasonLabel,
@@ -22,7 +23,7 @@ import {
   prowlarrReady,
   findsPrivateTorrent,
 } from '../utils'
-import { Fragment } from 'react'
+
 import { displayDateTime, displayTimeAgo } from '../datetime'
 import Card from './Card'
 import BulkDownloadDialog from './BulkDownloadDialog'
@@ -1027,9 +1028,9 @@ export default function AnimeTab({
                 {sectionLabels && (index === 0 || visibleGroups[index - 1].status !== group.status) && (
                   <h2 className="library-section-label" data-status={group.status}>
                     <Icon
-                      name={STATUS_PRESENTATION[group.status as CardStatus].icon}
+                      name={STATUS_PRESENTATION[group.status].icon}
                       size={15}
-                      className={cx('shrink-0', STATUS_PRESENTATION[group.status as CardStatus].tone)}
+                      className={cx('shrink-0', STATUS_PRESENTATION[group.status].tone)}
                     />
                     {STATUS_LABEL[group.status]}
                     <span>{statusTotals[group.status]}</span>

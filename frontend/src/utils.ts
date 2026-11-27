@@ -1,5 +1,5 @@
-import { baseGroupKey, resultGroupKey } from '../../shared/ids.js'
-import { seasonTag } from '../../shared/ids.js'
+import { baseGroupKey, resultGroupKey, seasonTag } from '../../shared/ids.js'
+
 import { isSeasonUpgradable, upgradeParts } from '../../shared/download-plan.js'
 import { estimateDownloads } from '../../shared/download-estimate.js'
 import { DEFAULT_TRACKER_MODE } from '../../shared/settings.js'

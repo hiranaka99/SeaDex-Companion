@@ -60,7 +60,7 @@ function config(overrides: Partial<Config> = {}): Config {
     animetosho_enabled: false,
     amenzb_enabled: false,
     ...overrides,
-  } as Config
+  }
 }
 
 function show(tag: string): PrivateSource {
@@ -175,7 +175,7 @@ function setup(t: TestContext, overrides: Partial<Fake> = {}): Fake {
     tosho: () => new Response('nope', { status: 404 }),
     ...overrides,
   }
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     fake.calls.push(url)
     if (url.origin === 'https://feed.animetosho.net') return fake.tosho(url.searchParams.get('hash') ?? '')
@@ -188,7 +188,7 @@ function setup(t: TestContext, overrides: Partial<Fake> = {}): Fake {
       return feed(Number(search[1]), url.searchParams.get('q') ?? '', fake.found)
     }
     throw new Error(`unexpected request: ${url.pathname}`)
-  }) as typeof fetch
+  }
   t.after(() => {
     globalThis.fetch = original
     searchScheduler.options.minIntervalMs = pacing.search
@@ -248,7 +248,7 @@ test('the sweep searches eligible sources in priority order after the hash looku
   const missing = privateRow('Missing', 'missing')
   const fallback = publicRow('Fallback', 'partial')
   // The same private release listed twice is searched once.
-  const duplicate = { ...privateRow('Upgrade', 'upgrade'), key: 'upgrade-again' } as ResultItem
+  const duplicate = { ...privateRow('Upgrade', 'upgrade'), key: 'upgrade-again' }
   const tags = ['Owned', 'Upgrade', 'Missing', 'Fallback']
   prefetchUsenetAvailability(
     config({ animetosho_enabled: true }),

@@ -57,7 +57,7 @@ export function ScheduleEditor({
   const toggleWeekday = (day: number) => {
     const weekdays = schedule.weekdays.includes(day)
       ? schedule.weekdays.filter(value => value !== day)
-      : [...schedule.weekdays, day].sort()
+      : [...schedule.weekdays, day].sort((left, right) => left - right)
     onChange({ weekdays })
   }
   const updateTime = (index: number, value: string) =>

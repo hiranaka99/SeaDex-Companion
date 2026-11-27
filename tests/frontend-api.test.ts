@@ -21,10 +21,10 @@ import {
 test('progress probes share a request but cannot reuse a stale request after results change', async () => {
   const original = globalThis.fetch
   const replies: Array<(response: Response) => void> = []
-  globalThis.fetch = (async () =>
+  globalThis.fetch = async () =>
     new Promise<Response>(resolve => {
       replies.push(resolve)
-    })) as typeof fetch
+    })
   try {
     invalidateDownloadProgress()
     const first = getAllDownloadProgress()
@@ -59,12 +59,12 @@ test('download-store subscribers share polling and unsubscribe independently', a
   } as unknown as Window & typeof globalThis
   // Subscribers hear about changed answers only, so every read reports a different unreachable client.
   let reads = 0
-  globalThis.fetch = (async () =>
+  globalThis.fetch = async () =>
     Response.json({
       ok: true,
       downloads: {},
       unavailable_clients: [++reads % 2 ? 'qbittorrent' : 'sabnzbd'],
-    })) as typeof fetch
+    })
   let firstCalls = 0,
     secondCalls = 0
   const unsubscribeFirst = subscribeDownloads(() => {
@@ -110,10 +110,10 @@ test('an unchanged download answer keeps the snapshot and notifies nobody, and a
   } as unknown as Window & typeof globalThis
   let reads = 0,
     speed = 10
-  globalThis.fetch = (async () => {
+  globalThis.fetch = async () => {
     reads += 1
     return Response.json({ ok: true, downloads: { 't:record': { record_id: 't:record', speed } } })
-  }) as typeof fetch
+  }
   let notified = 0
   const unsubscribe = subscribeDownloads(() => {
     notified += 1
@@ -157,12 +157,12 @@ test('provider-backed reviews have no aggregate timeout and honor explicit cance
     timeouts.push(ms)
     return originalTimeout(ms)
   }
-  globalThis.fetch = (async (_input, init) => {
+  globalThis.fetch = async (_input, init) => {
     const { promise, reject } = Promise.withResolvers<Response>()
     const signal = init?.signal as AbortSignal
     signal.addEventListener('abort', () => reject(signal.reason), { once: true })
     return promise
-  }) as typeof fetch
+  }
   try {
     for (const request of [preflightDownload, usenetAvailability]) {
       const controller = new AbortController()
@@ -171,7 +171,7 @@ test('provider-backed reviews have no aggregate timeout and honor explicit cance
       controller.abort()
       await assert.rejects(pending, error => error instanceof DOMException && error.name === 'AbortError')
     }
-    globalThis.fetch = (async () => Response.json({})) as typeof fetch
+    globalThis.fetch = async () => Response.json({})
     await getStatus()
     assert.deepEqual(timeouts, [30_000], 'Normal APIs retain their timeout')
   } finally {
@@ -188,7 +188,7 @@ test('submission failures preserve structured acceptance uncertainty and the HTT
     acceptance_unknown: true,
     record_id: 'owned-unknown',
   }
-  globalThis.fetch = (async () => Response.json(body, { status: 502 })) as typeof fetch
+  globalThis.fetch = async () => Response.json(body, { status: 502 })
   try {
     await assert.rejects(submitDownload('one-shot-plan'), error => {
       assert.ok(error instanceof SubmissionError)
@@ -205,10 +205,10 @@ test('submission failures preserve structured acceptance uncertainty and the HTT
 test('bulk cancellation sends the exact reviewed records even when all were checked', async () => {
   const originalFetch = globalThis.fetch
   let body: unknown
-  globalThis.fetch = (async (_input, init) => {
+  globalThis.fetch = async (_input, init) => {
     body = JSON.parse(String(init?.body))
     return Response.json({ ok: true, removed: [], failures: [] })
-  }) as typeof fetch
+  }
   try {
     await cancelDownloads(['reviewed-a', 'reviewed-b'], false)
     assert.deepEqual(body, { record_ids: ['reviewed-a', 'reviewed-b'], remove_files: false })
@@ -226,10 +226,10 @@ test('whole-library preflight sends every selected row in one plan', async () =>
     protocol: 'torrent' as const,
   }))
   const bodies: unknown[] = []
-  globalThis.fetch = (async (_input, init) => {
+  globalThis.fetch = async (_input, init) => {
     bodies.push(JSON.parse(String(init?.body)))
     return Response.json({ ok: true })
-  }) as typeof fetch
+  }
   try {
     await preflightDownload(selections)
     assert.deepEqual(bodies, [{ selections }])
@@ -253,7 +253,7 @@ test('availability reads preserve provider timestamps and only manual refresh re
     refreshing: true,
     hashes: [{ hash: 'a'.repeat(40), state: 'available', checked_at: checkedAt, stale: true, refreshing: true }],
   }
-  globalThis.fetch = (async (_input, init) => {
+  globalThis.fetch = async (_input, init) => {
     requests.push(JSON.parse(String(init?.body)))
     return Response.json({
       ok: true,
@@ -274,7 +274,7 @@ test('availability reads preserve provider timestamps and only manual refresh re
         },
       ],
     })
-  }) as typeof fetch
+  }
   try {
     const selections = [
       { key: 'show', release: 0, identity },
@@ -297,10 +297,10 @@ test('availability reads preserve provider timestamps and only manual refresh re
 test('availability requests name the rows to search, verify and cancel, and nothing else about them', async () => {
   const originalFetch = globalThis.fetch
   const requests: { path: string; body: Record<string, unknown>; keepalive?: boolean }[] = []
-  globalThis.fetch = (async (input, init) => {
+  globalThis.fetch = async (input, init) => {
     requests.push({ path: String(input), body: JSON.parse(String(init?.body)), keepalive: init?.keepalive })
     return Response.json({ ok: true, config_generation: 1, results: [] })
-  }) as typeof fetch
+  }
   try {
     const selections = [
       { key: 'one', release: 0, identity: 'identity-one' },
@@ -326,9 +326,9 @@ test('availability requests name the rows to search, verify and cancel, and noth
       body: { selections: [selections[1]], cancel_verify: [{ key: 'two', release: 1 }] },
       keepalive: true,
     })
-    globalThis.fetch = (async () => {
+    globalThis.fetch = async () => {
       throw new Error('Fixture connection lost')
-    }) as typeof fetch
+    }
     cancelUsenetChecks([selections[0]])
     await new Promise(resolve => setImmediate(resolve))
   } finally {
@@ -340,14 +340,14 @@ test('the Prowlarr search status is read from its own route', async () => {
   const originalFetch = globalThis.fetch
   const status = { eligible_sources: 12, pending_sources: 4, usenet_indexers: 2 }
   const paths: string[] = []
-  globalThis.fetch = (async input => {
+  globalThis.fetch = async input => {
     paths.push(String(input))
     return Response.json({ ok: true, status })
-  }) as typeof fetch
+  }
   try {
     assert.deepEqual(await getProwlarrSearchStatus(), status)
     assert.deepEqual(paths, ['/api/prowlarr/search-status'])
-    globalThis.fetch = (async () => Response.json({ error: 'Not found' }, { status: 404 })) as typeof fetch
+    globalThis.fetch = async () => Response.json({ error: 'Not found' }, { status: 404 })
     await assert.rejects(getProwlarrSearchStatus(), 'A missing route is an error the settings page swallows')
   } finally {
     globalThis.fetch = originalFetch
@@ -361,14 +361,14 @@ test('successful configuration saves invalidate availability even when a secret 
   const unsubscribe = subscribeUsenetAvailability(() => {
     notifications += 1
   })
-  globalThis.fetch = (async () => Response.json({ amenzb_key_configured: true })) as typeof fetch
+  globalThis.fetch = async () => Response.json({ amenzb_key_configured: true })
   try {
     await saveConfig({ amenzb_key: 'replacement-fixture-key' })
     assert.equal(getUsenetAvailabilityRevision(), before + 1)
     assert.equal(notifications, 1)
     await saveConfig({ datetime_format: 'YYYY-MM-DD HH:mm:ss' })
     assert.equal(getUsenetAvailabilityRevision(), before + 1, 'Unrelated settings preserve compatible availability')
-    globalThis.fetch = (async () => Response.json({ error: 'Fixture save failed' }, { status: 503 })) as typeof fetch
+    globalThis.fetch = async () => Response.json({ error: 'Fixture save failed' }, { status: 503 })
     await assert.rejects(saveConfig({ amenzb_key: 'another-fixture-key' }))
     assert.equal(getUsenetAvailabilityRevision(), before + 1, 'Failed saves leave the active scope unchanged')
   } finally {
@@ -380,8 +380,8 @@ test('successful configuration saves invalidate availability even when a secret 
 test('provider URL changes rebind availability while repeated config reads preserve its scope', async () => {
   const originalFetch = globalThis.fetch
   let url = 'https://fixture-provider.invalid'
-  globalThis.fetch = (async () =>
-    Response.json({ animetosho_enabled: true, animetosho_url: url, amenzb_key_configured: true })) as typeof fetch
+  globalThis.fetch = async () =>
+    Response.json({ animetosho_enabled: true, animetosho_url: url, amenzb_key_configured: true })
   try {
     await getConfig()
     const before = getUsenetAvailabilityRevision()
