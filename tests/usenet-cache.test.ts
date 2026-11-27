@@ -25,8 +25,8 @@ import {
   resolveUsenetHash,
   resolveUsenetRelease,
   usenetScheduler,
-  usenetAvailability,
 } from '../server/usenet.js'
+import { usenetAvailability } from '../server/usenet-copies.js'
 import type { Config, Release, ResultItem } from '../server/types.js'
 import type { UsenetAvailabilityResult } from '../shared/usenet-contracts.js'
 import { DATA_DIR } from '../server/paths.js'

@@ -35,7 +35,7 @@ Bulk review retains its selected result snapshot. Acceptance checks current iden
 
 ## Usenet finder through Prowlarr
 
-`server/usenet-search.ts` finds a Usenet copy of a source the hash indexers cannot provide: a private-tracker release (`files:<sha1>`), or a public info hash that every enabled hash indexer answered "no NZB" for and whose files SeaDex lists (`privateUsenetSources`, `prowlarrFallbackSource` in `usenet.ts`). A failed or still-processing hash lookup never qualifies. The finder has two stages. The **search stage** (`searchSource`) sends one Newznab request per indexer and query (`searchIndexer` in `prowlarr.ts`: `GET /{id}/api?t=search&extended=1&limit=100`, key in `X-Api-Key`, 45-second timeout) and merges what it finds into the stored record; it costs no grab and may run in the background. The **verify stage** (`verifySource`) fetches candidates' NZBs through `prowlarrDownload`, grades them with `gradeNzb` (`source-files.ts`), stores the bytes and writes each check at once. `resolveSource` runs both for one caller. A search or check already running for a source is shared, and a foreground caller promotes a background search. Search terms and ranking (`usenet-search-terms.ts`) and the state of a record (`usenet-search-state.ts`) are pure; `usenet-search-store.ts` owns persistence. `private-sources.ts` keeps only the private torrent lookup, which is unchanged.
+`server/usenet-search.ts` finds a Usenet copy of a source the hash indexers cannot provide: a private-tracker release (`files:<sha1>`), or a public info hash that every enabled hash indexer answered "no NZB" for and whose files SeaDex lists (`fileListSources` in `usenet-copies.ts`). A failed or still-processing hash lookup never qualifies. The finder has two stages. The **search stage** (`searchSource`) sends one Newznab request per indexer and query (`searchIndexer` in `prowlarr.ts`: `GET /{id}/api?t=search&extended=1&limit=100`, key in `X-Api-Key`, 45-second timeout) and merges what it finds into the stored record; it costs no grab and may run in the background. The **verify stage** (`verifySource`) fetches candidates' NZBs through `prowlarrDownload`, grades them with `gradeNzb` (`source-files.ts`), stores the bytes and writes each check at once. `resolveSource` runs both for one caller. A search or check already running for a source is shared, and a foreground caller promotes a background search. Search terms and ranking (`usenet-search-terms.ts`) and the state of a record (`usenet-search-state.ts`) are pure; `usenet-search-store.ts` owns persistence. `private-sources.ts` keeps only the private torrent lookup, which is unchanged.
 
 Prowlarr failures carry a `scope`. `indexer` (429 with `Retry-After`, 410, 5xx, timeouts, a Newznab error document, any failure after a download redirect) affects that indexer only: it is recorded as not answered, its channel learns the outcome, and the other indexers go on. `prowlarr` (a refused Prowlarr key, an unreachable Prowlarr) fails the whole lookup, writes nothing, and is remembered in memory until its retry time. Newznab code 501 (download limit reached) is read as `rate_limited`. Error descriptions from an indexer are never copied into a message.
 
@@ -53,17 +53,20 @@ Prowlarr failures carry a `scope`. `indexer` (429 with `Retry-After`, 410, 5xx, 
 
 A row names a chosen candidate by its entry ID (`nzb`); only a candidate that was fetched, graded and not rejected can be chosen, and only for the Usenet protocol. Every graded NZB is logged at INFO with its indexer, proof and lowest and highest ratio, so the ratios of exact matches can confirm the accepted range on the installation's own indexers.
 
-**What each caller may spend.** A fetch counts as a grab on the indexer, so it runs only for a user action:
+**The Usenet copy resolver.** `server/usenet-copies.ts` is the one place that decides where a Usenet copy of a release can come from: the hash indexers by torrent hash, the Prowlarr fallback for a hash they all lack, or Prowlarr alone for a private-tracker release. Availability (`usenetAvailability`), download review and acceptance (`planDownloads`), and the background sweep ask it through `resolveUsenetCopies`, one request per release with a named **intent**, and never combine hash lookups, fallback sources, search terms and Prowlarr results themselves. Its answer per release is the rows, their aggregate, whether Prowlarr found or may be searched for a copy, and the file-list sources a copy is checked against. `cancelCopyChecks` withdraws what `check` rows started, and `searchInBackground` is the sweep's search stage. Only the availability intents read Prowlarr's indexer list to report a private-tracker source as `not_configured`, because reading it may refresh it and a review or an acceptance never asks Prowlarr about such a release.
 
-| Caller | Searches | NZB fetches |
+**What each caller may spend.** A fetch counts as a grab on the indexer, so it runs only for a user action. The resolver holds this table as the budget of each intent:
+
+| Caller (intent) | Searches | NZB fetches |
 | --- | --- | --- |
-| **Search Prowlarr** and **Search again** (availability `search` rows) | Always, every indexer | Up to 3, also when the source is `no_match` or `lookup_failed` |
-| A single download review (`buildDownloadPlan` with one selection) | Only without a fresh record | Up to 3, only while the source is `unverified` |
-| **Check now** in release details and a bulk-review row (availability `verify` rows) | Only without a fresh record | 1, only while the source is `not_checked` or `unverified` |
-| Bulk review preflight (more than one selection) | Never | Never |
-| Acceptance of any plan (`resolve: 'stored'`) | Never | Never |
-| Background sweep | Only when stale, counted | Never |
-| Submission | Never | None, unless the stored bytes were evicted |
+| **Search Prowlarr** and **Search again** (availability `search` rows; `search`) | Always, every indexer | Up to 3, also when the source is `no_match` or `lookup_failed` |
+| A single download review (`buildDownloadPlan` with one selection; `single_review`) | Only without a fresh record | Up to 3, only while the source is `unverified` |
+| **Check now** in release details and a bulk-review row (availability `verify` rows; `check`) | Only without a fresh record | 1, only while the source is `not_checked` or `unverified` |
+| Any other availability row (`look`) | Never | Never |
+| Bulk review preflight (more than one selection; `bulk_review`) | Never | Never |
+| Acceptance of any plan (`acceptance`) | Never | Never |
+| Background sweep (`sweep`, then `searchInBackground`) | Only when stale, counted | Never |
+| Submission (not a lookup; `searchNzbBytes`) | Never | None, unless the stored bytes were evicted |
 
 A walk stops at the first `exact` or `near_exact` candidate or at its limit. A candidate whose indexer is paused or out of fetches is skipped without an error, and the row carries the reason ("Daily NZB check limit reached for <indexer>. Next check at <time>."). An indexer-scope fetch failure marks the candidate `unavailable` until a retry time (at least a minute, `Retry-After` and the channel pause respected) and stops fetches from that indexer for the walk; the source is then `lookup_failed`, never `no_match`, unless another candidate is proven. An `invalid_response`, whoever reported it, is the candidate's own fault: it is not fetched again for 7 days and the walk goes on. Any other Prowlarr-scope failure ends the walk. A bulk review sends its `verify` rows as `cancellable`; `cancelSourceCheck` (`cancel_verify` rows) drops a check still waiting for its slot, and a fetch already under way finishes and is stored.
 
