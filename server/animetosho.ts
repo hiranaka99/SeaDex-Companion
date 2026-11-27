@@ -10,22 +10,20 @@ import {
   ANIMETOSHO_LOOKUP_MAX_BYTES,
   LOOKUP_MAX_BYTES,
   LOOKUP_TIMEOUT_MS,
-  NZB_TIMEOUT_MS,
   ProviderProtocolError,
   ResponseTooLargeError,
   classifyFailure,
   decodeText,
   failedFrom,
   failedLookup,
+  fetchProviderNzb,
   httpStatusFailure,
   parseProviderXml,
   providerRequest,
-  readNzbBody,
   readResponseCapped,
   safeByteSize,
   safeText,
   text,
-  validateNzbBytes,
 } from './usenet-provider-types.js'
 import type { ProviderLookup, ProviderSettings, UsenetMatch, UsenetSourceFile } from './usenet-provider-types.js'
 
@@ -146,7 +144,7 @@ export async function lookupAnimeTosho(
 }
 
 /**
- * Read and validate the NZB for a matched entry. The URL is derived from the
+ * Fetch the validated NZB of a matched entry. The URL is derived from the
  * entry id on the configured origin, so a provider-supplied absolute URL is
  * structurally impossible to fetch.
  */
@@ -156,23 +154,7 @@ export async function fetchAnimeToshoNzb(
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<Uint8Array> {
   if (!ANIMETOSHO_ENTRY_PATTERN.test(match.entry_id)) throw new Error('AnimeTosho NZB reference was not usable')
-  let response: Response
-  try {
-    response = await providerRequest(
-      settings,
-      `/nzb/${encodeURIComponent(match.entry_id)}`,
-      'application/octet-stream',
-      NZB_TIMEOUT_MS,
-      fetchImpl,
-    )
-  } catch (error) {
-    throw new Error(classifyFailure(error, settings, 'NZB fetch').message)
-  }
-  const status = httpStatusFailure(response, 'AnimeTosho')
-  if (status) throw new Error(status.message)
-  const bytes = await readNzbBody(settings, response)
-  validateNzbBytes(bytes)
-  return bytes
+  return await fetchProviderNzb(settings, `/nzb/${encodeURIComponent(match.entry_id)}`, 'AnimeTosho', fetchImpl)
 }
 
 /** Unauthenticated capabilities probe: proves the endpoint answers with Newznab-style XML. */

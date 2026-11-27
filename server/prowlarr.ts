@@ -19,6 +19,7 @@ import {
   newznabAttributeValues,
   parseProviderXml,
   providerEndpoint,
+  readNzb,
   readResponseCapped,
   retryAfterMs,
   safeByteSize,
@@ -686,19 +687,20 @@ function downloadStatusFailure(response: Response, fromIndexer: boolean): Prowla
 }
 
 /**
- * Downloads a result's file through Prowlarr. Prowlarr counts this as a grab on the indexer, so callers
- * fetch only the few candidates they will check. When Prowlarr redirects to the indexer, the redirect is
- * followed to http(s) addresses only, and the Prowlarr API key is never sent beyond Prowlarr itself.
+ * Downloads a result's file through Prowlarr and reads it with `read`. Prowlarr counts this as a grab on the
+ * indexer, so callers fetch only the few candidates they will check. When Prowlarr redirects to the indexer,
+ * the redirect is followed to http(s) addresses only, and the Prowlarr API key is never sent beyond Prowlarr
+ * itself.
  *
  * A failure says who caused it. An indexer that is rate limited, failing or refusing its key fails with
  * indexer scope, also when it says so with HTTP 200 and a Newznab error document instead of the file.
  */
-export async function prowlarrDownload(
+async function download<T>(
   settings: ProwlarrSettings,
   release: Pick<ProwlarrRelease, 'download_path'>,
-  maxBytes: number,
-  fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<Uint8Array> {
+  fetchImpl: typeof fetch,
+  read: (response: Response) => Promise<T>,
+): Promise<T> {
   // Once Prowlarr has redirected, every answer and every failure is the indexer's.
   let redirected = false
   try {
@@ -736,15 +738,52 @@ export async function prowlarrDownload(
       await response.body?.cancel()
       throw downloadStatusFailure(response, redirected)
     }
+    return await read(response)
+  } catch (error) {
+    throw redirected ? transportFailure(error, 'download', 'indexer', 'Indexer') : transportFailure(error, 'download')
+  }
+}
+
+/** Downloads a result's file, such as a private tracker's .torrent, and returns it as it was sent. */
+export async function prowlarrDownload(
+  settings: ProwlarrSettings,
+  release: Pick<ProwlarrRelease, 'download_path'>,
+  maxBytes: number,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<Uint8Array> {
+  return await download(settings, release, fetchImpl, async response => {
     const bytes = await readResponseCapped(response, maxBytes)
     // An indexer at its limit answers with HTTP 200 and a Newznab error document instead of the file,
     // whether Prowlarr fetched the body itself or redirected to the indexer.
     const reported = detectXmlError(bytes)
     if (reported) throw newznabFailure(reported.code, 'The indexer')
     return bytes
-  } catch (error) {
-    throw redirected ? transportFailure(error, 'download', 'indexer', 'Indexer') : transportFailure(error, 'download')
-  }
+  })
+}
+
+/**
+ * Grabs a Usenet result's NZB and returns it decompressed and validated, through the same NZB step as the
+ * hash indexers. Anything but an NZB is a failure of the indexer.
+ */
+export async function prowlarrNzbDownload(
+  settings: ProwlarrSettings,
+  release: Pick<ProwlarrRelease, 'download_path'>,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<Uint8Array> {
+  return await download(settings, release, fetchImpl, async response => {
+    const nzb = await readNzb(response)
+    switch (nzb.kind) {
+      case 'nzb':
+        return nzb.bytes
+      case 'too_large':
+        // Reported like any other download over its cap.
+        throw new ResponseTooLargeError()
+      case 'error_document':
+        throw newznabFailure(nzb.code, 'The indexer')
+      case 'invalid':
+        throw new ProwlarrError('invalid_response', 'The indexer did not send a valid NZB', undefined, 'indexer')
+    }
+  })
 }
 
 /** Read-only connection test: the version and what the configured indexers can search. */
