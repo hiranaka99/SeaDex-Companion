@@ -3,7 +3,6 @@ import * as api from '../api'
 import { Status, TabId } from '../types'
 import { cx } from '../styles'
 import Icon, { IconName } from './Icons'
-import type { BulkOperationState } from './OperationCenter'
 import SidebarStatus from './SidebarStatus'
 import { useToast } from './Toast'
 import UpdateDialog, { UPDATED_FLAG } from './UpdateDialog'
@@ -29,13 +28,10 @@ interface Props {
   status: Status
   scanCompleted: string | null
   scanCancelledDismissed: boolean
-  bulk: BulkOperationState | null
   onCancelScan: () => void
   onRetryScan: () => void
   onOpenConfig: () => void
   onDismissScan: () => void
-  onDismissBulk: () => void
-  onReviewBulk?: () => void
 }
 
 function Brand({ compact = false }: { compact?: boolean }) {
@@ -85,13 +81,10 @@ function TopBar({
   status,
   scanCompleted,
   scanCancelledDismissed,
-  bulk,
   onCancelScan,
   onRetryScan,
   onOpenConfig,
   onDismissScan,
-  onDismissBulk,
-  onReviewBulk,
 }: Props) {
   const toast = useToast()
   const [update, setUpdate] = useState<UpdateInfo | null>(null)
@@ -263,14 +256,11 @@ function TopBar({
             status={status}
             scanCompleted={scanCompleted}
             scanCancelledDismissed={scanCancelledDismissed}
-            bulk={bulk}
             collapsed={collapsed}
             onCancelScan={onCancelScan}
             onRetryScan={onRetryScan}
             onOpenConfig={onOpenConfig}
             onDismissScan={onDismissScan}
-            onDismissBulk={onDismissBulk}
-            onReviewBulk={onReviewBulk}
             onExpand={onToggleCollapsed}
           />
         </div>

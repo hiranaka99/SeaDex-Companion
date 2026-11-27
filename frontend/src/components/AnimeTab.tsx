@@ -33,7 +33,6 @@ import Icon, { IconName } from './Icons'
 import { useToast } from './Toast'
 import * as api from '../api'
 import { buttonBase, buttonPrimary, control, cx } from '../styles'
-import type { BulkOperationState } from './OperationCenter'
 import BulkScopeSelector from './BulkScopeSelector'
 import { useLibraryMotion } from '../useLibraryMotion'
 import { useBulkActions } from '../useBulkActions'
@@ -52,9 +51,6 @@ interface Props {
   active: boolean
   openResultKey: string | null
   onResultOpened: () => void
-  bulkOperationActive?: boolean
-  bulkReviewRequest: number
-  onBulkReviewReset: () => void
   results: ResultItem[]
   config: Config | null
   status: Status
@@ -64,8 +60,8 @@ interface Props {
   loadError: string
   onReloadResults: () => void
   onOpenConfig: () => void
-  onBulkOperationChange: (operation: BulkOperationState) => void
-  operationsVisible: boolean
+  /** A scan notice shows above the library, so the toolbar does not stick to the top. */
+  scanNoticeVisible: boolean
   onResultsChanged: () => Promise<void>
   /** Opens the library with one status filter, e.g. from a scan history total. */
   filterRequest?: (LibraryFilterRequest & { id: number }) | null
@@ -246,9 +242,6 @@ export default function AnimeTab({
   active,
   openResultKey,
   onResultOpened,
-  bulkOperationActive = false,
-  bulkReviewRequest,
-  onBulkReviewReset,
   results,
   config,
   status,
@@ -258,8 +251,7 @@ export default function AnimeTab({
   loadError,
   onReloadResults,
   onOpenConfig,
-  onBulkOperationChange,
-  operationsVisible,
+  scanNoticeVisible,
   onResultsChanged,
   filterRequest,
 }: Props) {
@@ -274,13 +266,8 @@ export default function AnimeTab({
   const [page, setPage] = useState(0)
   const resultsRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
-  const bulk = useBulkActions({
-    active,
-    operationActive: bulkOperationActive,
-    reviewRequest: bulkReviewRequest,
-    onReviewReset: onBulkReviewReset,
-    onOperationChange: onBulkOperationChange,
-  })
+  const bulk = useBulkActions(active)
+  const bulkOperationActive = bulk.operationActive
   const toast = useToast()
 
   useEffect(() => {
@@ -665,7 +652,7 @@ export default function AnimeTab({
       <div
         className={cx(
           'library-toolbar library-toolbar-refined z-20 mb-5 max-[600px]:mb-3 rounded-2xl border border-line',
-          operationsVisible ? 'relative' : 'sticky top-0',
+          scanNoticeVisible || bulk.operationShown ? 'relative' : 'sticky top-0',
         )}
       >
         <div className="toolbar-controls flex flex-wrap items-center gap-2.5">

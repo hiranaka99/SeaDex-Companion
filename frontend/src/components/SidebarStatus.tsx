@@ -4,25 +4,18 @@ import { displayDateTime } from '../datetime'
 import { usenetPauseText } from '../utils'
 import { sweepProgress } from '../usenet-review'
 import Icon from './Icons'
-import {
-  type BulkOperationState,
-  bulkOperationSummary,
-  bulkOperationTitle,
-  isScanNoticeVisible,
-} from './OperationCenter'
+import { bulkOperationSummary, bulkOperationTitle, isScanNoticeVisible } from './OperationCenter'
+import { useBulkOperation } from '../useBulkOperation'
 
 interface Props {
   status: Status
   scanCompleted: string | null
   scanCancelledDismissed: boolean
-  bulk: BulkOperationState | null
   collapsed: boolean
   onCancelScan: () => void
   onRetryScan: () => void
   onOpenConfig: () => void
   onDismissScan: () => void
-  onDismissBulk: () => void
-  onReviewBulk?: () => void
   onExpand: () => void
 }
 
@@ -31,16 +24,17 @@ export default function SidebarStatus({
   status,
   scanCompleted,
   scanCancelledDismissed,
-  bulk,
   collapsed,
   onCancelScan,
   onRetryScan,
   onOpenConfig,
   onDismissScan,
-  onDismissBulk,
-  onReviewBulk,
   onExpand,
 }: Props) {
+  const bulkOperation = useBulkOperation()
+  const bulk = bulkOperation.operation
+  const onDismissBulk = bulkOperation.dismiss
+  const onReviewBulk = bulkOperation.reviewAvailable ? bulkOperation.requestReview : undefined
   const scanVisible = isScanNoticeVisible(status, scanCompleted, scanCancelledDismissed)
   const usenet = status.usenet_prefetch
   const usenetVisible = Boolean(usenet?.running)
