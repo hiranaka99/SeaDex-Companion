@@ -1018,3 +1018,94 @@ test('audio channel layouts in filenames are never read as episode numbers', asy
   assert.equal(episodeFromFilename('[Group] Show - 13.5 [1080p].mkv')?.episode, 13.5)
   assert.equal(episodeFromFilename('Show S01 1080p BluRay FLAC 2.0 x264 - 03.mkv')?.episode, 3)
 })
+
+test('a version suffix such as "01v2" still names the episode', async () => {
+  const { episodeFromFilename } = await import('../shared/releases.js')
+  assert.equal(episodeFromFilename('[sam] Dr. STONE - New World - 01v2 [BD 1080p FLAC] [C878A21C].mkv')?.episode, 1)
+  assert.equal(episodeFromFilename('[Group] Show - Episode 05v3 [1080p].mkv')?.episode, 5)
+  assert.equal(episodeFromFilename('[Group] Show - 13.5v2 [1080p].mkv')?.episode, 13.5)
+})
+
+test('a whole-season batch with re-released episodes is one release with the same cour on a private tracker', async () => {
+  // Dr. STONE: NEW WORLD as SeaDex lists it: sam's 22-episode batch on Nyaa, where the first cour's episodes are
+  // "v2" re-releases, beside the same encode on AB split per cour.
+  const name = (episode: string) => `[sam] Dr. STONE - New World - ${episode} [BD 1080p FLAC].mkv`
+  const size = (episode: number) => 4_000_000_000 + episode
+  const episodes = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, index) => from + index)
+  const batch = [
+    ...episodes(1, 11).map(episode => ({ name: name(`${String(episode).padStart(2, '0')}v2`), length: size(episode) })),
+    ...episodes(12, 22).map(episode => ({ name: name(String(episode)), length: size(episode) })),
+    { name: name('NCOP 01v2'), length: 500 },
+  ]
+  const cour = (part: number[]) => [
+    { name: `Extras/${name('NCOP 01v2')}`, length: 500 },
+    ...batch.filter(file => part.includes(file.length - 4_000_000_000)),
+  ]
+  const torrent = (tracker: string, infoHash: string, files: { name: string; length: number }[]) => ({
+    tracker,
+    releaseGroup: 'sam',
+    infoHash,
+    isBest: true,
+    dualAudio: true,
+    tags: [],
+    files,
+  })
+  const best = await seadexBest({
+    loadPage: async () => ({
+      totalPages: 1,
+      items: [
+        {
+          alID: 1,
+          notes: '',
+          expand: { trs: [torrent('Nyaa', 'a'.repeat(40), batch), torrent('AB', '<redacted>', cour(episodes(1, 11)))] },
+        },
+        {
+          alID: 2,
+          notes: '',
+          expand: {
+            trs: [torrent('Nyaa', 'a'.repeat(40), batch), torrent('AB', '<redacted>', cour(episodes(12, 22)))],
+          },
+        },
+      ],
+    }),
+  })
+  // Holding sam for both cours lists the shared batch as each cour's release.
+  const local = { groups: ['sam'], size: 1, episode_count: 22, episode_numbers: episodes(1, 22) }
+  const result = assessSeason({
+    item: { arr: 'Sonarr', id: 1, title: 'Dr. STONE', seasons: { 1: local } },
+    season: 1,
+    local,
+    chain: [
+      {
+        season: 1,
+        id: 1,
+        ids: [1, 2],
+        episodeCount: 22,
+        parts: [
+          { id: 1, episodeCount: 11 },
+          { id: 2, episodeCount: 11 },
+        ],
+      },
+    ],
+    best,
+    libraryKey: 'Sonarr:item1',
+    arrUrl: null,
+  })
+  const listed = (part: string) => result.releases.filter(release => release.part === part)
+  assert.deepEqual(
+    listed('Cour 1').map(release => release.tracker),
+    ['Nyaa'],
+  )
+  assert.deepEqual(
+    listed('Cour 2').map(release => release.tracker),
+    ['Nyaa'],
+  )
+  assert.deepEqual(
+    listed('Cour 1')[0].selected_files,
+    batch.slice(0, 11).map(file => file.name),
+  )
+  assert.deepEqual(
+    listed('Cour 2')[0].selected_files,
+    batch.slice(11, 22).map(file => file.name),
+  )
+})

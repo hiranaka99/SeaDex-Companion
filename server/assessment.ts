@@ -574,8 +574,14 @@ export function assessSeason({
     bestSize = commonBest.size || 0
     ownsAllBest = true
   }
+  // The shared batch is listed in each part as that part's copy, scoped to the part's own files.
+  const partCopy = (part: ResolvedPart, release: ReleaseCandidate) =>
+    candidatesOf(part).find(candidate => sameRelease(candidate, release)) || release
   const releases = resolved.flatMap((part, index) =>
-    listReleases(part, !dormant[index] && !partiallyResolved && ownsAllBest ? commonBest || part.best : part.best),
+    listReleases(
+      part,
+      !dormant[index] && !partiallyResolved && ownsAllBest && commonBest ? partCopy(part, commonBest) : part.best,
+    ),
   )
   const status = partiallyResolved ? 'partial' : ownsAllBest ? 'best' : 'upgrade'
   return {
