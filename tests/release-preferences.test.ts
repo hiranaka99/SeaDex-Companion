@@ -24,7 +24,7 @@ import {
   unreachableTrackerReason,
 } from '../shared/settings.js'
 import { resetRuntimeForTests } from './support/runtime.js'
-import { prowlarrReady } from '../frontend/src/utils.js'
+import { prowlarrReady } from '../frontend/src/download-routes.js'
 import type { TrackerMode } from '../shared/contracts.js'
 import type {
   ChainEntry,

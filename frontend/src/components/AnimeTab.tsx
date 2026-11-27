@@ -11,7 +11,8 @@ import {
   type ReactNode,
   Fragment,
 } from 'react'
-import { ResultItem, Config, Release, Status, GroupedCard, LibraryFilterRequest } from '../types'
+import { ResultItem, Config, Status, GroupedCard, LibraryFilterRequest } from '../types'
+import { downloadRoutes } from '../download-routes'
 import {
   groupResults,
   seasonLabel,
@@ -20,8 +21,6 @@ import {
   STATUS_LABEL,
   formatBytes,
   upgradeDownloadEstimate,
-  prowlarrReady,
-  findsPrivateTorrent,
 } from '../utils'
 
 import { displayDateTime, displayTimeAgo } from '../datetime'
@@ -255,8 +254,8 @@ export default function AnimeTab({
   onResultsChanged,
   filterRequest,
 }: Props) {
-  /** Whether Prowlarr can find a private-tracker release's torrent; stable so bulk review is not rebuilt each render. */
-  const privateTorrent = useCallback((release: Release) => findsPrivateTorrent(release, config), [config])
+  /** What each release can be sent through; stable so bulk review is not rebuilt each render. */
+  const routes = useMemo(() => downloadRoutes(config), [config])
   const { filters, update, reset: resetFilters } = useLibraryFilters(active)
   const { search, source: arr, status: statusFilter, sort, episodes: showEpisodes, unseen: showUnseen } = filters
   const showHidden = filters.hidden
@@ -1106,11 +1105,8 @@ export default function AnimeTab({
           hiddenKeys={hiddenKeys}
           busy={bulk.busy === 'start'}
           job={bulk.job}
-          downloadMode={config?.download_mode || 'torrent_only'}
+          routes={routes}
           preferTarget={Boolean(config?.release_preferences && !preferencesAreDefault(config.release_preferences))}
-          sabEnabled={Boolean(config?.sabnzbd_url && config?.sabnzbd_key_configured)}
-          privateTorrent={privateTorrent}
-          privateUsenet={prowlarrReady(config) && config?.prowlarr_coverage?.usenet === true}
           onConfirm={(planId, acknowledge) => void bulk.start(planId, acknowledge)}
           onClose={bulk.close}
         />

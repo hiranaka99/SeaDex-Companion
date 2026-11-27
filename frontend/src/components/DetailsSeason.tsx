@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { releaseOwned } from '../../../shared/download-plan'
 import type { Config, ResultItem } from '../types'
 import { currentReleases, releaseCours, releaseQuality } from '../release-status'
-import { torrentSendable } from '../utils'
+import type { DownloadRoutes } from '../download-routes'
 import { buttonBase, cx } from '../styles'
 import {
   IDLE_DOWNLOAD,
@@ -61,7 +61,8 @@ interface Props {
   busyDownload: string | null
   /** Index of the release being sent in this season, -1 when another season is sending, null when idle. */
   sendingIndex: number | null
-  usenetEnabled: boolean
+  /** What each release can be sent through. */
+  routes: DownloadRoutes
   availability: SeasonAvailability | undefined
   protocolFor: (index: number) => DownloadProtocol
   onProtocol: (index: number, protocol: DownloadProtocol) => void
@@ -100,7 +101,7 @@ export default function DetailsSeason({
   dl,
   busyDownload,
   sendingIndex,
-  usenetEnabled,
+  routes,
   availability,
   protocolFor,
   onProtocol,
@@ -125,6 +126,7 @@ export default function DetailsSeason({
   onJump,
 }: Props) {
   const root = useRef<HTMLElement>(null)
+  const { usenetAllowed } = routes
   const [initiallyOpen] = useState(defaultOpen)
   const groups = releaseCours(r)
   const split = groups.some(group => group.part)
@@ -144,8 +146,8 @@ export default function DetailsSeason({
     .join(',')
   const releaseSignature = JSON.stringify(r.releases.map(releaseIdentity))
   useEffect(() => {
-    if (usenetEnabled && root.current?.querySelector<HTMLDetailsElement>('.details-season-disclosure')?.open) onOpened()
-  }, [releaseSignature, usenetEnabled])
+    if (usenetAllowed && root.current?.querySelector<HTMLDetailsElement>('.details-season-disclosure')?.open) onOpened()
+  }, [releaseSignature, usenetAllowed])
 
   useEffect(() => {
     if (!activeReleases || !root.current) return
@@ -219,7 +221,7 @@ export default function DetailsSeason({
                 : undefined
             }
             availabilityLoading={Boolean(availability?.loading)}
-            sabnzbdConfigured={Boolean(availability?.sabnzbdConfigured)}
+            routes={routes}
             onProtocol={protocol => onProtocol(index, protocol)}
             onRefreshAvailability={onRefreshAvailability}
             onSearchProwlarr={() => onSearchProwlarr(index)}
@@ -244,11 +246,14 @@ export default function DetailsSeason({
    * An upgrade that only exists on a private tracker: nothing here can send it, so the status says so up front instead
    * of promising a download the release row cannot start.
    */
-  const torrentOnly = (config?.download_mode || 'torrent_only') === 'torrent_only'
+  const torrentOnly = routes.mode === 'torrent_only'
   const manualOnly = (items: (typeof groups)[number]['items'], kind: string) => {
     const wanted = items.filter(({ rel }) => !releaseOwned(r, rel))
     return (
-      torrentOnly && kind === 'upgrade' && wanted.length > 0 && wanted.every(({ rel }) => !torrentSendable(rel, config))
+      torrentOnly &&
+      kind === 'upgrade' &&
+      wanted.length > 0 &&
+      wanted.every(({ rel }) => !routes.release(rel, undefined).torrent.sendable)
     )
   }
   const manualNote = <span className="details-summary-note text-muted">Manual download only · no public magnet</span>
@@ -301,7 +306,7 @@ export default function DetailsSeason({
         className="details-season-disclosure"
         open={initiallyOpen || undefined}
         onToggle={event => {
-          if (usenetEnabled && (event.target as HTMLDetailsElement).open) onOpened()
+          if (usenetAllowed && (event.target as HTMLDetailsElement).open) onOpened()
         }}
       >
         <summary

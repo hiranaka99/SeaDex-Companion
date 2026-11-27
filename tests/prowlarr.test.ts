@@ -32,7 +32,7 @@ import { applyConfigUpdate, publicConfig } from '../server/config.js'
 import { resetQbRuntime } from '../server/qbittorrent.js'
 import type { Config, ResultItem } from '../server/types.js'
 import { currentDownloadAssociations } from '../frontend/src/download-store.js'
-import { findsPrivateTorrent } from '../frontend/src/utils.js'
+import { findsPrivateTorrent } from '../frontend/src/download-routes.js'
 import type { DownloadProgress } from '../shared/download-contracts.js'
 import { baseConfig, purgeTestDataDir, resultFixture, releaseFixture, QB, SAB } from './support/download-fixtures.js'
 
