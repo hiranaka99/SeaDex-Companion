@@ -24,7 +24,7 @@ import {
   resetUsenetLookups,
   resolveUsenetHash,
   resolveUsenetRelease,
-  usenetScheduler,
+  paceUsenetLookups,
 } from '../server/usenet.js'
 import { usenetAvailability } from '../server/usenet-copies.js'
 import type { Config, Release, ResultItem } from '../server/types.js'
@@ -93,7 +93,7 @@ async function fixture(
   const calls: URL[] = []
   let response = (url: URL): Response | Promise<Response> => match(url.searchParams.get('hash') || HASH)
   resetUsenetLookups()
-  usenetScheduler.options.minIntervalMs = 0
+  paceUsenetLookups({ minIntervalMs: 0 })
   globalThis.fetch = async input => {
     const url = new URL(String(input))
     calls.push(url)

@@ -29,17 +29,18 @@ import { matchRoute } from '../server/router.js'
 import { autocheckState, setState } from '../server/scan-state.js'
 import { filesSourceId, type SourceFile } from '../server/source-files.js'
 import type { Config, PrivateSource, ResultItem } from '../server/types.js'
-import { resolveUsenetHash, usenetScheduler } from '../server/usenet.js'
+import { paceUsenetLookups, resolveUsenetHash } from '../server/usenet.js'
 import { resolveUsenetCopies, usenetAvailability, type CopyIntent } from '../server/usenet-copies.js'
 import {
   chosenSearchCandidate,
+  paceUsenetSearch,
   prowlarrIndexerUsage,
   resetUsenetSearch,
-  searchScheduler,
   searchSnapshot,
   searchSource,
 } from '../server/usenet-search.js'
 import { candidateEntryId } from '../server/usenet-search-terms.js'
+import type { LookupPacing } from '../server/usenet-scheduler.js'
 import type { UsenetAvailabilityResponse, UsenetAvailabilityResult } from '../shared/usenet-contracts.js'
 import {
   animetoshoMatch,
@@ -234,16 +235,14 @@ function forgetSearches(): void {
  * Resets the finder, the Prowlarr client, the ledger and both schedulers' pacing, and routes `fetch` to the
  * fakes. Everything is put back when the test ends.
  */
-function setup(t: TestContext): Fake {
+function setup(t: TestContext, searchPacing: Partial<LookupPacing> = {}): Fake {
   const router: RouterState = { calls: [], sabQueue: [] }
   const restoreRouter = installRouter(router)
   const routed = globalThis.fetch
-  const pacing = { ...searchScheduler.options }
-  const hashPacing = { ...usenetScheduler.options }
   forgetSearches()
   resetProwlarrRuntime()
-  searchScheduler.options.minIntervalMs = 0
-  usenetScheduler.options.minIntervalMs = 0
+  paceUsenetSearch({ minIntervalMs: 0, ...searchPacing })
+  paceUsenetLookups({ minIntervalMs: 0 })
   const fake: Fake = {
     calls: [],
     indexers: [GEEK],
@@ -311,8 +310,8 @@ function setup(t: TestContext): Fake {
   }
   t.after(() => {
     restoreRouter()
-    Object.assign(searchScheduler.options, pacing)
-    Object.assign(usenetScheduler.options, hashPacing)
+    paceUsenetSearch()
+    paceUsenetLookups()
     forgetSearches()
     resetProwlarrRuntime()
   })
@@ -721,11 +720,10 @@ test('accepting a plan spends no search and no fetch, also when its stored resul
 })
 
 test('cancelling a review drops the checks that wait, and the one under way finishes', async t => {
-  const fake = setup(t)
+  // One request at a time, so every check behind the first waits for its slot.
+  const fake = setup(t, { concurrency: 1 })
   const hang = gate()
   fake.beforeNzb = () => hang.opened
-  // One request at a time, so every check behind the first waits for its slot.
-  searchScheduler.options.concurrency = 1
   const tags = ['Alpha', 'Beta', 'Gamma']
   const results = tags.map(tag => privateRow(tag))
   const rows = tags.map(row)
