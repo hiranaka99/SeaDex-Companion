@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { test, type TestContext } from 'node:test'
+import { test } from 'node:test'
 import { setImmediate as nextTurn } from 'node:timers/promises'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import type { OwnedDownloadRecord } from '../server/download-store.js'
@@ -11,8 +9,8 @@ import { prowlarrFingerprint, prowlarrIndexers } from '../server/prowlarr.js'
 import { saveLastResults } from '../server/results.js'
 import type { Config, Release, ResultItem } from '../server/types.js'
 import { cachedHashState, resolveUsenetHash } from '../server/usenet.js'
-import { createUsenetRuntime, type UsenetRuntimeOptions } from '../server/usenet-runtime.js'
 import type { SearchRecord } from '../server/usenet-search-store.js'
+import { testUsenetRuntime } from './support/usenet-runtime.js'
 
 const HASH = 'c'.repeat(40)
 const OTHER = 'd'.repeat(40)
@@ -46,29 +44,9 @@ function toshoMatch(hash: string): Response {
   })
 }
 
-/** A fresh runtime on its own data paths; the default runtime is put back when the test ends. */
-function runtime(t: TestContext, options: UsenetRuntimeOptions = {}) {
-  const dir = fs.mkdtempSync(join(tmpdir(), 'usenet-runtime-'))
-  const paths = {
-    cache: join(dir, 'usenet_cache.json'),
-    search: join(dir, 'usenet_search.json'),
-    nzbs: join(dir, 'nzbs'),
-  }
-  const created = createUsenetRuntime({
-    paths,
-    pacing: { hashes: { minIntervalMs: 0 }, search: { minIntervalMs: 0 } },
-    ...options,
-  })
-  t.after(() => {
-    createUsenetRuntime()
-    fs.rmSync(dir, { recursive: true, force: true })
-  })
-  return { runtime: created, paths }
-}
-
 test('a fresh runtime looks hashes up through its own fetch and writes its cache to its own path', async t => {
   const calls: URL[] = []
-  const { runtime: usenet, paths } = runtime(t, {
+  const { runtime: usenet, paths } = testUsenetRuntime(t, {
     fetch: async input => {
       const url = new URL(String(input))
       calls.push(url)
@@ -86,7 +64,7 @@ test('a fresh runtime looks hashes up through its own fetch and writes its cache
 test('a fresh runtime measures freshness on its own clock', async t => {
   let now = 1_800_000_000_000
   let calls = 0
-  runtime(t, {
+  testUsenetRuntime(t, {
     now: () => now,
     fetch: async input => {
       calls++
@@ -125,7 +103,7 @@ async function until(condition: () => boolean): Promise<void> {
 
 test('changed hash indexer settings cancel running lookups and drop observations of the old settings', async t => {
   const tosho = heldTosho()
-  const { runtime: usenet } = runtime(t, { fetch: tosho.fetch })
+  const { runtime: usenet } = testUsenetRuntime(t, { fetch: tosho.fetch })
   const moved = config({ animetosho_url: 'https://runtime-tosho-mirror.test' })
   await resolveUsenetHash(config(), OTHER)
   tosho.hold = true
@@ -143,7 +121,7 @@ test('changed hash indexer settings cancel running lookups and drop observations
 
 test('an unrelated settings change cancels nothing and keeps every observation', async t => {
   const tosho = heldTosho()
-  const { runtime: usenet } = runtime(t, { fetch: tosho.fetch })
+  const { runtime: usenet } = testUsenetRuntime(t, { fetch: tosho.fetch })
   await resolveUsenetHash(config(), OTHER)
   tosho.hold = true
   const running = resolveUsenetHash(config(), HASH)
@@ -175,7 +153,7 @@ function prowlarrConfig(overrides: Partial<Config> = {}): Config {
 
 test('changed Prowlarr settings drop the indexer list and what other connections found', async t => {
   let listed = 0
-  const { runtime: usenet } = runtime(t, {
+  const { runtime: usenet } = testUsenetRuntime(t, {
     fetch: async input => {
       if (new URL(String(input)).pathname === '/api/v1/indexer') listed++
       return Response.json([])
@@ -215,7 +193,7 @@ function ledgerRecord(overrides: Partial<OwnedDownloadRecord>): OwnedDownloadRec
 }
 
 test('new results keep what they and active downloads name, and drop the rest', async t => {
-  const { runtime: usenet } = runtime(t, {
+  const { runtime: usenet } = testUsenetRuntime(t, {
     sweep: true,
     fetch: async input => toshoMatch(new URL(String(input)).searchParams.get('hash') || HASH),
   })
@@ -240,7 +218,7 @@ test('new results keep what they and active downloads name, and drop the rest', 
 })
 
 test('without a readable ledger no search record is dropped', async t => {
-  const { runtime: usenet } = runtime(t, { sweep: true })
+  const { runtime: usenet } = testUsenetRuntime(t, { sweep: true })
   const fingerprint = prowlarrFingerprint({ baseUrl: PROWLARR, apiKey: KEY })
   usenet.searchStore.put(searchRecord(OTHER))
   usenet.resultsChanged(config(), [result([release(HASH)])], undefined, 'test')
@@ -250,7 +228,7 @@ test('without a readable ledger no search record is dropped', async t => {
 })
 
 test('a runtime without sweeps prunes nothing', async t => {
-  const { runtime: usenet } = runtime(t)
+  const { runtime: usenet } = testUsenetRuntime(t)
   const fingerprint = prowlarrFingerprint({ baseUrl: PROWLARR, apiKey: KEY })
   usenet.searchStore.put(searchRecord(OTHER))
   usenet.resultsChanged(config(), [result([release(HASH)])], [], 'test')
@@ -258,14 +236,14 @@ test('a runtime without sweeps prunes nothing', async t => {
 })
 
 test('a replaced runtime can no longer be used', t => {
-  const { runtime: first } = runtime(t)
-  runtime(t)
+  const { runtime: first } = testUsenetRuntime(t)
+  testUsenetRuntime(t)
   assert.throws(() => first.shutdown(), /replaced/)
 })
 
 test('changed Usenet eligibility sweeps the saved results again, and an unrelated change does not', async t => {
   const swept: string[] = []
-  const { runtime: usenet } = runtime(t, {
+  const { runtime: usenet } = testUsenetRuntime(t, {
     sweep: true,
     fetch: async input => {
       const hash = new URL(String(input)).searchParams.get('hash') || HASH
@@ -291,4 +269,13 @@ test('changed Usenet eligibility sweeps the saved results again, and an unrelate
   usenet.configChanged(torrents, either)
   await until(() => swept.length === 1)
   assert.deepEqual(swept, [HASH])
+})
+
+test('a replaced runtime writes nothing it had pending, as a process that exits', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { runtime: first, paths } = testUsenetRuntime(t)
+  first.searchStore.put(searchRecord(HASH))
+  testUsenetRuntime(t)
+  t.mock.timers.tick(5 * 60_000)
+  assert.equal(fs.existsSync(paths.search), false, 'the pending write of the replaced runtime is dropped')
 })

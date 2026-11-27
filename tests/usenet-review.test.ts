@@ -1,7 +1,8 @@
 // Usenet copies found through Prowlarr, from an availability request to the ledger: what a row reports and
 // starts, what a bulk review plans from stored results, what an acceptance sends, and what must not change for
-// hash-linked NZBs. Prowlarr, its indexer, the hash indexer and both download clients are fakes behind `fetch`;
-// records, NZBs and the ledger live in the shared temp DATA_DIR (tests/run-tests.mjs).
+// hash-linked NZBs. Prowlarr, its indexer and the hash indexer are fakes behind the Usenet runtime's `fetch`, and
+// both download clients behind the global one; the ledger lives in the shared temp DATA_DIR (tests/run-tests.mjs)
+// and each test's runtime keeps records and NZBs on its own temp paths.
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -17,35 +18,22 @@ import { buildDownloadPlan, parseSelections } from '../server/download-preflight
 import { downloadRoutes } from '../server/download-routes.js'
 import { downloadRecords, resetOwnedRuntime } from '../server/download-store.js'
 import { acceptDownloadPlan, PlanRejected } from '../server/download-submit.js'
-import {
-  CONFIG_FILE,
-  DATA_DIR,
-  ENCRYPTED_SECRETS_FILE,
-  NZB_STORE_DIR,
-  SECRETS_KEY_FILE,
-  USENET_SEARCH_FILE,
-} from '../server/paths.js'
-import { resetProwlarrRuntime } from '../server/prowlarr.js'
+import { CONFIG_FILE, DATA_DIR, ENCRYPTED_SECRETS_FILE, SECRETS_KEY_FILE } from '../server/paths.js'
+import { prowlarrIndexers } from '../server/prowlarr.js'
 import { matchRoute } from '../server/router.js'
 import { autocheckState, setState } from '../server/scan-state.js'
 import { filesSourceId, type SourceFile } from '../server/source-files.js'
 import type { Config, PrivateSource, ResultItem } from '../server/types.js'
-import { paceUsenetLookups, resolveUsenetHash } from '../server/usenet.js'
+import { resolveUsenetHash } from '../server/usenet.js'
 import { resolveUsenetCopies, usenetAvailability, type CopyIntent } from '../server/usenet-copies.js'
-import {
-  chosenSearchCandidate,
-  paceUsenetSearch,
-  prowlarrIndexerUsage,
-  resetUsenetSearch,
-  searchSnapshot,
-  searchSource,
-} from '../server/usenet-search.js'
+import { chosenSearchCandidate, prowlarrIndexerUsage, searchSnapshot, searchSource } from '../server/usenet-search.js'
 import { candidateEntryId } from '../server/usenet-search-terms.js'
 import type { LookupPacing } from '../server/usenet-scheduler.js'
 import type { UsenetAvailabilityResponse, UsenetAvailabilityResult } from '../shared/usenet-contracts.js'
 import {
   animetoshoMatch,
   baseConfig,
+  fakeAnimeTosho,
   installRouter,
   purgeTestDataDir,
   releaseFixture,
@@ -53,6 +41,7 @@ import {
   SAB,
   type RouterState,
 } from './support/download-fixtures.js'
+import type { TestUsenetRuntime } from './support/usenet-runtime.js'
 
 const PROWLARR = 'http://prowlarr-review.test:9696'
 const KEY = 'prowlarr-review-key-71f0'
@@ -226,24 +215,20 @@ function feed(indexerId: number, posts: Post[]): Response {
   )
 }
 
-function forgetSearches(): void {
-  resetUsenetSearch()
-  fs.rmSync(USENET_SEARCH_FILE, { force: true })
-  fs.rmSync(NZB_STORE_DIR, { recursive: true, force: true })
+/** The runtime of the running test. */
+let usenet: TestUsenetRuntime
+
+/** Prowlarr's indexer list is read again, as it is once the one read last expires. */
+async function relist(): Promise<void> {
+  await prowlarrIndexers({ baseUrl: PROWLARR, apiKey: KEY }, undefined, true)
 }
 
 /**
- * Resets the finder, the Prowlarr client, the ledger and both schedulers' pacing, and routes `fetch` to the
- * fakes. Everything is put back when the test ends.
+ * A fresh ledger and a fresh runtime, unpaced unless `searchPacing` says otherwise, with every request routed to
+ * the fakes. Everything is put back when the test ends.
  */
 function setup(t: TestContext, searchPacing: Partial<LookupPacing> = {}): Fake {
   const router: RouterState = { calls: [], sabQueue: [] }
-  const restoreRouter = installRouter(router)
-  const routed = globalThis.fetch
-  forgetSearches()
-  resetProwlarrRuntime()
-  paceUsenetSearch({ minIntervalMs: 0, ...searchPacing })
-  paceUsenetLookups({ minIntervalMs: 0 })
   const fake: Fake = {
     calls: [],
     indexers: [GEEK],
@@ -259,7 +244,8 @@ function setup(t: TestContext, searchPacing: Partial<LookupPacing> = {}): Fake {
     await fake.beforeNzb()
     return new Response(fake.bodies[link] ?? exactNzb(link))
   }
-  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const tosho = fakeAnimeTosho(router)
+  const indexers = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     const headers = new Headers(init?.headers)
     if (url.origin === PROWLARR) {
@@ -287,6 +273,13 @@ function setup(t: TestContext, searchPacing: Partial<LookupPacing> = {}): Fake {
       return sendNzb(url.searchParams.get('id') ?? '')
     }
     if (url.href.includes('animetosho.net/json')) return fake.animetosho(url.searchParams.get('hash') ?? '')
+    return tosho(input, init)
+  }
+  const restoreRouter = installRouter(router, { fetch: indexers, pacing: { search: searchPacing } })
+  usenet = restoreRouter.usenet
+  const routed = globalThis.fetch
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input))
     if (url.origin === SAB && init?.method === 'POST') {
       const form = init.body as FormData
       const job = {
@@ -309,13 +302,7 @@ function setup(t: TestContext, searchPacing: Partial<LookupPacing> = {}): Fake {
     }
     return routed(input, init)
   }
-  t.after(() => {
-    restoreRouter()
-    paceUsenetSearch()
-    paceUsenetLookups()
-    forgetSearches()
-    resetProwlarrRuntime()
-  })
+  t.after(restoreRouter)
   return fake
 }
 
@@ -389,8 +376,7 @@ test('a proven match survives a restart, and a bulk review then plans and sends 
   assert.deepEqual([searches(fake), downloads(fake)], [['Vault Alpha'], ['Alpha']])
 
   // The server restarts between "Search Prowlarr" and the bulk download.
-  resetUsenetSearch(true)
-  resetProwlarrRuntime()
+  usenet.restart()
   fake.calls.length = 0
   const settings = config()
   const built = await buildDownloadPlan(settings, rows, { results, clients: downloadClients(settings) })
@@ -632,11 +618,11 @@ test('a bulk review checks one NZB for each row it names, plans the proven ones 
   assert.equal(spent(fake), 4)
   // Not even a search, when one is due because Prowlarr has an indexer the stored results do not know.
   fake.indexers = [GEEK, { ...GEEK, id: 5, name: 'Slug' }]
-  resetProwlarrRuntime()
+  await relist()
   await observe(config(), rows, results, { verify: named })
   assert.equal(spent(fake), 4)
   fake.indexers = [GEEK]
-  resetProwlarrRuntime()
+  await relist()
 
   // The review that follows reads what is stored. The row nobody named is neither searched nor fetched.
   const settings = config()
@@ -708,7 +694,7 @@ test('accepting a plan spends no search and no fetch, also when its stored resul
   assert.equal(spent(fake), 2)
 
   // The stored result is gone by the time the plan is confirmed.
-  forgetSearches()
+  usenet.fresh()
   fake.calls.length = 0
   const outcome = await accept(settings, built.plan, results)
   assert.equal(outcome.ok, false)
@@ -727,8 +713,10 @@ test('accepting a plan spends no search and no fetch, also when its stored resul
 
   // With the result in place, the other plan is sent from the store alone.
   await buildDownloadPlan(settings, [row('Alpha')], { results, clients: downloadClients(settings) })
+  // Not even the indexer list is read: the process restarted, so none is known.
+  assert.equal(usenet.runtime.shutdown(), true)
+  usenet.restart()
   fake.calls.length = 0
-  resetProwlarrRuntime()
   const sent = await accept(config(), reopened.plan, results)
   assert.equal(sent.ok, true)
   assert.equal(fake.sent[0].nzb, text(exactNzb('Alpha')))
@@ -866,7 +854,7 @@ test('public-tracker mode makes no Prowlarr request for a private-tracker releas
   })
   assert.equal(torrent.review.blocked[0].code, 'no_torrent')
   assert.deepEqual(fake.calls, [])
-  assert.equal(fs.existsSync(USENET_SEARCH_FILE), false)
+  assert.equal(fs.existsSync(usenet.paths.search), false)
 })
 
 test('a source requested through both protocols in one review is sent through neither', async t => {
@@ -986,24 +974,24 @@ test('a changed Prowlarr key or address leaves no usable record and no stored NZ
   const rows = [row('Alpha')]
   const source = show('Alpha')
   for (const change of [{ prowlarr_key: 'another-key-0d2e' }, { prowlarr_url: 'http://prowlarr-moved.test:9696' }]) {
-    forgetSearches()
+    usenet.fresh()
     fake.calls.length = 0
     const saved = storeConfig(t, config())
     const [checked] = await observe(saved, rows, results, { verify: rows })
     assert.equal(checked.aggregate, 'available')
-    assert.equal(fs.readdirSync(NZB_STORE_DIR).length, 1)
+    assert.equal(fs.readdirSync(usenet.paths.nzbs).length, 1)
 
     // The daily limits are settings of their own: nothing is forgotten when one changes.
     const relimited = saveSettings({ prowlarr_fetch_limit: 5, prowlarr_search_limit: 50 })
     assert.equal(searchSnapshot(relimited, source.id).availability.state, 'available')
     assert.deepEqual(prowlarrIndexerUsage(relimited), [{ indexer: 'Geek', fetches_left: 4 }])
-    assert.equal(fs.readdirSync(NZB_STORE_DIR).length, 1)
+    assert.equal(fs.readdirSync(usenet.paths.nzbs).length, 1)
 
     const changed = saveSettings(change)
     assert.equal(searchSnapshot(changed, source.id).availability.state, 'not_checked')
     assert.equal(chosenSearchCandidate(changed, source.id, entryOf('Alpha')), undefined)
-    assert.deepEqual(fs.readdirSync(NZB_STORE_DIR), [])
-    const stored = fs.readFileSync(USENET_SEARCH_FILE, 'utf8')
+    assert.deepEqual(fs.readdirSync(usenet.paths.nzbs), [])
+    const stored = fs.readFileSync(usenet.paths.search, 'utf8')
     assert.ok(!stored.includes(source.id) && !stored.includes('"link"'), 'the record is gone from the file as well')
     const built = await buildDownloadPlan(changed, [...rows, { key: 'gone', release: 0 }], {
       results,
@@ -1011,7 +999,7 @@ test('a changed Prowlarr key or address leaves no usable record and no stored NZ
     })
     assert.equal(built.review.blocked.find(blocked => blocked.key === 'alpha')?.code, 'not_searched')
     // Going back to the old connection does not bring the record back.
-    resetUsenetSearch(true)
+    usenet.restart()
     assert.equal(searchSnapshot(saved, source.id).availability.state, 'not_checked')
     assert.deepEqual(downloads(fake), ['Alpha'])
   }
@@ -1147,10 +1135,9 @@ test('with Prowlarr turned off, availability neither reports a Prowlarr state no
   )
 
   // After a restart the store is read on first use. With its file out of the way, a read would find nothing.
-  resetUsenetSearch(true)
-  resetProwlarrRuntime()
-  const aside = `${USENET_SEARCH_FILE}.aside`
-  fs.renameSync(USENET_SEARCH_FILE, aside)
+  usenet.restart()
+  const aside = `${usenet.paths.search}.aside`
+  fs.renameSync(usenet.paths.search, aside)
   t.after(() => fs.rmSync(aside, { force: true }))
   fake.calls.length = 0
   const off = config({ prowlarr_enabled: false })
@@ -1164,10 +1151,10 @@ test('with Prowlarr turned off, availability neither reports a Prowlarr state no
   )
   assert.deepEqual(prowlarrIndexerUsage(off), [])
   assert.deepEqual(fake.calls, [])
-  assert.equal(fs.existsSync(USENET_SEARCH_FILE), false, 'nothing was written either')
+  assert.equal(fs.existsSync(usenet.paths.search), false, 'nothing was written either')
 
   // The store was not touched: with Prowlarr on again, what it holds is still there to be read.
-  fs.renameSync(aside, USENET_SEARCH_FILE)
+  fs.renameSync(aside, usenet.paths.search)
   const back = await observe(config(), rows, results)
   assert.deepEqual(
     back.map(entry => [entry.aggregate, entry.hashes[0].proof]),

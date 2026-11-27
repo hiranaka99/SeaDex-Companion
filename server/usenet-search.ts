@@ -126,11 +126,13 @@ export let searchStore = parts.store
 
 /**
  * Usenet runtime only: the finder from now on runs on `next`. Running searches and checks are cancelled and
- * what they learn is discarded.
+ * what they learn is discarded; changes the replaced store had not written yet are lost.
  */
 export function useSearchParts(next: SearchParts): void {
   cancelWork()
   sourceFiles.clear()
+  // The replaced store writes nothing it had pending, as a process that exits.
+  parts.store.reset()
   parts = next
   searchScheduler = next.scheduler
   searchStore = next.store

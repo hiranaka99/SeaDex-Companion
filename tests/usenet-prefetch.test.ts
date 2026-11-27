@@ -1,20 +1,15 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 import { setImmediate as nextTurn } from 'node:timers/promises'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { bumpGeneration } from '../server/config-generation.js'
-import {
-  enableUsenetPrefetch,
-  prefetchPlan,
-  prefetchUsenetAvailability,
-  stopUsenetPrefetch,
-  usenetPrefetchProgress,
-} from '../server/usenet-prefetch.js'
-import { paceUsenetLookups, resetUsenetLookups, resolveUsenetHash, usenetProviderPauses } from '../server/usenet.js'
+import { prefetchPlan, prefetchUsenetAvailability, usenetPrefetchProgress } from '../server/usenet-prefetch.js'
+import { resolveUsenetHash, usenetProviderPauses } from '../server/usenet.js'
 import { usenetAvailability } from '../server/usenet-copies.js'
 import { retryAfterMs } from '../server/provider-http.js'
 import type { Release, ResultItem } from '../server/types.js'
 import type { LookupPacing } from '../server/usenet-scheduler.js'
+import { testUsenetRuntime, type TestUsenetRuntime } from './support/usenet-runtime.js'
 
 const hexHash = (index: number) => index.toString(16).padStart(40, '0')
 
@@ -53,9 +48,14 @@ interface Probe {
   fetches: number
 }
 
+const unexpected: typeof fetch = async input => {
+  throw new Error(`unexpected provider request: ${String(input)}`)
+}
+/** How the runtime in use reaches the hash indexers. */
+let send: typeof fetch = unexpected
+
 function stubFetch(probe: Probe) {
-  const original = globalThis.fetch
-  globalThis.fetch = async (input: RequestInfo | URL) => {
+  send = async (input: RequestInfo | URL) => {
     const url = String(input)
     if (url.startsWith('https://feed.animetosho.net/json')) {
       probe.fetches++
@@ -65,26 +65,36 @@ function stubFetch(probe: Probe) {
     throw new Error(`unexpected provider request: ${url}`)
   }
   return () => {
-    globalThis.fetch = original
+    send = unexpected
   }
 }
 
-function isolation(intervalMs: number, pacing: Partial<LookupPacing> = {}): () => void {
-  resetUsenetLookups()
-  paceUsenetLookups({ minIntervalMs: intervalMs, ...pacing })
+/** A fresh runtime with this hash-indexer pacing that asks through `send`; sweeps run only when asked for. */
+function isolation(
+  t: TestContext,
+  intervalMs: number,
+  options: { pacing?: Partial<LookupPacing>; sweep?: boolean } = {},
+): TestUsenetRuntime {
+  const usenet = testUsenetRuntime(t, {
+    fetch: (input, init) => send(input, init),
+    pacing: { hashes: { minIntervalMs: intervalMs, ...options.pacing } },
+    sweep: options.sweep,
+  })
+  t.after(() => {
+    send = unexpected
+  })
   bumpGeneration()
-  return () => resetUsenetLookups()
+  return usenet
 }
 
 function controlledFetch() {
-  const original = globalThis.fetch
   const probe = {
     starts: [] as string[],
     pending: new Map<string, (response: Response) => void>(),
     active: 0,
     maximum: 0,
   }
-  globalThis.fetch = (input: RequestInfo | URL) => {
+  send = (input: RequestInfo | URL) => {
     const url = String(input)
     assert.ok(url.startsWith('https://feed.animetosho.net/json'), `unexpected provider request: ${url}`)
     const hash = new URL(url).searchParams.get('hash')!
@@ -106,7 +116,7 @@ function controlledFetch() {
       resolve(new Response('nope', { status: 404 }))
     },
     restore() {
-      globalThis.fetch = original
+      send = unexpected
     },
   }
 }
@@ -119,8 +129,8 @@ async function until(condition: () => boolean, timeoutMs = 5_000): Promise<void>
   }
 }
 
-test('ineligible configurations never trigger a prefetch sweep', async () => {
-  isolation(0)
+test('ineligible configurations never trigger a prefetch sweep', async t => {
+  isolation(t, 0)
   const probe: Probe = { starts: [], fetches: 0 }
   const restore = stubFetch(probe)
   try {
@@ -136,28 +146,23 @@ test('ineligible configurations never trigger a prefetch sweep', async () => {
   }
 })
 
-test('provider requests are spaced by the configured minimum interval', async () => {
+test('provider requests are spaced by the configured minimum interval', async t => {
   // The pacer schedules real setTimeout dispatches with no fake-time seam;
   // this integration test deliberately exercises real-time pacing.
-  isolation(80)
+  isolation(t, 80)
   const marks: number[] = []
-  const original = globalThis.fetch
-  globalThis.fetch = async () => {
+  send = async () => {
     marks.push(Date.now())
     return new Response('nope', { status: 404 })
   }
-  try {
-    await Promise.all([hexHash(1), hexHash(2), hexHash(3)].map(hash => resolveUsenetHash(config(), hash)))
-    assert.equal(marks.length, 3)
-    assert.ok(marks[1] - marks[0] >= 70, `second request started too early: ${marks[1] - marks[0]}ms`)
-    assert.ok(marks[2] - marks[1] >= 70, `third request started too early: ${marks[2] - marks[1]}ms`)
-  } finally {
-    globalThis.fetch = original
-  }
+  await Promise.all([hexHash(1), hexHash(2), hexHash(3)].map(hash => resolveUsenetHash(config(), hash)))
+  assert.equal(marks.length, 3)
+  assert.ok(marks[1] - marks[0] >= 70, `second request started too early: ${marks[1] - marks[0]}ms`)
+  assert.ok(marks[2] - marks[1] >= 70, `third request started too early: ${marks[2] - marks[1]}ms`)
 })
 
-test('interactive lookups overtake queued background lookups', async () => {
-  isolation(120)
+test('interactive lookups overtake queued background lookups', async t => {
+  isolation(t, 120)
   const probe: Probe = { starts: [], fetches: 0 }
   const restore = stubFetch(probe)
   try {
@@ -189,8 +194,8 @@ async function drain(
   await all
 }
 
-test('background work leaves a slot for foreground lookups, which also take freed slots first', async () => {
-  isolation(0)
+test('background work leaves a slot for foreground lookups, which also take freed slots first', async t => {
+  const usenet = isolation(t, 0)
   const { probe, complete, restore } = controlledFetch()
   const work = Array.from({ length: 4 }, (_, index) => resolveUsenetHash(config(), hexHash(index + 1), false, true))
   try {
@@ -216,14 +221,14 @@ test('background work leaves a slot for foreground lookups, which also take free
     assert.equal(probe.active, 0)
   } finally {
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    resetUsenetLookups()
+    usenet.close()
     await Promise.all(work)
     restore()
   }
 })
 
-test('background work held back by the reserved slot waits without spinning timers', async () => {
-  isolation(0)
+test('background work held back by the reserved slot waits without spinning timers', async t => {
+  const usenet = isolation(t, 0)
   const { probe, complete, restore } = controlledFetch()
   const work = Array.from({ length: 4 }, (_, index) => resolveUsenetHash(config(), hexHash(index + 1), false, true))
   const originalSetTimeout = globalThis.setTimeout
@@ -245,14 +250,14 @@ test('background work held back by the reserved slot waits without spinning time
   } finally {
     globalThis.setTimeout = originalSetTimeout
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    resetUsenetLookups()
+    usenet.close()
     await Promise.all(work)
     restore()
   }
 })
 
-test('foreground callers promote a shared queued background lookup before global admission', async () => {
-  isolation(0)
+test('foreground callers promote a shared queued background lookup before global admission', async t => {
+  const usenet = isolation(t, 0)
   const { probe, complete, restore } = controlledFetch()
   const work = Array.from({ length: 4 }, (_, index) => resolveUsenetHash(config(), hexHash(index + 1), false, true))
   try {
@@ -267,53 +272,43 @@ test('foreground callers promote a shared queued background lookup before global
     assert.equal(probe.maximum, 4)
   } finally {
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    resetUsenetLookups()
+    usenet.close()
     await Promise.all(work)
     restore()
   }
 })
 
-test('a rate-limited provider pauses: interactive lookups fail fast and background lookups wait and retry', async () => {
-  isolation(0, { pauseBaseMs: 300 })
+test('a rate-limited provider pauses: interactive lookups fail fast and background lookups wait and retry', async t => {
+  isolation(t, 0, { pacing: { pauseBaseMs: 300 } })
   let rateLimited = true
   const starts: string[] = []
-  const original = globalThis.fetch
-  globalThis.fetch = async (input: RequestInfo | URL) => {
+  send = async (input: RequestInfo | URL) => {
     const hash = new URL(String(input)).searchParams.get('hash')!
     starts.push(hash)
     return rateLimited ? new Response('slow down', { status: 429 }) : new Response('nope', { status: 404 })
   }
-  try {
-    const background = resolveUsenetHash(config(), hexHash(1), false, true)
-    await until(() => usenetProviderPauses().length === 1)
-    const [pause] = usenetProviderPauses()
-    assert.equal(pause.channel, 'animetosho')
-    assert.equal(pause.label, 'AnimeTosho')
-    assert.equal(pause.reason, 'rate_limited')
-    const interactive = await resolveUsenetHash(config(), hexHash(2))
-    assert.equal(interactive.state, 'lookup_failed')
-    assert.equal(interactive.error_code, 'rate_limited')
-    assert.match(interactive.error || '', /AnimeTosho is rate limiting lookups; retrying in about/)
-    assert.deepEqual(starts, [hexHash(1)], 'no request starts while the provider is paused')
-    rateLimited = false
-    const retried = await background
-    assert.equal(retried.state, 'no_match', 'the background lookup retried after the pause instead of failing')
-    assert.deepEqual(starts, [hexHash(1), hexHash(1)])
-    assert.deepEqual(usenetProviderPauses(), [])
-  } finally {
-    globalThis.fetch = original
-    paceUsenetLookups()
-    resetUsenetLookups()
-  }
+  const background = resolveUsenetHash(config(), hexHash(1), false, true)
+  await until(() => usenetProviderPauses().length === 1)
+  const [pause] = usenetProviderPauses()
+  assert.equal(pause.channel, 'animetosho')
+  assert.equal(pause.label, 'AnimeTosho')
+  assert.equal(pause.reason, 'rate_limited')
+  const interactive = await resolveUsenetHash(config(), hexHash(2))
+  assert.equal(interactive.state, 'lookup_failed')
+  assert.equal(interactive.error_code, 'rate_limited')
+  assert.match(interactive.error || '', /AnimeTosho is rate limiting lookups; retrying in about/)
+  assert.deepEqual(starts, [hexHash(1)], 'no request starts while the provider is paused')
+  rateLimited = false
+  const retried = await background
+  assert.equal(retried.state, 'no_match', 'the background lookup retried after the pause instead of failing')
+  assert.deepEqual(starts, [hexHash(1), hexHash(1)])
+  assert.deepEqual(usenetProviderPauses(), [])
 })
 
-test('a running sweep reports the provider it waits on by its label', async () => {
-  isolation(0, { pauseBaseMs: 300 })
-  enableUsenetPrefetch()
+test('a running sweep reports the provider it waits on by its label', async t => {
+  const usenet = isolation(t, 0, { pacing: { pauseBaseMs: 300 }, sweep: true })
   let rateLimited = true
-  const original = globalThis.fetch
-  globalThis.fetch = async () =>
-    rateLimited ? new Response('slow down', { status: 429 }) : new Response('nope', { status: 404 })
+  send = async () => (rateLimited ? new Response('slow down', { status: 429 }) : new Response('nope', { status: 404 }))
   try {
     prefetchUsenetAvailability(config(), [result('paused-sweep', 1)], 'test')
     await until(() => Boolean(usenetPrefetchProgress().paused))
@@ -323,10 +318,7 @@ test('a running sweep reports the provider it waits on by its label', async () =
     rateLimited = false
     await until(() => !usenetPrefetchProgress().running)
   } finally {
-    stopUsenetPrefetch()
-    globalThis.fetch = original
-    paceUsenetLookups()
-    resetUsenetLookups()
+    usenet.close()
   }
 })
 
@@ -386,9 +378,8 @@ test('the sweep checks likely downloads first and skips excluded seasons and par
   )
 })
 
-test('a sweep prunes cached observations for hashes no longer in the results', async () => {
-  isolation(0)
-  enableUsenetPrefetch()
+test('a sweep prunes cached observations for hashes no longer in the results', async t => {
+  isolation(t, 0, { sweep: true })
   const probe: Probe = { starts: [], fetches: 0 }
   const restore = stubFetch(probe)
   try {
@@ -418,11 +409,11 @@ test('a sweep prunes cached observations for hashes no longer in the results', a
   }
 })
 
-test('many concurrent lookups never wedge the shared slot limiter', async () => {
+test('many concurrent lookups never wedge the shared slot limiter', async t => {
   // Regression: handing a released slot to a waiter used to also increment the
   // active count, so a batch larger than the cap leaked slots permanently and
   // every later lookup queued behind a full semaphore forever.
-  isolation(0)
+  isolation(t, 0)
   const probe: Probe = { starts: [], fetches: 0 }
   const restore = stubFetch(probe)
   try {
@@ -435,9 +426,8 @@ test('many concurrent lookups never wedge the shared slot limiter', async () => 
   }
 })
 
-test('the prefetch sweep checks every release of the saved results in the background', async () => {
-  isolation(10)
-  enableUsenetPrefetch()
+test('the prefetch sweep checks every release of the saved results in the background', async t => {
+  isolation(t, 10, { sweep: true })
   const probe: Probe = { starts: [], fetches: 0 }
   const restore = stubFetch(probe)
   try {
@@ -449,8 +439,8 @@ test('the prefetch sweep checks every release of the saved results in the backgr
   }
 })
 
-test('stopUsenetPrefetch cancels a running sweep mid-flight', async () => {
-  isolation(30)
+test('cleared results cancel a running sweep mid-flight', async t => {
+  const usenet = isolation(t, 30, { sweep: true })
   const probe: Probe = { starts: [], fetches: 0 }
   const restore = stubFetch(probe)
   try {
@@ -460,7 +450,7 @@ test('stopUsenetPrefetch cancels a running sweep mid-flight', async () => {
       'test',
     )
     await until(() => probe.fetches >= 2)
-    stopUsenetPrefetch()
+    usenet.runtime.resultsChanged(config(), [], [], 'results cleared')
     const observed = probe.fetches
     // In-flight completion of the current release is tolerated; the sweep must not continue.
     await assert.rejects(
@@ -472,9 +462,8 @@ test('stopUsenetPrefetch cancels a running sweep mid-flight', async () => {
   }
 })
 
-test('an older sweep completion cannot finish or overwrite a newer sweep', async () => {
-  isolation(0)
-  enableUsenetPrefetch()
+test('an older sweep completion cannot finish or overwrite a newer sweep', async t => {
+  const usenet = isolation(t, 0, { sweep: true })
   const { probe, complete, restore } = controlledFetch()
   const oldResults = [result('old-first', 1), result('old-later', 1)]
   const newerResults = [result('new-first', 1), result('new-later', 2)]
@@ -498,41 +487,37 @@ test('an older sweep completion cannot finish or overwrite a newer sweep', async
     await nextTurn()
     assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
   } finally {
-    stopUsenetPrefetch()
+    usenet.close()
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    resetUsenetLookups()
     await nextTurn()
     restore()
   }
 })
 
-test('stop clears current progress immediately and stale work cannot resurrect it', async () => {
-  isolation(0)
-  enableUsenetPrefetch()
+test('cleared results clear current progress immediately and stale work cannot resurrect it', async t => {
+  const usenet = isolation(t, 0, { sweep: true })
   const { probe, complete, restore } = controlledFetch()
   const results = [result('first', 1), result('later', 1)]
   try {
     prefetchUsenetAvailability(config(), results, 'test')
     await nextTurn()
     assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 0, total: 2 })
-    stopUsenetPrefetch()
+    usenet.runtime.resultsChanged(config(), [], [], 'results cleared')
     assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
     complete(results[0].releases[0].info_hashes[0])
     await nextTurn()
     assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
     assert.equal(probe.starts.length, 1)
   } finally {
-    stopUsenetPrefetch()
+    usenet.close()
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    resetUsenetLookups()
     await nextTurn()
     restore()
   }
 })
 
-test('empty and ineligible sweeps supersede old work without retaining progress', async () => {
-  isolation(0)
-  enableUsenetPrefetch()
+test('empty and ineligible sweeps supersede old work without retaining progress', async t => {
+  const usenet = isolation(t, 0, { sweep: true })
   const { probe, complete, restore } = controlledFetch()
   try {
     for (const ineligible of [false, true]) {
@@ -551,17 +536,15 @@ test('empty and ineligible sweeps supersede old work without retaining progress'
       assert.equal(probe.starts.includes(results[1].releases[0].info_hashes[0]), false)
     }
   } finally {
-    stopUsenetPrefetch()
+    usenet.close()
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    resetUsenetLookups()
     await nextTurn()
     restore()
   }
 })
 
-test('an unrelated configuration generation change does not interrupt the sweep', async () => {
-  isolation(0)
-  enableUsenetPrefetch()
+test('an unrelated configuration generation change does not interrupt the sweep', async t => {
+  const usenet = isolation(t, 0, { sweep: true })
   const { probe, complete, restore } = controlledFetch()
   const results = [result('first', 1), result('later', 1)]
   try {
@@ -574,17 +557,15 @@ test('an unrelated configuration generation change does not interrupt the sweep'
     assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 1, total: 2 })
     assert.equal(probe.starts.length, 2)
   } finally {
-    stopUsenetPrefetch()
+    usenet.close()
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    resetUsenetLookups()
     await nextTurn()
     restore()
   }
 })
 
-test('public snapshots cannot count scheduled prefetch work as completed or duplicate its provider requests', async () => {
-  isolation(0)
-  enableUsenetPrefetch()
+test('public snapshots cannot count scheduled prefetch work as completed or duplicate its provider requests', async t => {
+  const usenet = isolation(t, 0, { sweep: true })
   const { probe, complete, restore } = controlledFetch()
   const results = [result('snapshot-prefetch', 2)]
   try {
@@ -607,9 +588,8 @@ test('public snapshots cannot count scheduled prefetch work as completed or dupl
     await nextTurn()
     assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
   } finally {
-    stopUsenetPrefetch()
+    usenet.close()
     for (const hash of [...probe.pending.keys()]) complete(hash)
-    resetUsenetLookups()
     await nextTurn()
     restore()
   }
