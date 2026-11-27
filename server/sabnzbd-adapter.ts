@@ -26,6 +26,7 @@ import {
   spaceVerdict,
   unitSizing,
   type DownloadClientAdapter,
+  type DownloadSpaceLocation,
   type LiveJob,
   type SubmissionUnit,
 } from './download-client-types.js'
@@ -130,6 +131,23 @@ export function sabnzbdAdapter(config: Config): DownloadClientAdapter {
       sufficient: spaceVerdict(bytes, required, uncertain - unsized, unsized),
       reason: reason || 'Category folders on other disks are not checked.',
     }))
+  }
+
+  async function freeSpace(): Promise<DownloadSpaceLocation[]> {
+    if (!settings) return []
+    try {
+      const space = await sabDiskSpace(settings)
+      return [{ client: 'sabnzbd', label: 'SABnzbd completed folder', free_bytes: space.complete_free_bytes }]
+    } catch (error) {
+      return [
+        {
+          client: 'sabnzbd',
+          label: 'SABnzbd completed folder',
+          free_bytes: null,
+          reason: `Could not read SABnzbd storage: ${errorMessage(error).slice(0, 120)}`,
+        },
+      ]
+    }
   }
 
   /**
@@ -240,6 +258,7 @@ export function sabnzbdAdapter(config: Config): DownloadClientAdapter {
       else await sabDeleteHistoryJob(settings, nativeId, removeFiles)
     },
     diskChecks,
+    freeSpace,
     unknownCategories: async categories => (settings ? sabMissingCategories(settings, categories) : null),
     adoptUnconfirmed,
     forgotten: recordId => {

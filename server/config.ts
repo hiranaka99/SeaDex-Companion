@@ -26,7 +26,7 @@ import {
   normalizeReleasePreferences,
   normalizeTrackerMode,
 } from '../shared/settings.js'
-import { configuredArrInstances, instanceOf, PRIMARY_INSTANCE_IDS } from './arr-instances.js'
+import { configuredArrInstances, instanceOf, PRIMARY_INSTANCE_IDS, type ArrInstance } from './arr-instances.js'
 import type { ArrInstanceConfig, Config, JsonObject, PublicConfig } from './types.js'
 import type { DownloadProtocol } from '../shared/download-contracts.js'
 
@@ -209,6 +209,14 @@ export function migrateConfig(): void {
   }
 }
 
+/** Download-client category of a Sonarr or Radarr instance for the given protocol. */
+export function instanceCategory(
+  instance: Pick<ArrInstance, 'category' | 'sabnzbd_category'>,
+  protocol: DownloadProtocol,
+): string {
+  return (protocol === 'usenet' ? instance.sabnzbd_category : instance.category).trim()
+}
+
 /** Download-client category of the instance a result belongs to, so the right Sonarr or Radarr imports it. */
 export function downloadCategory(
   config: Config,
@@ -216,8 +224,7 @@ export function downloadCategory(
   protocol: DownloadProtocol,
 ): string {
   const instance = instanceOf(config, typeof source === 'string' ? { arr: source } : source)
-  if (!instance) return ''
-  return (protocol === 'usenet' ? instance.sabnzbd_category : instance.category).trim()
+  return instance ? instanceCategory(instance, protocol) : ''
 }
 
 /** SABnzbd categories every configured instance imports from. */

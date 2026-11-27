@@ -12,6 +12,7 @@ import { setImmediate as nextTurn } from 'node:timers/promises'
 import { loadConfig, saveConfig } from '../server/config.js'
 import { saveSettings } from '../server/config-service.js'
 import { consumePlan } from '../server/download-plans.js'
+import { downloadClients } from '../server/download-clients.js'
 import { buildDownloadPlan, parseSelections } from '../server/download-preflight.js'
 import { downloadRoutes } from '../server/download-routes.js'
 import { downloadRecords, resetOwnedRuntime } from '../server/download-store.js'
@@ -355,7 +356,13 @@ async function accept(
   results: ResultItem[],
   acknowledge: { whole_source?: boolean; disk_space?: boolean } = { disk_space: true },
 ) {
-  const { completion } = await acceptDownloadPlan(settings, consumePlan(plan.id)!, acknowledge, results)
+  const { completion } = await acceptDownloadPlan(
+    settings,
+    consumePlan(plan.id)!,
+    acknowledge,
+    results,
+    downloadClients(settings),
+  )
   return completion
 }
 
@@ -385,7 +392,8 @@ test('a proven match survives a restart, and a bulk review then plans and sends 
   resetUsenetSearch(true)
   resetProwlarrRuntime()
   fake.calls.length = 0
-  const built = await buildDownloadPlan(config(), rows, { results })
+  const settings = config()
+  const built = await buildDownloadPlan(settings, rows, { results, clients: downloadClients(settings) })
   assert.deepEqual(
     built.review.units.map(unit => [unit.source_hash, unit.status, unit.provider, unit.proof]),
     [[show('Alpha').id, 'new', 'prowlarr', 'exact']],
@@ -400,7 +408,7 @@ test('a proven match survives a restart, and a bulk review then plans and sends 
   ])
   assert.equal(built.review.requires_whole_ack, false)
 
-  const outcome = await accept(config(), built.plan, results)
+  const outcome = await accept(settings, built.plan, results)
   assert.deepEqual(
     outcome.rows.map(entry => [entry.key, entry.status]),
     [
@@ -419,7 +427,7 @@ test('a proven match survives a restart, and a bulk review then plans and sends 
     [record.protocol, record.source_hash, record.provider, record.proof, record.entry_id],
     ['usenet', show('Alpha').id, 'prowlarr', 'exact', entryOf('Alpha')],
   )
-  const again = await buildDownloadPlan(config(), rows, { results })
+  const again = await buildDownloadPlan(settings, rows, { results, clients: downloadClients(settings) })
   assert.deepEqual(
     again.review.units.map(unit => [unit.status, unit.existing_record_id]),
     [['existing', record.id]],
@@ -471,10 +479,14 @@ test('a near-exact NZB is planned without a confirmation and labelled on the uni
   const fake = setup(t)
   fake.bodies.Alpha = nearExactNzb('Alpha')
   const results = [privateRow('Alpha')]
-  const [checked] = await observe(config(), [row('Alpha')], results, { verify: [row('Alpha')] })
+  const settings = config()
+  const [checked] = await observe(settings, [row('Alpha')], results, { verify: [row('Alpha')] })
   assert.deepEqual([checked.aggregate, checked.hashes[0].proof], ['available', 'near_exact'])
 
-  const built = await buildDownloadPlan(config(), [row('Alpha'), { key: 'gone', release: 0 }], { results })
+  const built = await buildDownloadPlan(settings, [row('Alpha'), { key: 'gone', release: 0 }], {
+    results,
+    clients: downloadClients(settings),
+  })
   assert.deepEqual(
     built.review.units.map(unit => [unit.status, unit.proof, unit.whole_source, unit.scope_expanded]),
     [['new', 'near_exact', true, false]],
@@ -507,7 +519,8 @@ test('probable, size-only and unverified candidates are sent only when chosen, a
   }))
   Object.assign(fake.bodies, { probable: probableNzb('Alpha'), size_only: SIZE_ONLY_NZB, unverified: OTHER_NZB })
   const results = [privateRow('Alpha')]
-  const [searched] = await observe(config(), [row('Alpha')], results, { search: [row('Alpha')] })
+  const settings = config()
+  const [searched] = await observe(settings, [row('Alpha')], results, { search: [row('Alpha')] })
   assert.equal(searched.aggregate, 'no_match')
   assert.deepEqual(
     searched.hashes[0].candidates?.map(candidate => [candidate.entry_id, candidate.checked, candidate.proof]),
@@ -522,7 +535,7 @@ test('probable, size-only and unverified candidates are sent only when chosen, a
 
   // On its own no review sends any of them, alone or in bulk, and none fetches another NZB.
   for (const selections of [[row('Alpha')], [row('Alpha'), { key: 'gone', release: 0 }]]) {
-    const plain = await buildDownloadPlan(config(), selections, { results })
+    const plain = await buildDownloadPlan(settings, selections, { results, clients: downloadClients(settings) })
     assert.deepEqual(plain.review.units, [])
     const blocked = plain.review.blocked.find(entry => entry.key === 'alpha')
     assert.equal(blocked?.code, 'no_match')
@@ -532,7 +545,7 @@ test('probable, size-only and unverified candidates are sent only when chosen, a
   // Naming a checked candidate is the confirmation, whatever its NZB showed.
   for (const proof of ['probable', 'size_only', 'unverified'] as const) {
     const chosen = { ...row('Alpha'), protocol: 'usenet' as const, nzb: entryOf(proof) }
-    const built = await buildDownloadPlan(config(), [chosen], { results })
+    const built = await buildDownloadPlan(settings, [chosen], { results, clients: downloadClients(settings) })
     assert.deepEqual(built.review.blocked, [], proof)
     assert.deepEqual(
       built.review.units.map(unit => [unit.status, unit.provider, unit.proof]),
@@ -543,7 +556,7 @@ test('probable, size-only and unverified candidates are sent only when chosen, a
   // A candidate nobody fetched cannot be chosen, and neither can one that is not known.
   for (const link of ['unopened', 'elsewhere']) {
     const chosen = { ...row('Alpha'), protocol: 'usenet' as const, nzb: entryOf(link) }
-    const refused = await buildDownloadPlan(config(), [chosen], { results })
+    const refused = await buildDownloadPlan(settings, [chosen], { results, clients: downloadClients(settings) })
     assert.deepEqual(refused.review.units, [])
     assert.deepEqual(refused.review.blocked, [
       {
@@ -559,10 +572,11 @@ test('probable, size-only and unverified candidates are sent only when chosen, a
   const torrent = { ...row('Alpha'), protocol: 'torrent', nzb: entryOf('probable') }
   assert.throws(() => parseSelections([torrent]), /A chosen NZB needs the Usenet protocol/)
   assert.throws(() => parseSelections([{ ...row('Alpha'), nzb: entryOf('probable') }]), /needs the Usenet protocol/)
+  const chooseConfig = config({ download_mode: 'choose' })
   const asTorrent = await buildDownloadPlan(
-    config({ download_mode: 'choose' }),
+    chooseConfig,
     [torrent as { key: string; release: number; protocol: 'torrent'; nzb: string }],
-    { results },
+    { results, clients: downloadClients(chooseConfig) },
   )
   assert.deepEqual(asTorrent.review.units, [])
   assert.deepEqual(
@@ -572,7 +586,7 @@ test('probable, size-only and unverified candidates are sent only when chosen, a
 
   // The chosen NZB is sent as it was checked, with its proof on the ledger record.
   const chosen = { ...row('Alpha'), protocol: 'usenet' as const, nzb: entryOf('size_only') }
-  const built = await buildDownloadPlan(config(), [chosen], { results })
+  const built = await buildDownloadPlan(settings, [chosen], { results, clients: downloadClients(settings) })
   await accept(config(), built.plan, results)
   assert.equal(fake.sent[0].nzb, text(SIZE_ONLY_NZB))
   assert.deepEqual(
@@ -625,7 +639,8 @@ test('a bulk review checks one NZB for each row it names, plans the proven ones 
   resetProwlarrRuntime()
 
   // The review that follows reads what is stored. The row nobody named is neither searched nor fetched.
-  const built = await buildDownloadPlan(config(), rows, { results })
+  const settings = config()
+  const built = await buildDownloadPlan(settings, rows, { results, clients: downloadClients(settings) })
   assert.deepEqual(
     built.review.units.map(unit => [unit.source_hash, unit.proof]),
     [[show('Alpha').id, 'exact']],
@@ -663,7 +678,7 @@ test('rows beyond the daily fetch limit stay unchecked and say when the next che
   const [usage] = prowlarrIndexerUsage(limited)
   assert.deepEqual([usage.indexer, usage.fetches_left], ['Geek', 0])
 
-  const built = await buildDownloadPlan(limited, rows, { results })
+  const built = await buildDownloadPlan(limited, rows, { results, clients: downloadClients(limited) })
   assert.equal(built.review.units.length, 1)
   assert.deepEqual(
     built.review.blocked.map(blocked => [blocked.key, blocked.code]),
@@ -678,23 +693,24 @@ test('rows beyond the daily fetch limit stay unchecked and say when the next che
 
 test('accepting a plan spends no search and no fetch, also when its stored result has disappeared', async t => {
   const fake = setup(t)
+  const settings = config()
   const results = [privateRow('Alpha')]
   // A review of one release searches and checks by itself.
-  const built = await buildDownloadPlan(config(), [row('Alpha')], { results })
+  const built = await buildDownloadPlan(settings, [row('Alpha')], { results, clients: downloadClients(settings) })
   assert.deepEqual(
     built.review.units.map(unit => unit.proof),
     ['exact'],
   )
   assert.deepEqual([searches(fake), downloads(fake)], [['Vault Alpha'], ['Alpha']])
   // Opening it again costs nothing more.
-  const reopened = await buildDownloadPlan(config(), [row('Alpha')], { results })
+  const reopened = await buildDownloadPlan(settings, [row('Alpha')], { results, clients: downloadClients(settings) })
   assert.equal(reopened.review.units.length, 1)
   assert.equal(spent(fake), 2)
 
   // The stored result is gone by the time the plan is confirmed.
   forgetSearches()
   fake.calls.length = 0
-  const outcome = await accept(config(), built.plan, results)
+  const outcome = await accept(settings, built.plan, results)
   assert.equal(outcome.ok, false)
   assert.deepEqual(
     outcome.failures.map(failure => [failure.code, failure.error]),
@@ -710,7 +726,7 @@ test('accepting a plan spends no search and no fetch, also when its stored resul
   assert.deepEqual(downloadRecords(), [])
 
   // With the result in place, the other plan is sent from the store alone.
-  await buildDownloadPlan(config(), [row('Alpha')], { results })
+  await buildDownloadPlan(settings, [row('Alpha')], { results, clients: downloadClients(settings) })
   fake.calls.length = 0
   resetProwlarrRuntime()
   const sent = await accept(config(), reopened.plan, results)
@@ -755,7 +771,8 @@ test('cancelling a review drops the checks that wait, and the one under way fini
   assert.deepEqual(downloads(fake), ['Alpha'], 'no further NZB was fetched')
   assert.equal(searches(fake).length, 3)
 
-  const built = await buildDownloadPlan(config(), rows, { results })
+  const settings = config()
+  const built = await buildDownloadPlan(settings, rows, { results, clients: downloadClients(settings) })
   assert.deepEqual(
     built.review.blocked.map(blocked => [blocked.key, blocked.code, blocked.reason]),
     ['beta', 'gamma'].map(key => [key, 'not_verified', 'Usenet results for this release have not been checked yet.']),
@@ -793,12 +810,15 @@ test('a hash-linked NZB is used as before, and a failed or processing hash looku
   assert.equal(spent(fake), 0)
 
   // A review of one release may search Prowlarr, and still does not for these.
-  const reviews = await Promise.all(rows.map(entry => buildDownloadPlan(config(), [entry], { results })))
+  const settings = config()
+  const reviews = await Promise.all(
+    rows.map(entry => buildDownloadPlan(settings, [entry], { results, clients: downloadClients(settings) })),
+  )
   assert.deepEqual(
     reviews.map(built => built.review.blocked.map(blocked => blocked.code)),
     [[], ['lookup_failed'], ['processing']],
   )
-  const bulk = await buildDownloadPlan(config(), rows, { results })
+  const bulk = await buildDownloadPlan(settings, rows, { results, clients: downloadClients(settings) })
   assert.deepEqual(
     bulk.review.blocked.map(blocked => [blocked.key, blocked.code]),
     [
@@ -834,13 +854,15 @@ test('public-tracker mode makes no Prowlarr request for a private-tracker releas
     assert.deepEqual([shown.aggregate, shown.search, shown.fallback], ['unsupported_hash', undefined, undefined])
     for (const selections of [rows, [...rows, { key: 'gone', release: 0 }]]) {
       const usenet = selections.map(entry => ({ ...entry, protocol: 'usenet' as const }))
-      const built = await buildDownloadPlan(settings, usenet, { results })
+      const built = await buildDownloadPlan(settings, usenet, { results, clients: downloadClients(settings) })
       assert.deepEqual(built.review.units, [])
       assert.equal(built.review.blocked.find(blocked => blocked.key === 'alpha')?.code, 'no_match')
     }
   }
-  const torrent = await buildDownloadPlan(config({ tracker_mode: 'public', download_mode: 'torrent_only' }), rows, {
+  const torrentConfig = config({ tracker_mode: 'public', download_mode: 'torrent_only' })
+  const torrent = await buildDownloadPlan(torrentConfig, rows, {
     results,
+    clients: downloadClients(torrentConfig),
   })
   assert.equal(torrent.review.blocked[0].code, 'no_torrent')
   assert.deepEqual(fake.calls, [])
@@ -866,7 +888,7 @@ test('a source requested through both protocols in one review is sent through ne
       { ...one, protocol: 'usenet' },
       { key: 'two', release: 0, protocol: 'torrent' },
     ],
-    { results },
+    { results, clients: downloadClients(settings) },
   )
   assert.deepEqual(both.review.units, [])
   assert.deepEqual(both.review.blocked.map(blocked => [blocked.key, blocked.code]).sort(), [
@@ -882,6 +904,7 @@ test('a source requested through both protocols in one review is sent through ne
     ],
     {
       results,
+      clients: downloadClients(settings),
     },
   )
   assert.deepEqual(
@@ -898,9 +921,10 @@ test('a whole-source NZB with a selected-file scope needs the acknowledgement at
   const scoped = (tag: string) => privateRow(tag, { selected_files: [show(tag).files[0].name] })
   const results = [scoped('Alpha'), scoped('Beta')]
   const rows = [row('Alpha'), row('Beta')]
-  await observe(config(), rows, results, { verify: rows })
+  const settings = config()
+  await observe(settings, rows, results, { verify: rows })
 
-  const built = await buildDownloadPlan(config(), rows, { results })
+  const built = await buildDownloadPlan(settings, rows, { results, clients: downloadClients(settings) })
   assert.deepEqual(built.review.blocked, [])
   assert.deepEqual(
     built.review.units.map(unit => [unit.proof, unit.whole_source, unit.scope_expanded, unit.scope_unknown]),
@@ -911,16 +935,16 @@ test('a whole-source NZB with a selected-file scope needs the acknowledgement at
   )
   assert.equal(built.review.requires_whole_ack, true)
   for (const tag of ['Alpha', 'Beta']) {
-    const single = await buildDownloadPlan(config(), [row(tag)], { results })
+    const single = await buildDownloadPlan(settings, [row(tag)], { results, clients: downloadClients(settings) })
     assert.equal(single.review.requires_whole_ack, true, tag)
     await assert.rejects(
-      accept(config(), single.plan, results),
+      accept(settings, single.plan, results),
       (error: PlanRejected) => error.status === 409 && /whole Usenet sources/.test(error.message),
     )
   }
   assert.equal(fake.sent.length, 0)
 
-  const outcome = await accept(config(), built.plan, results, { whole_source: true, disk_space: true })
+  const outcome = await accept(settings, built.plan, results, { whole_source: true, disk_space: true })
   assert.equal(outcome.ok, true)
   assert.deepEqual(
     fake.sent.map(job => job.nzb),
@@ -981,7 +1005,10 @@ test('a changed Prowlarr key or address leaves no usable record and no stored NZ
     assert.deepEqual(fs.readdirSync(NZB_STORE_DIR), [])
     const stored = fs.readFileSync(USENET_SEARCH_FILE, 'utf8')
     assert.ok(!stored.includes(source.id) && !stored.includes('"link"'), 'the record is gone from the file as well')
-    const built = await buildDownloadPlan(changed, [...rows, { key: 'gone', release: 0 }], { results })
+    const built = await buildDownloadPlan(changed, [...rows, { key: 'gone', release: 0 }], {
+      results,
+      clients: downloadClients(changed),
+    })
     assert.equal(built.review.blocked.find(blocked => blocked.key === 'alpha')?.code, 'not_searched')
     // Going back to the old connection does not bring the record back.
     resetUsenetSearch(true)

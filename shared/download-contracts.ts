@@ -5,6 +5,11 @@ export type DownloadProtocol = 'torrent' | 'usenet'
 export type DownloadMode = 'torrent_only' | 'usenet_only' | 'choose'
 export type DownloadClient = 'qbittorrent' | 'sabnzbd'
 
+/** Whether the saved download mode allows acquisitions over this protocol. */
+export function modeAllowsProtocol(mode: DownloadMode, protocol: DownloadProtocol): boolean {
+  return mode === 'choose' || (mode === 'torrent_only' ? protocol === 'torrent' : protocol === 'usenet')
+}
+
 /** Shared acquisition phase. Torrent and Usenet native states both map here. */
 export type DownloadPhase =
   | 'acceptance_unknown'

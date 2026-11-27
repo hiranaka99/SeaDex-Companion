@@ -31,6 +31,7 @@ import type { Config, Release, ResultItem } from '../server/types.js'
 import type { UsenetAvailabilityResult } from '../shared/usenet-contracts.js'
 import { DATA_DIR } from '../server/paths.js'
 import { resetOwnedRuntime } from '../server/download-store.js'
+import { downloadClients } from '../server/download-clients.js'
 import { buildDownloadPlan } from '../server/download-preflight.js'
 
 const HASH = 'c'.repeat(40)
@@ -183,11 +184,15 @@ test('restored manifest paths remain exact so cached scope checks cannot hide ex
           releases: [selected],
         },
       ] as unknown as ResultItem[]
-      const built = await buildDownloadPlan(
-        config({ download_mode: 'usenet_only', sabnzbd_url: 'http://cache-sab.test', sabnzbd_key: 'test-key' }),
-        [{ key: 'cache-show', release: 0, protocol: 'usenet' }],
-        { results },
-      )
+      const cacheConfig = config({
+        download_mode: 'usenet_only',
+        sabnzbd_url: 'http://cache-sab.test',
+        sabnzbd_key: 'test-key',
+      })
+      const built = await buildDownloadPlan(cacheConfig, [{ key: 'cache-show', release: 0, protocol: 'usenet' }], {
+        results,
+        clients: downloadClients(cacheConfig),
+      })
       assert.equal(built.review.requires_whole_ack, true)
       assert.deepEqual(built.review.units[0].known_extra_files, [extraName])
       assert.equal(built.review.units[0].extra_file_count, 1)

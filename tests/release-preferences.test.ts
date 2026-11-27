@@ -3,6 +3,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { assessSeason } from '../server/assessment.js'
 import { exclusionReason, pickBest } from '../server/matching.js'
+import { downloadClients } from '../server/download-clients.js'
 import { buildDownloadPlan } from '../server/download-preflight.js'
 import { applyConfigUpdate, DEFAULT_CONFIG, publicConfig } from '../server/config.js'
 import { RELEASE_CHANGES_FILE, RESULTS_FILE } from '../server/paths.js'
@@ -597,6 +598,7 @@ test('bulk review refuses a release Prowlarr cannot reach and says why, while a 
       { ...result, key: 'row' },
       { ...result, key: 'other' },
     ],
+    clients: downloadClients(config),
   })
   assert.ok('review' in bulk)
   assert.deepEqual(
@@ -606,7 +608,10 @@ test('bulk review refuses a release Prowlarr cannot reach and says why, while a 
       ['other', 'invalid', `Your release preferences exclude this release. (${UNREACHABLE_AB})`],
     ],
   )
-  const single = await buildDownloadPlan(config, [pick('row')], { results: [{ ...result, key: 'row' }] })
+  const single = await buildDownloadPlan(config, [pick('row')], {
+    results: [{ ...result, key: 'row' }],
+    clients: downloadClients(config),
+  })
   assert.ok('review' in single)
   assert.equal(
     single.review.blocked.some(row => row.code === 'invalid'),
@@ -821,6 +826,7 @@ test('bulk review refuses a release the preferences exclude, while a single down
   assert.equal(releaseOffered(result.releases[encodeIndex]), true)
   const bulk = await buildDownloadPlan(config, [pick(remuxIndex), { ...pick(remuxIndex), key: 'other' }], {
     results: [result, other],
+    clients: downloadClients(config),
   })
   assert.ok('review' in bulk)
   assert.deepEqual(
@@ -830,7 +836,10 @@ test('bulk review refuses a release the preferences exclude, while a single down
       ['other', 'invalid', 'Your release preferences exclude this release. (Over 4 GB per episode)'],
     ],
   )
-  const single = await buildDownloadPlan(config, [pick(remuxIndex)], { results: [result] })
+  const single = await buildDownloadPlan(config, [pick(remuxIndex)], {
+    results: [result],
+    clients: downloadClients(config),
+  })
   assert.ok('review' in single)
   assert.equal(
     single.review.blocked.some(row => row.code === 'invalid'),

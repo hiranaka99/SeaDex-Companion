@@ -20,11 +20,11 @@ import {
   setDownloadPhase,
   type OwnedDownloadRecord,
 } from './download-store.js'
-import { downloadClients } from './download-clients.js'
 import {
   OwnershipError,
   type ClientSnapshot,
   type DownloadClientAdapter,
+  type DownloadClients,
   type LiveJob,
 } from './download-client-types.js'
 import { resultsForRequest } from './downloads.js'
@@ -287,11 +287,15 @@ async function readClient(
  * client once per call; endpoint-mismatched records are reported unbound and are
  * never controlled, and failed reads preserve the persisted last-known phase.
  */
-async function readDownloadProgress(config: Config, records: OwnedDownloadRecord[]): Promise<ProgressRead> {
+async function readDownloadProgress(
+  config: Config,
+  records: OwnedDownloadRecord[],
+  clients: DownloadClients,
+): Promise<ProgressRead> {
   const downloads: Record<string, DownloadProgress> = {}
   const live = new Map<string, LiveJob>()
   const unavailable: DownloadClient[] = []
-  for (const client of Object.values(downloadClients(config))) {
+  for (const client of Object.values(clients)) {
     const complete = await readClient(
       config,
       client,
@@ -313,12 +317,12 @@ async function readDownloadProgress(config: Config, records: OwnedDownloadRecord
   }
 }
 
-export async function collectDownloadProgress(config: Config): Promise<AllDownloadProgress> {
-  return (await readDownloadProgress(config, downloadRecords())).progress
+export async function collectDownloadProgress(config: Config, clients: DownloadClients): Promise<AllDownloadProgress> {
+  return (await readDownloadProgress(config, downloadRecords(), clients)).progress
 }
 
-export async function listCancelable(config: Config): Promise<CancelableDownloads> {
-  const progress = await collectDownloadProgress(config)
+export async function listCancelable(config: Config, clients: DownloadClients): Promise<CancelableDownloads> {
+  const progress = await collectDownloadProgress(config, clients)
   const results = resultsForRequest()
   const items: CancelableDownload[] = []
   for (const view of Object.values(progress.downloads)) {
@@ -373,11 +377,11 @@ export async function cancelRecords(
   config: Config,
   recordIds: unknown,
   removeFiles: boolean,
+  clients: DownloadClients,
 ): Promise<DownloadCancelResult> {
   if (recordIds !== undefined && !Array.isArray(recordIds)) throw new Error('record_ids must be an array')
   const wanted = recordIds?.map(String)
-  const clients = downloadClients(config)
-  const { progress, live } = await readDownloadProgress(config, downloadRecords())
+  const { progress, live } = await readDownloadProgress(config, downloadRecords(), clients)
   const removed: DownloadCancelResult['removed'] = []
   const failures: DownloadCancelResult['failures'] = []
   for (const view of Object.values(progress.downloads)) {
@@ -414,12 +418,13 @@ export async function controlRecord(
   recordId: string,
   action: string,
   deleteFiles: boolean,
+  clients: DownloadClients,
 ): Promise<{ ok: true }> {
   const record = findDownloadRecord(recordId)
   if (!record || record.removed_at) throw new OwnershipError('Download record not found.', 404)
   if (action !== 'pause' && action !== 'resume' && action !== 'remove')
     throw new OwnershipError('Unknown download action', 400)
-  const client = downloadClients(config)[record.protocol]
+  const client = clients[record.protocol]
   // An unconfirmed submission is only forgotten; the client is never touched, so nothing it holds is lost.
   if (record.state === 'acceptance_unknown' && action === 'remove') {
     markDownloadRemoved(record.id)
@@ -434,7 +439,7 @@ export async function controlRecord(
     throw new OwnershipError('This download was added through a different client URL; controls are disabled.')
   if (record.state === 'acceptance_unknown')
     throw new OwnershipError('Submission status is unknown; check the download client before controlling this record.')
-  const { progress, live } = await readDownloadProgress(config, [record])
+  const { progress, live } = await readDownloadProgress(config, [record], clients)
   const view = progress.downloads[record.id]
   if (!view) throw new OwnershipError('Download record not found.', 404)
   const job = live.get(record.id)

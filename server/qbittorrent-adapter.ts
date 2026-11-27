@@ -15,6 +15,7 @@ import {
   spaceVerdict,
   unitSizing,
   type DownloadClientAdapter,
+  type DownloadSpaceLocation,
   type LiveJob,
   type SubmissionUnit,
 } from './download-client-types.js'
@@ -104,13 +105,48 @@ async function torrentDiskChecks(config: Config, units: SubmissionUnit[]): Promi
   }))
 }
 
+/** Free space per configured qBittorrent destination, deduplicated across categories sharing one path. */
+async function torrentFreeSpace(
+  config: Config,
+  endpointId: string,
+  categories: string[],
+): Promise<DownloadSpaceLocation[]> {
+  if (!endpointId) return []
+  try {
+    const locations: DownloadSpaceLocation[] = []
+    const seen = new Set<string>()
+    for (const location of await qbGetDownloadStorage(config, categories)) {
+      const label = location.path || `qBittorrent category ${location.category || '(none)'}`
+      if (seen.has(label)) continue
+      seen.add(label)
+      locations.push({
+        client: 'qbittorrent',
+        label,
+        free_bytes: location.free_bytes,
+        ...(location.reason ? { reason: location.reason } : {}),
+      })
+    }
+    return locations
+  } catch (error) {
+    return [
+      {
+        client: 'qbittorrent',
+        label: 'qBittorrent',
+        free_bytes: null,
+        reason: `Could not read qBittorrent storage: ${errorMessage(error).slice(0, 120)}`,
+      },
+    ]
+  }
+}
+
 export function qbittorrentAdapter(config: Config): DownloadClientAdapter {
+  const endpointId = qbEndpointId(config)
   return {
     protocol: 'torrent',
     client: 'qbittorrent',
     label: 'qBittorrent',
     jobNoun: 'torrent',
-    endpointId: qbEndpointId(config),
+    endpointId,
     nativeIdIsSourceHash: true,
     notControllable: 'This torrent is no longer in qBittorrent.',
     async read(records) {
@@ -152,5 +188,6 @@ export function qbittorrentAdapter(config: Config): DownloadClientAdapter {
     control: (nativeId, action) => qbControlTorrents(config, [nativeId], action),
     remove: (nativeId, removeFiles) => qbControlTorrents(config, [nativeId], 'remove', removeFiles),
     diskChecks: units => torrentDiskChecks(config, units),
+    freeSpace: categories => torrentFreeSpace(config, endpointId, categories),
   }
 }
