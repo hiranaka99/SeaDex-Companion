@@ -1,4 +1,5 @@
 import { log } from './logging.js'
+import { guarded } from './lookup-flights.js'
 import type { UsenetFailureCode } from '../shared/usenet-contracts.js'
 import type { ProviderLookup } from './usenet-provider-types.js'
 
@@ -15,7 +16,7 @@ export interface LookupRequest<T> {
   signal: AbortSignal
   /** Gives up only the wait for a slot; work that started runs on. `signal` when left out. */
   waitSignal?: AbortSignal
-  /** How long the work may hold the slot; past it the job fails with `LookupGuardTimeout`. */
+  /** How long the work may hold the slot; past it the job fails with `LookupGuardTimeout` (`lookup-flights.ts`). */
   guardMs: number
   /** The request itself, run with the slot in hand. */
   work: () => Promise<T>
@@ -36,13 +37,6 @@ export interface LookupHandle<T> {
   result: Promise<T>
   /** Someone now waits on the job: from here on it is foreground work. Nothing changes once it started. */
   promote(): void
-}
-
-/** The work of a job held its slot longer than its guard allows; the slot was freed. */
-export class LookupGuardTimeout extends Error {
-  constructor() {
-    super('lookup exceeded the wall-clock guard')
-  }
 }
 
 /** How a scheduler paces its channels; fixed when the scheduler is created. */
@@ -145,23 +139,6 @@ interface Waiter {
 function describeWait(ms: number): string {
   const seconds = Math.max(1, Math.ceil(ms / 1000))
   return seconds < 90 ? `${seconds} seconds` : `${Math.ceil(seconds / 60)} minutes`
-}
-
-/** Settles with `work`, or rejects once `signal` aborts or `work` is still pending after `guardMs`. */
-async function guarded<T>(work: Promise<T>, signal: AbortSignal, guardMs: number): Promise<T> {
-  const stop = Promise.withResolvers<never>()
-  const cancel = () => stop.reject(signal.reason)
-  // The provider clients carry their own timeouts; this is the last line of defense, and never keeps the process alive.
-  const timer = setTimeout(() => stop.reject(new LookupGuardTimeout()), guardMs)
-  timer.unref?.()
-  signal.addEventListener('abort', cancel, { once: true })
-  if (signal.aborted) cancel()
-  try {
-    return await Promise.race([work, stop.promise])
-  } finally {
-    clearTimeout(timer)
-    signal.removeEventListener('abort', cancel)
-  }
 }
 
 const idle = (): ChannelState => ({
