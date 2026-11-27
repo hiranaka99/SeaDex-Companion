@@ -27,10 +27,6 @@ import { groupReleaseChanges, presentReleaseChange } from '../release-changes'
 import ReleaseChangeLine from './ReleaseChangeLine'
 import { STATUS_PRESENTATION } from '../status-presentation'
 
-function HideActionIcon({ hidden }: { hidden: boolean }) {
-  return <Icon name={hidden ? 'eye' : 'eye-off'} size={18} />
-}
-
 interface CardProps {
   active: boolean
   openRequested?: boolean
@@ -38,15 +34,11 @@ interface CardProps {
   group: GroupedCard
   index: number
   config: Config | null
-  hidden?: boolean
-  onToggle: (group: GroupedCard) => void
   onRulesChanged: () => Promise<void>
   onRescan: () => void
   reviewingChanges: boolean
   onReviewChanges: (ids: string[]) => Promise<void>
 }
-
-const HIDE_DURATION_MS = 280
 
 function jumpToDetails(id: string) {
   const target = document.getElementById(id)
@@ -77,8 +69,6 @@ function jumpToDetails(id: string) {
 
 const CARD_BASE =
   'group/card relative flex flex-col overflow-hidden rounded-card border border-line bg-panel transition-opacity duration-200'
-const ICON_BUTTON =
-  'grid size-9 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-panel-raised hover:text-ink'
 function Card({
   active,
   openRequested,
@@ -86,14 +76,11 @@ function Card({
   group,
   index,
   config,
-  hidden = false,
-  onToggle,
   onRulesChanged,
   onRescan,
   reviewingChanges,
   onReviewChanges,
 }: CardProps) {
-  const [hiding, setHiding] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [detailsVisible, setDetailsVisible] = useState(false)
   const [removeTarget, setRemoveTarget] = useState<DownloadEntry | null>(null)
@@ -101,7 +88,6 @@ function Card({
   const [mappingOpen, setMappingOpen] = useState(false)
   const [mappingSeason, setMappingSeason] = useState<ResultItem | null>(null)
   const [ruleBusy, setRuleBusy] = useState('')
-  const hideTimer = useRef<number | null>(null)
   const closing = useRef(false)
   const openFrame = useRef<number | null>(null)
   const closeTimer = useRef<number | null>(null)
@@ -161,7 +147,6 @@ function Card({
 
   useEffect(() => {
     return () => {
-      if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
       if (openFrame.current !== null) window.cancelAnimationFrame(openFrame.current)
       if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
     }
@@ -194,19 +179,6 @@ function Card({
       document.body.style.overflow = previousOverflow
     }
   }, [detailsOpen])
-
-  const handleHide = () => {
-    if (hiding) return
-    if (hidden) {
-      onToggle(group)
-      return
-    }
-    setHiding(true)
-    hideTimer.current = window.setTimeout(
-      () => onToggle(group),
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : HIDE_DURATION_MS,
-    )
-  }
 
   const handleOpenDetails = () => {
     setDetailsVisible(false)
@@ -392,14 +364,9 @@ function Card({
         data-library-key={group.key}
         data-library-status={group.status}
         data-needs-action={group.status === 'review' || upgradableSeasonCount > 0 ? 'true' : 'false'}
-        className={cx(
-          CARD_BASE,
-          'library-card-readable',
-          hiding && 'library-card-hiding pointer-events-none opacity-0',
-          hidden && 'border-dashed !border-line-strong',
-        )}
+        className={cx(CARD_BASE, 'library-card-readable')}
       >
-        <div className={cx('library-card-body', st === 'missing' && 'grayscale', hidden && 'grayscale-70')}>
+        <div className={cx('library-card-body', st === 'missing' && 'grayscale')}>
           <div className="library-card-poster">
             <span className="absolute inset-0 grid place-items-center text-muted-dim" aria-hidden="true">
               <Icon name="library" size={32} />
@@ -576,16 +543,6 @@ function Card({
               onClick={handleOpenDetails}
             >
               Details <Icon name="chevron-right" size={15} />
-            </button>
-            <button
-              className={cx(ICON_BUTTON, 'touch-target size-8 shrink-0 disabled:cursor-wait', hidden && 'text-warn')}
-              type="button"
-              title={hidden ? 'Show this card' : 'Hide this card'}
-              aria-label={(hidden ? 'Show ' : 'Hide ') + group.title}
-              onClick={handleHide}
-              disabled={hiding}
-            >
-              <HideActionIcon hidden={hidden} />
             </button>
           </div>
         </footer>

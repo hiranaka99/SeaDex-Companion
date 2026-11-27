@@ -386,7 +386,7 @@ test('provider URL and key changes remove only incompatible records while unrela
     await resolveUsenetHash(cfg, OTHER)
     assert.equal(state.calls.length, 3)
     bumpGeneration()
-    state.usenet.runtime.configChanged(cfg, { ...cfg, hidden: ['unrelated'] })
+    state.usenet.runtime.configChanged(cfg, { ...cfg, datetime_format: 'DD.MM.YYYY HH:mm' })
     assert.equal((await state.snapshot([HASH, OTHER], false, cfg)).aggregate, 'available')
     assert.equal(state.calls.length, 3)
     const newKey = { ...cfg, amenzb_key: 'new-key' }

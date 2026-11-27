@@ -9,7 +9,7 @@ One Sonarr or Radarr connection whose titles are scanned. Every result belongs t
 _Avoid_: arr, source (a source is what a release is acquired by)
 
 **Primary instance**:
-The first Sonarr or the first Radarr, set up under its own settings. Results, rules and hidden titles saved before additional instances existed belong to it.
+The first Sonarr or the first Radarr, set up under its own settings. Results and rules saved before additional instances existed belong to it.
 _Avoid_: main instance, default instance
 
 **Additional instance**:

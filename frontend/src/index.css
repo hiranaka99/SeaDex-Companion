@@ -851,11 +851,7 @@ details[open] > summary .disclosure-chevron {
 .library-card-readable {
   transition:
     opacity 180ms ease-out,
-    clip-path 220ms cubic-bezier(0.16, 1, 0.3, 1),
     border-color 140ms ease-out;
-}
-.library-card-hiding {
-  clip-path: inset(0 0 100% 0 round 14px);
 }
 .library-card-readable footer button,
 .library-actions > button,
@@ -872,9 +868,6 @@ details[open] > summary .disclosure-chevron {
   transform: scale(0.97);
 }
 @media (prefers-reduced-motion: reduce) {
-  .library-card-hiding {
-    clip-path: none;
-  }
   .library-card-readable footer button:enabled:active,
   .library-actions > button:enabled:active,
   .library-toolbar button:enabled:active {

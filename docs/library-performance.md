@@ -32,7 +32,7 @@ Changes:
 
 Verification: `npm run test:browser` builds and typechecks the frontend and
 exercises library pagination, metadata search, off-page history navigation,
-hidden titles, full and filtered bulk scope, release identity changes, download
+full and filtered bulk scope, release identity changes, download
 controls, keyboard dialogs, and responsive layouts including enlarged text.
 Desktop and mobile screenshots were inspected with the 1,000-title fixture.
 

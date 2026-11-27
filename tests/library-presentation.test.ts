@@ -75,12 +75,16 @@ test('library filters survive the URL round trip and ignore anything unrecognise
     sort: 'size' as const,
     episodes: true,
     unseen: true,
-    hidden: true,
   }
   assert.deepEqual(parseLibraryFilters(libraryFiltersHash(filters)), filters)
   assert.equal(libraryFiltersHash(DEFAULT_LIBRARY_FILTERS), '#anime')
   assert.deepEqual(parseLibraryFilters('#anime?status=nonsense&sort=random'), DEFAULT_LIBRARY_FILTERS)
   assert.deepEqual(parseLibraryFilters('#history?status=best'), DEFAULT_LIBRARY_FILTERS)
+  assert.deepEqual(
+    parseLibraryFilters('#anime?hidden=1'),
+    DEFAULT_LIBRARY_FILTERS,
+    'A bookmark from before hiding was removed opens the normal library',
+  )
 })
 
 test('the last scan reads as relative time and falls back to the date after a week', () => {

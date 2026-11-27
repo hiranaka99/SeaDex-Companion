@@ -690,7 +690,6 @@ test('a change in the trackers Prowlarr covers makes the next scan a baseline, a
     loadCache: () => ({}),
     loadUserRules: () => ({ mappings: {}, exclusions: [] }),
     autoNotifyNew: async () => 0,
-    unhideNewBestReleases: () => [],
     onScanFinished: () => {},
     recordScanHistory: () => ({}) as never,
     prowlarrIndexers: async (_settings, _fetch, fresh) => {

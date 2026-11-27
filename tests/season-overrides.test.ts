@@ -63,7 +63,6 @@ async function scan(rules: UserRules, overrides: ScanDependencies = {}) {
     loadUserRules: () => rules,
     saveLastResults: () => {},
     autoNotifyNew: async () => 0,
-    unhideNewBestReleases: () => [],
     recordScanHistory: (previous, current, runAt) => buildScanHistoryEntry(previous, current, runAt),
     ...overrides,
   }).run(DEFAULT_CONFIG)

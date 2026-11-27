@@ -36,7 +36,6 @@ import { buttonBase, buttonPrimary, control, cx } from '../styles'
 import BulkScopeSelector from './BulkScopeSelector'
 import { useLibraryMotion } from '../useLibraryMotion'
 import { useBulkActions } from '../useBulkActions'
-import { useHiddenCards } from '../useHiddenCards'
 import { describeSchedule, timeUntilCheck } from '../schedule-text'
 import { groupReleaseChanges, latestReleaseChange } from '../release-changes'
 import { preferencesAreDefault } from '../../../shared/settings'
@@ -259,7 +258,6 @@ export default function AnimeTab({
   const routes = useMemo(() => downloadRoutes(config), [config])
   const { filters, update, reset: resetFilters } = useLibraryFilters(active)
   const { search, source: arr, status: statusFilter, sort, episodes: showEpisodes, unseen: showUnseen } = filters
-  const showHidden = filters.hidden
   const [reviewingChanges, setReviewingChanges] = useState(false)
   const reviewInFlight = useRef(false)
   const unseenFilterRef = useRef<HTMLButtonElement>(null)
@@ -272,7 +270,7 @@ export default function AnimeTab({
 
   useEffect(() => {
     if (!openResultKey) setPage(0)
-  }, [search, arr, statusFilter, sort, showHidden, showUnseen, showEpisodes])
+  }, [search, arr, statusFilter, sort, showUnseen, showEpisodes])
 
   useEffect(() => {
     if (!filterRequest) return
@@ -285,11 +283,10 @@ export default function AnimeTab({
     const group = groupResults(results).find(group => group.seasons.some(season => season.key === openResultKey))
     if (group) {
       resetFilters()
-      update('hidden', hiddenKeys.has(cardKey(group)))
-    } else {
-      toast.show('This title is no longer in the current library', 'info')
-      onResultOpened()
+      return
     }
+    toast.show('This title is no longer in the current library', 'info')
+    onResultOpened()
   }, [openResultKey])
 
   const allGroups = useMemo(() => groupResults(results), [results])
@@ -302,9 +299,6 @@ export default function AnimeTab({
     // A source restored from the URL waits for the results that name it.
     if (arr && allGroups.length && !sources.includes(arr)) update('source', '')
   }, [arr, sources, allGroups.length])
-  const titleFor = useCallback((key: string) => allGroups.find(group => cardKey(group) === key)?.title, [allGroups])
-  const { hiddenKeys, toggleHidden: toggleHiddenKey } = useHiddenCards(config?.hidden, titleFor)
-  const toggleHidden = useCallback((group: GroupedCard) => toggleHiddenKey(cardKey(group)), [toggleHiddenKey])
   // Filtering preserves this order, so typing never sorts the collection again.
   const orderedGroups = useMemo(() => {
     const ordered = [...allGroups]
@@ -336,10 +330,10 @@ export default function AnimeTab({
   const scopeGroups = useMemo(
     () =>
       orderedGroups.filter(group => {
-        if (hiddenKeys.has(cardKey(group)) !== showHidden || (arr && group.source !== arr)) return false
+        if (arr && group.source !== arr) return false
         return !searchQuery || searchText.get(group)!.includes(searchQuery)
       }),
-    [orderedGroups, hiddenKeys, showHidden, arr, searchText, searchQuery],
+    [orderedGroups, arr, searchText, searchQuery],
   )
   const matchesStatus = useCallback(
     (group: GroupedCard) =>
@@ -506,11 +500,7 @@ export default function AnimeTab({
     { value: '', label: 'All', icon: 'library', tone: 'text-ink' },
     ...STATUS_ORDER.map(status => ({ value: status, label: STATUS_LABEL[status], ...STATUS_PRESENTATION[status] })),
   ]
-  const activeOptions = [
-    arr,
-    showHidden ? 'Hidden titles' : '',
-    showUnseen || sort === 'recommended' ? '' : SORT_LABEL[sort],
-  ].filter(Boolean)
+  const activeOptions = [arr, showUnseen || sort === 'recommended' ? '' : SORT_LABEL[sort]].filter(Boolean)
   const activeFilters = [
     search.trim() ? `Search: ${search.trim()}` : '',
     ...activeOptions,
@@ -745,15 +735,6 @@ export default function AnimeTab({
                 {showUnseen && (
                   <span className="font-normal text-muted-dim">Latest change first while Unseen changes is on</span>
                 )}
-              </label>
-              <label className="touch-target flex cursor-pointer items-center gap-2.5 rounded-lg px-1 py-1.5 text-sm text-ink">
-                <input
-                  type="checkbox"
-                  className="size-4 cursor-pointer accent-accent"
-                  checked={showHidden}
-                  onChange={event => update('hidden', event.target.checked)}
-                />
-                Show hidden titles only
               </label>
               <label className="touch-target flex cursor-pointer items-center gap-2.5 rounded-lg px-1 py-1.5 text-sm text-ink min-[601px]:hidden">
                 <input
@@ -1031,8 +1012,6 @@ export default function AnimeTab({
                   group={group}
                   index={index}
                   config={config}
-                  hidden={hiddenKeys.has(cardKey(group))}
-                  onToggle={toggleHidden}
                   onRulesChanged={onResultsChanged}
                   onRescan={onScan}
                   reviewingChanges={reviewingChanges}
@@ -1100,7 +1079,6 @@ export default function AnimeTab({
           open={active && bulk.confirm === 'start'}
           results={bulk.reviewResults}
           scopeControl={scopeControl}
-          hiddenKeys={hiddenKeys}
           busy={bulk.busy === 'start'}
           job={bulk.job}
           routes={routes}

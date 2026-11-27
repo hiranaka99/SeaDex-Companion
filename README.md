@@ -106,13 +106,13 @@ Once the URL and API key are entered, the tags and root folders of that instance
 
 Use **Add Sonarr instance** or **Add Radarr instance** for a second library, such as a 4K instance. Give it a name, its URL and API key, and the download-client category that instance imports from. Each instance has its own library scope and is scanned separately.
 
-The same anime in two instances appears as two cards, and the card of an additional instance shows that instance's name. The **source** filter in the library lists your instances by name. Matching corrections, hidden cards, and exclusions belong to one instance and do not affect the other. Removing an instance removes its titles from the library with the next scan.
+The same anime in two instances appears as two cards, and the card of an additional instance shows that instance's name. The **source** filter in the library lists your instances by name. Matching corrections and ignored seasons or cours belong to one instance and do not affect the other. Removing an instance removes its titles from the library with the next scan.
 
 ## Review your library
 
 The library opens with a one-line summary of what you can act on: how many shown titles can be upgraded, roughly how much **Bulk download** would fetch for them, how much the library grows once they replace your current files, the free space your download client reports, and how many matches need review. When the estimated download is larger than the free space, the summary says so. In the recommended order, titles are grouped under a heading for each status, with matches that need review first. Cards that need action have an accent border; titles that are already on their best release sit flatter. Every status has its own symbol as well as a color: a magnifier for a match that needs review, an up arrow for upgradable, a warning for partial coverage, a minus for not on SeaDex, and a check for the best release owned. Season badges use the same symbols and labels as the card they sit on, and selecting a badge opens **Details** at that season.
 
-The row of status filters under the search box matches those headings. **Episodes missing** and **Unseen changes** narrow any status further. **Source & sort** holds the source filter, the sort order, and **Show hidden titles only**; on a phone it also holds the episodes filter. Select the info button at the end of the status row, or **What the statuses mean** on a phone, for a short explanation of every status. Your search, filters, and sort are kept in the page address, so reloading the page or opening a bookmark returns to the same view; **Clear filters** resets them.
+The row of status filters under the search box matches those headings. **Episodes missing** and **Unseen changes** narrow any status further. **Source & sort** holds the source filter and the sort order; on a phone it also holds the episodes filter. Select the info button at the end of the status row, or **What the statuses mean** on a phone, for a short explanation of every status. Your search, filters, and sort are kept in the page address, so reloading the page or opening a bookmark returns to the same view; **Clear filters** resets them.
 
 Open **Details** on an anime to see its quality verdict, the release groups in your files, and the recommended upgrades. Expand a season or cour to compare releases and download options. A cour is one part of a split season.
 
@@ -152,7 +152,7 @@ Season corrections affect only that season. Choose **Use automatic match** to re
 
 ### Download and monitor upgrades
 
-Download an individual release from **Details**, or open bulk review to select several upgrades. **Download** in release details sends that one release straight to its client without a review step: it skips releases already queued and does not ask about extra files in whole Usenet sources. It asks first only when the download client reports less free space than the release needs; choose **Send anyway** or **Cancel** in the release row. A notification confirms the send, and a failed send is explained in the release row with **Try again**. Bulk review includes titles matching your current filters across all pages. Choose **Entire library** to include titles outside those filters; hidden titles start unchecked.
+Download an individual release from **Details**, or open bulk review to select several upgrades. **Download** in release details sends that one release straight to its client without a review step: it skips releases already queued and does not ask about extra files in whole Usenet sources. It asks first only when the download client reports less free space than the release needs; choose **Send anyway** or **Cancel** in the release row. A notification confirms the send, and a failed send is explained in the release row with **Try again**. Bulk review includes titles matching your current filters across all pages. Choose **Entire library** to include titles outside those filters. Every row that can be downloaded starts checked; seasons and cours you ignore for bulk downloads are left out.
 
 In bulk review, check the release groups, selected episodes, download sizes, and available disk space before submitting. Downloads already present in qBittorrent or SABnzbd are skipped. When filenames identify the required episodes, SeaDex Companion can download only the selected files; otherwise, review the whole-torrent scope before proceeding.
 
@@ -231,7 +231,7 @@ Searches use the titles Sonarr searches with, plus AniList's: the library title,
 
 Set an interval, daily times, or weekdays under **Configuration → Automation**. Choose the timezone and what should happen if a scan was missed while SeaDex Companion was offline.
 
-**Unhide anime with new best releases** is off by default. Enable it to bring hidden titles back when a scan finds a new best release. Alternative releases do not trigger this setting. Add a Discord webhook under **Configuration** if you want upgrade notifications.
+Add a Discord webhook under **Configuration** if you want upgrade notifications.
 
 Seasons and cours you ignore for bulk downloads are not announced on Discord and get no upgrade tag in Sonarr or Radarr; the library still shows them as upgradable. Discord notifications also report a season that loses its best release because its files changed, for example when Sonarr replaced them with another grab. **Import problems** adds a message when a finished download is not imported; turn it off under **Configuration → Notifications** if you do not want those.
 

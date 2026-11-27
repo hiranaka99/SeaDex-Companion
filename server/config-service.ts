@@ -37,7 +37,7 @@ function describeSave(config: Config, data: JsonObject): string {
     ),
     ...SECRET_CONFIG_KEYS.filter(key => cleared.includes(key)).map(key => `${key} cleared`),
   ]
-  return `${integrations}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'}; notifications: ${config.notify_enabled ? 'enabled' : 'disabled'}; hidden titles: ${config.hidden.length}${credentials.length ? `; credentials: ${credentials.join(', ')}` : ''}`
+  return `${integrations}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'}; notifications: ${config.notify_enabled ? 'enabled' : 'disabled'}${credentials.length ? `; credentials: ${credentials.join(', ')}` : ''}`
 }
 
 /** Applies a settings change and brings everything derived from the old settings up to date. */
