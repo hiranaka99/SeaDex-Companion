@@ -57,7 +57,10 @@ test('the qBittorrent adapter plans one torrent unit per hash with its files to 
     const adapter = qbittorrentAdapter(baseConfig())
     const blocks = new Blocks()
     const scoped = unitRow(releaseFixture({ selected_files: ['Show - 01.mkv'] }), 'sonarr-anime')
-    const hashless = { ...unitRow(releaseFixture({ info_hashes: [], torrent_files: [] }), 'sonarr-anime'), key: 'other' }
+    const hashless = {
+      ...unitRow(releaseFixture({ info_hashes: [], torrent_files: [] }), 'sonarr-anime'),
+      key: 'other',
+    }
     const plan = await adapter.planUnits([scoped, hashless], { blocks, intent: 'single_review' })
 
     assert.deepEqual(plan.sources(scoped), [HASH])
@@ -97,7 +100,10 @@ test('the SABnzbd adapter plans a Usenet unit with the NZB entry to fetch, and n
     assert.equal(unit.provider, 'animetosho')
     assert.deepEqual(unit.send, { entryId: '1234' })
     assert.deepEqual(adapter.recordFields(unit), { entry_id: '1234' })
-    assert.ok(!('requestedPaths' in unit.send) && !('torrentFile' in unit.send), 'a Usenet unit carries no torrent fields')
+    assert.ok(
+      !('requestedPaths' in unit.send) && !('torrentFile' in unit.send),
+      'a Usenet unit carries no torrent fields',
+    )
   } finally {
     restore()
   }
