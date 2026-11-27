@@ -54,7 +54,7 @@ export type InstanceSettings = Partial<
 const isConfigured = (url: string, key: string, keyConfigured: boolean | undefined): boolean =>
   Boolean(url && (key || keyConfigured))
 
-function extraInstance(instance: AdditionalInstanceSettings): ArrInstance {
+function additionalInstance(instance: AdditionalInstanceSettings): ArrInstance {
   return {
     id: instance.id,
     kind: instance.kind,
@@ -99,7 +99,7 @@ export function arrInstances(config: InstanceSettings): ArrInstance[] {
       sabnzbd_category: config.sabnzbd_radarr_category || '',
       scope: config.radarr_scope || EMPTY_LIBRARY_SCOPE,
     },
-    ...(config.arr_instances || []).map(extraInstance),
+    ...(config.arr_instances || []).map(additionalInstance),
   ]
 }
 

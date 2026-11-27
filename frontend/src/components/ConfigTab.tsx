@@ -1,4 +1,4 @@
-import { libraryConnected } from '../../../shared/arr-instances.js'
+import { findArrInstance, libraryConnected } from '../../../shared/arr-instances.js'
 import { errorMessage } from '../../../shared/errors.js'
 import type {
   ArrKind,
@@ -411,10 +411,7 @@ export default function ConfigTab({
         )}
       </section>
     )
-  const savedSelectedSource =
-    librarySource === 'sonarr'
-      ? Boolean(config.sonarr_url && config.sonarr_key_configured)
-      : Boolean(config.radarr_url && config.radarr_key_configured)
+  const selectedInstanceSaved = Boolean(findArrInstance(config, librarySource)?.configured)
   const schedule = form.scan_schedule ?? config.scan_schedule
   const formatCandidate = form.datetime_format ?? config.datetime_format ?? DEFAULT_DATETIME_FORMAT
   const previewDateTime = formatDateTime(
@@ -526,7 +523,7 @@ export default function ConfigTab({
             <li>
               <strong className="block text-ink">2. Save connection</strong>
               <span className="text-muted">
-                {savedSelectedSource && !dirty ? 'Connection saved' : 'Use Save configuration below'}
+                {selectedInstanceSaved && !dirty ? 'Connection saved' : 'Use Save configuration below'}
               </span>
             </li>
             <li className="flex flex-wrap items-center justify-between gap-2">
@@ -537,7 +534,7 @@ export default function ConfigTab({
               <button
                 type="button"
                 className={cx(buttonBase, 'border-accent/35 bg-accent/10 text-accent-bright')}
-                disabled={!savedSelectedSource || dirty || scanDisabled}
+                disabled={!selectedInstanceSaved || dirty || scanDisabled}
                 onClick={() => {
                   onRunScan()
                   setGuidedSetup(false)
