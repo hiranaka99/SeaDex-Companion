@@ -12,7 +12,7 @@ export interface ArrInstance {
   kind: ArrKind
   /** Application name carried by results. */
   arr: 'Sonarr' | 'Radarr'
-  /** Unique display name; also the key of scan errors for this source. */
+  /** Unique display name; also the key of scan errors for this instance. */
   name: string
   primary: boolean
   url: string
@@ -27,8 +27,11 @@ export interface ArrInstance {
 
 export const ARR_NAMES: Record<ArrKind, 'Sonarr' | 'Radarr'> = { sonarr: 'Sonarr', radarr: 'Radarr' }
 export const PRIMARY_INSTANCE_IDS: readonly string[] = ['sonarr', 'radarr']
+/** An additional instance as the server saves it, or as the browser sees it: key blanked, `key_configured` set. */
+type AdditionalInstanceSettings = ArrInstanceConfig & { key_configured?: boolean }
+
 /** The server's configuration, or the browser's, whose keys are blanked and reported as `*_key_configured`. */
-export type InstanceSource = Partial<
+export type InstanceSettings = Partial<
   Pick<
     Config,
     | 'sonarr_url'
@@ -45,13 +48,13 @@ export type InstanceSource = Partial<
 > & {
   sonarr_key_configured?: boolean
   radarr_key_configured?: boolean
-  arr_instances?: (ArrInstanceConfig & { key_configured?: boolean })[]
+  arr_instances?: AdditionalInstanceSettings[]
 }
 
 const isConfigured = (url: string, key: string, keyConfigured: boolean | undefined): boolean =>
   Boolean(url && (key || keyConfigured))
 
-function extraInstance(instance: ArrInstanceConfig & { key_configured?: boolean }): ArrInstance {
+function extraInstance(instance: AdditionalInstanceSettings): ArrInstance {
   return {
     id: instance.id,
     kind: instance.kind,
@@ -68,7 +71,7 @@ function extraInstance(instance: ArrInstanceConfig & { key_configured?: boolean 
 }
 
 /** Every saved instance in display order: Sonarr, Radarr, then additional instances. */
-export function arrInstances(config: InstanceSource): ArrInstance[] {
+export function arrInstances(config: InstanceSettings): ArrInstance[] {
   return [
     {
       id: 'sonarr',
@@ -101,16 +104,16 @@ export function arrInstances(config: InstanceSource): ArrInstance[] {
 }
 
 /** Instances that can be scanned: both a URL and an API key are saved. */
-export function configuredArrInstances(config: InstanceSource): ArrInstance[] {
+export function configuredArrInstances(config: InstanceSettings): ArrInstance[] {
   return arrInstances(config).filter(instance => instance.configured)
 }
 
 /** A library is connected when any instance, primary or additional, can be scanned. */
-export function libraryConnected(config: InstanceSource | null | undefined): boolean {
-  return Boolean(config) && configuredArrInstances(config!).length > 0
+export function libraryConnected(config: InstanceSettings | null | undefined): boolean {
+  return !!config && configuredArrInstances(config).length > 0
 }
 
-export function findArrInstance(config: InstanceSource, id: string): ArrInstance | undefined {
+export function findArrInstance(config: InstanceSettings, id: string): ArrInstance | undefined {
   return arrInstances(config).find(instance => instance.id === id)
 }
 
@@ -136,7 +139,7 @@ export function sourceNameOf(ref: SourceRef): string {
   return typeof ref.instance_name === 'string' && ref.instance_name ? ref.instance_name : String(ref.arr || 'Unknown')
 }
 
-export function instanceOf(config: InstanceSource, ref: SourceRef): ArrInstance | undefined {
+export function instanceOf(config: InstanceSettings, ref: SourceRef): ArrInstance | undefined {
   const id =
     typeof ref.instance === 'string' && ref.instance
       ? ref.instance
@@ -161,7 +164,7 @@ export function instanceCategory(
  * category is blank or the instance no longer exists: the download is then sent without a category.
  */
 export function downloadCategory(
-  config: InstanceSource,
+  config: InstanceSettings,
   source: string | SourceRef,
   protocol: DownloadProtocol,
 ): string {

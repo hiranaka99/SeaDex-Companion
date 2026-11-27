@@ -1,4 +1,3 @@
-import { downloadCategory } from '../../../shared/arr-instances'
 import { normalizeTorrentPath as normalizeFile, releaseFilesMatch, releaseOwned } from '../../../shared/download-plan'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Config, Release, ResultItem } from '../types'
@@ -11,7 +10,7 @@ import { clientName, phaseLabel, protocolClientName, type DownloadEntry } from '
 import type { DownloadPhase, DownloadProtocol } from '../api'
 import type { UsenetCandidate } from '../../../shared/usenet-contracts'
 import { DiskLine } from './PlanReview'
-import { releaseFileScope } from '../release-actions'
+import { categoryPhrase, releaseFileScope } from '../release-actions'
 import type { ReleaseActions } from '../useReleaseActions'
 import { DEFAULT_TRACKER_MODE } from '../../../shared/settings'
 import { displayDateTimeMinutes } from '../datetime'
@@ -275,7 +274,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
           ? 'border-transparent bg-accent text-on-accent enabled:hover:bg-accent-bright'
           : 'border-line-strong bg-panel text-ink enabled:hover:bg-panel-raised'
   const statusCopy = complete ? `Download completed in ${clientName(transfers[0].client)}` : ''
-  const usenetCategory = config ? downloadCategory(config, r, 'usenet') : ''
+  const intoUsenet = categoryPhrase(config, r, 'usenet')
   const destination = protocolClientName(chosen)
   const sendFacts = verdict.facts
   const usenetBytes = currentAvailability?.hashes[0]?.total_bytes || 0
@@ -674,8 +673,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
           )}
           {chosen === 'usenet' && (
             <p className="mt-1 mb-0 text-xs text-muted">
-              Usenet sources cannot be split;{' '}
-              {usenetCategory ? `category: ${usenetCategory}` : 'it is sent without a category'}.
+              Usenet sources cannot be split and are sent to SABnzbd {intoUsenet}.
             </p>
           )}
           {chosen === 'torrent' && !inClient && !complete && torrentUsable && !fileScope.exact && (
@@ -791,8 +789,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
           </p>
           <p className="mt-1 mb-0 text-xs text-ink wrap-anywhere">
             {candidateConfirmText(confirmingNzb, rel.releaseGroup)} Download it only if you checked it on{' '}
-            {confirmingNzb.indexer || 'the indexer'}. SABnzbd downloads the whole post
-            {usenetCategory ? ` to the category ${usenetCategory}` : ' without a category'}.
+            {confirmingNzb.indexer || 'the indexer'}. SABnzbd downloads the whole post {intoUsenet}.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <button
