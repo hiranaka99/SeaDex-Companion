@@ -63,7 +63,7 @@ async function scan(rules: UserRules, overrides: ScanDependencies = {}) {
     loadUserRules: () => rules,
     saveLastResults: () => {},
     autoNotifyNew: async () => 0,
-    recordScanHistory: (previous, current, runAt) => buildScanHistoryEntry(previous, current, runAt),
+    recordScanHistory: (comparison, runAt) => buildScanHistoryEntry(comparison, runAt),
     ...overrides,
   }).run(DEFAULT_CONFIG)
   assert.equal(getState().error, null)

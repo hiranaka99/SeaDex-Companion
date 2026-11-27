@@ -20,6 +20,7 @@ import {
 import { DEFAULT_CONFIG, loadConfig, saveConfig } from '../server/config.js'
 import { loadCache, loadLastResults, saveLastResults } from '../server/results.js'
 import { resultItem } from './support/results.js'
+import { compareScans } from '../server/scan-comparison.js'
 import { loadScanHistory } from '../server/history.js'
 import { loadUserRules } from '../server/user-rules.js'
 import { qbGetTorrents } from '../server/qbittorrent.js'
@@ -648,37 +649,37 @@ test('notification failure preserves the completed scan instead of restoring sta
 })
 
 test('notifications delivered before interruption remain marked as delivered', async () => {
-  setState({
-    results: [
-      {
-        key: 'one',
-        title: 'One',
-        status: 'upgrade',
-        releases: [{ kind: 'best', releaseGroup: 'Best', torrent_available: true, info_hashes: [] }],
-      },
-      {
-        key: 'two',
-        title: 'Two',
-        status: 'upgrade',
-        releases: [{ kind: 'best', releaseGroup: 'Best', torrent_available: true, info_hashes: [] }],
-      },
-    ],
-  })
+  const results = ['one', 'two'].map(key =>
+    resultItem({
+      key,
+      title: key,
+      status: 'upgrade',
+      releases: [
+        {
+          kind: 'best',
+          releaseGroup: 'Best',
+          tracker: '',
+          quality: '',
+          tags: [],
+          size: 0,
+          torrent_available: true,
+          info_hashes: [],
+        },
+      ],
+    }),
+  )
   let saved: string[] = []
   await assert.rejects(
-    autoNotifyNew(
-      { ...DEFAULT_CONFIG, webhook: 'https://fixture.test' },
-      {
-        load: () => new Set(),
-        save: values => {
-          saved = [...values]
-        },
-        send: async (_webhook, results, onSent) => {
-          onSent?.(results[0])
-          throw new Error('Interrupted')
-        },
+    autoNotifyNew({ ...DEFAULT_CONFIG, webhook: 'https://fixture.test' }, results, compareScans([], results), {
+      load: () => new Set(),
+      save: values => {
+        saved = [...values]
       },
-    ),
+      send: async (_webhook, results, onSent) => {
+        onSent?.(results[0])
+        throw new Error('Interrupted')
+      },
+    }),
     /Interrupted/,
   )
   assert.deepEqual(saved, ['one'])

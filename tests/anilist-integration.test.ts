@@ -294,7 +294,7 @@ test('a full continuous-series scan resolves all seasons and publishes the corre
       anilistSeason: (ids, cache) => anilistSeason(ids, cache, { media: client.media, persist: () => {} }),
       saveLastResults: () => {},
       autoNotifyNew: async () => 0,
-      recordScanHistory: (previous, current, at) => buildScanHistoryEntry(previous, current, at),
+      recordScanHistory: (comparison, at) => buildScanHistoryEntry(comparison, at),
     }).run(DEFAULT_CONFIG)
     const results = getState().results
     assert.equal(getState().error, null)

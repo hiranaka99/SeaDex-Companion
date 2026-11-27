@@ -14,6 +14,7 @@ import { autoNotifyNew, sendToDiscord, type NotifiedResult } from '../server/not
 import { resultItem } from './support/results.js'
 import { autocheckState, getState, setState } from '../server/scan-state.js'
 import { buildScanHistoryEntry } from '../server/history.js'
+import { compareScans } from '../server/scan-comparison.js'
 import { clearScannedData, scannedDataInfo } from '../server/results.js'
 import { DATA_DIR } from '../server/paths.js'
 import { loadStringSet } from '../server/persistence.js'
@@ -31,6 +32,18 @@ import {
 } from '../server/scheduler.js'
 import { wantedParts, type RecommendationSeason } from '../shared/download-plan.js'
 import { JsonObject, ReleaseCandidate, ScanTrigger } from '../server/types.js'
+import type { Release, ResultItem } from '../shared/contracts.js'
+
+const bestRelease: Release = {
+  kind: 'best',
+  releaseGroup: 'Best',
+  tracker: 'Nyaa',
+  quality: '',
+  tags: [],
+  size: 0,
+  torrent_available: true,
+  info_hashes: [],
+}
 
 beforeEach(() => {
   resetRuntimeForTests()
@@ -216,7 +229,7 @@ describe('manual rules and scan history', () => {
         best_group: 'C',
       }),
     ]
-    const entry = buildScanHistoryEntry(previous, current, 'today')
+    const entry = buildScanHistoryEntry(compareScans(previous, current), 'today')
     assert.deepEqual(
       entry.changes.map(change => [change.title, change.type]),
       [
@@ -229,8 +242,7 @@ describe('manual rules and scan history', () => {
 
   test('records trigger, duration, scope size, and partial source failures', () => {
     const entry = buildScanHistoryEntry(
-      [],
-      [resultItem({ key: 'new', title: 'New', arr: 'Sonarr', status: 'missing' })],
+      compareScans([], [resultItem({ key: 'new', title: 'New', arr: 'Sonarr', status: 'missing' })]),
       'today',
       'scheduled',
       {
@@ -280,23 +292,12 @@ describe('notifications and scheduling', () => {
   })
 
   test('marks only successfully delivered notifications', async () => {
-    setState({
-      results: [
-        {
-          key: 'sent',
-          status: 'upgrade',
-          releases: [{ kind: 'best', releaseGroup: 'Best', torrent_available: true, info_hashes: [] }],
-        },
-        {
-          key: 'failed',
-          status: 'upgrade',
-          releases: [{ kind: 'best', releaseGroup: 'Best', torrent_available: true, info_hashes: [] }],
-        },
-      ],
-    })
+    const results = ['sent', 'failed'].map(key => resultItem({ key, status: 'upgrade', releases: [bestRelease] }))
     let saved = new Set<string>()
     const sent = await autoNotifyNew(
       { ...DEFAULT_CONFIG, webhook: 'https://discord.example/webhook' },
+      results,
+      compareScans([], results),
       {
         load: () => new Set(),
         save: keys => {
@@ -431,28 +432,10 @@ describe('notifications and scheduling', () => {
       },
     }
     const config = { ...DEFAULT_CONFIG, notify_enabled: true, webhook: 'https://discord.example/webhook' }
-    setState({
-      results: [
-        {
-          key: 'same',
-          status: 'upgrade',
-          releases: [{ kind: 'best', releaseGroup: 'Best', torrent_available: true, info_hashes: [] }],
-        },
-      ],
-    })
-    await autoNotifyNew(config, dependencies)
-    setState({ results: [{ key: 'same', status: 'best', releases: [] }] })
-    await autoNotifyNew(config, dependencies)
-    setState({
-      results: [
-        {
-          key: 'same',
-          status: 'upgrade',
-          releases: [{ kind: 'best', releaseGroup: 'Best', torrent_available: true, info_hashes: [] }],
-        },
-      ],
-    })
-    await autoNotifyNew(config, dependencies)
+    const notify = (results: ResultItem[]) => autoNotifyNew(config, results, compareScans([], results), dependencies)
+    await notify([resultItem({ key: 'same', status: 'upgrade', releases: [bestRelease] })])
+    await notify([resultItem({ key: 'same', status: 'best' })])
+    await notify([resultItem({ key: 'same', status: 'upgrade', releases: [bestRelease] })])
     assert.equal(deliveries, 2)
   })
 })

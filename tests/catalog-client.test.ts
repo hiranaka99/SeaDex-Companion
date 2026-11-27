@@ -228,8 +228,8 @@ test('scan cancellation interrupts catalog backoff and preserves previous result
     saveLastResults: () => {
       saved = true
     },
-    recordScanHistory: (previous, current, runAt, _file, trigger, metadata) =>
-      (history = buildScanHistoryEntry(previous, current, runAt, trigger, metadata)),
+    recordScanHistory: (comparison, runAt, _file, trigger, metadata) =>
+      (history = buildScanHistoryEntry(comparison, runAt, trigger, metadata)),
   })
   try {
     setState({ results: [{ key: 'existing', title: 'Existing results' }], last_run: 'previous successful scan' })
@@ -244,6 +244,7 @@ test('scan cancellation interrupts catalog backoff and preserves previous result
     assert.equal(getState().last_run, previous.last_run)
     assert.equal(getState().cancelled, true)
     assert.equal(history?.outcome, 'cancelled')
+    assert.deepEqual(history?.changes, [], 'A cancelled scan compares the previous results with themselves')
   } finally {
     setState(before)
   }
@@ -264,8 +265,8 @@ test('exhausted catalog retries preserve previous scan results and record useful
     saveLastResults: () => {
       saved = true
     },
-    recordScanHistory: (previous, current, runAt, _file, trigger, metadata) =>
-      (history = buildScanHistoryEntry(previous, current, runAt, trigger, metadata)),
+    recordScanHistory: (comparison, runAt, _file, trigger, metadata) =>
+      (history = buildScanHistoryEntry(comparison, runAt, trigger, metadata)),
   })
   try {
     setState({ results: [{ key: 'existing', title: 'Existing results' }], last_run: 'previous successful scan' })

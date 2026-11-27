@@ -7,8 +7,7 @@ import { buildScanHistoryEntry } from '../server/history.js'
 import { loadReleaseChanges, recordReleaseChanges } from '../server/release-changes.js'
 import { autoNotifyNew, discordMessageBody } from '../server/notifications.js'
 import { DEFAULT_CONFIG } from '../server/config.js'
-import { resetRuntimeForTests } from './support/runtime.js'
-import { setState } from '../server/scan-state.js'
+import { compareScans } from '../server/scan-comparison.js'
 import { describeRegression } from '../shared/release-changes.js'
 import { changeTypeLabel, historyDetails, historyStatusText, summarizeChanges } from '../frontend/src/history.js'
 import { presentReleaseChange } from '../frontend/src/release-changes.js'
@@ -134,7 +133,7 @@ test('scan history tells a regression apart from a new upgrade', () => {
       releases: [release('Old')],
     }),
   ]
-  const entry = buildScanHistoryEntry(before, [replaced(), upgradeOnly] as ResultItem[], '2026-11-25 10:00:00')
+  const entry = buildScanHistoryEntry(compareScans(before, [replaced(), upgradeOnly]), '2026-11-25 10:00:00')
   assert.deepEqual(
     entry.changes.map(change => [change.title, change.type, change.from, change.to]),
     [
@@ -148,9 +147,7 @@ test('scan history tells a regression apart from a new upgrade', () => {
   ])
 
   // After a change of preferences, a status move says nothing about the library.
-  const baseline = buildScanHistoryEntry(before, [replaced()] as ResultItem[], '2026-11-25 10:00:00', 'manual', {
-    settingsChanged: true,
-  })
+  const baseline = buildScanHistoryEntry(compareScans(before, [replaced()], { baseline: true }), '2026-11-25 10:00:00')
   assert.equal(baseline.changes.find(change => change.title === 'Show')?.type, 'upgrade')
 
   // Presentation: named first in the summary, with what changed underneath.
@@ -173,7 +170,7 @@ test('scan history tells a regression apart from a new upgrade', () => {
 test('a regression becomes an unseen change, unless the results are a new baseline', () => {
   const file = join(DATA_DIR, 'regression-changes.test.json')
   try {
-    recordReleaseChanges([season()], [replaced()], file, '2026-11-25T10:00:00.000Z')
+    recordReleaseChanges(compareScans([season()], [replaced()]), file, '2026-11-25T10:00:00.000Z')
     const stored = Object.values(loadReleaseChanges(file)).flat()
     assert.deepEqual(
       stored.map(change => [change.kind, change.description, change.detected_at]),
@@ -181,11 +178,9 @@ test('a regression becomes an unseen change, unless the results are a new baseli
     )
     // A baseline scan adds nothing and keeps what was already waiting for review.
     recordReleaseChanges(
-      [replaced()],
-      [season({ status: 'upgrade', have: ['Third'], local_size: 5 })],
+      compareScans([replaced()], [season({ status: 'upgrade', have: ['Third'], local_size: 5 })], { baseline: true }),
       file,
       '2026-11-26T10:00:00.000Z',
-      { baseline: true },
     )
     assert.deepEqual(
       Object.values(loadReleaseChanges(file))
@@ -194,11 +189,19 @@ test('a regression becomes an unseen change, unless the results are a new baseli
       stored.map(change => change.id),
     )
     recordReleaseChanges(
-      [season()],
-      [season({ status: 'upgrade', best_group: 'Newer', releases: [release('Newer', { info_hashes: [hash('b')] })] })],
+      compareScans(
+        [season()],
+        [
+          season({
+            status: 'upgrade',
+            best_group: 'Newer',
+            releases: [release('Newer', { info_hashes: [hash('b')] })],
+          }),
+        ],
+        { baseline: true },
+      ),
       file,
       '2026-11-27T10:00:00.000Z',
-      { baseline: true },
     )
     assert.equal(
       Object.values(loadReleaseChanges(file)).flat().length,
@@ -227,26 +230,32 @@ test('the notification for a regression says what happened instead of announcing
     'SeaDex · Sonarr 4K',
   )
 
-  resetRuntimeForTests()
   const sent: JsonObject[] = []
-  try {
-    setState({ results: [replaced()] })
-    const count = await autoNotifyNew(
+  /** A scan that ended with these results, compared with the previous ones. */
+  const notify = (previous: ResultItem[], current: ResultItem[], options: { baseline?: boolean } = {}) =>
+    autoNotifyNew(
       { ...DEFAULT_CONFIG, webhook: 'https://discord.test/hook' },
+      current,
+      compareScans(previous, current, options),
       {
         load: () => new Set(),
         save: () => {},
-        previous: [season()] as ResultItem[],
-        regressions: { 'Sonarr:42:1:Best': 'Your files changed: Best → Weekly' },
         send: async (_webhook, results) => {
           sent.push(...results)
           return results.length
         },
       },
     )
-    assert.equal(count, 1)
-    assert.equal(sent[0].regression, 'Your files changed: Best → Weekly')
-  } finally {
-    resetRuntimeForTests()
-  }
+  assert.equal(await notify([season()], [replaced()]), 1)
+  assert.equal(sent[0].regression, 'Your files changed: Best → Weekly')
+  assert.equal(sent[0].change_details, undefined, 'The regression replaces the change details')
+  // A baseline scan sends no regression text, but still says what changed.
+  await notify([season()], [replaced()], { baseline: true })
+  assert.equal(sent[1].regression, undefined)
+  const newer = season({ status: 'upgrade', best_group: 'Newer', releases: [release('Newer')] })
+  await notify([season()], [newer], { baseline: true })
+  assert.deepEqual(sent[2].change_details?.[0], 'Best release changed: Best → Newer')
+  // A first scan has nothing to compare with.
+  await notify([], [newer])
+  assert.equal(sent[3].change_details, undefined)
 })

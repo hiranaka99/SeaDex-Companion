@@ -327,9 +327,9 @@ test('scan service rejects overlapping runs and storage overrides retain history
     },
     localItems: async () => [],
     saveLastResults: () => {},
-    recordScanHistory: (previous, current, runAt) => {
+    recordScanHistory: (comparison, runAt) => {
       history += 1
-      return buildScanHistoryEntry(previous, current, runAt)
+      return buildScanHistoryEntry(comparison, runAt)
     },
   })
   const first = service.run(DEFAULT_CONFIG)

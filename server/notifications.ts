@@ -1,8 +1,7 @@
 import { NOTIFIED_FILE } from './paths.js'
 import { loadStringSet, writeJsonAtomic } from './persistence.js'
-import { scanState } from './scan-state.js'
 import { applyUserRulesToResults } from './user-rules.js'
-import { describeResultChange, previousResultMatcher } from './history.js'
+import { describeResultChange, type ScanComparison } from './scan-comparison.js'
 import { fetchWithTimeout, sleep, scanRequests } from './http.js'
 import { log } from './logging.js'
 import { errorMessage } from '../shared/errors.js'
@@ -149,9 +148,6 @@ export interface NotificationDependencies {
   load?: typeof loadNotified
   save?: typeof saveNotified
   send?: typeof sendToDiscord
-  previous?: ResultItem[]
-  /** Result keys that lost their best release because the library files changed, with what changed. */
-  regressions?: Record<string, string>
 }
 
 /** One notification for a finished download that Sonarr or Radarr did not import. */
@@ -203,10 +199,19 @@ export async function sendImportProblem(config: Config, problem: ImportProblem):
   }
 }
 
-export async function autoNotifyNew(config: Config, dependencies: NotificationDependencies = {}): Promise<number> {
+/**
+ * Announces the seasons of a scan's results that have wanted parts and were not announced yet. The scan's
+ * comparison says what changed for each: a regression replaces the change details, a first scan has none.
+ */
+export async function autoNotifyNew(
+  config: Config,
+  results: ResultItem[],
+  comparison: ScanComparison,
+  dependencies: NotificationDependencies = {},
+): Promise<number> {
   const notified = (dependencies.load || loadNotified)()
   const save = dependencies.save || saveNotified
-  const currentByKey = new Map(scanState.results.filter(result => result.key).map(result => [result.key, result]))
+  const currentByKey = new Map(results.filter(result => result.key).map(result => [result.key, result]))
   let notificationStateChanged = false
   for (const key of [...notified]) {
     const current = currentByKey.get(key)
@@ -223,17 +228,15 @@ export async function autoNotifyNew(config: Config, dependencies: NotificationDe
   }
   if (!config.notify_enabled) return skip('INFO', 'Discord notifications skipped: disabled in configuration')
   if (!config.webhook) return skip('WARNING', 'Discord notifications skipped: no webhook is configured')
-  const fresh = applyUserRulesToResults(scanState.results).filter(
+  const fresh = applyUserRulesToResults(results).filter(
     result => result.key && !notified.has(result.key) && wantedParts(result).length > 0,
   )
   if (!fresh.length) return skip('INFO', 'Discord notifications: no new upgrades to send')
-  const previous = dependencies.previous || []
-  const regressions = dependencies.regressions || {}
-  const previousOf = previousResultMatcher(previous)
   const payload: NotifiedResult[] = fresh.map(result => {
-    if (regressions[result.key]) return { ...result, regression: regressions[result.key] }
-    if (!previous.length) return result
-    const details = describeResultChange(previousOf(result), result)
+    const season = comparison.of(result)
+    if (season?.regression) return { ...result, regression: season.regression.description }
+    if (comparison.firstScan) return result
+    const details = describeResultChange(season?.previous ?? null, result)
     return details.length ? { ...result, change_details: details } : result
   })
   const delivered: NotifiedResult[] = []

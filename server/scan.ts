@@ -8,7 +8,9 @@ import { HISTORY_FILE } from './paths.js'
 import { flushCache, loadCache, loadLastResults, saveLastResults } from './results.js'
 import { normalizeResults } from './result-model.js'
 import { loadUserRules, libraryItemKey, seasonMappingKey, applyUserRulesToResults } from './user-rules.js'
-import { previousResultMatcher, recordScanHistory } from './history.js'
+import { recordScanHistory } from './history.js'
+import { recordReleaseChanges } from './release-changes.js'
+import { compareScans } from './scan-comparison.js'
 import { seadexBest } from './catalog.js'
 import { loadLocalLibrary, arrItemUrl, isScopedScan, scopeIds, type LibraryLoad } from './library.js'
 import { anilistChain, anilistSeason } from './anilist.js'
@@ -20,7 +22,6 @@ import { settleImports } from './import-follow.js'
 import { arrInstances, configuredArrInstances, instanceSourceKey, sourceNameOf } from '../shared/arr-instances.js'
 import { isDownloadable } from './matching.js'
 import { prowlarrIndexers, prowlarrSettings, trackerIndexers, type ProwlarrSettings } from './prowlarr.js'
-import { describeRegression } from '../shared/release-changes.js'
 import { DEFAULT_RELEASE_PREFERENCES, normalizeReleasePreferences, normalizeTrackerMode } from '../shared/settings.js'
 import type { Config, ScanScope, ScanTrigger, LocalItem, ResultItem, SeaDexEntry } from './types.js'
 
@@ -136,6 +137,8 @@ export interface ScanDependencies {
   anilistSeason?: typeof anilistSeason
   loadCache?: typeof loadCache
   saveLastResults?: typeof saveLastResults
+  /** Adds the scan's release changes and regressions to the changes waiting for review. */
+  recordReleaseChanges?: typeof recordReleaseChanges
   autoNotifyNew?: typeof autoNotifyNew
   loadUserRules?: typeof loadUserRules
   onScanFinished?: (config: Config, results: ResultItem[]) => void
@@ -156,6 +159,7 @@ export function createScanService(overrides: ScanDependencies = {}) {
     anilistSeason,
     loadCache,
     saveLastResults,
+    recordReleaseChanges,
     autoNotifyNew,
     loadUserRules,
     recordScanHistory,
@@ -393,13 +397,13 @@ async function performScan(
       last_run: lastRun,
       source_errors: sourceErrors,
     })
+    // Release changes, history and notifications all read this one comparison with the previous results.
+    const comparison = compareScans(previousResults, finalResults, { baseline: settingsChanged })
     stage = 'saving scan results'
+    dependencies.recordReleaseChanges(comparison)
     // A scan of single titles leaves the other results as they were judged, so the saved signatures stay.
     const resultSettings = scoped ? saved?.settings : signatures
-    dependencies.saveLastResults(finalResults, lastRun, {
-      baseline: settingsChanged,
-      ...(resultSettings ? { settings: resultSettings } : {}),
-    })
+    dependencies.saveLastResults(finalResults, lastRun, resultSettings ? { settings: resultSettings } : {})
     try {
       dependencies.onScanFinished(config, finalResults)
     } catch (error) {
@@ -415,9 +419,8 @@ async function performScan(
         durationSeconds: Math.round((Date.now() - started) / 100) / 10,
         scannedTitles: items.length,
         sourceErrors,
-        settingsChanged,
       }
-      dependencies.recordScanHistory(previousResults, finalResults, lastRun, HISTORY_FILE, trigger, metadata)
+      dependencies.recordScanHistory(comparison, lastRun, HISTORY_FILE, trigger, metadata)
     } catch (error) {
       log('WARNING', `Could not save scan history: ${errorMessage(error)}`)
     }
@@ -437,17 +440,8 @@ async function performScan(
     }
     stage = 'sending notifications'
     if (!Object.keys(sourceErrors).length) {
-      const regressions: Record<string, string> = {}
-      if (!settingsChanged) {
-        const previousOf = previousResultMatcher(previousResults)
-        for (const result of finalResults) {
-          const old = previousOf(result)
-          const regression = old ? describeRegression(old, result) : null
-          if (regression) regressions[result.key] = regression.description
-        }
-      }
       try {
-        await dependencies.autoNotifyNew(config, { previous: previousResults, regressions })
+        await dependencies.autoNotifyNew(config, finalResults, comparison)
       } catch (error) {
         log(
           'WARNING',
@@ -482,9 +476,9 @@ async function performScan(
     }
     {
       try {
+        // The previous results compared with themselves: the scan changed nothing.
         dependencies.recordScanHistory(
-          previousState.results,
-          previousState.results,
+          compareScans(previousState.results, previousState.results),
           timestamp(),
           HISTORY_FILE,
           trigger,

@@ -2,7 +2,6 @@ import { isRecord } from '../shared/guards.js'
 import { errorMessage } from '../shared/errors.js'
 import { log } from './logging.js'
 import { normalizeResults } from './result-model.js'
-import { recordReleaseChanges } from './release-changes.js'
 import type { ResultItem, JsonObject } from './types.js'
 import type { ScannedDataInfo } from '../shared/contracts.js'
 import { existsSync, readFileSync, statSync } from 'node:fs'
@@ -59,13 +58,12 @@ export interface ResultSettings {
   library?: string
 }
 
+/** Writes a scan's results and the signatures of the settings they were computed under. */
 export function saveLastResults(
   results: ResultItem[],
   lastRun: string,
-  options: { settings?: ResultSettings; baseline?: boolean } = {},
+  options: { settings?: ResultSettings } = {},
 ): void {
-  const previous = loadLastResults()?.results || []
-  recordReleaseChanges(previous, results, undefined, undefined, { baseline: options.baseline })
   savedResults = null
   savedSettings = null
   writeJsonAtomic(RESULTS_FILE, {
