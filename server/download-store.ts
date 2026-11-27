@@ -131,7 +131,7 @@ const now = () => new Date().toISOString()
 
 function decodeCard(value: unknown): CardSnapshot | undefined {
   if (!isRecord(value)) return undefined
-  const card = value as Record<string, unknown>
+  const card = value
   if (typeof card.title !== 'string' || !card.title) return undefined
   return {
     title: card.title,
@@ -145,7 +145,7 @@ function decodeCard(value: unknown): CardSnapshot | undefined {
 
 function decodeRecord(value: unknown): OwnedDownloadRecord | null {
   if (!isRecord(value)) return null
-  const raw = value as Record<string, unknown>
+  const raw = value
   if (typeof raw.id !== 'string' || !raw.id) return null
   if (raw.protocol !== 'torrent' && raw.protocol !== 'usenet') return null
   if (raw.client !== 'qbittorrent' && raw.client !== 'sabnzbd') return null
@@ -182,7 +182,7 @@ function decodeRecord(value: unknown): OwnedDownloadRecord | null {
     added_at: addedAt,
     updated_at: typeof raw.updated_at === 'string' ? raw.updated_at : addedAt,
     ...(typeof raw.removed_at === 'string' ? { removed_at: raw.removed_at } : {}),
-    ...(decodePhase(raw.last_phase) ? { last_phase: raw.last_phase as DownloadPhase } : {}),
+    ...(decodePhase(raw.last_phase) ? { last_phase: raw.last_phase } : {}),
     ...(decodeCard(raw.card) ? { card: decodeCard(raw.card) } : {}),
     labels: Array.isArray(raw.labels)
       ? raw.labels
@@ -283,7 +283,7 @@ function decodeRows(value: unknown): Record<string, AssociationRow[]> {
 
 function decodeFile(value: unknown): RecordFile | null {
   if (!isRecord(value)) return null
-  const file = value as Record<string, unknown>
+  const file = value
   if (file.version !== 2 || !Array.isArray(file.records)) return null
   const records = file.records.map(decodeRecord).filter((record): record is OwnedDownloadRecord => Boolean(record))
   return { version: 2, records, rows: decodeRows(file.rows) }
@@ -301,7 +301,7 @@ function legacyCardFrom(raw: unknown, hash: string): LegacyTorrentCard {
       key: `torrent:${hash}`,
       release: 0,
     }
-  const info = raw as Record<string, unknown>
+  const info = raw
   const title = typeof info.title === 'string' ? info.title : ''
   return {
     title,
@@ -340,7 +340,7 @@ function legacyFile(): { cards: Map<string, LegacyTorrentCard>; hashes: string[]
   const cards = new Map<string, LegacyTorrentCard>()
   const hashes: string[] = []
   if (Array.isArray(owned)) {
-    const detailMap = isRecord(details) ? (details as Record<string, unknown>) : {}
+    const detailMap = isRecord(details) ? details : {}
     for (const value of owned) {
       const hash = normalizeInfoHash(value)
       if (!hash) continue
@@ -356,7 +356,7 @@ function legacyFile(): { cards: Map<string, LegacyTorrentCard>; hashes: string[]
   ) {
     const torrents = (owned as Record<string, unknown>).torrents
     if (isRecord(torrents))
-      for (const [value, raw] of Object.entries(torrents as Record<string, unknown>)) {
+      for (const [value, raw] of Object.entries(torrents)) {
         const hash = normalizeInfoHash(value)
         if (!hash) continue
         hashes.push(hash)

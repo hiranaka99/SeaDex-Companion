@@ -17,8 +17,8 @@ export function arrApiUrl(value: unknown): string {
 
 export async function sonarrApiUrl(value: unknown, key: string): Promise<string> {
   const base = arrBaseUrl(value)
-  const info = await api(`${base}/api`, key, {}, true)
-  if (info.current !== 'v3' && info.current !== 'v5')
-    throw new Error(`Unsupported Sonarr API version: ${String(info.current)}`)
-  return `${base}/api/${info.current}`
+  const info = (await api(`${base}/api`, key, {}, true)) as { current?: unknown } | null
+  const current = info?.current
+  if (current !== 'v3' && current !== 'v5') throw new Error(`Unsupported Sonarr API version: ${String(current)}`)
+  return `${base}/api/${current}`
 }

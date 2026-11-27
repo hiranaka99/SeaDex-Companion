@@ -361,11 +361,11 @@ test('a multi-source single submission returns a partial failure receipt instead
   const router = globalThis.fetch
   const secondHash = 'b'.repeat(40)
   try {
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).includes('/torrents/add') && String(init?.body).includes(secondHash))
         return new Response('Rejected', { status: 409 })
       return router(input, init)
-    }) as typeof fetch
+    }
     const results = [
       resultFixture([
         releaseFixture({
@@ -402,11 +402,11 @@ test('unrelated submitted rows keep separate outcomes when only one source fails
   const router = globalThis.fetch
   const secondHash = 'b'.repeat(40)
   try {
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).includes('/torrents/add') && String(init?.body).includes(secondHash))
         return new Response('Rejected', { status: 409 })
       return router(input, init)
-    }) as typeof fetch
+    }
     const results = [
       resultFixture([releaseFixture()]),
       resultFixture(
@@ -505,10 +505,10 @@ test('an ambiguous torrent add retains its intent and blocks reacquisition even 
   const cleanup = installRouter({ calls: [] })
   const router = globalThis.fetch
   try {
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).includes('/torrents/add')) throw new TypeError('connection lost after dispatch')
       return router(input, init)
-    }) as typeof fetch
+    }
     const results = [resultFixture([releaseFixture()])] as unknown as ResultItem[]
     const built = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'torrent' }], {
       results,
@@ -580,12 +580,12 @@ test('an incomplete presence read blocks an accepted source instead of proving i
       source_hash: HASH,
       category: 'sonarr-anime',
     })
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input))
       if (url.origin === SAB && url.searchParams.get('mode') === 'history' && url.searchParams.get('archive') === '1')
         return Response.json({ history: {} })
       return router(input, init)
-    }) as typeof fetch
+    }
     const results = [resultFixture([releaseFixture()])] as unknown as ResultItem[]
     const built = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'usenet' }], {
       results,
@@ -609,15 +609,15 @@ test('invalid provider NZB bytes never reach SABnzbd even after a matched review
   const cleanup = installRouter(state)
   const router = globalThis.fetch
   try {
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).includes('animetosho.net/nzb/')) {
-        state.calls.push(`GET ${input}`)
+        state.calls.push(`GET ${String(input)}`)
         return new Response('<html><body>Provider login required</body></html>', {
           headers: { 'content-type': 'text/html' },
         })
       }
       return router(input, init)
-    }) as typeof fetch
+    }
     const results = [resultFixture([releaseFixture()])] as unknown as ResultItem[]
     const built = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'usenet' }], {
       results,

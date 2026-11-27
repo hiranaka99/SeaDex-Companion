@@ -4,11 +4,11 @@ import { join } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { DATA_DIR } from '../server/paths.js'
-import { qbAddTorrent, qbControlTorrents } from '../server/qbittorrent.js'
+import { qbAddTorrent, qbControlTorrents, QbittorrentAmbiguousError } from '../server/qbittorrent.js'
 import { resetRuntimeForTests } from './support/runtime.js'
 import { resetWebhookScanState } from '../server/scheduler.js'
 import { qbPhase } from '../server/qbittorrent-adapter.js'
-import { QbittorrentAmbiguousError } from '../server/qbittorrent.js'
+
 import { testIntegration } from '../server/integration-tests.js'
 import { upgradeParts, type RecommendationSeason } from '../shared/download-plan.js'
 
@@ -71,14 +71,14 @@ describe('qBittorrent torrent controls', () => {
   test('pauses torrents and removes them with the selected file behavior', async () => {
     const originalFetch = globalThis.fetch
     const requests: { url: string; body: string }[] = []
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input)
       requests.push({ url, body: String(init?.body || '') })
       if (url.endsWith('/api/v2/auth/login')) {
         return new Response('Ok.', { status: 200, headers: { 'Set-Cookie': 'SID=test; Path=/' } })
       }
       return new Response('', { status: 200 })
-    }) as typeof fetch
+    }
     const config = {
       ...DEFAULT_CONFIG,
       qbittorrent_url: 'http://qb.example',
@@ -103,13 +103,13 @@ describe('qBittorrent torrent controls', () => {
   test('falls back to the legacy pause endpoint', async () => {
     const originalFetch = globalThis.fetch
     const paths: string[] = []
-    globalThis.fetch = (async (input: string | URL | Request) => {
+    globalThis.fetch = async (input: string | URL | Request) => {
       const url = String(input)
       paths.push(url)
       if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.', { status: 200 })
       if (url.endsWith('/api/v2/torrents/stop')) return new Response('Not Found', { status: 404 })
       return new Response('', { status: 200 })
-    }) as typeof fetch
+    }
     try {
       await qbControlTorrents(
         {
@@ -130,7 +130,7 @@ describe('qBittorrent torrent controls', () => {
   test('downloads only selected cour files after magnet metadata arrives', async () => {
     const originalFetch = globalThis.fetch
     const requests: { url: string; body: string }[] = []
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input)
       requests.push({ url, body: String(init?.body || '') })
       if (url.endsWith('/api/v2/auth/login')) {
@@ -147,7 +147,7 @@ describe('qBittorrent torrent controls', () => {
           { status: 200 },
         )
       return new Response('', { status: 200 })
-    }) as typeof fetch
+    }
 
     try {
       await qbAddTorrent(
@@ -188,7 +188,7 @@ describe('qBittorrent torrent controls', () => {
   test('removes the torrent and reports a metadata failure when metadata never arrives', async () => {
     const originalFetch = globalThis.fetch
     const requests: { url: string; body: string }[] = []
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input)
       requests.push({ url, body: String(init?.body || '') })
       if (url.endsWith('/api/v2/auth/login')) {
@@ -198,7 +198,7 @@ describe('qBittorrent torrent controls', () => {
       if (url.includes('/api/v2/torrents/info')) return new Response('[]', { status: 200 })
       if (url.includes('/api/v2/torrents/files?')) return new Response('[]', { status: 200 })
       return new Response('', { status: 200 })
-    }) as typeof fetch
+    }
     const config = {
       ...DEFAULT_CONFIG,
       qbittorrent_url: 'http://qb.example',
@@ -216,13 +216,13 @@ describe('qBittorrent torrent controls', () => {
 
     const removal = requests.find(request => request.url.endsWith('/api/v2/torrents/delete'))
     assert.ok(removal, 'the torrent must be removed after the metadata timeout')
-    assert.equal(new URLSearchParams(removal!.body).get('deleteFiles'), 'false')
+    assert.equal(new URLSearchParams(removal.body).get('deleteFiles'), 'false')
   })
 
   test('keeps adding the remaining torrents when one fails to fetch metadata', async () => {
     const originalFetch = globalThis.fetch
     const requests: { url: string; body: string }[] = []
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input)
       requests.push({ url, body: String(init?.body || '') })
       if (url.endsWith('/api/v2/auth/login')) {
@@ -237,7 +237,7 @@ describe('qBittorrent torrent controls', () => {
         return new Response(JSON.stringify([{ index: 0, name: 'Root/Show.S01E01.mkv' }]), { status: 200 })
       }
       return new Response('', { status: 200 })
-    }) as typeof fetch
+    }
     const config = {
       ...DEFAULT_CONFIG,
       qbittorrent_url: 'http://qb.example',
@@ -285,13 +285,13 @@ describe('qBittorrent torrent controls', () => {
     const originalFetch = globalThis.fetch
     let addRequested = false
     const hash = 'd'.repeat(40)
-    globalThis.fetch = (async (input: string | URL | Request) => {
+    globalThis.fetch = async (input: string | URL | Request) => {
       const url = String(input)
       if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.', { status: 200 })
       if (url.includes('/api/v2/torrents/info?')) return new Response(JSON.stringify([{ hash }]), { status: 200 })
       if (url.endsWith('/api/v2/torrents/add')) addRequested = true
       return new Response('', { status: 200 })
-    }) as typeof fetch
+    }
     let recorded = false
     try {
       await assert.rejects(
@@ -327,13 +327,13 @@ describe('qBittorrent torrent controls', () => {
     const originalFetch = globalThis.fetch
     const requests: string[] = []
     const hash = 'e'.repeat(40)
-    globalThis.fetch = (async (input: string | URL | Request) => {
+    globalThis.fetch = async (input: string | URL | Request) => {
       const url = String(input)
       requests.push(url)
       if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.', { status: 200 })
       if (url.includes('/api/v2/torrents/info')) return new Response('[]', { status: 200 })
       return new Response('Ok.', { status: 200 })
-    }) as typeof fetch
+    }
     try {
       await assert.rejects(
         () =>
@@ -377,7 +377,7 @@ describe('qBittorrent torrent controls', () => {
         let owned = false
         let forgotten = 0
         const deletions: URLSearchParams[] = []
-        globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
           const url = String(input)
           if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.')
           if (url.includes('/api/v2/torrents/info?')) return Response.json([])
@@ -388,7 +388,7 @@ describe('qBittorrent torrent controls', () => {
           }
           if (url.endsWith('/api/v2/torrents/delete')) deletions.push(new URLSearchParams(String(init?.body || '')))
           return new Response('Ok.')
-        }) as typeof fetch
+        }
         await assert.rejects(
           () =>
             qbAddTorrent(config, `magnet:?xt=urn:btih:${hash}`, '', ['01.mkv'], 0, {
@@ -421,11 +421,11 @@ describe('qBittorrent torrent controls', () => {
   test('retains accepted ownership when confirmed cleanup cannot persist its removal', async () => {
     const originalFetch = globalThis.fetch
     let owned = false
-    globalThis.fetch = (async (input: string | URL | Request) => {
+    globalThis.fetch = async (input: string | URL | Request) => {
       const url = String(input)
       if (url.includes('/api/v2/torrents/info')) return Response.json([])
       return new Response('Ok.')
-    }) as typeof fetch
+    }
     try {
       await assert.rejects(
         () =>
@@ -464,7 +464,7 @@ describe('qBittorrent torrent controls', () => {
       for (const failure of ['dispatch', 'body', 'unknown-response', 'rejected', 'pre-add'] as const) {
         let addCalled = false
         let recorded = false
-        globalThis.fetch = (async (input: string | URL | Request) => {
+        globalThis.fetch = async (input: string | URL | Request) => {
           const url = String(input)
           if (url.endsWith('/api/v2/auth/login')) return new Response('Ok.')
           if (url.includes('/api/v2/torrents/info')) {
@@ -485,7 +485,7 @@ describe('qBittorrent torrent controls', () => {
             return new Response(failure === 'rejected' ? 'Fails.' : 'Not Ok')
           }
           throw new Error(`Unexpected request: ${url}`)
-        }) as typeof fetch
+        }
         await assert.rejects(
           () =>
             qbAddTorrent(
@@ -521,7 +521,7 @@ describe('qBittorrent torrent controls', () => {
 
   test('rejects misleading qBittorrent login responses', async () => {
     const originalFetch = globalThis.fetch
-    globalThis.fetch = (async () => new Response('Not Ok', { status: 200 })) as typeof fetch
+    globalThis.fetch = async () => new Response('Not Ok', { status: 200 })
     try {
       await assert.rejects(
         () =>
@@ -544,10 +544,10 @@ describe('qBittorrent torrent controls', () => {
   test('does not automatically follow credential-bearing redirects', async () => {
     const originalFetch = globalThis.fetch
     let redirect: RequestRedirect | undefined
-    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
       redirect = init?.redirect
       return new Response('', { status: 302, headers: { Location: 'https://attacker.example/' } })
-    }) as typeof fetch
+    }
     try {
       await assert.rejects(
         () =>

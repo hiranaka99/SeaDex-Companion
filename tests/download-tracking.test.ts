@@ -320,7 +320,7 @@ test('removal keeps an audit record outside the active ledger and row projection
   )
   const kept = allDownloadRecords().find(candidate => candidate.id === record.id)
   assert.ok(kept?.removed_at, 'Removed acquisitions remain in the audit ledger')
-  assert.equal(kept!.card, undefined)
+  assert.equal(kept.card, undefined)
 })
 
 test('failed ledger writes leave records, associations, and native bindings unchanged until retry', () => {
@@ -421,7 +421,7 @@ interface ProgressRouter {
 function installProgressRouter(state: ProgressRouter): () => void {
   const original = globalThis.fetch
   resetQbRuntime()
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     if (url.hostname === 'qb-ledger.test') {
       if (url.pathname === '/api/v2/auth/login') return new Response('Ok.')
@@ -449,7 +449,7 @@ function installProgressRouter(state: ProgressRouter): () => void {
       }
     }
     throw new Error(`Unexpected test request: ${url.href}`)
-  }) as typeof fetch
+  }
   return () => {
     globalThis.fetch = original
     resetQbRuntime()

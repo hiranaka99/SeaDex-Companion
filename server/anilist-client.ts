@@ -34,7 +34,7 @@ export function createAniListClient(
   let lastCompleted: number | null = null
   let tail = Promise.resolve()
 
-  async function perform(payload: JsonObject, kind: RequestKind): Promise<any> {
+  async function perform(payload: JsonObject, kind: RequestKind): Promise<JsonObject | JsonObject[]> {
     const search = kind !== 'media'
     const label = search ? `${kind} ` : ''
     let lastError = 'unknown error'
@@ -110,7 +110,7 @@ export function createAniListClient(
     throw new Error(`AniList ${label}request failed after 6 attempts: ${lastError}`)
   }
 
-  async function request(payload: JsonObject, kind: RequestKind): Promise<any> {
+  async function request(payload: JsonObject, kind: RequestKind): Promise<JsonObject | JsonObject[]> {
     const previous = tail
     let unlock!: () => void
     const current = new Promise<void>(resolve => {
@@ -129,8 +129,10 @@ export function createAniListClient(
 
   return {
     media: (query: string, variables: JsonObject): Promise<JsonObject> => request({ query, variables }, 'media'),
-    search: (query: string, variables: JsonObject): Promise<JsonObject[]> => request({ query, variables }, 'search'),
-    batch: (query: string, variables: JsonObject): Promise<JsonObject[]> => request({ query, variables }, 'batch'),
+    search: (query: string, variables: JsonObject): Promise<JsonObject[]> =>
+      request({ query, variables }, 'search') as Promise<JsonObject[]>,
+    batch: (query: string, variables: JsonObject): Promise<JsonObject[]> =>
+      request({ query, variables }, 'batch') as Promise<JsonObject[]>,
   }
 }
 

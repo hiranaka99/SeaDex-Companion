@@ -93,7 +93,7 @@ function decodeJobs(value: unknown): DownloadJob[] {
   return rawJobs.flatMap(raw => {
     const job = object(raw)
     if (!job || typeof job.id !== 'string' || typeof job.finished !== 'boolean' || !validTargets(job.targets)) return []
-    const targets = job.targets as DownloadSelection[]
+    const targets = job.targets
     const rows = targets.map(({ key, release }) => ({ key, release }))
     const labelsByHash = new Map<string, string>()
     if (Array.isArray(job.failures))

@@ -42,7 +42,7 @@ if (command === 'runtime' && target) {
     { path: RUNTIME_IDENTITY_FILE, data: Buffer.from(JSON.stringify(runtime, null, 2) + '\n') },
     ...sources
       .flatMap(files)
-      .sort()
+      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
       .map(path => ({ path: relative(root, path).split(sep).join('/'), data: readFileSync(path) })),
   ]
   const archive = packTarGz(entries)

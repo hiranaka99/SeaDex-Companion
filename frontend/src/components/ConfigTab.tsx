@@ -416,7 +416,7 @@ export default function ConfigTab({
     librarySource === 'sonarr'
       ? Boolean(config.sonarr_url && config.sonarr_key_configured)
       : Boolean(config.radarr_url && config.radarr_key_configured)
-  const schedule = (form.scan_schedule as ScanSchedule | undefined) ?? config.scan_schedule
+  const schedule = form.scan_schedule ?? config.scan_schedule
   const formatCandidate = form.datetime_format ?? config.datetime_format ?? DEFAULT_DATETIME_FORMAT
   const previewDateTime = formatDateTime(
     parseTimestamp(status.last_run) ?? new Date(),
@@ -556,7 +556,7 @@ export default function ConfigTab({
       </div>
       <form
         id={formId}
-        onSubmit={submit}
+        onSubmit={event => void submit(event)}
         onInvalidCapture={event => {
           if (event.target instanceof HTMLElement) {
             // The first invalid field decides the section to show. Reveal its panel at once so the browser can

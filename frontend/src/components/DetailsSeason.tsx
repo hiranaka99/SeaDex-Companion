@@ -4,12 +4,18 @@ import type { Config, ResultItem } from '../types'
 import { currentReleases, releaseCours, releaseQuality } from '../release-status'
 import { torrentSendable } from '../utils'
 import { buttonBase, cx } from '../styles'
-import { IDLE_DOWNLOAD, sendKey, type LowSpaceHold, type SeasonAvailability } from '../useCardDownloads'
+import {
+  IDLE_DOWNLOAD,
+  sendKey,
+  type LowSpaceHold,
+  type SeasonAvailability,
+  type DetailsDownloadState,
+} from '../useCardDownloads'
 import Icon from './Icons'
 import DetailsQuality, { QUALITY_ICONS, QUALITY_TONES } from './DetailsQuality'
 import type { DownloadEntry } from './DownloadsPanel'
 import ReleaseDetails from './ReleaseDetails'
-import type { DetailsDownloadState } from '../useCardDownloads'
+
 import type { DownloadProtocol } from '../api'
 import { releaseIdentity } from '../../../shared/releases'
 import { PREFERENCE_BLOCKED_REASON } from '../../../shared/settings'

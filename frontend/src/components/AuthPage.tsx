@@ -96,7 +96,7 @@ export default function AuthPage({ setupRequired, onAuthenticated }: Props) {
                 : 'Sign in to your local SeaDex Companion account.'}
             </p>
           </header>
-          <form className="auth-form" onSubmit={submit} aria-busy={busy}>
+          <form className="auth-form" onSubmit={event => void submit(event)} aria-busy={busy}>
             <div className="auth-field">
               <label htmlFor={`${id}-username`}>Username</label>
               <input

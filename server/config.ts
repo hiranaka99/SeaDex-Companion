@@ -274,7 +274,7 @@ function normalizeArrInstances(raw: unknown, previous: ArrInstanceConfig[]): Arr
 /** The same explicit patch rules serve both saving and connection previews. */
 export function applyConfigUpdate(config: Config, input: unknown): Config {
   if (!isRecord(input)) throw new Error('Configuration must be an object')
-  const data = input as Record<string, unknown>
+  const data = input
   const next = { ...config }
   const cleared = new Set(Array.isArray(data.clear_secrets) ? data.clear_secrets : [])
   for (const key of SECRET_CONFIG_KEYS) {
@@ -382,7 +382,7 @@ export function integrationConfig(config: Config, service: string, input: unknow
     amenzb: ['amenzb_enabled', 'amenzb_url', 'amenzb_key'],
     prowlarr: ['prowlarr_enabled', 'prowlarr_url', 'prowlarr_key'],
   }
-  const data = isRecord(input) ? (input as Record<string, unknown>) : {}
+  const data = isRecord(input) ? input : {}
   // An additional instance is tested from the submitted draft list; nothing else in the draft applies.
   if (service.startsWith('arr:'))
     return applyConfigUpdate(config, 'arr_instances' in data ? { arr_instances: data.arr_instances } : {})

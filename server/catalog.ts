@@ -184,7 +184,7 @@ export async function seadexBest(
                 ]
               : [],
           }
-          ;(entry.seasons[season].candidates as ReleaseCandidate[]).push(release)
+          entry.seasons[season].candidates.push(release)
         }
       }
     }

@@ -18,7 +18,7 @@ interface ServiceDefinition {
   /** The switch that turns an optional service off. */
   enabledBy?: 'animetosho_enabled' | 'amenzb_enabled' | 'prowlarr_enabled'
   /** Enough is filled in to attempt a connection. */
-  configured(form: ConfigDraft): boolean
+  configured: (form: ConfigDraft) => boolean
 }
 
 const filled = (form: ConfigDraft, key: keyof ConfigDraft): boolean => Boolean(String(form[key] || '').trim())

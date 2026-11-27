@@ -31,7 +31,7 @@ export function baseConfig(overrides: Partial<Config> = {}): Config {
     sabnzbd_key: 'sab-key',
     download_mode: 'choose',
     ...overrides,
-  } as Config
+  }
 }
 
 export function releaseFixture(overrides: Record<string, unknown> = {}) {
@@ -87,7 +87,7 @@ export function installRouter(state: RouterState): () => void {
   resetOwnedRuntime()
   resetUsenetLookups()
   purgeTestDataDir()
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     state.calls.push(`${init?.method || 'GET'} ${url}`)
     const body = typeof init?.body === 'string' || init?.body instanceof URLSearchParams ? String(init.body) : ''
@@ -173,7 +173,7 @@ export function installRouter(state: RouterState): () => void {
       }
     }
     throw new Error(`unexpected request: ${url}`)
-  }) as typeof fetch
+  }
   return () => {
     globalThis.fetch = original
     resetUsenetLookups()

@@ -258,7 +258,7 @@ function setup(t: TestContext): Fake {
     await fake.beforeNzb()
     return new Response(fake.bodies[link] ?? exactNzb(link))
   }
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     const headers = new Headers(init?.headers)
     if (url.origin === PROWLARR) {
@@ -307,7 +307,7 @@ function setup(t: TestContext): Fake {
       return Response.json({ status: true, nzo_ids: [id] })
     }
     return routed(input, init)
-  }) as typeof fetch
+  }
   t.after(() => {
     restoreRouter()
     Object.assign(searchScheduler.options, pacing)
@@ -489,7 +489,7 @@ test('probable, size-only and unverified candidates are sent only when chosen, a
     assert.deepEqual(plain.review.units, [])
     const blocked = plain.review.blocked.find(entry => entry.key === 'alpha')
     assert.equal(blocked?.code, 'no_match')
-    assert.match(blocked!.reason, /Prowlarr found 4 possible NZBs; none of those checked so far could be shown/)
+    assert.match(blocked.reason, /Prowlarr found 4 possible NZBs; none of those checked so far could be shown/)
   }
 
   // Naming a checked candidate is the confirmation, whatever its NZB showed.

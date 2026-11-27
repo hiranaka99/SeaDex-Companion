@@ -11,12 +11,33 @@
   "ignorePatterns": ["dist/**", "static/**", "frontend/dist/**", "frontend/public/**"],
   "rules": {
     // Copying a Set or Map before looping over it is deliberate where the loop body can change it.
-    "unicorn/no-useless-spread": "off"
+    "unicorn/no-useless-spread": "off",
+    "eslint/no-empty": "error",
+    "import/no-duplicates": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
+    // Untrusted JSON and form input is deliberately coerced with String(value ?? '').
+    "typescript/no-base-to-string": "off",
+    // Default sort order is intended for strings; numbers and mixed arrays still need a comparator.
+    "typescript/require-array-sort-compare": ["error", { "ignoreStringArrays": true }]
   },
   "overrides": [
     {
       "files": ["server/**", "shared/**", "tests/**", "scripts/**"],
       "env": { "node": true }
+    },
+    {
+      "files": ["tests/**"],
+      "rules": {
+        // node:test registers top-level test() and describe() calls without awaiting them.
+        "typescript/no-floating-promises": "off",
+        // Test helpers return bags of closures that are destructured, which this rule mistakes for methods.
+        "typescript/unbound-method": "off",
+        // Tests sort strings and tuples only to compare them with an expected list in a stable order.
+        "typescript/require-array-sort-compare": "off"
+      }
     },
     {
       "files": ["frontend/src/**"],

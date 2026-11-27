@@ -199,7 +199,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
                   config={libraryConfig}
                   status={status}
                   lastRun={library.lastRun}
-                  onScan={handleScan}
+                  onScan={() => void handleScan()}
                   loading={library.resultsLoading}
                   loadError={library.resultsError}
                   onReloadResults={() => void library.reloadResults()}
@@ -258,7 +258,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
                       status={status}
                       username={username}
                       knownTrackers={knownTrackers}
-                      onRunScan={handleScan}
+                      onRunScan={() => void handleScan()}
                       onAccountUpdated={onAccountUpdated}
                       onSaved={library.applySavedConfig}
                       onScannedDataCleared={library.clearResults}
