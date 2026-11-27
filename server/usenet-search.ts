@@ -20,7 +20,7 @@ import {
   downloadRef,
   knownProwlarrIndexers,
   privateSearchSettings,
-  prowlarrDownload,
+  prowlarrGrabNzb,
   prowlarrFingerprint,
   prowlarrIndexers,
   prowlarrSettings,
@@ -32,7 +32,7 @@ import {
 } from './prowlarr.js'
 import { gradeNzb, nzbFiles, type NzbFile, type NzbGrade, type SourceFile } from './source-files.js'
 import type { Config, PrivateSource } from './types.js'
-import { NZB_MAX_BYTES, gunzipOnce, safeText } from './usenet-provider-types.js'
+import { safeText } from './usenet-provider-types.js'
 import {
   LookupGuardTimeout,
   LookupScheduler,
@@ -824,14 +824,9 @@ async function fetchNzb(
         if (block) return { kind: 'blocked', reason: block }
         searchStore.countFetch(fingerprint, candidate.indexer_id)
         const path = downloadPathFromRef(settings, { indexer_id: candidate.indexer_id, ...candidate.download })
-        const bytes = await prowlarrDownload({ ...settings, signal }, { download_path: path }, NZB_MAX_BYTES)
-        try {
-          const nzb = await gunzipOnce(bytes, NZB_MAX_BYTES)
-          // `nzbFiles` validates the NZB before it reads it.
-          return { kind: 'fetched', nzb, files: nzbFiles(nzb) }
-        } catch {
-          throw new ProwlarrError('invalid_response', 'The indexer did not send a valid NZB', undefined, 'indexer')
-        }
+        // Arrives decompressed and validated: anything but an NZB already failed as the indexer's.
+        const nzb = await prowlarrGrabNzb({ ...settings, signal }, { download_path: path })
+        return { kind: 'fetched', nzb, files: nzbFiles(nzb) }
       },
       outcome: settled => {
         if (settled.ok) return settled.value.kind === 'fetched' ? ANSWERED : undefined
