@@ -2,6 +2,7 @@
 // and the one-click send behind it. The card answers a row by season and release; the season details only lay
 // the rows out.
 
+import { downloadCategory } from '../../shared/arr-instances.js'
 import { normalizeTorrentPath as normalizeFile, releaseOwned } from '../../shared/download-plan.js'
 import { estimateDownloads } from '../../shared/download-estimate.js'
 import { episodeRangeLabel, releaseIdentity } from '../../shared/releases.js'
@@ -96,6 +97,15 @@ export interface SendVerdict {
   facts: string
 }
 
+/**
+ * The category the server files a send of this result under, as the row names it. A blank category, or an instance
+ * that no longer exists, sends the release without one.
+ */
+export function categoryPhrase(config: Config | null, result: ResultItem, protocol: DownloadProtocol): string {
+  const category = config ? downloadCategory(config, result, protocol) : ''
+  return category ? `(category: ${category})` : 'without a category'
+}
+
 export interface SendVerdictInput {
   result: ResultItem
   release: Release
@@ -126,8 +136,7 @@ export function sendVerdict({
   const usable = protocol === 'torrent' ? route.torrent.sendable : route.usenet.sendable
   const enabled = !inClient && !complete && usable
   const owned = releaseOwned(r, rel)
-  const category = (r.arr === 'Sonarr' ? config?.sonarr_category : config?.radarr_category)?.trim() || r.arr
-  const usenetCategory = r.arr === 'Sonarr' ? config?.sabnzbd_sonarr_category : config?.sabnzbd_radarr_category
+  const categoryNote = categoryPhrase(config, r, protocol)
   const fileCount = `${fileScope.files.length} selected file${fileScope.files.length === 1 ? '' : 's'}`
 
   const reason = complete
@@ -138,12 +147,12 @@ export function sendVerdict({
         ? route.blocked
         : protocol === 'usenet'
           ? usable
-            ? `Send this release to SABnzbd (category: ${usenetCategory})`
+            ? `Send this release to SABnzbd ${categoryNote}`
             : usenetDetail(rel, routes, availability) || 'Usenet is not available for this release'
           : rel.torrent_available
-            ? `Send this release to qBittorrent (category: ${category})`
+            ? `Send this release to qBittorrent ${categoryNote}`
             : route.torrent.viaProwlarr
-              ? `Find this release on ${rel.tracker.trim() || 'its tracker'} through Prowlarr, check its files, and send it to qBittorrent (category: ${category})`
+              ? `Find this release on ${rel.tracker.trim() || 'its tracker'} through Prowlarr, check its files, and send it to qBittorrent ${categoryNote}`
               : 'No magnet available (private tracker)'
   const label = complete
     ? 'Download completed'

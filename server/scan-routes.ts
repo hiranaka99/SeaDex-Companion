@@ -1,5 +1,5 @@
 import { authenticateBasic } from './auth-routes.js'
-import { findArrInstance, instanceSourceKey } from './arr-instances.js'
+import { findArrInstance, instanceSourceKey } from '../shared/arr-instances.js'
 import { loadConfig } from './config.js'
 import { currentGeneration } from './config-generation.js'
 import { resultsForRequest } from './downloads.js'

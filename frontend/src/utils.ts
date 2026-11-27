@@ -1,3 +1,4 @@
+import { sourceNameOf } from '../../shared/arr-instances.js'
 import { baseGroupKey, resultGroupKey, seasonTag } from '../../shared/ids.js'
 
 import { isSeasonUpgradable, upgradeParts } from '../../shared/download-plan.js'
@@ -131,11 +132,6 @@ export function seasonLabel(r: ResultItem): string {
   return 'Movie'
 }
 
-/** Name of the Sonarr or Radarr instance a result came from. */
-export function sourceName(r: Pick<ResultItem, 'arr' | 'instance_name'>): string {
-  return r.instance_name || r.arr
-}
-
 export { resultGroupKey }
 
 /**
@@ -153,7 +149,7 @@ export function groupResults(results: ResultItem[]): GroupedCard[] {
         key: String(gid),
         title: r.title,
         arr: r.arr,
-        source: sourceName(r),
+        source: sourceNameOf(r),
         image: r.image,
         banner: r.banner,
         url: r.url,

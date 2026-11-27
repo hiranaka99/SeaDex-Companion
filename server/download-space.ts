@@ -1,5 +1,4 @@
-import { configuredArrInstances } from './arr-instances.js'
-import { instanceCategory } from './config.js'
+import { configuredArrInstances, instanceCategory } from '../shared/arr-instances.js'
 import type { DownloadClients, DownloadSpaceLocation } from './download-client-types.js'
 import { modeAllowsProtocol } from '../shared/download-contracts.js'
 import type { Config } from './types.js'

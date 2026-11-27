@@ -10,7 +10,7 @@ import type {
   DownloadProgress,
 } from '../shared/download-contracts.js'
 import { cancelablePhase, isCancelable } from '../shared/download-contracts.js'
-import { arrInstances, parseLibraryKey } from './arr-instances.js'
+import { arrInstances, parseLibraryKey } from '../shared/arr-instances.js'
 import {
   downloadRecords,
   downloadRows,

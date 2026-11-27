@@ -12,7 +12,7 @@ import { followImports, importsToFollow, readArrQueue } from './import-follow.js
 import { downloadClients } from './download-clients.js'
 import { collectDownloadProgress } from './download-progress.js'
 import { sendImportProblem } from './notifications.js'
-import type { ArrInstance } from './arr-instances.js'
+import type { ArrInstance } from '../shared/arr-instances.js'
 import type { Config, ScanSchedule, ScanScope, ScanTrigger } from './types.js'
 const WEBHOOK_DEBOUNCE_SECONDS = 10
 const SCHEDULER_TICK_MS = 5_000
