@@ -1,6 +1,14 @@
 import type { ImgHTMLAttributes } from 'react'
 
-export type BrandName = 'sonarr' | 'radarr' | 'qbittorrent' | 'sabnzbd' | 'animetosho' | 'amenzb' | 'discord'
+export type BrandName =
+  | 'sonarr'
+  | 'radarr'
+  | 'prowlarr'
+  | 'qbittorrent'
+  | 'sabnzbd'
+  | 'animetosho'
+  | 'amenzb'
+  | 'discord'
 
 interface Props extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src' | 'alt' | 'width' | 'height'> {
   name: BrandName

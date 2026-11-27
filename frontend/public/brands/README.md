@@ -4,6 +4,7 @@ Official service artwork is bundled locally, without recoloring or runtime reque
 
 - sonarr.svg: [Sonarr full-color logo](https://github.com/Sonarr/Sonarr/blob/v5-develop/Logo/Sonarr.svg).
 - radarr.svg: [Radarr full-color logo](https://github.com/Radarr/Radarr/blob/develop/Logo/Radarr.svg).
+- prowlarr.svg: [Prowlarr full-color logo](https://github.com/Prowlarr/Prowlarr/blob/develop/Logo/Prowlarr.svg).
 - qbittorrent.svg: [qBittorrent application icon](https://github.com/qbittorrent/qBittorrent/blob/master/src/icons/qbittorrent-tray.svg).
 - sabnzbd.svg: [SABnzbd arrow logo](https://github.com/sabnzbd/sabnzbd/blob/develop/icons/logo-arrow.svg).
 - animetosho.png: [AnimeTosho favicon](https://animetosho.org/favicon.ico), the 32px image converted to PNG.
