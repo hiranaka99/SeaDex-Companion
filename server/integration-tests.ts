@@ -48,9 +48,13 @@ export async function testIntegration(config: Config, service: string): Promise<
   if (isArrService(service)) {
     const instance = arrInstanceFor(config, service)
     const base = await arrApiBase(instance)
-    const status = await api(`${base}/system/status`, instance.key, {}, instance.kind === 'sonarr')
-    const name = String(status.appName || status.instanceName || ARR_NAMES[instance.kind])
-    const version = status.version ? ` ${status.version}` : ''
+    const status = (await api(`${base}/system/status`, instance.key, {}, instance.kind === 'sonarr')) as {
+      appName?: unknown
+      instanceName?: unknown
+      version?: unknown
+    } | null
+    const name = String(status?.appName || status?.instanceName || ARR_NAMES[instance.kind])
+    const version = status?.version ? ` ${String(status.version)}` : ''
     return `Connected to ${name}${version}`
   }
   if (service === 'qbittorrent') {

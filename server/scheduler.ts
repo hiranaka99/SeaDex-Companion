@@ -77,7 +77,7 @@ export function queueWebhookScan(
   const dueTime = new Date(webhookScanState.dueAt * 1000).toISOString()
   log(
     'INFO',
-    `${source === 'sonarr' ? 'Sonarr' : 'Radarr'} ${eventType} webhook queued an automatic scan for ${dueTime}`,
+    `${source === 'sonarr' ? 'Sonarr' : 'Radarr'} ${String(eventType)} webhook queued an automatic scan for ${dueTime}`,
   )
   return { accepted: true, dueAt: webhookScanState.dueAt }
 }

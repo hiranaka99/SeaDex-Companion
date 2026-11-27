@@ -23,7 +23,7 @@ import { isDownloadable } from './matching.js'
 import { prowlarrIndexers, prowlarrSettings, trackerIndexers, type ProwlarrSettings } from './prowlarr.js'
 import { describeRegression } from '../shared/release-changes.js'
 import { DEFAULT_RELEASE_PREFERENCES, normalizeReleasePreferences, normalizeTrackerMode } from '../shared/settings.js'
-import type { Config, ScanScope, ScanTrigger, LocalItem, LocalSeason, ResultItem, SeaDexEntry } from './types.js'
+import type { Config, ScanScope, ScanTrigger, LocalItem, ResultItem, SeaDexEntry } from './types.js'
 
 const trackerKeys = (trackers: readonly string[]): string[] =>
   [...new Set(trackers.map(tracker => tracker.trim().toLowerCase()).filter(Boolean))].sort()
@@ -311,7 +311,7 @@ async function performScan(
       const libraryKey = libraryItemKey(item)
       const mappingId = rules.mappings[libraryKey]
       const seasonEntries = Object.entries(item.seasons)
-        .map(([season, local]) => [Number(season), local as LocalSeason] as const)
+        .map(([season, local]) => [Number(season), local] as const)
         .sort(([a], [b]) => a - b)
       const requiredSeasons = seasonEntries
         .filter(([season]) => !rules.season_mappings?.[seasonMappingKey(libraryKey, season)])

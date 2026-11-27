@@ -22,7 +22,7 @@ export async function api(
   key?: string,
   init: RequestInit = {},
   followSameOriginRedirects = false,
-): Promise<any> {
+): Promise<unknown> {
   try {
     const headers = new Headers(init.headers)
     if (key) headers.set('X-Api-Key', key)

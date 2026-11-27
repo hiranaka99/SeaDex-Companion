@@ -3,17 +3,16 @@ import { errorMessage } from '../shared/errors.js'
 import { log } from './logging.js'
 import { normalizeResults } from './result-model.js'
 import { recordReleaseChanges } from './release-changes.js'
-import type { ResultItem } from './types.js'
+import type { ResultItem, JsonObject } from './types.js'
 import type { ScannedDataInfo } from '../shared/contracts.js'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { CACHE_FILE, RESULTS_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
 import { setState } from './scan-state.js'
-import type { JsonObject } from './types.js'
 
 export function loadCache(): JsonObject {
   const cache = readJson<unknown>(CACHE_FILE, {})
-  return isRecord(cache) ? (cache as JsonObject) : {}
+  return isRecord(cache) ? cache : {}
 }
 /** How long new AniList metadata may wait in memory before it is written. */
 const CACHE_FLUSH_DELAY_MS = 30_000

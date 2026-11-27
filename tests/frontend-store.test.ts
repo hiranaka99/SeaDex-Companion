@@ -9,7 +9,13 @@ import {
   refreshDownloads,
   subscribeDownloads,
 } from '../frontend/src/download-store.js'
-import { invalidateDownloadProgress, type DownloadJobStatus, type DownloadProgress } from '../frontend/src/api.js'
+import {
+  invalidateDownloadProgress,
+  type DownloadJobStatus,
+  type DownloadProgress,
+  type SelectionInput,
+  type UsenetAvailabilityResult,
+} from '../frontend/src/api.js'
 import type { ResultItem } from '../frontend/src/types.js'
 import { setImmediate as settle } from 'node:timers/promises'
 import {
@@ -17,7 +23,6 @@ import {
   observeUsenetAvailability,
   type AvailabilitySnapshot,
 } from '../frontend/src/usenet-observation.js'
-import type { SelectionInput, UsenetAvailabilityResult } from '../frontend/src/api.js'
 
 const unit = {
   unit_id: 'torrent:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:anime',
@@ -51,11 +56,11 @@ test('one job observer retries connectivity failures and follows the accepted ID
   const finished = { ...accepted, finished: true, pending: [], added: [unit] }
   const paths: string[] = []
   let attempts = 0
-  globalThis.fetch = (async input => {
+  globalThis.fetch = async input => {
     paths.push(String(input))
     if (++attempts === 1) throw new Error('Temporary connection failure')
     return Response.json(finished)
-  }) as typeof fetch
+  }
   try {
     const updates: boolean[] = []
     const result = waitForDownloadJob(accepted, job => updates.push(job.finished))
@@ -104,13 +109,13 @@ test('record-keyed snapshot reloads after control commands even without subscrib
   }
   let acceptControl!: (value: Response) => void
   let removed = false
-  globalThis.fetch = (async input => {
+  globalThis.fetch = async input => {
     if (String(input) === '/api/download_control')
       return new Promise<Response>(resolve => {
         acceptControl = resolve
       })
     return Response.json({ ok: true, downloads: removed ? {} : { [recordId]: row } })
-  }) as typeof fetch
+  }
   try {
     invalidateDownloadProgress()
     const unsubscribe = subscribeDownloads(() => {})
@@ -156,8 +161,8 @@ test('jobResult reports in-flight units as pending rows and settles them once ad
   const running = jobResult(inflight)
   const row = running.rows.find(item => item.key === 'show-1' && item.release === 0)
   assert.ok(row, 'A still-pending unit keeps a visible row')
-  assert.equal(row!.status, 'pending')
-  assert.deepEqual(row!.protocols, ['torrent'])
+  assert.equal(row.status, 'pending')
+  assert.deepEqual(row.protocols, ['torrent'])
   assert.equal(running.rows.find(item => item.key === 'show-2')?.status, 'pending')
   assert.equal(running.count, 0)
   const settled = jobResult({ ...inflight, finished: true, pending: [], added: [unit], existing: [unitB] })
@@ -300,10 +305,10 @@ test('cached availability appears before a held refresh and manual refresh retai
   await availabilityFixture(async (timers, snapshots, controller) => {
     const held = Promise.withResolvers<Response>()
     const requests: { selections: SelectionInput[]; refresh?: boolean }[] = []
-    globalThis.fetch = (async (_input, init) => {
+    globalThis.fetch = async (_input, init) => {
       requests.push(JSON.parse(String(init?.body)))
       return requests.length === 1 ? availabilityReply([availabilityRow('cached')]) : held.promise
-    }) as typeof fetch
+    }
     const observing = observeUsenetAvailability([availabilitySelection('cached')], {
       signal: controller.signal,
       onSnapshot: snapshot => snapshots.push(snapshot),
@@ -320,10 +325,10 @@ test('cached availability appears before a held refresh and manual refresh retai
     await observing
     const manualController = new AbortController()
     const manualHeld = Promise.withResolvers<Response>()
-    globalThis.fetch = (async (_input, init) => {
+    globalThis.fetch = async (_input, init) => {
       requests.push(JSON.parse(String(init?.body)))
       return manualHeld.promise
-    }) as typeof fetch
+    }
     const manual = observeUsenetAvailability([availabilitySelection('cached')], {
       signal: manualController.signal,
       refresh: true,
@@ -353,7 +358,7 @@ test('cached availability appears before a held refresh and manual refresh retai
 test('mixed snapshots poll only refreshing identities without forcing work and stop after a refresh failure', async () => {
   await availabilityFixture(async (timers, snapshots, controller) => {
     const requests: { selections: SelectionInput[]; refresh?: boolean }[] = []
-    globalThis.fetch = (async (_input, init) => {
+    globalThis.fetch = async (_input, init) => {
       requests.push(JSON.parse(String(init?.body)))
       if (requests.length === 1)
         return availabilityReply([
@@ -369,7 +374,7 @@ test('mixed snapshots poll only refreshing identities without forcing work and s
           refresh_error: 'Fixture provider timed out',
         }),
       ])
-    }) as typeof fetch
+    }
     const observing = observeUsenetAvailability([availabilitySelection('known'), availabilitySelection('missing')], {
       signal: controller.signal,
       refresh: true,
@@ -392,10 +397,10 @@ test('mixed snapshots poll only refreshing identities without forcing work and s
 test('connectivity failures keep last-known availability and cancel the refreshing indicator', async () => {
   await availabilityFixture(async (timers, snapshots, controller) => {
     let calls = 0
-    globalThis.fetch = (async () => {
+    globalThis.fetch = async () => {
       if (++calls === 1) return availabilityReply([availabilityRow('cached')])
       throw new Error('Fixture connection lost')
-    }) as typeof fetch
+    }
     const observing = observeUsenetAvailability([availabilitySelection('cached')], {
       signal: controller.signal,
       onSnapshot: snapshot => snapshots.push(snapshot),
@@ -415,18 +420,18 @@ test('connectivity failures keep last-known availability and cancel the refreshi
 test('closing an observation clears polling and a replacement ignores the canceled response', async () => {
   await availabilityFixture(async (timers, snapshots, controller) => {
     const held = Promise.withResolvers<Response>()
-    globalThis.fetch = (async () => held.promise) as typeof fetch
+    globalThis.fetch = async () => held.promise
     const old = observeUsenetAvailability([availabilitySelection('old')], {
       signal: controller.signal,
       onSnapshot: snapshot => snapshots.push(snapshot),
     })
     controller.abort()
     const replacement = new AbortController()
-    globalThis.fetch = (async () =>
+    globalThis.fetch = async () =>
       availabilityReply([
         availabilityRow('replacement', { refreshing: false }),
         availabilityRow('old', { refreshing: false }),
-      ])) as typeof fetch
+      ])
     await observeUsenetAvailability([availabilitySelection('replacement')], {
       signal: replacement.signal,
       onSnapshot: snapshot => snapshots.push(snapshot),
@@ -441,7 +446,7 @@ test('closing an observation clears polling and a replacement ignores the cancel
       'Only requested canonical identities may attach',
     )
     const closing = new AbortController()
-    globalThis.fetch = (async () => availabilityReply([availabilityRow('cached')])) as typeof fetch
+    globalThis.fetch = async () => availabilityReply([availabilityRow('cached')])
     const polling = observeUsenetAvailability([availabilitySelection('cached')], {
       signal: closing.signal,
       onSnapshot: snapshot => snapshots.push(snapshot),
@@ -457,7 +462,7 @@ test('closing an observation clears polling and a replacement ignores the cancel
 test('a changed config generation discards old rows and re-observes the whole requested scope', async () => {
   await availabilityFixture(async (timers, snapshots, controller) => {
     const requests: { selections: SelectionInput[] }[] = []
-    globalThis.fetch = (async (_input, init) => {
+    globalThis.fetch = async (_input, init) => {
       requests.push(JSON.parse(String(init?.body)))
       if (requests.length === 1)
         return availabilityReply([availabilityRow('cached', { refreshing: false }), availabilityRow('pending')], 4)
@@ -470,7 +475,7 @@ test('a changed config generation discards old rows and re-observes the whole re
         ],
         5,
       )
-    }) as typeof fetch
+    }
     const selections = [availabilitySelection('cached'), availabilitySelection('pending')]
     const observing = observeUsenetAvailability(selections, {
       signal: controller.signal,
@@ -505,7 +510,7 @@ test('search, verify and cancel go out with the first request only and are confi
         refreshing,
         hashes: [{ hash: 'files:' + 'a'.repeat(40), state: 'unverified', provider: 'prowlarr', candidate_count: 2 }],
       })
-    globalThis.fetch = (async (_input, init) => {
+    globalThis.fetch = async (_input, init) => {
       requests.push(JSON.parse(String(init?.body)))
       if (requests.length === 1)
         return Response.json({
@@ -520,7 +525,7 @@ test('search, verify and cancel go out with the first request only and are confi
         availabilityRow('checked', { search: 'prowlarr', refreshing: false }),
         availabilityRow('searched', { aggregate: 'no_match', search: 'prowlarr', refreshing: false }),
       ])
-    }) as typeof fetch
+    }
     const selections = ['checked', 'dropped', 'searched'].map(availabilitySelection)
     const order: string[] = []
     const observing = observeUsenetAvailability(selections, {
@@ -576,7 +581,7 @@ test('a changed config generation discards unverified rows and what the indexers
       error: null,
       usage: [{ indexer: 'Geek', fetches_left: 3 }],
     }
-    globalThis.fetch = (async () =>
+    globalThis.fetch = async () =>
       availabilityReply(
         [
           availabilityRow('unverified', {
@@ -587,7 +592,7 @@ test('a changed config generation discards unverified rows and what the indexers
           }),
         ],
         5,
-      )) as typeof fetch
+      )
     await observeUsenetAvailability(selections, {
       signal: controller.signal,
       initial,
@@ -607,14 +612,14 @@ test('large reviews publish each cached batch before later batches finish', asyn
     const held = Promise.withResolvers<Response>()
     let calls = 0
     let generation = 1
-    globalThis.fetch = (async (_input, init) => {
+    globalThis.fetch = async (_input, init) => {
       const { selections } = JSON.parse(String(init?.body)) as { selections: SelectionInput[] }
       if (++calls === 2) return held.promise
       return availabilityReply(
         selections.map(selection => availabilityRow(selection.key, { refreshing: false })),
         generation,
       )
-    }) as typeof fetch
+    }
     const selections = Array.from({ length: 201 }, (_, index) => availabilitySelection(`row-${index}`))
     const observing = observeUsenetAvailability(selections, {
       signal: controller.signal,
@@ -636,10 +641,10 @@ test('large reviews publish each cached batch before later batches finish', asyn
 test('a mismatched snapshot preserves last-known data, reports the missing identity, and stops polling', async () => {
   await availabilityFixture(async (timers, snapshots, controller) => {
     let calls = 0
-    globalThis.fetch = (async () =>
+    globalThis.fetch = async () =>
       availabilityReply([
         availabilityRow('cached', calls++ ? { identity: 'obsolete-identity', refreshing: false } : {}),
-      ])) as typeof fetch
+      ])
     const observing = observeUsenetAvailability([availabilitySelection('cached')], {
       signal: controller.signal,
       onSnapshot: snapshot => snapshots.push(snapshot),
@@ -659,10 +664,10 @@ test('a mismatched snapshot preserves last-known data, reports the missing ident
 
 test('a row-level refresh failure warns without replacing successful cached hashes', async () => {
   await availabilityFixture(async (timers, snapshots, controller) => {
-    globalThis.fetch = (async () =>
+    globalThis.fetch = async () =>
       availabilityReply([
         availabilityRow('cached', { refreshing: false, refresh_error: 'Fixture row-level refresh failure' }),
-      ])) as typeof fetch
+      ])
     await observeUsenetAvailability([availabilitySelection('cached')], {
       signal: controller.signal,
       onSnapshot: snapshot => snapshots.push(snapshot),

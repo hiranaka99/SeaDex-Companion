@@ -217,7 +217,7 @@ test('torrent acceptance writes the intent before the client call and finalizes 
     })
     assert.ok('review' in built)
     const plan = consumePlan(built.review.plan_id)!
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.includes('/torrents/add') && init?.method === 'POST') {
         const record = findTorrentRecord(HASH)
@@ -225,7 +225,7 @@ test('torrent acceptance writes the intent before the client call and finalizes 
         intentStateDuringAdd = record?.state || ''
       }
       return originalAdd(input, init)
-    }) as typeof fetch
+    }
     const { job, completion } = await acceptDownloadPlan(baseConfig(), plan, undefined, results)
     const result = await completion
     assert.equal(intentVisibleDuringAdd, true, 'the intent record must exist while the client call runs')
@@ -441,9 +441,9 @@ test('unreachable clients keep the persisted last phase instead of inventing mis
     assert.equal(first.downloads[record.id].phase, 'downloading')
     assert.equal(findDownloadRecord(record.id)!.last_phase, 'downloading')
 
-    globalThis.fetch = (async () => {
+    globalThis.fetch = async () => {
       throw new TypeError('offline')
-    }) as typeof fetch
+    }
     resetQbRuntime()
     const second = await collectDownloadProgress(config)
     assert.equal(second.downloads[record.id].phase, 'downloading')

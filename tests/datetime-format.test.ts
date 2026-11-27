@@ -31,7 +31,7 @@ test('format validation accepts token patterns and rejects prose', () => {
   assert.ok(!isValidDateTimeFormat(''))
   assert.ok(!isValidDateTimeFormat('today'))
   assert.ok(!isValidDateTimeFormat('YYYY-MM-DD HH:mm:ss (local)'))
-  assert.ok(!isValidDateTimeFormat(42 as unknown as string))
+  assert.ok(!isValidDateTimeFormat(42))
 })
 
 test('stored timestamps parse in both server-local and ISO forms', () => {

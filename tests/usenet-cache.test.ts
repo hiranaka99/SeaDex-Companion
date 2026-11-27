@@ -94,11 +94,11 @@ async function fixture(
   let response = (url: URL): Response | Promise<Response> => match(url.searchParams.get('hash') || HASH)
   resetUsenetLookups()
   usenetScheduler.options.minIntervalMs = 0
-  globalThis.fetch = (async input => {
+  globalThis.fetch = async input => {
     const url = new URL(String(input))
     calls.push(url)
     return response(url)
-  }) as typeof fetch
+  }
   try {
     await run({
       advance(ms) {
@@ -651,7 +651,7 @@ test('AnimeTosho entries without an NZB are processing only while recent', async
       Response.json({ id: 123, info_hash: HASH, nzb_url: null, ...extra })
     const lookup = async (response: Response) => {
       resetUsenetLookups()
-      globalThis.fetch = (async () => response) as typeof fetch
+      globalThis.fetch = async () => response
       return (await resolveUsenetHash(config(), HASH)).state
     }
     assert.equal(
