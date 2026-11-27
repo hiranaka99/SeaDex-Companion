@@ -80,6 +80,8 @@ export interface UsenetRuntime {
 
 /** What the Usenet modules run on: the parts of one runtime. */
 export interface UsenetParts {
+  /** How every request to a hash indexer or to Prowlarr is sent, connection tests included. */
+  readonly fetch: typeof fetch
   readonly hash: HashLookupParts
   readonly search: SearchParts
   readonly indexers: ProwlarrIndexerList
@@ -138,6 +140,7 @@ class Runtime implements UsenetRuntime {
     const send: typeof fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
     const { paths = {}, pacing = {} } = options
     this.parts = {
+      fetch: send,
       hash: new HashLookupParts({ now, fetch: send, cacheFile: paths.cache, pacing: pacing.hashes }),
       search: new SearchParts({
         now,

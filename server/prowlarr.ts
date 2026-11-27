@@ -463,7 +463,7 @@ export async function searchProwlarr(
   settings: ProwlarrSettings,
   query: string,
   indexerIds: number[],
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: typeof fetch,
   categories: number[] = [],
 ): Promise<ProwlarrRelease[]> {
   if (!indexerIds.length) return []
@@ -558,7 +558,7 @@ export async function searchIndexer(
   settings: ProwlarrSettings,
   indexer: { id: number; name: string },
   params: IndexerSearchParams,
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: typeof fetch,
 ): Promise<ProwlarrSearchResult[]> {
   const name = indexerLabel(indexer)
   // The ID becomes a path segment, so it is never anything but a number.
@@ -707,7 +707,7 @@ export async function prowlarrDownload(
   settings: ProwlarrSettings,
   release: Pick<ProwlarrRelease, 'download_path'>,
   maxBytes: number,
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: typeof fetch,
 ): Promise<Uint8Array> {
   return await download(settings, release, fetchImpl, async response => {
     const bytes = await readResponseCapped(response, maxBytes)
@@ -728,7 +728,7 @@ export async function prowlarrDownload(
 export async function prowlarrGrabNzb(
   settings: ProwlarrSettings,
   release: Pick<ProwlarrRelease, 'download_path'>,
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: typeof fetch,
 ): Promise<Uint8Array> {
   return await download(settings, release, fetchImpl, async response => {
     const nzb = await readNzb(response, DOWNLOAD_SOURCE)
@@ -738,10 +738,7 @@ export async function prowlarrGrabNzb(
 }
 
 /** Read-only connection test: the version and what the configured indexers can search. */
-export async function testProwlarr(
-  settings: ProwlarrSettings,
-  fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<string> {
+export async function testProwlarr(settings: ProwlarrSettings, fetchImpl: typeof fetch): Promise<string> {
   const status = await getJson(settings, '/api/v1/system/status', API_TIMEOUT_MS, 'status check', fetchImpl)
   if (!isRecord(status) || typeof status.version !== 'string')
     throw new ProwlarrError('invalid_response', 'The URL did not answer like Prowlarr. Check the URL and URL base.')
