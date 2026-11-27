@@ -132,11 +132,6 @@ export async function controlDownload(
   await reloadDownloads()
 }
 
-// Batch submissions and completions refresh the same retained store as card commands.
-if (typeof window !== 'undefined')
-  window.addEventListener(api.DOWNLOADS_CHANGED_EVENT, () => {
-    void reloadDownloads()
-  })
 if (typeof window !== 'undefined')
   window.addEventListener(api.DOWNLOAD_PROGRESS_INVALIDATED_EVENT, () => {
     generation += 1

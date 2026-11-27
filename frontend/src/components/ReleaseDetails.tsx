@@ -1,10 +1,12 @@
 import { normalizeTorrentPath as normalizeFile, releaseFilesMatch, releaseOwned } from '../../../shared/download-plan'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Config, Release, ResultItem } from '../types'
-import { findsPrivateTorrent, formatBytes, formatEta, seasonLabel, sizeDelta } from '../utils'
+import { formatBytes, formatEta, seasonLabel, sizeDelta } from '../utils'
+import type { DownloadRoutes } from '../download-routes'
 import { buttonBase, cx, downloadTextTone } from '../styles'
 import Icon from './Icons'
-import { DownloadActions, ImportStatusLine, clientName, phaseLabel, type DownloadEntry } from './DownloadsPanel'
+import { DownloadActions, ImportStatusLine, phaseLabel } from './DownloadsPanel'
+import { clientName, type DownloadEntry } from '../download-entry'
 import { estimateDownloads } from '../../../shared/download-estimate'
 import type { DownloadPhase, DownloadProtocol, UsenetAvailabilityResult } from '../api'
 import type { UsenetCandidate } from '../../../shared/usenet-contracts'
@@ -38,7 +40,8 @@ interface Props {
   protocol: DownloadProtocol
   availability?: UsenetAvailabilityResult
   availabilityLoading: boolean
-  sabnzbdConfigured: boolean
+  /** What this release can be sent through. */
+  routes: DownloadRoutes
   onProtocol: (protocol: DownloadProtocol) => void
   onRefreshAvailability: () => void
   /** Searches Prowlarr's Usenet indexers for this release now. */
@@ -92,7 +95,7 @@ export default function ReleaseDetails({
   protocol,
   availability,
   availabilityLoading,
-  sabnzbdConfigured,
+  routes,
   onProtocol,
   onRefreshAvailability,
   onSearchProwlarr,
@@ -115,18 +118,17 @@ export default function ReleaseDetails({
   const active = transfers.filter(transfer => transfer.phase !== 'complete')
   const complete = transfers.length > 0 && active.length === 0
   const inClient = active.length > 0
-  const mode = config?.download_mode || 'torrent_only'
   const publicOnly = (config?.tracker_mode || DEFAULT_TRACKER_MODE) === 'public'
   const category = (r.arr === 'Sonarr' ? config?.sonarr_category : config?.radarr_category)?.trim() || r.arr
-  const usenetEnabled = mode !== 'torrent_only'
-  const sabReady = sabnzbdConfigured || Boolean(config?.sabnzbd_url && config?.sabnzbd_key_configured)
+  const usenetEnabled = routes.usenetAllowed
   const currentAvailability = availability?.identity === releaseIdentity(rel) ? availability : undefined
+  const route = routes.release(rel, currentAvailability, protocol)
   const usenet = usenetEnabled
     ? describeUsenet(
         currentAvailability,
-        sabReady,
+        routes.usenetReady,
         Boolean(rel.private_sources?.length),
-        Boolean(config?.prowlarr_enabled && config.prowlarr_url && config.prowlarr_key_configured),
+        routes.prowlarrConfigured,
       )
     : null
   /** The row shows a Prowlarr result (a private-tracker release, or a public one the hash indexers lack). */
@@ -139,11 +141,11 @@ export default function ReleaseDetails({
     Boolean(currentAvailability?.hashes.some(item => item.provider === 'prowlarr' && item.state !== 'not_checked'))
   const availabilityRefreshing = availabilityLoading || currentAvailability?.refreshing === true
   const refreshError = currentAvailability ? availabilityErrors([currentAvailability]) : null
-  const chosen: DownloadProtocol = mode === 'torrent_only' ? 'torrent' : mode === 'usenet_only' ? 'usenet' : protocol
+  const chosen: DownloadProtocol = route.protocol
   /** A private-tracker torrent the server finds through Prowlarr and checks file by file before sending. */
-  const viaProwlarr = findsPrivateTorrent(rel, config)
-  const torrentUsable = rel.torrent_available || viaProwlarr
-  const usenetUsable = usenet?.usable === true
+  const viaProwlarr = route.torrent.viaProwlarr
+  const torrentUsable = route.torrent.sendable
+  const usenetUsable = route.usenet.sendable
   const protocolUsable = chosen === 'torrent' ? torrentUsable : usenetUsable
   const disabled = inClient || complete || !protocolUsable
   /** Owning this release already; sending it again is a deliberate re-download, not an upgrade. */
@@ -678,8 +680,10 @@ export default function ReleaseDetails({
                             buttonBase,
                             'min-h-9 shrink-0 border-line-strong bg-panel px-2.5 text-xs text-ink enabled:hover:bg-panel-raised',
                           )}
-                          disabled={!sabReady || inClient || complete || sendLocked || lowSpace !== null}
-                          title={sabReady ? 'Send this NZB to SABnzbd after confirming it' : 'Set up SABnzbd first'}
+                          disabled={!routes.usenetReady || inClient || complete || sendLocked || lowSpace !== null}
+                          title={
+                            routes.usenetReady ? 'Send this NZB to SABnzbd after confirming it' : 'Set up SABnzbd first'
+                          }
                           aria-label={`Download this NZB · ${candidate.title}`}
                           onClick={() => {
                             setConfirmingRedownload(false)
@@ -700,7 +704,7 @@ export default function ReleaseDetails({
       )}
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
         <div className="min-w-0 flex-1 basis-44">
-          {mode === 'choose' && !inClient && !complete && (
+          {routes.mode === 'choose' && !inClient && !complete && (
             <div
               className="mb-2.5 flex flex-wrap items-center gap-1.5"
               role="radiogroup"

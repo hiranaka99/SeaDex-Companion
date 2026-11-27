@@ -11,6 +11,7 @@ import type {
   UsenetProof,
 } from '../../shared/usenet-contracts.js'
 import { displayDateTimeMinutes } from './datetime.js'
+import { awaitsCheck } from './download-routes.js'
 import { availabilityKey as rowId, type AvailabilityRow } from './usenet-observation.js'
 import { formatBytes, providerNames } from './utils.js'
 
@@ -29,17 +30,6 @@ function aboutWait(seconds: number): string {
 // ---------------------------------------------------------------------------
 // Availability states
 // ---------------------------------------------------------------------------
-
-/**
- * A file-list search through Prowlarr can still find a copy of this release: nothing is proven and nothing is
- * ruled out. A public release qualifies once its hash indexers answered that they have no NZB.
- */
-export function awaitsCheck(row: UsenetAvailabilityResult | undefined): boolean {
-  if (!row) return false
-  if (row.aggregate === 'not_checked' || row.aggregate === 'unverified')
-    return row.search === 'prowlarr' || row.fallback === 'prowlarr'
-  return row.aggregate === 'no_match' && row.fallback === 'prowlarr'
-}
 
 /** Search results found for a release, checked or not. */
 export function candidateCount(row: UsenetAvailabilityResult): number {

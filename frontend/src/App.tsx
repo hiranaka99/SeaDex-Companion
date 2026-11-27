@@ -4,13 +4,13 @@ import TopBar from './components/TopBar'
 import AnimeTab from './components/AnimeTab'
 import AuthPage from './components/AuthPage'
 import ConfirmDialog from './components/ConfirmDialog'
-import OperationCenter from './components/OperationCenter'
+import OperationCenter, { isScanNoticeVisible } from './components/OperationCenter'
 import SidebarResizer from './components/SidebarResizer'
 import ErrorBoundary, { PageErrorFallback } from './components/ErrorBoundary'
 import { useToast } from './components/Toast'
 import type { AuthState, LibraryFilterRequest } from './types'
 import * as api from './api'
-import { useBulkOperation } from './useBulkOperation'
+import { useBulkOperation, useBulkReviewRequest } from './useBulkOperation'
 import { useHashTab } from './useHashTab'
 import { useLibraryData } from './useLibraryData'
 import { useProwlarrCoverage } from './useProwlarrCoverage'
@@ -84,6 +84,9 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
   const libraryConfig = useProwlarrCoverage(config, library.results)
   const busy = status.running || bulk.running
 
+  // Reviewing the current batch, from either operation banner, opens the library where the review lives.
+  useBulkReviewRequest(() => changeTab('anime'))
+
   // Fetch the other pages as soon as the app is up, so opening one neither waits for the network nor shows
   // a placeholder.
   useEffect(() => {
@@ -132,18 +135,10 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
     status,
     scanCompleted,
     scanCancelledDismissed,
-    bulk: bulk.operation,
     onCancelScan: () => void handleCancelScan(),
     onRetryScan: () => void handleScan(),
     onOpenConfig: openConfig,
     onDismissScan: library.dismissScan,
-    onDismissBulk: bulk.dismiss,
-    onReviewBulk: bulk.reviewAvailable
-      ? () => {
-          changeTab('anime')
-          bulk.requestReview()
-        }
-      : undefined,
   }
 
   return (
@@ -192,9 +187,6 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
                   active={tab === 'anime'}
                   openResultKey={openResultKey}
                   onResultOpened={handleResultOpened}
-                  bulkOperationActive={bulk.running}
-                  bulkReviewRequest={bulk.reviewRequest}
-                  onBulkReviewReset={bulk.resetReview}
                   results={library.results}
                   config={libraryConfig}
                   status={status}
@@ -204,15 +196,7 @@ function AuthenticatedApp({ username, onLogout, onAccountUpdated }: Authenticate
                   loadError={library.resultsError}
                   onReloadResults={() => void library.reloadResults()}
                   onOpenConfig={openConfig}
-                  onBulkOperationChange={bulk.report}
-                  operationsVisible={
-                    status.running ||
-                    Boolean(status.error) ||
-                    (status.cancelled && !scanCancelledDismissed) ||
-                    status.webhook_scan.queued ||
-                    Boolean(scanCompleted) ||
-                    Boolean(bulk.operation)
-                  }
+                  scanNoticeVisible={isScanNoticeVisible(status, scanCompleted, scanCancelledDismissed)}
                   onResultsChanged={library.reloadResults}
                   filterRequest={libraryFilter}
                 />
