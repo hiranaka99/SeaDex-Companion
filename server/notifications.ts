@@ -6,7 +6,7 @@ import { describeResultChange, previousResultMatcher } from './history.js'
 import { fetchWithTimeout, sleep, scanRequests } from './http.js'
 import { log } from './logging.js'
 import { errorMessage } from '../shared/errors.js'
-import { isSeasonUpgradable } from '../shared/download-plan.js'
+import { upgradeAvailable, wantedParts } from '../shared/download-plan.js'
 import { seasonTag } from '../shared/ids.js'
 import { sourceNameOf } from '../shared/arr-instances.js'
 import type { ImportProblem } from './import-follow.js'
@@ -154,15 +154,6 @@ export interface NotificationDependencies {
   regressions?: Record<string, string>
 }
 
-/** True when at least one best release of the result sits outside the user's excluded cours. */
-function hasIncludedBestPart(result: ResultItem & { excluded_parts?: string[] }): boolean {
-  const excludedParts = new Set(result.excluded_parts || [])
-  const bestParts = new Set(
-    result.releases.filter(release => release.kind === 'best').map(release => release.part || ''),
-  )
-  return bestParts.size === 0 || [...bestParts].some(part => !excludedParts.has(part))
-}
-
 /** One notification for a finished download that Sonarr or Radarr did not import. */
 export async function sendImportProblem(config: Config, problem: ImportProblem): Promise<boolean> {
   if (!config.webhook) return false
@@ -219,7 +210,8 @@ export async function autoNotifyNew(config: Config, dependencies: NotificationDe
   let notificationStateChanged = false
   for (const key of [...notified]) {
     const current = currentByKey.get(key)
-    if (current && !isSeasonUpgradable(current)) {
+    // Forgotten only once the upgrade is gone, so ignoring a part and restoring it announces nothing new.
+    if (current && !upgradeAvailable(current)) {
       notified.delete(key)
       notificationStateChanged = true
     }
@@ -232,12 +224,7 @@ export async function autoNotifyNew(config: Config, dependencies: NotificationDe
   if (!config.notify_enabled) return skip('INFO', 'Discord notifications skipped: disabled in configuration')
   if (!config.webhook) return skip('WARNING', 'Discord notifications skipped: no webhook is configured')
   const fresh = applyUserRulesToResults(scanState.results).filter(
-    result =>
-      !result.excluded &&
-      hasIncludedBestPart(result) &&
-      isSeasonUpgradable(result) &&
-      result.key &&
-      !notified.has(result.key),
+    result => result.key && !notified.has(result.key) && wantedParts(result).length > 0,
   )
   if (!fresh.length) return skip('INFO', 'Discord notifications: no new upgrades to send')
   const previous = dependencies.previous || []

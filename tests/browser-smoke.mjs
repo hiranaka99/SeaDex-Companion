@@ -882,6 +882,11 @@ const wait = async expression => {
   }
   throw new Error('UI did not reach expected state: ' + expression)
 }
+// Waiting on an element the page already shows can pass before the reload replaces the document, so wait for the new one.
+const reload = async () => {
+  await evaluate(`window.__seadexBeforeReload = true; location.reload()`)
+  await wait(`!window.__seadexBeforeReload`)
+}
 const click = async text => {
   const found = await evaluate(
     `(() => { const button = [...document.querySelectorAll('button, summary')].find(button => button.getClientRects().length && button.textContent.trim() === ${JSON.stringify(text)}); if (!button) return false; button.focus(); button.click(); return true })()`,
@@ -2595,7 +2600,7 @@ try {
     // The library says when its results predate the saved scope or preferences.
     config = configBefore
     statusOverrides = { ...overridesBefore, settings_changed: true }
-    await evaluate('location.reload()')
+    await reload()
     await wait(`document.querySelector('input[name=sonarr_url]')`)
     await click('Library')
     await wait(

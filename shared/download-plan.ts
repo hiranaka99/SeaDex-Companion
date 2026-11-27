@@ -40,8 +40,18 @@ export interface RecommendationSeason<R extends RecommendationRelease = Recommen
   releases: R[]
 }
 
-export const isSeasonUpgradable = (season: Pick<RecommendationSeason, 'status' | 'upgrade_available'>): boolean =>
+/**
+ * SeaDex lists a better release for this season than the library holds. A fact about the catalog and the
+ * library, whatever the user has ignored: the card, the Upgrade filter, history and regressions ask this.
+ */
+export const upgradeAvailable = (season: Pick<RecommendationSeason, 'status' | 'upgrade_available'>): boolean =>
   season.status === 'upgrade' || (season.status === 'partial' && season.upgrade_available === true)
+
+/** Whether the user ignored this release's part of the season. */
+export const partIgnored = (
+  season: Pick<RecommendationSeason, 'excluded_parts'>,
+  release: Pick<RecommendationRelease, 'part'>,
+): boolean => Boolean(season.excluded_parts?.includes(release.part || ''))
 
 type OwnedRelease = Pick<RecommendationRelease, 'part' | 'releaseGroup' | 'files_match'>
 type OwnershipFacts = Pick<
@@ -88,32 +98,66 @@ export const releaseSatisfies = (release: Pick<RecommendationRelease, 'kind' | '
 export const releaseOffered = (release: Pick<RecommendationRelease, 'kind' | 'target' | 'excluded_by'>): boolean =>
   !release.excluded_by && (release.kind === 'best' || release.target === true)
 
-/** One eligibility policy for review, preflight validation, and submission. Torrent availability only. */
-export function upgradeParts<R extends RecommendationRelease>(
+/** Parts the library already settles: it holds a release whose ownership settles the part. */
+const settledParts = (season: RecommendationSeason): Set<string> =>
+  new Set(
+    season.releases
+      .filter(release => releaseOwned(season, release) && releaseSatisfies(release))
+      .map(release => release.part || ''),
+  )
+
+/** Why a release is not a wanted option of its season. */
+export type UnwantedReason =
+  /** The season has no upgrade available. */
+  | 'no_upgrade'
+  /** The user ignored the whole season. */
+  | 'ignored'
+  /** Neither SeaDex's best release nor the preferred target, or excluded by the release preferences. */
+  | 'not_offered'
+  /** The user ignored the release's part. */
+  | 'ignored_part'
+  /** The library holds this release. */
+  | 'owned'
+  /** The library holds another release that settles the part. */
+  | 'settled'
+
+/** Why this release is not one of the season's wanted options, or undefined when it is one. */
+export function unwantedReason(season: RecommendationSeason, index: number): UnwantedReason | undefined {
+  const release = season.releases[index]
+  if (!upgradeAvailable(season)) return 'no_upgrade'
+  if (season.excluded) return 'ignored'
+  if (!release || !releaseOffered(release)) return 'not_offered'
+  if (partIgnored(season, release)) return 'ignored_part'
+  if (releaseOwned(season, release)) return 'owned'
+  if (settledParts(season).has(release.part || '')) return 'settled'
+  return undefined
+}
+
+/**
+ * The wanted parts of a season, each with the releases that may fetch it: what Bulk download fetches and what
+ * notifications and upgrade tags announce. One eligibility policy for review, preflight validation, and
+ * submission. A part stays wanted when nothing can fetch it yet; `torrent_available` says whether a torrent can.
+ */
+export function wantedParts<R extends RecommendationRelease>(
   season: RecommendationSeason<R>,
 ): { part: string; options: { index: number; release: R }[]; torrent_available: boolean }[] {
-  if (!isSeasonUpgradable(season) || season.excluded) return []
+  if (!upgradeAvailable(season) || season.excluded) return []
+  const settled = settledParts(season)
   const parts = new Map<string, { index: number; release: R }[]>()
-  const settled = new Set<string>()
   season.releases.forEach((release, index) => {
     const part = release.part || ''
-    if (releaseOwned(season, release)) {
-      if (releaseSatisfies(release)) settled.add(part)
-      return
-    }
-    if (!releaseOffered(release) || season.excluded_parts?.includes(part)) return
+    if (settled.has(part) || releaseOwned(season, release)) return
+    if (!releaseOffered(release) || partIgnored(season, release)) return
     parts.set(part, [...(parts.get(part) || []), { index, release }])
   })
-  return [...parts]
-    .filter(([part]) => !settled.has(part))
-    .map(([part, offered]) => {
-      // The preferred target leads, so it is the default choice wherever several releases are offered.
-      const options = [...offered].sort(
-        (left, right) => Number(right.release.target === true) - Number(left.release.target === true),
-      )
-      const available = options.filter(({ release }) => release.torrent_available && torrentHashes(release).length > 0)
-      return { part, options: available.length ? available : options, torrent_available: available.length > 0 }
-    })
+  return [...parts].map(([part, offered]) => {
+    // The preferred target leads, so it is the default choice wherever several releases are offered.
+    const options = [...offered].sort(
+      (left, right) => Number(right.release.target === true) - Number(left.release.target === true),
+    )
+    const available = options.filter(({ release }) => release.torrent_available && torrentHashes(release).length > 0)
+    return { part, options: available.length ? available : options, torrent_available: available.length > 0 }
+  })
 }
 
 export interface PlannedTorrent {

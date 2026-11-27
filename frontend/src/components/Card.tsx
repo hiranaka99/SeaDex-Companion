@@ -2,7 +2,8 @@ import { errorMessage } from '../../../shared/errors.js'
 import { useReleaseActions } from '../useReleaseActions'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { GroupedCard, ResultItem, Config } from '../types'
-import { seasonLabel, STATUS_LABEL, cardSizeDelta, formatBytes, isSeasonUpgradable } from '../utils'
+import { upgradeAvailable } from '../../../shared/download-plan'
+import { seasonLabel, STATUS_LABEL, cardSizeDelta, formatBytes } from '../utils'
 import { displayDateTimeMinutes } from '../datetime'
 import * as api from '../api'
 import { buttonBase, cx } from '../styles'
@@ -155,7 +156,7 @@ function Card({
   const seasonCount = group.seasons.length
   const unseenChanges = useMemo(() => groupReleaseChanges(group), [group.seasons])
   const changeIds = unseenChanges.map(({ change }) => change.id)
-  const upgradableSeasonCount = group.seasons.filter(isSeasonUpgradable).length
+  const upgradableSeasonCount = group.seasons.filter(upgradeAvailable).length
   const delta = cardSizeDelta(group)
 
   useEffect(() => {
@@ -290,7 +291,7 @@ function Card({
   const indexesWhere = (keep: (index: number) => boolean) => group.seasons.map((_, index) => index).filter(keep)
   const reviewTargets = indexesWhere(index => qualities[index].kind === 'review')
   const upgradeTargets = indexesWhere(
-    index => isSeasonUpgradable(group.seasons[index]) && qualities[index].kind !== 'review',
+    index => upgradeAvailable(group.seasons[index]) && qualities[index].kind !== 'review',
   )
   // The summary's button walks the seasons that explain it, in the order the summary names them.
   const action: { targets: number[]; label: string; icon: QualityIconName } | null = reviewTargets.length
