@@ -1029,7 +1029,7 @@ export default function ConfigTab({
               </p>
               <div className="grid grid-cols-2 gap-4 max-[1100px]:grid-cols-1">
                 <IntegrationCard
-                  icon={<Icon name="search" size={22} />}
+                  brand="prowlarr"
                   title="Prowlarr"
                   description="Searches your private trackers and Usenet indexers; requires the Prowlarr API key"
                   configured={configured.prowlarr}
