@@ -19,20 +19,46 @@ import { prefetchAfterScan } from './usenet-prefetch.js'
 import { syncArrTags } from './arr-tags.js'
 import { settleImports } from './import-follow.js'
 import { arrInstances, configuredArrInstances, instanceSourceKey, sourceNameOf } from './arr-instances.js'
+import { isDownloadable } from './matching.js'
+import { prowlarrIndexers, prowlarrSettings, trackerIndexers, type ProwlarrSettings } from './prowlarr.js'
 import { describeRegression } from '../shared/release-changes.js'
 import { DEFAULT_RELEASE_PREFERENCES, normalizeReleasePreferences, normalizeTrackerMode } from '../shared/settings.js'
 import type { Config, ScanScope, ScanTrigger, LocalItem, LocalSeason, ResultItem, SeaDexEntry } from './types.js'
 
-/** Identifies the settings a season is judged under; results computed under another signature are not comparable. */
+const trackerKeys = (trackers: readonly string[]): string[] =>
+  [...new Set(trackers.map(tracker => tracker.trim().toLowerCase()).filter(Boolean))].sort()
+
+/**
+ * Identifies the settings a season is judged under; results computed under another signature are not comparable.
+ * Reachable-tracker mode is also judged by the private trackers Prowlarr covers, so they are part of its signature.
+ */
 export function assessmentSignature(
   config: Pick<Config, 'release_preferences' | 'verify_release_files'> & Partial<Pick<Config, 'tracker_mode'>>,
+  coveredTrackers: readonly string[] = [],
 ): string {
+  const trackers = normalizeTrackerMode(config.tracker_mode)
   return JSON.stringify([
     normalizeReleasePreferences(config.release_preferences),
     config.verify_release_files !== false,
-    // Results from before tracker modes listed every tracker, so only public mode extends the signature.
-    ...(normalizeTrackerMode(config.tracker_mode) === 'public' ? ['public'] : []),
+    // Results from before tracker modes listed every tracker, so private mode adds nothing to the signature.
+    ...(trackers === 'public'
+      ? ['public']
+      : trackers === 'reachable'
+        ? ['reachable', trackerKeys(coveredTrackers)]
+        : []),
   ])
+}
+
+/** The covered trackers a reachable-mode signature was computed with; none for any other signature. */
+function signatureCoverage(signature: string | undefined): string[] {
+  try {
+    const parts: unknown = JSON.parse(signature || 'null')
+    if (Array.isArray(parts) && parts[2] === 'reachable' && Array.isArray(parts[3]))
+      return parts[3].filter((tracker): tracker is string => typeof tracker === 'string')
+  } catch {
+    /* an unreadable signature covers nothing */
+  }
+  return []
 }
 /** What results saved without a signature were judged under: default preferences across every tracker. */
 const DEFAULT_ASSESSMENT_SIGNATURE = assessmentSignature({
@@ -52,7 +78,9 @@ export function resultSettingsChanged(
   saved: { count: number; settings?: { assessment?: string; library?: string } },
 ): boolean {
   if (!saved.count) return false
-  if ((saved.settings?.assessment ?? DEFAULT_ASSESSMENT_SIGNATURE) !== assessmentSignature(config)) return true
+  const assessment = saved.settings?.assessment ?? DEFAULT_ASSESSMENT_SIGNATURE
+  // Only a scan reads what Prowlarr covers, so the saved coverage stands in for it here.
+  if (assessment !== assessmentSignature(config, signatureCoverage(assessment))) return true
   return saved.settings?.library !== undefined && saved.settings.library !== librarySignature(config)
 }
 
@@ -73,6 +101,35 @@ async function loadCatalog(load: typeof seadexBest, reuse: boolean): Promise<Map
   return catalog
 }
 
+/**
+ * The private trackers of the catalog that Prowlarr has a torrent indexer for, which reachable-tracker mode
+ * judges against. When Prowlarr cannot be read, the coverage of the saved results stands, so the scan stays
+ * comparable with them instead of failing or becoming a baseline.
+ */
+async function readCoveredTrackers(
+  settings: ProwlarrSettings,
+  catalog: Map<number, SeaDexEntry>,
+  listIndexers: typeof prowlarrIndexers,
+  options: { fresh: boolean; signal: AbortSignal; savedSignature: string | undefined },
+): Promise<string[]> {
+  const privateTrackers = new Set<string>()
+  for (const entry of catalog.values())
+    for (const slot of Object.values(entry.seasons || {}))
+      for (const candidate of slot.candidates || [])
+        if (candidate.tracker && !isDownloadable(candidate)) privateTrackers.add(candidate.tracker)
+  try {
+    const indexers = await listIndexers({ ...settings, signal: options.signal }, undefined, options.fresh)
+    return trackerKeys([...privateTrackers].filter(tracker => trackerIndexers(indexers, tracker).length > 0))
+  } catch (error) {
+    if (options.signal.aborted) throw new DOMException('Scan cancelled', 'AbortError')
+    log(
+      'WARNING',
+      `Prowlarr's indexers could not be read (${errorMessage(error)}). This scan uses the trackers Prowlarr covered at the last scan.`,
+    )
+    return signatureCoverage(options.savedSignature)
+  }
+}
+
 export interface ScanDependencies {
   seadexBest?: typeof seadexBest
   localItems?: (config: Config, scope?: ScanScope) => Promise<LocalItem[]>
@@ -89,6 +146,8 @@ export interface ScanDependencies {
   /** Lets finished downloads learn from the new results whether they were imported. */
   settleImports?: typeof settleImports
   recordScanHistory?: typeof recordScanHistory
+  /** Lists Prowlarr's indexers, which decide the private trackers reachable-tracker mode can target. */
+  prowlarrIndexers?: typeof prowlarrIndexers
 }
 
 /** Resolve dependencies once; overrides never disable another subsystem. */
@@ -103,6 +162,7 @@ export function createScanService(overrides: ScanDependencies = {}) {
     unhideNewBestReleases,
     loadUserRules,
     recordScanHistory,
+    prowlarrIndexers,
     onScanFinished: prefetchAfterScan,
     syncArrTags,
     settleImports,
@@ -182,12 +242,30 @@ async function performScan(
     const saved = loadLastResults()
     const previousResults = previousState.results.length ? previousState.results : saved?.results || []
     const rules = dependencies.loadUserRules()
+    const trackers = normalizeTrackerMode(config.tracker_mode)
+    // Reachable-tracker mode judges against what Prowlarr covers now. A scan of single titles accepts a recent list.
+    const prowlarr = trackers === 'reachable' ? prowlarrSettings(config) : null
+    let coveredTrackers: string[] = []
+    if (prowlarr) {
+      stage = 'reading the Prowlarr indexers'
+      setState({ message: 'Checking which trackers Prowlarr can reach…' })
+      coveredTrackers = await readCoveredTrackers(prowlarr, best, dependencies.prowlarrIndexers, {
+        fresh: !scoped,
+        signal: controller.signal,
+        savedSignature: saved?.settings?.assessment,
+      })
+      log('INFO', `Private trackers Prowlarr can reach: ${coveredTrackers.join(', ') || 'none'}`)
+    }
     const settings: AssessmentSettings = {
       preferences: normalizeReleasePreferences(config.release_preferences),
       verify: config.verify_release_files !== false,
-      trackers: normalizeTrackerMode(config.tracker_mode),
+      trackers,
+      coveredTrackers,
     }
-    const signatures = { assessment: assessmentSignature(config), library: librarySignature(config) }
+    const signatures = {
+      assessment: assessmentSignature(config, coveredTrackers),
+      library: librarySignature(config),
+    }
     // Results judged under other preferences are a new baseline: their differences are neither SeaDex changes nor regressions.
     const settingsChanged =
       previousResults.length > 0 &&

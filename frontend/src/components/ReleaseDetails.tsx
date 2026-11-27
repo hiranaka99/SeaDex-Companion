@@ -1,7 +1,7 @@
 import { normalizeTorrentPath as normalizeFile, releaseFilesMatch, releaseOwned } from '../../../shared/download-plan'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Config, Release, ResultItem } from '../types'
-import { findsPrivateTorrent, formatBytes, formatEta, providerNames, seasonLabel, sizeDelta } from '../utils'
+import { findsPrivateTorrent, formatBytes, formatEta, seasonLabel, sizeDelta } from '../utils'
 import { buttonBase, cx, downloadTextTone } from '../styles'
 import Icon from './Icons'
 import { DownloadActions, ImportStatusLine, clientName, phaseLabel, type DownloadEntry } from './DownloadsPanel'
@@ -14,6 +14,15 @@ import { episodeRangeLabel, releaseIdentity } from '../../../shared/releases'
 import { DEFAULT_TRACKER_MODE } from '../../../shared/settings'
 import { displayDateTimeMinutes } from '../datetime'
 import { availabilityErrors } from '../usenet-observation'
+import {
+  candidateChoosable,
+  candidateConfirmText,
+  candidateFacts,
+  candidateFinding,
+  candidatesIntro,
+  checkBlockedReason,
+  describeUsenet,
+} from '../usenet-review'
 
 interface Props {
   result: ResultItem
@@ -34,6 +43,8 @@ interface Props {
   onRefreshAvailability: () => void
   /** Searches Prowlarr's Usenet indexers for this release now. */
   onSearchProwlarr: () => void
+  /** Fetches the best search result's NZB and compares its files with this release. */
+  onCheckProwlarr: () => void
   onDownload: () => void
   /** Sends an unproven NZB the user chose from a Prowlarr search for this private-tracker release. */
   onDownloadNzb: (nzb: string) => void
@@ -70,134 +81,6 @@ const PHASE_ORDER: DownloadPhase[] = [
   'complete',
 ]
 
-interface UsenetInfo {
-  usable: boolean
-  label: string
-  detail: string
-}
-
-/** Human Usenet state for one release; the server re-validates everything. */
-function describeUsenet(
-  row: UsenetAvailabilityResult | undefined,
-  sabnzbdConfigured: boolean | undefined,
-  privateRelease = false,
-  /** Prowlarr is set up. */
-  prowlarr = false,
-): UsenetInfo | null {
-  if (!row) return null
-  const hash = row.hashes[0]
-  if (!sabnzbdConfigured)
-    return {
-      usable: false,
-      label: 'Usenet needs SABnzbd',
-      detail: 'Set up SABnzbd in Settings to download over Usenet.',
-    }
-  if (row.search === 'prowlarr') {
-    const reason = row.hashes.find(item => item.state === row.aggregate && item.error)?.error
-    if (row.aggregate === 'available') {
-      const size = hash?.total_bytes ? ` · ~${formatBytes(hash.total_bytes).replace(' ', '\u00a0')}` : ''
-      return {
-        usable: true,
-        label: `Usenet copy found through Prowlarr${size}`,
-        detail:
-          'The NZB names every file of this release with its exact size. It is the whole upload; files beyond the selected episodes will also download.',
-      }
-    }
-    if (row.aggregate === 'not_checked')
-      return {
-        usable: false,
-        label: row.refreshing ? 'Searching Prowlarr…' : 'Usenet: not searched',
-        detail:
-          'Private-tracker releases are searched only when you ask. Each NZB checked against the release’s files counts toward the indexer’s download limit.',
-      }
-    if (row.aggregate === 'no_match')
-      return {
-        usable: false,
-        label: 'No matching copy on Usenet',
-        detail: reason || 'No NZB found through Prowlarr has exactly this release’s files.',
-      }
-    if (row.aggregate === 'lookup_failed')
-      return {
-        usable: false,
-        label: 'Prowlarr search failed',
-        detail: `${reason || 'Prowlarr could not be reached'}. Search again in a moment.`,
-      }
-    if (row.aggregate === 'not_configured')
-      return {
-        usable: false,
-        label: 'Usenet search unavailable',
-        detail: reason || 'Add a Usenet indexer to Prowlarr to search for private-tracker releases.',
-      }
-  }
-  if (row.aggregate === 'available') {
-    const foundOn = providerNames(row.hashes.map(item => item.provider))
-    const size = hash?.total_bytes ? ` · ~${formatBytes(hash.total_bytes).replace(' ', '\u00a0')}` : ''
-    const extras =
-      hash?.files_known && hash.file_count ? ` · ${hash.file_count} file${hash.file_count === 1 ? '' : 's'}` : ''
-    return {
-      usable: true,
-      label: `Usenet source found${foundOn.length ? ` on ${foundOn.join(' and ')}` : ''}${size}${extras}`,
-      detail: 'The Usenet source is the whole upload; files beyond the selected episodes will also download.',
-    }
-  }
-  if (row.aggregate === 'processing')
-    return {
-      usable: false,
-      label: 'Not found on Usenet indexers yet',
-      detail:
-        'The indexer is still converting this release on their side; it can take hours after release. Re-check refreshes the status.',
-    }
-  if (row.aggregate === 'incomplete')
-    return {
-      usable: false,
-      label: 'Usenet source uncertain',
-      detail: 'Providers returned partial results for this release.',
-    }
-  if (row.aggregate === 'no_match') {
-    // Name what was actually asked: the hash providers, never Prowlarr, for a public release.
-    const checked = providerNames(row.hashes.flatMap(item => item.providers_checked || []))
-    const who = checked.length ? checked.join(' and ') : 'The enabled hash indexers'
-    return {
-      usable: false,
-      label: checked.length ? `Not found on ${checked.join(' or ')}` : 'Not found on Usenet indexers',
-      detail: `${who} ${checked.length === 1 ? 'has' : 'have'} no NZB for this release's torrent hash.${
-        row.fallback === 'prowlarr'
-          ? ' Search Prowlarr to look on your other Usenet indexers.'
-          : prowlarr
-            ? ' SeaDex lists no file sizes for it, so a copy found through Prowlarr could not be checked.'
-            : ''
-      }`,
-    }
-  }
-  if (row.aggregate === 'lookup_failed') {
-    const providers = providerNames(hash?.providers_failed || [])
-    return {
-      usable: false,
-      label: 'Usenet lookup failed',
-      detail: `${providers.length ? `${providers.join(' and ')} ` : 'The Usenet source '}could not be reached. Retry in a moment.`,
-    }
-  }
-  if (row.aggregate === 'unsupported_hash')
-    return {
-      usable: false,
-      label: 'Usenet unavailable',
-      detail: privateRelease
-        ? 'Private-tracker releases have no public hash. Set up Prowlarr with Usenet indexers and include private trackers in Release preferences to search for them.'
-        : 'This release has no hash the enabled Usenet sources can search.',
-    }
-  if (row.aggregate === 'not_checked')
-    return {
-      usable: false,
-      label: row.refreshing ? 'Checking Usenet sources…' : 'Usenet: not checked',
-      detail: 'No provider result is available yet. Re-check the sources to try again.',
-    }
-  return {
-    usable: false,
-    label: 'Usenet not set up',
-    detail: 'Enable a Usenet source (AnimeTosho or AmeNZB) in Settings.',
-  }
-}
-
 export default function ReleaseDetails({
   result: r,
   release: rel,
@@ -213,6 +96,7 @@ export default function ReleaseDetails({
   onProtocol,
   onRefreshAvailability,
   onSearchProwlarr,
+  onCheckProwlarr,
   onDownload,
   onDownloadNzb,
   lowSpace,
@@ -324,16 +208,22 @@ export default function ReleaseDetails({
   const [confirmingRedownload, setConfirmingRedownload] = useState(false)
   /** An unproven NZB is only sent after the person confirms it is the release. */
   const [confirmingNzb, setConfirmingNzb] = useState<UsenetCandidate | null>(null)
+  // Search results that are no proven copy: checked ones can still be chosen, the others are listed as they are.
   const nzbCandidates =
-    privateSearch && currentAvailability?.aggregate === 'no_match'
+    privateSearch && currentAvailability?.aggregate !== 'available'
       ? currentAvailability.hashes.flatMap(item => item.candidates || [])
       : []
+  /** Why no NZB could be checked: a daily limit that was reached, or a paused indexer. */
+  const checkBlocked = checkBlockedReason(currentAvailability)
   const nzbConfirmRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     if (confirmingNzb) nzbConfirmRef.current?.focus()
   }, [confirmingNzb])
   useEffect(() => {
-    if (confirmingNzb && !nzbCandidates.some(candidate => candidate.entry_id === confirmingNzb.entry_id))
+    if (
+      confirmingNzb &&
+      !nzbCandidates.some(candidate => candidate.entry_id === confirmingNzb.entry_id && candidateChoosable(candidate))
+    )
       setConfirmingNzb(null)
   })
   const rowRef = useRef<HTMLElement>(null)
@@ -655,7 +545,10 @@ export default function ReleaseDetails({
           <Icon name="ban" size={14} className="mt-0.5 shrink-0" />
           <span className="min-w-0">
             <span className="font-semibold text-ink">Excluded by your release preferences: {rel.excluded_by}.</span>
-            <span className="mt-0.5 block">Bulk download skips it. You can still download it here.</span>
+            {/* A private-tracker release nothing can send says so below, where its download would be. */}
+            <span className="mt-0.5 block">
+              Bulk download skips it.{manualOnly ? '' : ' You can still download it here.'}
+            </span>
           </span>
         </p>
       )}
@@ -667,7 +560,7 @@ export default function ReleaseDetails({
               usenet
                 ? usenet.usable
                   ? 'text-good'
-                  : currentAvailability?.aggregate === 'not_checked'
+                  : currentAvailability?.aggregate === 'not_checked' || currentAvailability?.aggregate === 'unverified'
                     ? 'text-muted'
                     : 'text-warn'
                 : 'text-muted',
@@ -676,7 +569,9 @@ export default function ReleaseDetails({
             {usenet ? usenet.label : availabilityLoading ? 'Checking Usenet sources…' : 'Usenet: not checked'}
           </span>
           {usenet && !usenet.usable && currentAvailability?.aggregate !== 'not_checked' && (
-            <span className="min-w-0 basis-44 flex-1 text-muted">{usenet.detail}</span>
+            <span className={cx('min-w-0 basis-44 flex-1 wrap-anywhere', checkBlocked ? 'text-warn' : 'text-muted')}>
+              {usenet.detail}
+            </span>
           )}
           {rel.torrent_available && (
             <button
@@ -700,6 +595,19 @@ export default function ReleaseDetails({
             >
               <Icon name="search" size={13} />
               {prowlarrSearched ? 'Search again' : 'Search Prowlarr'}
+            </button>
+          )}
+          {usenet?.action === 'check' && (
+            <button
+              type="button"
+              className="touch-target inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 font-semibold text-accent-bright hover:bg-accent/10 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={onCheckProwlarr}
+              disabled={availabilityRefreshing}
+              title="Fetch the best result's NZB and compare its files with this release. It counts toward the indexer's download limit."
+              aria-label={`Check now · ${seasonLabel(r)} · ${rel.releaseGroup}`}
+            >
+              <Icon name="check" size={13} />
+              Check now
             </button>
           )}
           {currentAvailability?.checked_at && (
@@ -726,68 +634,65 @@ export default function ReleaseDetails({
           )}
           {nzbCandidates.length > 0 && (
             <div className="release-nzb-candidates basis-full">
-              <p className="m-0 text-muted">
-                Found but not proven. Check {nzbCandidates.length === 1 ? 'it' : 'them'} on the indexer; if one is this
-                release, you can still download it.
-              </p>
+              <p className="m-0 text-muted">{candidatesIntro(nzbCandidates)}</p>
               <ul className="mt-1.5 mb-0 list-none divide-y divide-line rounded-lg border border-line p-0">
-                {nzbCandidates.map(candidate => (
-                  <li
-                    key={candidate.entry_id}
-                    className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-3 py-2"
-                  >
-                    <div className="min-w-0 flex-1 basis-60">
-                      {candidate.info_url ? (
-                        <a
-                          className="font-semibold text-accent-bright wrap-anywhere"
-                          href={candidate.info_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          {candidate.title || 'Untitled post'}
-                          <span className="sr-only"> on {candidate.indexer || 'the indexer'} (new tab)</span>
-                        </a>
-                      ) : (
-                        <span className="font-semibold text-ink wrap-anywhere">
-                          {candidate.title || 'Untitled post'}
-                        </span>
-                      )}
-                      <span className="mt-0.5 block text-muted">
-                        {[
-                          candidate.indexer,
-                          candidate.size ? `~${formatBytes(candidate.size)}` : null,
-                          candidate.unavailable
-                            ? `could not be checked: ${candidate.unavailable}`
-                            : !candidate.sizes_known
-                              ? `${candidate.names_matched} of ${candidate.files_expected} episode file names match; the post lists no file sizes to compare`
-                              : `${candidate.files_matched} of ${candidate.files_expected} episode file${candidate.files_expected === 1 ? '' : 's'} match by name and size`,
-                          candidate.info_url ? null : 'no indexer page available',
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      </span>
-                    </div>
-                    {!candidate.unavailable && (
-                      <button
-                        type="button"
-                        className={cx(
-                          buttonBase,
-                          'min-h-9 shrink-0 border-line-strong bg-panel px-2.5 text-xs text-ink enabled:hover:bg-panel-raised',
+                {nzbCandidates.map(candidate => {
+                  const finding = candidateFinding(candidate)
+                  return (
+                    <li
+                      key={candidate.entry_id}
+                      className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-3 py-2"
+                    >
+                      <div className="min-w-0 flex-1 basis-60">
+                        {candidate.info_url ? (
+                          <a
+                            className="font-semibold text-accent-bright wrap-anywhere"
+                            href={candidate.info_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {candidate.title || 'Untitled post'}
+                            <span className="sr-only"> on {candidate.indexer || 'the indexer'} (new tab)</span>
+                          </a>
+                        ) : (
+                          <span className="font-semibold text-ink wrap-anywhere">
+                            {candidate.title || 'Untitled post'}
+                          </span>
                         )}
-                        disabled={!sabReady || inClient || complete || sendLocked || lowSpace !== null}
-                        title={sabReady ? 'Send this NZB to SABnzbd after confirming it' : 'Set up SABnzbd first'}
-                        aria-label={`Download this NZB · ${candidate.title}`}
-                        onClick={() => {
-                          setConfirmingRedownload(false)
-                          setConfirmingNzb(candidate)
-                        }}
-                      >
-                        <Icon name="download" size={14} />
-                        Download this NZB
-                      </button>
-                    )}
-                  </li>
-                ))}
+                        <span className="mt-0.5 block text-muted">{candidateFacts(candidate)}</span>
+                        {finding.tone === 'warn' ? (
+                          <span className="mt-0.5 flex items-start gap-1.5 text-warn">
+                            <Icon name="alert" size={13} className="mt-0.5 shrink-0" />
+                            <span className="min-w-0">{finding.text}</span>
+                          </span>
+                        ) : (
+                          <span className={cx('mt-0.5 block', finding.tone === 'quiet' ? 'text-muted' : 'text-ink')}>
+                            {finding.text}
+                          </span>
+                        )}
+                      </div>
+                      {candidateChoosable(candidate) && (
+                        <button
+                          type="button"
+                          className={cx(
+                            buttonBase,
+                            'min-h-9 shrink-0 border-line-strong bg-panel px-2.5 text-xs text-ink enabled:hover:bg-panel-raised',
+                          )}
+                          disabled={!sabReady || inClient || complete || sendLocked || lowSpace !== null}
+                          title={sabReady ? 'Send this NZB to SABnzbd after confirming it' : 'Set up SABnzbd first'}
+                          aria-label={`Download this NZB · ${candidate.title}`}
+                          onClick={() => {
+                            setConfirmingRedownload(false)
+                            setConfirmingNzb(candidate)
+                          }}
+                        >
+                          <Icon name="download" size={14} />
+                          Download this NZB
+                        </button>
+                      )}
+                    </li>
+                  )
+                })}
               </ul>
             </div>
           )}
@@ -1021,11 +926,9 @@ export default function ReleaseDetails({
             <span>This NZB was not proven to be this release</span>
           </p>
           <p className="mt-1 mb-0 text-xs text-ink wrap-anywhere">
-            {confirmingNzb.sizes_known
-              ? `Only ${confirmingNzb.files_matched} of ${confirmingNzb.files_expected} episode files match what SeaDex lists for ${rel.releaseGroup}.`
-              : `The post does not list file sizes, so only names could be compared: ${confirmingNzb.names_matched} of ${confirmingNzb.files_expected} episode file names match what SeaDex lists.`}{' '}
-            Download it only if you checked it on {confirmingNzb.indexer || 'the indexer'}. SABnzbd downloads the whole
-            post{usenetCategory ? ` to the category ${usenetCategory}` : ''}.
+            {candidateConfirmText(confirmingNzb, rel.releaseGroup)} Download it only if you checked it on{' '}
+            {confirmingNzb.indexer || 'the indexer'}. SABnzbd downloads the whole post
+            {usenetCategory ? ` to the category ${usenetCategory}` : ''}.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <button

@@ -37,6 +37,7 @@ import {
   subheading,
   Field,
   InputField,
+  LimitField,
   ToggleRow,
   IntegrationCard,
   CopyRow,
@@ -48,6 +49,8 @@ import { SettingsPanel, SettingsTabs, type SettingsTabId } from './config/Settin
 import LibraryScopeEditor from './LibraryScopeEditor'
 import ReleasePreferencesEditor from './ReleasePreferencesEditor'
 import { useConnectionTests } from '../useConnectionTests'
+import { useProwlarrSearchStatus } from '../useProwlarrCoverage'
+import { expectedSearchesText, PROWLARR_FETCH_LIMIT, PROWLARR_SEARCH_LIMIT, sweepSummaryLines } from '../usenet-review'
 import {
   instanceConfigured,
   instanceService,
@@ -138,6 +141,12 @@ export default function ConfigTab({
   const toast = useToast()
   const tests = useConnectionTests(form, clearedSecrets)
   const { connection, testingAll, test, failed } = tests
+  // Read again after a scan and after a background search, which both change what is left to search.
+  const searchStatus = useProwlarrSearchStatus(
+    config,
+    active && settingsTab === 'downloads',
+    JSON.stringify([status.last_run, Boolean(status.usenet_prefetch?.running)]),
+  )
 
   useEffect(() => {
     if (!config) return
@@ -1017,7 +1026,8 @@ export default function ConfigTab({
               <h3 className={subheading}>Private-tracker releases</h3>
               <p className="mt-1 mb-3 max-w-[72ch] text-xs text-muted">
                 Prowlarr finds releases SeaDex lists on private trackers, through the indexers you set up in Prowlarr. A
-                torrent or NZB is only sent when its files match the ones SeaDex lists, byte for byte.
+                torrent is only sent when its files match the ones SeaDex lists, byte for byte. An NZB is sent when it
+                names every file with a matching size; a match without exact sizes in the post is labelled near-exact.
               </p>
               <div className="grid grid-cols-2 gap-4 max-[1100px]:grid-cols-1">
                 <IntegrationCard
@@ -1062,6 +1072,51 @@ export default function ConfigTab({
                         trackers there.
                       </span>
                     </p>
+                  )}
+                  {usenetShown && (
+                    <div className="flex flex-col gap-4 border-t border-line pt-4">
+                      <ToggleRow
+                        label="Search Usenet indexers in the background"
+                        hint={`After each scan, Prowlarr's Usenet indexers are searched for private-tracker releases and for releases AnimeTosho and AmeNZB do not have, so results are ready when you download. No NZB is fetched.${
+                          searchStatus ? ` ${expectedSearchesText(searchStatus)}` : ''
+                        }`}
+                        checked={!!form.prowlarr_background_search}
+                        onChange={checked => set('prowlarr_background_search', checked)}
+                      />
+                      <div className="grid grid-cols-2 items-start gap-4 max-[600px]:grid-cols-1">
+                        <LimitField
+                          name="prowlarr_search_limit"
+                          label="Daily searches per indexer"
+                          hint="Background searches only, up to 10,000. 0 means no limit from SeaDex Companion; Prowlarr's own limits still apply."
+                          max={PROWLARR_SEARCH_LIMIT.max}
+                          value={form.prowlarr_search_limit ?? PROWLARR_SEARCH_LIMIT.fallback}
+                          onChange={value => set('prowlarr_search_limit', value)}
+                        />
+                        <LimitField
+                          name="prowlarr_fetch_limit"
+                          label="Daily NZB checks per indexer"
+                          hint="Up to 1,000. Each check fetches one NZB, which the indexer counts as a download. 0 means no limit from SeaDex Companion."
+                          max={PROWLARR_FETCH_LIMIT.max}
+                          value={form.prowlarr_fetch_limit ?? PROWLARR_FETCH_LIMIT.fallback}
+                          onChange={value => set('prowlarr_fetch_limit', value)}
+                        />
+                      </div>
+                      {searchStatus?.summary && (
+                        <div className="text-xs text-muted">
+                          <p className="m-0 font-semibold text-ink">
+                            Latest background search, finished{' '}
+                            <time dateTime={searchStatus.summary.finished_at}>
+                              {displayDateTime(searchStatus.summary.finished_at)}
+                            </time>
+                          </p>
+                          <ul className="mt-1 mb-0 list-none space-y-0.5 p-0 tabular-nums wrap-anywhere">
+                            {sweepSummaryLines(searchStatus.summary).map(line => (
+                              <li key={line}>{line}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </IntegrationCard>
               </div>

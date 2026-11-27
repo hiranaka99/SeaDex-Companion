@@ -494,6 +494,114 @@ test('a changed config generation discards old rows and re-observes the whole re
   })
 })
 
+test('search, verify and cancel go out with the first request only and are confirmed before its snapshot', async () => {
+  await availabilityFixture(async (timers, snapshots, controller) => {
+    const requests: Record<string, unknown>[] = []
+    const usage = [{ indexer: 'Geek', fetches_left: 19 }]
+    const unverified = (key: string, refreshing: boolean) =>
+      availabilityRow(key, {
+        aggregate: 'unverified',
+        search: 'prowlarr',
+        refreshing,
+        hashes: [{ hash: 'files:' + 'a'.repeat(40), state: 'unverified', provider: 'prowlarr', candidate_count: 2 }],
+      })
+    globalThis.fetch = (async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)))
+      if (requests.length === 1)
+        return Response.json({
+          ok: true,
+          config_generation: 1,
+          sabnzbd_configured: true,
+          providers_enabled: { animetosho: true, amenzb: false },
+          prowlarr_usage: usage,
+          results: [unverified('checked', true), unverified('dropped', false), unverified('searched', true)],
+        })
+      return availabilityReply([
+        availabilityRow('checked', { search: 'prowlarr', refreshing: false }),
+        availabilityRow('searched', { aggregate: 'no_match', search: 'prowlarr', refreshing: false }),
+      ])
+    }) as typeof fetch
+    const selections = ['checked', 'dropped', 'searched'].map(availabilitySelection)
+    const order: string[] = []
+    const observing = observeUsenetAvailability(selections, {
+      signal: controller.signal,
+      search: [{ key: 'searched', release: 0 }],
+      verify: [selections[0], { key: 'elsewhere', release: 0 }],
+      cancelVerify: [selections[1]],
+      onRequested: sent => {
+        order.push('requested')
+        assert.deepEqual(sent, { verify: [selections[0]], cancel: [selections[1]] })
+      },
+      onSnapshot: snapshot => {
+        if (Object.keys(snapshot.rows).length) order.push('snapshot')
+        snapshots.push(snapshot)
+      },
+    })
+    await settle()
+    assert.deepEqual(order, ['requested', 'snapshot'], 'The ledger knows about a check before its row is shown')
+    assert.deepEqual(snapshots.at(-1)!.usage, usage)
+    assert.equal(snapshots.at(-1)!.rows[availabilityKey(selections[0])].aggregate, 'unverified')
+    await pollAvailability(timers)
+    await observing
+    assert.deepEqual(requests, [
+      {
+        selections,
+        search: [{ key: 'searched', release: 0 }],
+        verify: [{ key: 'checked', release: 0 }],
+        cancel_verify: [{ key: 'dropped', release: 0 }],
+      },
+      { selections: [selections[0], selections[2]] },
+    ])
+    assert.deepEqual(order, ['requested', 'snapshot', 'snapshot'], 'Polling asks for no work')
+    assert.equal(snapshots.at(-1)!.rows[availabilityKey(selections[0])].aggregate, 'available')
+    assert.deepEqual(snapshots.at(-1)!.usage, usage, 'The last reported usage stays while a poll does not repeat it')
+    assert.equal(timers.size, 0)
+  })
+})
+
+test('a changed config generation discards unverified rows and what the indexers allowed', async () => {
+  await availabilityFixture(async (_timers, snapshots, controller) => {
+    const selections = [availabilitySelection('unverified')]
+    const row = availabilityRow('unverified', {
+      aggregate: 'unverified',
+      search: 'prowlarr',
+      refreshing: false,
+      hashes: [{ hash: 'files:' + 'a'.repeat(40), state: 'unverified', provider: 'prowlarr', candidate_count: 3 }],
+    })
+    const initial: AvailabilitySnapshot = {
+      rows: { [availabilityKey(selections[0])]: row },
+      configGeneration: 4,
+      sabnzbdConfigured: true,
+      loading: false,
+      error: null,
+      usage: [{ indexer: 'Geek', fetches_left: 3 }],
+    }
+    globalThis.fetch = (async () =>
+      availabilityReply(
+        [
+          availabilityRow('unverified', {
+            aggregate: 'not_checked',
+            search: 'prowlarr',
+            checked_at: '',
+            refreshing: false,
+          }),
+        ],
+        5,
+      )) as typeof fetch
+    await observeUsenetAvailability(selections, {
+      signal: controller.signal,
+      initial,
+      onSnapshot: snapshot => snapshots.push(snapshot),
+    })
+    assert.equal(snapshots[0].rows[availabilityKey(selections[0])].aggregate, 'unverified')
+    assert.deepEqual(snapshots[0].usage, initial.usage, 'Known rows stay visible until the server answers')
+    const latest = snapshots.at(-1)!
+    assert.equal(latest.configGeneration, 5)
+    assert.equal(latest.rows[availabilityKey(selections[0])].aggregate, 'not_checked')
+    assert.equal(latest.usage, undefined, 'Usage of the earlier provider configuration is not carried over')
+  })
+})
+
 test('large reviews publish each cached batch before later batches finish', async () => {
   await availabilityFixture(async (_timers, snapshots, controller) => {
     const held = Promise.withResolvers<Response>()

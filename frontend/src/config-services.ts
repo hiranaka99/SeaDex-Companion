@@ -1,6 +1,6 @@
 import { SECRET_CONFIG_KEYS, type PublicArrInstance, type SecretConfigKey } from '../../shared/contracts.js'
 import type { DownloadProtocol } from '../../shared/download-contracts.js'
-import type { Config } from './types'
+import type { Config } from './types.js'
 
 export type Service = 'sonarr' | 'radarr' | 'qbittorrent' | 'sabnzbd' | 'animetosho' | 'amenzb' | 'prowlarr' | 'discord'
 /** A fixed integration, or `arr:<id>` for an additional Sonarr or Radarr instance. */
@@ -81,10 +81,13 @@ export const SERVICES: Record<Service, ServiceDefinition> = {
 
 export const SERVICE_IDS = Object.keys(SERVICES) as Service[]
 
+/** Prowlarr settings that say how much is searched, not how Prowlarr is reached. */
+const PROWLARR_USAGE_FIELDS = ['prowlarr_background_search', 'prowlarr_search_limit', 'prowlarr_fetch_limit']
+
 /** The service a setting belongs to, if any. */
 export function serviceOfField(name: string): Service | undefined {
-  // A library scope does not change whether the connection works, so it keeps the last test result.
-  if (name.endsWith('_scope')) return undefined
+  // A library scope or a usage limit does not change whether the connection works, so it keeps the last test result.
+  if (name.endsWith('_scope') || PROWLARR_USAGE_FIELDS.includes(name)) return undefined
   return SERVICE_IDS.find(
     service => name === SERVICES[service].fieldPrefix || name.startsWith(`${SERVICES[service].fieldPrefix}_`),
   )

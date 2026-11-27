@@ -15,17 +15,26 @@ import type {
 } from '../shared/usenet-contracts.js'
 import type { PrivateSource, Release } from '../shared/contracts.js'
 import { knownProwlarrIndexers, privateSearchSettings, prowlarrSettings } from './prowlarr.js'
+import { searchContext } from './private-sources.js'
+import type { SourceFile } from './source-files.js'
 import {
-  privateNzbBytes,
-  privateNzbSnapshot,
-  privateNzbState,
-  searchContext,
-  searchPrivateNzbInBackground,
-} from './private-sources.js'
+  cancelSourceCheck,
+  resolveSource,
+  searchNzbBytes,
+  searchSnapshot,
+  usenetSearchPauses,
+  type UsenetSearchContext,
+} from './usenet-search.js'
 import { LOOKUP_TIMEOUT_MS, type ProviderLookup, type ProviderSettings } from './usenet-provider-types.js'
 import { PersistentUsenetCache, providerFingerprint, usenetCacheKey } from './usenet-cache.js'
 import { providerSettings, USENET_PROVIDER_IDS, USENET_PROVIDERS } from './usenet-providers.js'
-import { LookupScheduler, ProviderPausedError, TRANSIENT_CODES, type LookupJob } from './usenet-scheduler.js'
+import {
+  LookupScheduler,
+  ProviderPausedError,
+  TRANSIENT_CODES,
+  type ChannelPause,
+  type LookupJob,
+} from './usenet-scheduler.js'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -42,15 +51,15 @@ const FILE_NAME_LIMIT = 200
 /** Background lookups wait out a pause and retry instead of recording a failure. */
 const BACKGROUND_ATTEMPTS = 3
 
-const PROVIDER_LABELS = Object.fromEntries(
-  USENET_PROVIDER_IDS.map(provider => [provider, USENET_PROVIDERS[provider].label]),
-) as Record<UsenetProvider, string>
+/** Paces and prioritizes every hash-indexer request this module makes, one channel per provider. */
+export const usenetScheduler = new LookupScheduler({ concurrency: 4, foregroundReserved: 1, minIntervalMs: 2_000 })
+for (const provider of USENET_PROVIDER_IDS)
+  usenetScheduler.describe(provider, { label: USENET_PROVIDERS[provider].label })
 
-/** Paces and prioritizes every provider request this module makes. */
-export const usenetScheduler = new LookupScheduler(PROVIDER_LABELS)
-
-/** Active provider pauses, for status reporting. */
-export const usenetProviderPauses = () => usenetScheduler.pauses()
+/** Active pauses of the hash indexers and of the Usenet indexers in Prowlarr, for status reporting. */
+export function usenetProviderPauses(): ChannelPause[] {
+  return [...usenetScheduler.pauses(), ...usenetSearchPauses()]
+}
 
 export function usenetProvidersEnabled(config: Config): Record<UsenetProvider, boolean> {
   return Object.fromEntries(
@@ -236,13 +245,11 @@ async function requestLookup(
 /** Takes scheduler slots until the provider answers. Background work waits out a pause rather than recording a transient failure. */
 async function runLookup(
   job: LookupJob,
+  provider: UsenetProvider,
   settings: ProviderSettings,
   hash: string,
 ): Promise<ProviderLookup | { kind: 'cancelled' }> {
-  const {
-    provider,
-    controller: { signal },
-  } = job
+  const { signal } = job.controller
   try {
     for (let attempt = 1; ; attempt++) {
       await usenetScheduler.acquire(job)
@@ -301,12 +308,12 @@ async function providerLookup(
     if (hit?.lookup && !hit.failure && Date.now() - hit.checkedAt < ttlFor(hit.lookup, hit.negativeStreak))
       return { kind: 'settled', lookup: hit.lookup, checkedAt: hit.checkedAt }
   }
-  const job: LookupJob = { provider, background, controller: new AbortController() }
+  const job: LookupJob = { channel: provider, background, controller: new AbortController() }
   const settings: ProviderSettings = { ...connection, signal: job.controller.signal }
   const epoch = lookupEpoch
   const flight: Flight = {
     job,
-    promise: runLookup(job, settings, hash)
+    promise: runLookup(job, provider, settings, hash)
       .then((lookup): LookupResult => {
         if (
           lookup.kind === 'cancelled' ||
@@ -566,6 +573,11 @@ function hashSnapshot(config: Config, hash: string): { result: UsenetHashAvailab
   return { result: withoutMatch(hash, queried, unknown ? 'not_checked' : 'no_match'), needsRefresh }
 }
 
+/** What the hash indexers answered for one hash as far as the cache knows, without any request or refresh. */
+export function cachedHashState(config: Config, hash: string): UsenetUnitState {
+  return hashSnapshot(config, hash).result.state
+}
+
 /** A release is 'available' only when every required source hash matched. Mixed coverage is 'incomplete'. */
 export function aggregateHashStates(states: UsenetUnitState[]): UsenetUnitState {
   if (!states.length) return 'unsupported_hash'
@@ -575,6 +587,7 @@ export function aggregateHashStates(states: UsenetUnitState[]): UsenetUnitState 
   if (decisive) return decisive
   if (states.includes('available')) return 'incomplete'
   if (states.includes('processing')) return 'processing'
+  if (states.includes('unverified')) return 'unverified'
   if (states.includes('not_checked')) return 'not_checked'
   return 'no_match'
 }
@@ -598,9 +611,35 @@ export class UsenetSelectionError extends HttpError {
   }
 }
 
+/** NZBs an explicit search may fetch for one source, and a row selected in a bulk review. */
+const SEARCH_FETCHES = 3
+const VERIFY_FETCHES = 1
+
+interface RowRef {
+  key: string
+  release: number
+}
+
+const rowId = (row: RowRef) => `${row.key}\u0000${row.release}`
+
+/** Every source of a release that Prowlarr may be searched for by its file list, whatever is known about it. */
+function fileListSources(config: Config, release: Release): PrivateSource[] {
+  const sources = privateUsenetSources(config, release)
+  if (sources.length) return sources
+  return torrentHashes(release).flatMap(hash => prowlarrFallbackSource(config, release, hash) ?? [])
+}
+
 /**
  * Cached or unchecked snapshots for the selected releases, returned immediately. Missing and
  * stale observations are refreshed in the background, once per hash however many rows share it.
+ *
+ * A source found through Prowlarr reports what is stored about it, and nothing is ever awaited from
+ * Prowlarr. Work starts only for the rows named, and reports through later snapshots:
+ *
+ * - `search`: the source is searched again and up to three of its candidates are fetched and checked.
+ * - `verify`: a source nothing was concluded about yet (`not_checked`, `unverified`) is searched if it has no
+ *   fresh result, and its best candidate is fetched and checked. Any other source is left as it is.
+ * - `cancelVerify`: what `verify` rows still wait for is dropped first; a fetch under way finishes.
  */
 export async function usenetAvailability(
   config: Config,
@@ -610,11 +649,14 @@ export async function usenetAvailability(
     refresh = false,
     background = false,
     search = [],
-  }: { refresh?: boolean; background?: boolean; search?: { key: string; release: number }[] } = {},
+    verify = [],
+    cancelVerify = [],
+  }: { refresh?: boolean; background?: boolean; search?: RowRef[]; verify?: RowRef[]; cancelVerify?: RowRef[] } = {},
 ): Promise<UsenetAvailabilityResult[]> {
   const resultsByKey = new Map(results.map(result => [result.key, result]))
-  // Prowlarr is searched only for the rows asked for: each checked NZB counts against the indexer's grab limit.
-  const searched = new Set(search.map(row => `${row.key}\u0000${row.release}`))
+  // Prowlarr is asked only for the rows named: each checked NZB counts against the indexer's grab limit.
+  const searched = new Set(search.map(rowId))
+  const verified = new Set(verify.map(rowId))
   const selected = selections.map(selection => {
     const release =
       Number.isSafeInteger(selection.release) && selection.release >= 0
@@ -634,37 +676,66 @@ export async function usenetAvailability(
     }
     return { selection, release, identity }
   })
+  // Withdrawn before anything starts, so a row that is cancelled and selected again starts over.
+  for (const row of cancelVerify) {
+    const release =
+      Number.isSafeInteger(row.release) && row.release >= 0
+        ? resultsByKey.get(row.key)?.releases?.[row.release]
+        : undefined
+    if (release) for (const source of fileListSources(config, release)) cancelSourceCheck(config, source.id)
+  }
   const scheduled = new Set<string>()
+  const started = new Set<string>()
+  /** What is stored about one source's Prowlarr search, after starting the work its row asks for. Never waits. */
+  const searchState = (
+    source: PrivateSource,
+    context: UsenetSearchContext,
+    asked: 'search' | 'verify' | undefined,
+  ): UsenetHashAvailability => {
+    if (asked && !started.has(source.id)) {
+      const { state } = searchSnapshot(config, source.id).availability
+      const options =
+        asked === 'search'
+          ? { limit: SEARCH_FETCHES, refresh: true }
+          : state === 'not_checked' || state === 'unverified'
+            ? { limit: VERIFY_FETCHES, cancellable: true }
+            : undefined
+      if (options) {
+        started.add(source.id)
+        // Failures come back as states of the source; only a defect lands here, and its text is not logged.
+        void resolveSource(config, source, context, options).catch(error =>
+          log('WARNING', `Prowlarr NZB search stopped: ${error instanceof Error ? error.name : 'unknown error'}`),
+        )
+      }
+    }
+    const snapshot = searchSnapshot(config, source.id)
+    return {
+      ...snapshot.availability,
+      checked_at: isoTime(snapshot.checkedAt),
+      stale: snapshot.stale,
+      refreshing: snapshot.running,
+    }
+  }
   return selected.map(({ selection, release, identity }) => {
     const privateSources = privateUsenetSources(config, release)
     const result = resultsByKey.get(selection.key)
     const context = searchContext(result, release)
-    const searchNow = searched.has(`${selection.key}\u0000${selection.release}`)
+    const asked = searched.has(rowId(selection)) ? 'search' : verified.has(rowId(selection)) ? 'verify' : undefined
     if (privateSources.length) {
       // Prowlarr without a Usenet indexer cannot find a copy; say so instead of offering a search.
       const noUsenet = prowlarrHasUsenet(config) === false
-      const hashes = privateSources.map(source => {
+      const hashes = privateSources.map((source): UsenetHashAvailability => {
         if (noUsenet)
           return {
             hash: source.id,
-            state: 'not_configured' as const,
-            provider: 'prowlarr' as const,
+            state: 'not_configured',
+            provider: 'prowlarr',
             error: 'Prowlarr has no Usenet indexer.',
             checked_at: '',
             stale: false,
             refreshing: false,
           }
-        if (searchNow && !scheduled.has(source.id)) {
-          scheduled.add(source.id)
-          searchPrivateNzbInBackground(config, source, context)
-        }
-        const snapshot = privateNzbSnapshot(config, source.id)
-        return {
-          ...privateNzbState(source.id, snapshot.lookup),
-          checked_at: isoTime(snapshot.checkedAt),
-          stale: false,
-          refreshing: snapshot.running,
-        }
+        return searchState(source, context, asked)
       })
       return {
         key: selection.key,
@@ -698,20 +769,10 @@ export async function usenetAvailability(
       const source = prowlarrFallbackSource(config, release, state.hash)
       if (!source) return state
       fallback = true
-      if (searchNow && !scheduled.has(`prowlarr:${source.id}`)) {
-        scheduled.add(`prowlarr:${source.id}`)
-        searchPrivateNzbInBackground(config, source, context)
-      }
-      const snapshot = privateNzbSnapshot(config, source.id)
-      if (snapshot.lookup.kind === 'not_checked' && !snapshot.running) return state
+      const found = searchState(source, context, asked)
+      if (found.state === 'not_checked' && !found.refreshing) return state
       viaProwlarr = true
-      return {
-        ...privateNzbState(source.id, snapshot.lookup),
-        ...(state.providers_checked ? { providers_checked: state.providers_checked } : {}),
-        checked_at: isoTime(snapshot.checkedAt),
-        stale: false,
-        refreshing: snapshot.running,
-      }
+      return { ...found, ...(state.providers_checked ? { providers_checked: state.providers_checked } : {}) }
     })
     // The public projection bounds filename lists; a truncated list is no longer a complete manifest.
     const publicHashes = merged.map(hash =>
@@ -731,14 +792,20 @@ export async function usenetAvailability(
   })
 }
 
-/** Server-side NZB retrieval for an accepted submission. Never trusts browser-supplied URLs. */
+/**
+ * Server-side NZB retrieval for an accepted submission. Never trusts browser-supplied URLs.
+ *
+ * An NZB found through Prowlarr is the stored one that was checked, so sending it costs no request. `files`
+ * is the file list of its source, for the case that the stored bytes are gone and a new fetch has to be graded.
+ */
 export async function fetchUsenetNzb(
   config: Config,
   provider: UsenetSource,
   entryId: string,
   sourceHash: string,
+  files?: SourceFile[],
 ): Promise<Uint8Array> {
-  if (provider === 'prowlarr') return privateNzbBytes(config, sourceHash, entryId)
+  if (provider === 'prowlarr') return searchNzbBytes(config, sourceHash, entryId, files)
   const result = await providerLookup(config, provider, sourceHash, false, false)
   const lookup = result.kind === 'settled' ? result.lookup : undefined
   if (lookup?.kind === 'failed' && lookup.code === 'rate_limited') throw new Error(lookup.message)

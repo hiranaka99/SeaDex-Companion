@@ -3,7 +3,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   cancelDownloads,
+  cancelUsenetChecks,
   getAllDownloadProgress,
+  getProwlarrSearchStatus,
   getStatus,
   getConfig,
   invalidateDownloadProgress,
@@ -287,6 +289,66 @@ test('availability reads preserve provider timestamps and only manual refresh re
     const poll = await usenetAvailability(selections)
     assert.equal(poll.results[0].checked_at, checkedAt, 'Reading a snapshot never invents a new provider check')
     assert.deepEqual(requests, [{ selections }, { selections, refresh: true }, { selections }])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('availability requests name the rows to search, verify and cancel, and nothing else about them', async () => {
+  const originalFetch = globalThis.fetch
+  const requests: { path: string; body: Record<string, unknown>; keepalive?: boolean }[] = []
+  globalThis.fetch = (async (input, init) => {
+    requests.push({ path: String(input), body: JSON.parse(String(init?.body)), keepalive: init?.keepalive })
+    return Response.json({ ok: true, config_generation: 1, results: [] })
+  }) as typeof fetch
+  try {
+    const selections = [
+      { key: 'one', release: 0, identity: 'identity-one' },
+      { key: 'two', release: 1, identity: 'identity-two' },
+    ]
+    await usenetAvailability(selections, false, undefined, {
+      search: [],
+      verify: [selections[0]],
+      cancel_verify: [selections[1]],
+    })
+    assert.deepEqual(requests[0].body, {
+      selections,
+      verify: [{ key: 'one', release: 0 }],
+      cancel_verify: [{ key: 'two', release: 1 }],
+    })
+    assert.equal(requests[0].keepalive, undefined)
+
+    cancelUsenetChecks([])
+    assert.equal(requests.length, 1, 'Nothing to cancel sends nothing')
+    cancelUsenetChecks([{ ...selections[1], protocol: 'usenet' }])
+    assert.deepEqual(requests[1], {
+      path: '/api/usenet/availability',
+      body: { selections: [selections[1]], cancel_verify: [{ key: 'two', release: 1 }] },
+      keepalive: true,
+    })
+    globalThis.fetch = (async () => {
+      throw new Error('Fixture connection lost')
+    }) as typeof fetch
+    cancelUsenetChecks([selections[0]])
+    await new Promise(resolve => setImmediate(resolve))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('the Prowlarr search status is read from its own route', async () => {
+  const originalFetch = globalThis.fetch
+  const status = { eligible_sources: 12, pending_sources: 4, usenet_indexers: 2 }
+  const paths: string[] = []
+  globalThis.fetch = (async input => {
+    paths.push(String(input))
+    return Response.json({ ok: true, status })
+  }) as typeof fetch
+  try {
+    assert.deepEqual(await getProwlarrSearchStatus(), status)
+    assert.deepEqual(paths, ['/api/prowlarr/search-status'])
+    globalThis.fetch = (async () => Response.json({ error: 'Not found' }, { status: 404 })) as typeof fetch
+    await assert.rejects(getProwlarrSearchStatus(), 'A missing route is an error the settings page swallows')
   } finally {
     globalThis.fetch = originalFetch
   }

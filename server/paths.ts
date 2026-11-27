@@ -18,5 +18,9 @@ export const DOWNLOAD_RECORDS_FILE = join(DATA_DIR, 'download_records.json')
 export const USER_RULES_FILE = join(DATA_DIR, 'user_rules.json')
 export const HISTORY_FILE = join(DATA_DIR, 'scan_history.json')
 export const RELEASE_CHANGES_FILE = join(DATA_DIR, 'release_changes.json')
+/** Prowlarr search records, usage counters and the latest sweep summary. Holds download references: mode 0600. */
+export const USENET_SEARCH_FILE = join(DATA_DIR, 'usenet_search.json')
+/** Fetched NZBs as `<sha256>.nzb.gz`, kept so a checked NZB is never fetched a second time. */
+export const NZB_STORE_DIR = join(DATA_DIR, 'nzb_store')
 export const LOG_DIR = join(DATA_DIR, 'logs')
 export const LOG_FILE = join(LOG_DIR, 'app.log')

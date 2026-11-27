@@ -13,6 +13,7 @@ import {
   UsenetSelectionError,
   usenetAvailability,
 } from '../server/usenet.js'
+import { LookupScheduler, ProviderPausedError, type LookupJob } from '../server/usenet-scheduler.js'
 import { releaseIdentity } from '../shared/releases.js'
 import type { Release, ResultItem } from '../server/types.js'
 
@@ -89,8 +90,7 @@ const animetoshoMatch = () =>
 function isolation() {
   const original = globalThis.fetch
   resetUsenetLookups()
-  usenetScheduler.options.minIntervalMs.animetosho = 0
-  usenetScheduler.options.minIntervalMs.amenzb = 0
+  usenetScheduler.options.minIntervalMs = 0
   const generation = bumpGeneration()
   return { original, generation }
 }
@@ -455,4 +455,161 @@ test('invalidation cancels active and queued work without leaking global permits
     await Promise.all(pending)
     restore(original)
   }
+})
+
+const lookupJob = (channel: string, background = false): LookupJob => ({
+  channel,
+  background,
+  controller: new AbortController(),
+})
+const RATE_LIMITED = { kind: 'failed', code: 'rate_limited' } as const
+
+test('rate limiting widens a channel interval up to 15 seconds and every 20 answers narrow it down to the minimum', t => {
+  let now = 1_800_000_000_000
+  t.mock.method(Date, 'now', () => now)
+  const scheduler = new LookupScheduler()
+  const answers = (count: number) => {
+    for (let index = 0; index < count; index++) scheduler.recordOutcome('animetosho', { kind: 'no_match' })
+  }
+  assert.equal(scheduler.interval('animetosho'), 2_000, 'a channel starts at its minimum')
+  scheduler.recordOutcome('animetosho', RATE_LIMITED)
+  scheduler.recordOutcome('animetosho', RATE_LIMITED)
+  assert.equal(scheduler.interval('animetosho'), 3_000, 'requests that fail together widen the interval once')
+  const widened: number[] = []
+  for (let round = 0; round < 6; round++) {
+    now = scheduler.pausedUntil('animetosho')
+    scheduler.recordOutcome('animetosho', RATE_LIMITED)
+    widened.push(scheduler.interval('animetosho'))
+  }
+  assert.deepEqual(widened, [4_500, 6_750, 10_125, 15_000, 15_000, 15_000])
+  assert.equal(scheduler.interval('amenzb'), 2_000, 'other channels keep their own interval')
+
+  answers(19)
+  assert.equal(scheduler.interval('animetosho'), 15_000)
+  answers(1)
+  assert.equal(scheduler.interval('animetosho'), 13_500)
+  answers(19)
+  scheduler.recordOutcome('animetosho', { kind: 'failed', code: 'invalid_response' })
+  answers(19)
+  assert.equal(scheduler.interval('animetosho'), 13_500, 'a failure restarts the count of answers')
+  answers(1)
+  assert.equal(scheduler.interval('animetosho'), 12_150)
+  answers(20 * 30)
+  assert.equal(scheduler.interval('animetosho'), 2_000, 'the interval never drops below the minimum')
+
+  now = scheduler.pausedUntil('animetosho')
+  scheduler.recordOutcome('animetosho', RATE_LIMITED)
+  assert.equal(scheduler.interval('animetosho'), 3_000)
+  scheduler.reset()
+  assert.equal(scheduler.interval('animetosho'), 2_000, 'a reset forgets the widening')
+})
+
+test('a new minimum applies at once to a channel unless rate limiting widened it further', () => {
+  const scheduler = new LookupScheduler({ minIntervalMs: 2_000 })
+  scheduler.describe('prowlarr:7', { label: 'Indexer Seven' })
+  assert.equal(scheduler.interval('prowlarr:7'), 2_000)
+  scheduler.describe('prowlarr:7', { label: 'Indexer Seven', minIntervalMs: 500 })
+  assert.equal(scheduler.interval('prowlarr:7'), 500)
+  scheduler.recordOutcome('prowlarr:7', RATE_LIMITED)
+  assert.equal(scheduler.interval('prowlarr:7'), 750)
+  scheduler.describe('prowlarr:7', { label: 'Indexer Seven', minIntervalMs: 100 })
+  assert.equal(scheduler.interval('prowlarr:7'), 750, 'a widened channel keeps its interval')
+  scheduler.describe('prowlarr:7', { label: 'Indexer 7', minIntervalMs: 1_000 })
+  assert.equal(scheduler.interval('prowlarr:7'), 1_000)
+  scheduler.reset()
+  assert.equal(scheduler.interval('prowlarr:7'), 1_000, 'a reset keeps the description')
+  scheduler.options.minIntervalMs = 0
+  assert.equal(scheduler.interval('prowlarr:8'), 0, 'a channel without its own minimum follows the scheduler')
+})
+
+test('a channel created on first use is paced by its own interval and leaves other channels alone', async () => {
+  const scheduler = new LookupScheduler({ concurrency: 3, foregroundReserved: 1, minIntervalMs: 80 })
+  const started: Record<string, number> = {}
+  const acquire = (name: string, channel: string) =>
+    scheduler.acquire(lookupJob(channel)).then(() => {
+      started[name] = Date.now()
+    })
+  const first = acquire('first', 'prowlarr:7')
+  const second = acquire('second', 'prowlarr:7')
+  const other = acquire('other', 'prowlarr:8')
+  await Promise.all([first, other])
+  assert.equal(started.second, undefined, 'the second request on a channel waits for its interval')
+  assert.ok(started.other - started.first < 70, 'another channel does not wait for it')
+  await second
+  assert.ok(started.second - started.first >= 70, `started too early: ${started.second - started.first}ms`)
+  for (let slot = 0; slot < 3; slot++) scheduler.release()
+
+  scheduler.recordOutcome('prowlarr:7', RATE_LIMITED)
+  assert.equal(scheduler.interval('prowlarr:7'), 120)
+  assert.equal(scheduler.interval('prowlarr:8'), 80)
+  assert.equal(scheduler.isPaused('prowlarr:8'), false)
+  const [pause, ...others] = scheduler.pauses()
+  assert.deepEqual(others, [])
+  assert.deepEqual(
+    pause,
+    { channel: 'prowlarr:7', label: 'prowlarr:7', until: scheduler.pausedUntil('prowlarr:7'), reason: 'rate_limited' },
+    'a channel nobody described is labelled by its name',
+  )
+  scheduler.describe('prowlarr:7', { label: 'Indexer Seven' })
+  assert.equal(scheduler.pauses()[0].label, 'Indexer Seven')
+  assert.equal(scheduler.interval('prowlarr:7'), 120, 'describing a channel keeps its pacing and health')
+})
+
+test('a paused channel fails queued foreground work fast and makes background work wait out the pause', async () => {
+  const scheduler = new LookupScheduler({ concurrency: 2, foregroundReserved: 1, minIntervalMs: 0, pauseBaseMs: 250 })
+  scheduler.describe('prowlarr:7', { label: 'Indexer Seven' })
+  await scheduler.acquire(lookupJob('prowlarr:7'))
+  await scheduler.acquire(lookupJob('prowlarr:7'))
+  const foreground = scheduler.acquire(lookupJob('prowlarr:7'))
+  let backgroundStartedAt = 0
+  const background = scheduler.acquire(lookupJob('prowlarr:7', true)).then(() => {
+    backgroundStartedAt = Date.now()
+  })
+  const elsewhere = scheduler.acquire(lookupJob('prowlarr:8'))
+
+  scheduler.recordOutcome('prowlarr:7', RATE_LIMITED)
+  const until = scheduler.pausedUntil('prowlarr:7')
+  scheduler.release()
+  scheduler.release()
+  await assert.rejects(
+    foreground,
+    (error: unknown) => error instanceof ProviderPausedError && error.channel === 'prowlarr:7' && error.until === until,
+  )
+  await assert.rejects(scheduler.acquire(lookupJob('prowlarr:7')), ProviderPausedError)
+  assert.match(
+    scheduler.pausedFailure('prowlarr:7', until).message,
+    /^Indexer Seven is rate limiting lookups; retrying in about/,
+  )
+  await elsewhere
+  scheduler.release()
+  assert.equal(backgroundStartedAt, 0, 'background work does not start while its channel is paused')
+  await background
+  assert.ok(backgroundStartedAt >= until, 'background work starts once the pause is over')
+  assert.deepEqual(scheduler.pauses(), [])
+  scheduler.release()
+})
+
+test('scheduler instances share no capacity: lookups that never finish on one leave every slot of the other free', async () => {
+  const hashes = new LookupScheduler({ concurrency: 4, foregroundReserved: 1, minIntervalMs: 0 })
+  const searches = new LookupScheduler({ concurrency: 3, foregroundReserved: 1, minIntervalMs: 0 })
+  // Three background searches and a foreground one that are never released.
+  const jobs = [true, true, true, false].map(background => lookupJob('prowlarr:7', background))
+  const started = jobs.map(() => false)
+  const stuck = jobs.map((job, index) =>
+    searches.acquire(job).then(
+      () => {
+        started[index] = true
+      },
+      () => {},
+    ),
+  )
+  await nextTurn()
+  assert.deepEqual(started, [true, true, false, true], 'background work leaves the reserved slot to foreground work')
+  searches.recordOutcome('animetosho', RATE_LIMITED)
+
+  await Promise.all(Array.from({ length: 4 }, () => hashes.acquire(lookupJob('animetosho'))))
+  assert.equal(hashes.isPaused('animetosho'), false, 'instances do not share channel health either')
+  assert.equal(started[2], false, 'the full scheduler keeps its own work queued')
+  jobs[2].controller.abort()
+  await Promise.all(stuck)
 })

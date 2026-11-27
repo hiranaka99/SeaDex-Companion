@@ -171,12 +171,16 @@ export async function sendImportProblem(config: Config, problem: ImportProblem):
   const headline =
     problem.state === 'blocked'
       ? `${problem.app} is not importing a finished download`
-      : `A finished download was not imported by ${problem.app}`
+      : problem.state === 'mismatch'
+        ? 'The downloaded files are not the release SeaDex lists'
+        : `A finished download was not imported by ${problem.app}`
+  // A mismatch is what the library scan found, not something Sonarr or Radarr said.
+  const source = problem.state === 'mismatch' ? 'Library scan' : `${problem.app} reports`
   const fields = [
     ...(problem.releaseGroup
       ? [{ name: 'Release', value: truncateText(problem.releaseGroup, 300), inline: true }]
       : []),
-    ...(problem.message ? [{ name: `${problem.app} reports`, value: truncateText(problem.message, 1024) }] : []),
+    ...(problem.message ? [{ name: source, value: truncateText(problem.message, 1024) }] : []),
   ]
   try {
     const response = await fetchWithTimeout(

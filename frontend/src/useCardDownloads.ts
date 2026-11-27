@@ -243,12 +243,16 @@ export function useSeasonAvailability(enabled: boolean, seasons: ResultItem[], o
   currentSignatures.current = signatures
   const signature = JSON.stringify(signatures)
 
-  /** `searchRelease` asks Prowlarr to search for that one release of the season now. */
-  const load = async (season: ResultItem, refresh = false, searchRelease?: number) => {
+  /**
+   * `work.search` asks Prowlarr to search for that one release of the season now; `work.verify` asks for the
+   * best search result of that release to be fetched and checked.
+   */
+  const load = async (season: ResultItem, refresh = false, work: { search?: number; verify?: number } = {}) => {
     if (!enabled || !open) return
     const key = season.key
     const signature = signatures[key]
-    if (!refresh && searchRelease === undefined && requested.current.get(key) === signature) return
+    const asksForWork = work.search !== undefined || work.verify !== undefined
+    if (!refresh && !asksForWork && requested.current.get(key) === signature) return
     requested.current.set(key, signature)
     requests.current.get(key)?.controller.abort()
     const controller = new AbortController()
@@ -269,7 +273,8 @@ export function useSeasonAvailability(enabled: boolean, seasons: ResultItem[], o
     try {
       await observeUsenetAvailability(selections, {
         refresh,
-        ...(searchRelease !== undefined ? { search: [{ key, release: searchRelease }] } : {}),
+        ...(work.search !== undefined ? { search: [{ key, release: work.search }] } : {}),
+        ...(work.verify !== undefined ? { verify: [{ key, release: work.verify }] } : {}),
         signal: controller.signal,
         initial,
         onSnapshot: snapshot => {
