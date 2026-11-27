@@ -32,7 +32,7 @@ import {
 } from './prowlarr.js'
 import { gradeNzb, nzbFiles, type NzbFile, type NzbGrade, type SourceFile } from './source-files.js'
 import type { Config, PrivateSource } from './types.js'
-import { safeText } from './usenet-provider-types.js'
+import { safeText } from './provider-http.js'
 import {
   LookupGuardTimeout,
   LookupScheduler,
