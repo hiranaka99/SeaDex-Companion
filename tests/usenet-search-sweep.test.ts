@@ -205,7 +205,7 @@ const searches = (fake: Fake) =>
 const searchedTags = (fake: Fake, tags: string[]) => [
   ...new Set(searches(fake).map(query => tags.find(tag => query.includes(tag)) ?? query)),
 ]
-const downloads = (fake: Fake) => fake.calls.filter(url => /\/download$/.test(url.pathname))
+const downloads = (fake: Fake) => fake.calls.filter(url => url.pathname.endsWith('/download'))
 const hashLookups = (fake: Fake) => fake.calls.filter(url => url.origin === 'https://feed.animetosho.net')
 
 /** Polls with real timers, so it also ends while `Date.now` is mocked. */
