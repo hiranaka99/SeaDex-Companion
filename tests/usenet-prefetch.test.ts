@@ -10,10 +10,11 @@ import {
   stopUsenetPrefetch,
   usenetPrefetchProgress,
 } from '../server/usenet-prefetch.js'
-import { resetUsenetLookups, resolveUsenetHash, usenetScheduler, usenetProviderPauses } from '../server/usenet.js'
+import { paceUsenetLookups, resetUsenetLookups, resolveUsenetHash, usenetProviderPauses } from '../server/usenet.js'
 import { usenetAvailability } from '../server/usenet-copies.js'
 import { retryAfterMs } from '../server/usenet-provider-types.js'
 import type { Release, ResultItem } from '../server/types.js'
+import type { LookupPacing } from '../server/usenet-scheduler.js'
 
 const hexHash = (index: number) => index.toString(16).padStart(40, '0')
 
@@ -68,9 +69,9 @@ function stubFetch(probe: Probe) {
   }
 }
 
-function isolation(intervalMs: number): () => void {
+function isolation(intervalMs: number, pacing: Partial<LookupPacing> = {}): () => void {
   resetUsenetLookups()
-  usenetScheduler.options.minIntervalMs = intervalMs
+  paceUsenetLookups({ minIntervalMs: intervalMs, ...pacing })
   bumpGeneration()
   return () => resetUsenetLookups()
 }
@@ -273,8 +274,7 @@ test('foreground callers promote a shared queued background lookup before global
 })
 
 test('a rate-limited provider pauses: interactive lookups fail fast and background lookups wait and retry', async () => {
-  isolation(0)
-  usenetScheduler.options.pauseBaseMs = 300
+  isolation(0, { pauseBaseMs: 300 })
   let rateLimited = true
   const starts: string[] = []
   const original = globalThis.fetch
@@ -302,15 +302,14 @@ test('a rate-limited provider pauses: interactive lookups fail fast and backgrou
     assert.deepEqual(usenetProviderPauses(), [])
   } finally {
     globalThis.fetch = original
-    usenetScheduler.options.pauseBaseMs = 30_000
+    paceUsenetLookups()
     resetUsenetLookups()
   }
 })
 
 test('a running sweep reports the provider it waits on by its label', async () => {
-  isolation(0)
+  isolation(0, { pauseBaseMs: 300 })
   enableUsenetPrefetch()
-  usenetScheduler.options.pauseBaseMs = 300
   let rateLimited = true
   const original = globalThis.fetch
   globalThis.fetch = async () =>
@@ -326,7 +325,7 @@ test('a running sweep reports the provider it waits on by its label', async () =
   } finally {
     stopUsenetPrefetch()
     globalThis.fetch = original
-    usenetScheduler.options.pauseBaseMs = 30_000
+    paceUsenetLookups()
     resetUsenetLookups()
   }
 })

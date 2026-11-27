@@ -252,7 +252,9 @@ async function resolveCopies(config: Config, request: CopyRequest, call: CallSta
     // Without a Usenet indexer Prowlarr cannot find a copy; say so instead of offering a search.
     const noUsenet = BUDGETS[request.intent].indexerList && prowlarrHasUsenet(config) === false
     const hashes = await Promise.all(
-      sources.map(source => (noUsenet ? noUsenetIndexer(source) : prowlarrCopy(config, source, request, call))),
+      sources.map(source =>
+        noUsenet ? Promise.resolve(noUsenetIndexer(source)) : prowlarrCopy(config, source, request, call),
+      ),
     )
     return {
       by: 'file_list',

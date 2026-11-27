@@ -2,15 +2,51 @@ import { log } from './logging.js'
 import type { UsenetFailureCode } from '../shared/usenet-contracts.js'
 import type { ProviderLookup } from './usenet-provider-types.js'
 
-export interface LookupJob {
+/** A finished job's work: what it returned, or what it threw. */
+export type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown }
+
+/** One request to send on a channel, and what its result tells the channel. */
+export interface LookupRequest<T> {
   /** What the request is paced and paused by: a hash indexer's ID, or `prowlarr:<indexer id>`. */
   channel: string
-  /** Background work yields to interactive lookups; a job is promoted when someone starts waiting on it. */
-  background: boolean
-  controller: AbortController
+  /** Background work yields to interactive lookups until its handle promotes it. */
+  background?: boolean
+  /** Cancels the job: the wait for a slot, or the work under way, which is then no longer waited for. */
+  signal: AbortSignal
+  /** Gives up only the wait for a slot; work that started runs on. `signal` when left out. */
+  waitSignal?: AbortSignal
+  /** How long the work may hold the slot; past it the job fails with `LookupGuardTimeout`. */
+  guardMs: number
+  /** The request itself, run with the slot in hand. */
+  work: () => Promise<T>
+  /**
+   * What the work tells the channel's health; `undefined` tells it nothing. Not asked when the job was
+   * cancelled, since a cancelled request says nothing about the provider.
+   */
+  outcome: (settled: Settled<T>) => LookupOutcome | undefined
 }
 
-export interface LookupSchedulerOptions {
+/** A scheduled job. */
+export interface LookupHandle<T> {
+  /**
+   * Settles with what the work returned. Rejects with the reason of the signal that cancelled the job, with
+   * `ProviderPausedError` when the channel of a foreground job is paused before the job starts, with
+   * `LookupGuardTimeout`, or with what the work threw.
+   */
+  result: Promise<T>
+  /** Someone now waits on the job: from here on it is foreground work. Nothing changes once it started. */
+  promote(): void
+}
+
+/** The work of a job held its slot longer than its guard allows; the slot was freed. */
+export class LookupGuardTimeout extends Error {
+  constructor() {
+    super('lookup exceeded the wall-clock guard')
+  }
+}
+
+/** How a scheduler paces its channels; fixed when the scheduler is created. */
+export interface LookupPacing {
   /** Requests that may run at once, across all channels of this scheduler. */
   concurrency: number
   /** Slots background work never takes, so an interactive lookup cannot queue behind slow sweeps. */
@@ -29,7 +65,7 @@ export interface LookupSchedulerOptions {
   transientFailuresBeforePause: number
 }
 
-const DEFAULT_OPTIONS: LookupSchedulerOptions = {
+const DEFAULT_PACING: LookupPacing = {
   concurrency: 4,
   foregroundReserved: 1,
   minIntervalMs: 2_000,
@@ -97,7 +133,9 @@ interface Channel extends ChannelState {
 }
 
 interface Waiter {
-  job: LookupJob
+  channel: string
+  background: boolean
+  signal: AbortSignal
   run: () => void
   cancel: () => void
   /** Rejects a foreground waiter whose channel is paused, so interactive work fails fast. */
@@ -107,6 +145,23 @@ interface Waiter {
 function describeWait(ms: number): string {
   const seconds = Math.max(1, Math.ceil(ms / 1000))
   return seconds < 90 ? `${seconds} seconds` : `${Math.ceil(seconds / 60)} minutes`
+}
+
+/** Settles with `work`, or rejects once `signal` aborts or `work` is still pending after `guardMs`. */
+async function guarded<T>(work: Promise<T>, signal: AbortSignal, guardMs: number): Promise<T> {
+  const stop = Promise.withResolvers<never>()
+  const cancel = () => stop.reject(signal.reason)
+  // The provider clients carry their own timeouts; this is the last line of defense, and never keeps the process alive.
+  const timer = setTimeout(() => stop.reject(new LookupGuardTimeout()), guardMs)
+  timer.unref?.()
+  signal.addEventListener('abort', cancel, { once: true })
+  if (signal.aborted) cancel()
+  try {
+    return await Promise.race([work, stop.promise])
+  } finally {
+    clearTimeout(timer)
+    signal.removeEventListener('abort', cancel)
+  }
 }
 
 const idle = (): ChannelState => ({
@@ -120,21 +175,40 @@ const idle = (): ChannelState => ({
 })
 
 /**
- * Hands out request slots. Capacity is assigned only when a channel's pacing lets a request
- * start; foreground work goes first, and a channel that pushes back is paused for everyone
- * instead of being retried by each lookup on its own. A channel is one provider or indexer and
- * exists from its first use; instances share nothing, so each has its own slots and channels.
+ * Runs requests to providers. A job gets a slot only when its channel's pacing lets it start;
+ * foreground work goes first, and a channel that pushes back is paused for everyone instead of
+ * being retried by each lookup on its own. A channel is one provider or indexer and exists from
+ * its first use; instances share nothing, so each has its own slots and channels.
  */
 export class LookupScheduler {
-  /** Live settings; tests shorten the intervals. */
-  readonly options: LookupSchedulerOptions
+  private readonly pacing: LookupPacing
   private readonly channels = new Map<string, Channel>()
   private readonly waiting: Waiter[] = []
   private active = 0
   private timer?: NodeJS.Timeout
 
-  constructor(options: Partial<LookupSchedulerOptions> = {}) {
-    this.options = { ...DEFAULT_OPTIONS, ...options }
+  constructor(pacing: Partial<LookupPacing> = {}) {
+    this.pacing = { ...DEFAULT_PACING, ...pacing }
+  }
+
+  /**
+   * Runs `work` once the job has a slot, and always frees the slot: when the work settles, fails, is
+   * cancelled or outlives its guard. What it came to is recorded for the channel before the next job starts.
+   */
+  schedule<T>(request: LookupRequest<T>): LookupHandle<T> {
+    const { slot, waiter } = this.enqueue(
+      request.channel,
+      request.background ?? false,
+      request.waitSignal ?? request.signal,
+    )
+    return {
+      result: slot.then(() => this.runHeld(request)),
+      promote: () => {
+        if (!waiter.background) return
+        waiter.background = false
+        this.pump()
+      },
+    }
   }
 
   /**
@@ -155,7 +229,7 @@ export class LookupScheduler {
    */
   interval(channel: string): number {
     const state = this.channel(channel)
-    return Math.max(state.minIntervalMs ?? this.options.minIntervalMs, state.widenedMs)
+    return Math.max(state.minIntervalMs ?? this.pacing.minIntervalMs, state.widenedMs)
   }
 
   isPaused(channel: string, now = Date.now()): boolean {
@@ -213,7 +287,10 @@ export class LookupScheduler {
     }
   }
 
-  /** Tracks channel health from real answers: paces the channel to what it tolerates and pauses it when it pushes back. */
+  /**
+   * Tracks channel health from real answers: paces the channel to what it tolerates and pauses it when it
+   * pushes back. `schedule` records every job's outcome; this is public for tests of the health rules.
+   */
   recordOutcome(channel: string, outcome: LookupOutcome): void {
     const health = this.channel(channel)
     if (outcome.kind !== 'failed') {
@@ -223,13 +300,13 @@ export class LookupScheduler {
       health.successes = 0
       const narrowed = Math.round(health.widenedMs * NARROW_FACTOR)
       // Back at the minimum the channel follows it again, including a minimum that changes later.
-      health.widenedMs = narrowed > (health.minIntervalMs ?? this.options.minIntervalMs) ? narrowed : 0
+      health.widenedMs = narrowed > (health.minIntervalMs ?? this.pacing.minIntervalMs) ? narrowed : 0
       return
     }
     health.successes = 0
     if (!outcome.code || !TRANSIENT_CODES.has(outcome.code)) return
     health.failures++
-    if (outcome.code !== 'rate_limited' && health.failures < this.options.transientFailuresBeforePause) return
+    if (outcome.code !== 'rate_limited' && health.failures < this.pacing.transientFailuresBeforePause) return
     const now = Date.now()
     const requested = outcome.retry_after_ms || 0
     // Concurrent requests that fail together escalate the pause, and widen the spacing, only once.
@@ -238,8 +315,8 @@ export class LookupScheduler {
       return
     }
     if (outcome.code === 'rate_limited')
-      health.widenedMs = Math.min(this.options.maxIntervalMs, Math.round(this.interval(channel) * WIDEN_FACTOR))
-    const delay = Math.max(requested, Math.min(this.options.pauseBaseMs * 2 ** health.pauses, this.options.pauseMaxMs))
+      health.widenedMs = Math.min(this.pacing.maxIntervalMs, Math.round(this.interval(channel) * WIDEN_FACTOR))
+    const delay = Math.max(requested, Math.min(this.pacing.pauseBaseMs * 2 ** health.pauses, this.pacing.pauseMaxMs))
     health.pausedUntil = now + delay
     health.reason = outcome.code
     health.pauses++
@@ -250,16 +327,13 @@ export class LookupScheduler {
     )
   }
 
-  /** Resolves when the job may send its request. Rejects when it is aborted first, or paused while in the foreground. */
-  acquire(job: LookupJob): Promise<void> {
+  /** Resolves when the job holds a slot. Rejects when its wait is cancelled first, or its channel paused while it is foreground. */
+  private enqueue(channel: string, background: boolean, signal: AbortSignal): { slot: Promise<void>; waiter: Waiter } {
     const { promise, resolve, reject } = Promise.withResolvers<void>()
-    const { signal } = job.controller
-    if (signal.aborted) {
-      reject(signal.reason)
-      return promise
-    }
     const waiter: Waiter = {
-      job,
+      channel,
+      background,
+      signal,
       run: resolve,
       cancel: () => {
         const index = this.waiting.indexOf(waiter)
@@ -267,40 +341,60 @@ export class LookupScheduler {
         reject(signal.reason)
         this.pump()
       },
-      paused: until => reject(new ProviderPausedError(job.channel, until)),
+      paused: until => reject(new ProviderPausedError(channel, until)),
+    }
+    if (signal.aborted) {
+      reject(signal.reason)
+      return { slot: promise, waiter }
     }
     signal.addEventListener('abort', waiter.cancel, { once: true })
     this.waiting.push(waiter)
     this.pump()
-    return promise
+    return { slot: promise, waiter }
   }
 
-  release(): void {
-    this.active--
-    this.pump()
+  /** The work of a job that holds a slot; the slot is freed after the outcome is recorded, whatever happened. */
+  private async runHeld<T>(request: LookupRequest<T>): Promise<T> {
+    const { channel, signal } = request
+    let settled: Settled<T>
+    try {
+      signal.throwIfAborted()
+      settled = { ok: true, value: await guarded(request.work(), signal, request.guardMs) }
+    } catch (error) {
+      settled = { ok: false, error }
+    }
+    try {
+      const outcome = signal.aborted ? undefined : request.outcome(settled)
+      if (outcome) this.recordOutcome(channel, outcome)
+    } finally {
+      this.active--
+      this.pump()
+    }
+    if (settled.ok) return settled.value
+    throw settled.error
   }
 
-  /** Assigns free capacity to waiters. Call after anything that changes who may start. */
-  pump(): void {
-    const { concurrency, foregroundReserved } = this.options
+  /** Assigns free capacity to waiters. Called after anything that changes who may start. */
+  private pump(): void {
+    const { concurrency, foregroundReserved } = this.pacing
     clearTimeout(this.timer)
     this.timer = undefined
     const startedAt = Date.now()
     for (const waiter of [...this.waiting]) {
-      if (waiter.job.background || !this.isPaused(waiter.job.channel, startedAt)) continue
+      if (waiter.background || !this.isPaused(waiter.channel, startedAt)) continue
       this.dequeue(waiter)
-      waiter.paused(this.pausedUntil(waiter.job.channel))
+      waiter.paused(this.pausedUntil(waiter.channel))
     }
     while (this.active < concurrency && this.waiting.length) {
       const now = Date.now()
-      const ready = ({ job }: Waiter) => now >= this.readyAt(job.channel)
+      const ready = ({ channel }: Waiter) => now >= this.readyAt(channel)
       const next =
-        this.waiting.find(waiter => !waiter.job.background && ready(waiter)) ??
+        this.waiting.find(waiter => !waiter.background && ready(waiter)) ??
         (this.active < concurrency - foregroundReserved ? this.waiting.find(ready) : undefined)
       if (!next) break
       this.dequeue(next)
       this.active++
-      this.channel(next.job.channel).lastStartedAt = now
+      this.channel(next.channel).lastStartedAt = now
       next.run()
     }
     if (this.active >= concurrency) return
@@ -308,8 +402,8 @@ export class LookupScheduler {
     // lookup exists and its release pumps again. A timer for them would only spin.
     const backgroundBlocked = this.active >= concurrency - foregroundReserved
     let soonest = Infinity
-    for (const { job } of this.waiting)
-      if (!job.background || !backgroundBlocked) soonest = Math.min(soonest, this.readyAt(job.channel))
+    for (const { channel, background } of this.waiting)
+      if (!background || !backgroundBlocked) soonest = Math.min(soonest, this.readyAt(channel))
     if (soonest === Infinity) return
     this.timer = setTimeout(
       () => {
@@ -341,6 +435,6 @@ export class LookupScheduler {
 
   private dequeue(waiter: Waiter): void {
     this.waiting.splice(this.waiting.indexOf(waiter), 1)
-    waiter.job.controller.signal.removeEventListener('abort', waiter.cancel)
+    waiter.signal.removeEventListener('abort', waiter.cancel)
   }
 }
