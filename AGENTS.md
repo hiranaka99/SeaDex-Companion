@@ -7,3 +7,17 @@
 - Put development and release instructions in `docs/development.md`, and other technical details in an appropriate document under `docs/`.
 - Keep installation commands, service connection guidance, persistent-volume instructions, and operational security advice in the README when users need them to run the application.
 - When documenting a feature or release in the README, explain user-visible behavior and required user actions. Keep implementation notes, test results, and release engineering elsewhere.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues for `hiranaka99/SeaDex-Companion` (via `gh`). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Uses the five default triage labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
