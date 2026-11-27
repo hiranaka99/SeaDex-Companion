@@ -15,9 +15,9 @@ export interface UsenetProviderDefinition {
   connection(config: Config): ProviderSettings
   /** Enabled and complete enough to query. */
   usable(config: Config): boolean
-  lookup(settings: ProviderSettings, hash: string, fetchImpl?: typeof fetch): Promise<ProviderLookup>
-  fetchNzb(settings: ProviderSettings, match: UsenetMatch, fetchImpl?: typeof fetch): Promise<Uint8Array>
-  test(settings: ProviderSettings): Promise<void>
+  lookup(settings: ProviderSettings, hash: string, fetchImpl: typeof fetch): Promise<ProviderLookup>
+  fetchNzb(settings: ProviderSettings, match: UsenetMatch, fetchImpl: typeof fetch): Promise<Uint8Array>
+  test(settings: ProviderSettings, fetchImpl: typeof fetch): Promise<void>
 }
 
 /** Lookup order: providers are asked in this order and the first usable match wins. */
@@ -30,7 +30,7 @@ export const USENET_PROVIDERS: Record<UsenetProvider, UsenetProviderDefinition> 
     usable: config => Boolean(config.animetosho_enabled && config.animetosho_url),
     lookup: (settings, hash, fetchImpl) => lookupAnimeTosho(settings, hash, fetchImpl),
     fetchNzb: (settings, match, fetchImpl) => fetchAnimeToshoNzb(settings, match, fetchImpl),
-    test: settings => testAnimeTosho(settings),
+    test: (settings, fetchImpl) => testAnimeTosho(settings, fetchImpl),
   },
   amenzb: {
     label: 'AmeNZB',
@@ -40,7 +40,7 @@ export const USENET_PROVIDERS: Record<UsenetProvider, UsenetProviderDefinition> 
     usable: config => Boolean(config.amenzb_enabled && config.amenzb_url && config.amenzb_key),
     lookup: (settings, hash, fetchImpl) => lookupAmeNZB(settings, hash, fetchImpl),
     fetchNzb: (settings, match, fetchImpl) => fetchAmeNZBNzb(settings, match, fetchImpl),
-    test: settings => testAmeNZB(settings),
+    test: (settings, fetchImpl) => testAmeNZB(settings, fetchImpl),
   },
 }
 

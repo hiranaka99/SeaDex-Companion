@@ -50,6 +50,7 @@ Rules that conflict with deliberate patterns in this codebase are switched off i
 
 ## Validation
 
+- `npm run format:check` checks the source formatting with Prettier.
 - `npm run lint` checks the source with Oxlint.
 - `npm run typecheck` type-checks the server, the tests, and the frontend.
 - `npm test` builds the server and runs backend, HTTP, scheduling, and frontend utility regressions.

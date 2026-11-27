@@ -10,6 +10,7 @@ import { arrApiBase } from './library.js'
 import { qbTestConnection } from './qbittorrent.js'
 import { sabMissingCategories, sabTestConnection } from './sabnzbd.js'
 import { testProwlarr } from './prowlarr.js'
+import { usenetParts } from './usenet-runtime.js'
 
 /** `sonarr`, `radarr`, or `arr:<id>` for an additional instance. */
 export function isArrService(service: string): boolean {
@@ -79,17 +80,17 @@ export async function testIntegration(config: Config, service: string): Promise<
   }
   if (service === 'animetosho') {
     if (!config.animetosho_url) throw new Error('AnimeTosho NEW API URL is required')
-    await USENET_PROVIDERS.animetosho.test(USENET_PROVIDERS.animetosho.connection(config))
+    await USENET_PROVIDERS.animetosho.test(USENET_PROVIDERS.animetosho.connection(config), usenetParts().fetch)
     return 'Connected to AnimeTosho NEW'
   }
   if (service === 'amenzb') {
     if (!config.amenzb_url || !config.amenzb_key) throw new Error('AmeNZB URL and API key are required')
-    await USENET_PROVIDERS.amenzb.test(USENET_PROVIDERS.amenzb.connection(config))
+    await USENET_PROVIDERS.amenzb.test(USENET_PROVIDERS.amenzb.connection(config), usenetParts().fetch)
     return 'AmeNZB accepted the API key'
   }
   if (service === 'prowlarr') {
     if (!config.prowlarr_url || !config.prowlarr_key) throw new Error('Prowlarr URL and API key are required')
-    return await testProwlarr({ baseUrl: config.prowlarr_url, apiKey: config.prowlarr_key })
+    return await testProwlarr({ baseUrl: config.prowlarr_url, apiKey: config.prowlarr_key }, usenetParts().fetch)
   }
   if (service === 'discord') {
     if (!config.webhook) throw new Error('Discord webhook URL is required')
