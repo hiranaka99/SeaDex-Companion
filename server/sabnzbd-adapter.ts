@@ -213,7 +213,7 @@ export function sabnzbdAdapter(config: Config): DownloadClientAdapter {
         if (!settings) throw new Error('SABnzbd is no longer configured.')
         if (!unit.provider || !unit.entryId)
           throw new Error('The Usenet source reference is no longer available. Re-run the review.')
-        const nzb = await fetchUsenetNzb(config, unit.provider, unit.entryId, unit.source_hash)
+        const nzb = await fetchUsenetNzb(config, unit.provider, unit.entryId, unit.source_hash, unit.sourceFiles)
         const nzoIds = await sabAddNzb(settings, nzb, sabSubmissionName(unit.nzb_name, unit.source_hash), unit.category)
         ownership.accepted(nzoIds)
         return nzoIds[0]

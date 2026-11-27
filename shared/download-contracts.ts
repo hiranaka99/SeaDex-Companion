@@ -1,5 +1,5 @@
 import { rowKey } from './ids.js'
-import type { UsenetSource } from './usenet-contracts.js'
+import type { UsenetProof, UsenetSource } from './usenet-contracts.js'
 
 export type DownloadProtocol = 'torrent' | 'usenet'
 export type DownloadMode = 'torrent_only' | 'usenet_only' | 'choose'
@@ -29,9 +29,10 @@ export interface DownloadSelectionRef {
 /**
  * Where a finished download stands with the Sonarr or Radarr instance that should import it.
  * `waiting`: still downloading. `pending`: finished, import not seen yet. `blocked`: the app
- * reports a problem. `not_imported`: the app dropped it and the library did not change.
+ * reports a problem. `not_imported`: the app dropped it and the library did not change. `mismatch`: the
+ * library now holds other files than the listed release under its group; final for the download.
  */
-export type ImportState = 'waiting' | 'pending' | 'blocked' | 'imported' | 'not_imported'
+export type ImportState = 'waiting' | 'pending' | 'blocked' | 'imported' | 'not_imported' | 'mismatch'
 
 export interface DownloadImport {
   state: ImportState
@@ -80,6 +81,8 @@ export interface PlannedUnit {
   size_bytes: number | null
   approximate: boolean
   provider?: UsenetSource
+  /** How an NZB found through Prowlarr was shown to be the listed release; absent for hash-linked NZBs. */
+  proof?: UsenetProof
   nzb_name?: string
   /** Known source files beyond the requested scope (complete provider manifest only). */
   known_extra_files?: string[]
@@ -100,6 +103,7 @@ export interface PreflightBlocked {
     | 'private_no_match'
     | 'private_lookup_failed'
     | 'not_searched'
+    | 'not_verified'
     | 'no_match'
     | 'processing'
     | 'incomplete'

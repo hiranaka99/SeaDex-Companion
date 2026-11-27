@@ -1,5 +1,6 @@
 import { HttpError } from './http-error.js'
 import type { OwnedDownloadRecord } from './download-store.js'
+import type { SourceFile } from './source-files.js'
 import type {
   DiskSpaceCheck,
   DownloadCapabilities,
@@ -24,6 +25,11 @@ export interface SubmissionUnit extends PlannedUnit {
   requiresAck: boolean
   /** Provider entry the NZB is fetched from. */
   entryId?: string
+  /**
+   * The listed files of a source whose NZB was found through Prowlarr. They grade the NZB again in the one case
+   * it has to be fetched again for the submission: its stored bytes are gone.
+   */
+  sourceFiles?: SourceFile[]
   /** The checked .torrent file of a private-tracker release; qBittorrent receives it instead of a magnet. */
   torrentFile?: Uint8Array
   /**

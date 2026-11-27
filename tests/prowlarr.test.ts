@@ -2,8 +2,11 @@
 // availability and submission paths that use them. Runs in the shared temp DATA_DIR (tests/run-tests.mjs).
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { rmSync } from 'node:fs'
 import { test } from 'node:test'
+import { setImmediate as nextTurn } from 'node:timers/promises'
 import { seadexBest } from '../server/catalog.js'
+import { NZB_STORE_DIR, USENET_SEARCH_FILE } from '../server/paths.js'
 import { normalizeResults } from '../server/result-model.js'
 import { parseTorrentFile } from '../server/torrent-file.js'
 import { filesSourceId, nzbFileMatches, nzbFiles, nzbHasFiles, sameFiles } from '../server/source-files.js'
@@ -15,13 +18,9 @@ import {
   testProwlarr,
   trackerIndexers,
 } from '../server/prowlarr.js'
-import {
-  invalidatePrivateSources,
-  resolvePrivateNzb,
-  searchContext,
-  trackerTorrentId,
-} from '../server/private-sources.js'
-import { cleanSearchTitle, searchCategories, searchTitles } from '../server/search-titles.js'
+import { invalidatePrivateSources, trackerTorrentId } from '../server/private-sources.js'
+import { resetUsenetSearch, resolveSource, searchScheduler } from '../server/usenet-search.js'
+import { cleanSearchTitle, searchTitles } from '../server/search-titles.js'
 import { buildDownloadPlan } from '../server/download-preflight.js'
 import { consumePlan } from '../server/download-plans.js'
 import { acceptDownloadPlan } from '../server/download-submit.js'
@@ -148,13 +147,50 @@ const INDEXERS = [
   { id: 4, name: 'Off', protocol: 'usenet', privacy: 'private', enable: false },
 ]
 
+const escapeXml = (value: unknown) =>
+  String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+/**
+ * The Usenet results of one indexer as its Newznab endpoint in Prowlarr lists them. Prowlarr writes a result's
+ * page address into `<comments>`.
+ */
+function newznabFeed(results: unknown[], indexerId: number): Response {
+  const items = (results as Record<string, unknown>[])
+    .filter(entry => entry.indexerId === indexerId)
+    .map(entry =>
+      [
+        `<item><title>${escapeXml(entry.title)}</title><guid>${escapeXml(entry.guid)}</guid>`,
+        entry.infoUrl ? `<comments>${escapeXml(entry.infoUrl)}</comments>` : '',
+        `<link>${escapeXml(entry.downloadUrl)}</link>`,
+        `<enclosure url="${escapeXml(entry.downloadUrl)}" type="application/x-nzb" />`,
+        entry.size ? `<newznab:attr name="size" value="${escapeXml(entry.size)}" />` : '',
+        '</item>',
+      ].join(''),
+    )
+  return new Response(
+    `<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/"><channel><title>Prowlarr</title>${items.join('')}</channel></rss>`,
+    { headers: { 'content-type': 'application/rss+xml' } },
+  )
+}
+
+/** Forgets every Usenet search result, in memory and on disk. */
+function forgetUsenetSearches(): void {
+  resetUsenetSearch()
+  rmSync(USENET_SEARCH_FILE, { force: true })
+  rmSync(NZB_STORE_DIR, { recursive: true, force: true })
+}
+
 function install(state: FakeState): () => void {
   const original = globalThis.fetch
+  const pacing = { ...searchScheduler.options }
   resetQbRuntime()
   resetOwnedRuntime()
   resetProwlarrRuntime()
   invalidatePrivateSources()
+  forgetUsenetSearches()
   purgeTestDataDir()
+  // Requests to the fake indexers need no spacing.
+  searchScheduler.options.minIntervalMs = 0
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     state.calls.push(`${init?.method || 'GET'} ${url.href}`)
@@ -165,10 +201,10 @@ function install(state: FakeState): () => void {
       const pathname = url.pathname.replace(/^\/prowlarr(?=\/)/, '')
       if (pathname === '/api/v1/system/status') return Response.json({ appName: 'Prowlarr', version: '1.30.2' })
       if (pathname === '/api/v1/indexer') return Response.json(state.indexers ?? INDEXERS)
-      if (pathname === '/api/v1/search') {
-        const ids = url.searchParams.getAll('indexerIds')
-        return Response.json(ids.includes('1') ? state.torrentResults?.() || [] : state.usenetResults?.() || [])
-      }
+      // Torrent indexers are searched together through the JSON API, each Usenet indexer through its Newznab endpoint.
+      if (pathname === '/api/v1/search') return Response.json(state.torrentResults?.() || [])
+      const newznab = pathname.match(/^\/(\d+)\/api$/)
+      if (newznab) return newznabFeed(state.usenetResults?.() || [], Number(newznab[1]))
       const download = pathname.match(/^\/(\d+)\/download$/)
       if (download) {
         const link = url.searchParams.get('link') || ''
@@ -249,10 +285,12 @@ function install(state: FakeState): () => void {
   }) as typeof fetch
   return () => {
     globalThis.fetch = original
+    Object.assign(searchScheduler.options, pacing)
     resetQbRuntime()
     resetOwnedRuntime()
     resetProwlarrRuntime()
     invalidatePrivateSources()
+    forgetUsenetSearches()
     purgeTestDataDir()
   }
 }
@@ -260,6 +298,21 @@ function install(state: FakeState): () => void {
 /** Prowlarr searches and downloads (grabs); reading the indexer list is neither. */
 const prowlarrCalls = (state: FakeState) =>
   state.calls.filter(call => call.startsWith(`GET ${PROWLARR}`) && !call.includes('/api/v1/indexer')).length
+
+/** Reads availability as the browser's observer does, until no row reports a search or a check under way. */
+async function settledAvailability(
+  config: Config,
+  selections: { key: string; release: number }[],
+  results: ResultItem[],
+): Promise<Awaited<ReturnType<typeof usenetAvailability>>> {
+  const deadline = Date.now() + 10_000
+  while (Date.now() < deadline) {
+    const rows = await usenetAvailability(config, selections, results)
+    if (!rows.some(row => row.refreshing)) return rows
+    await nextTurn()
+  }
+  throw new Error('Usenet availability never settled')
+}
 
 /** A Prowlarr search result; download links name Prowlarr's host as it sees itself. */
 const result = (overrides: Record<string, unknown>) => ({
@@ -304,7 +357,7 @@ test('file-list identities ignore order and folders, and comparisons need every 
 
 test('NZB subjects disclose file sizes only when the poster wrote them', () => {
   const files = nzbFiles(new TextEncoder().encode(MATCHING_NZB))
-  assert.deepEqual(files[0], { name: FILES[0].name, size: FILES[0].length })
+  assert.deepEqual(files[0], { name: FILES[0].name, size: FILES[0].length, bytes: 700000 })
   assert.ok(nzbHasFiles(files, FILES))
   const sizeless = nzbFiles(new TextEncoder().encode(nzb(FILES.map(file => `"${file.name}" yEnc (1/10)`))))
   assert.equal(sizeless[0].size, null)
@@ -471,7 +524,7 @@ test('Usenet copies of private-tracker releases are searched only when asked for
     calls: [],
     nzbs: { wrong: nzb([`"${FILES[0].name}" yEnc (1/10) 5`]), right: MATCHING_NZB },
     usenetResults: () => [
-      // Not by the release group: never fetched.
+      // Not by the release group: ranked last, and never fetched once a better candidate is proven.
       result({
         guid: 'other',
         indexerId: 2,
@@ -517,17 +570,14 @@ test('Usenet copies of private-tracker releases are searched only when asked for
     assert.equal(prowlarrCalls(state), 0)
     const [searching] = await usenetAvailability(config, selections, results, { search: selections })
     assert.equal(searching.refreshing, true)
-    await resolvePrivateNzb(
-      config,
-      source,
-      { titles: ['Show'], releaseGroup: 'Vault', tracker: 'AB', categories: [5070, 5000] },
-      { search: true },
-    )
-    const [found] = await usenetAvailability(config, selections, results)
+    const [found] = await settledAvailability(config, selections, results)
     assert.equal(found.aggregate, 'available')
     assert.equal(found.hashes[0].provider, 'prowlarr')
     assert.equal(found.hashes[0].hash, source.id)
+    assert.equal(found.hashes[0].proof, 'exact')
+    // The candidate that names every file is checked first and proven, so no other NZB is fetched.
     assert.equal(state.calls.filter(call => call.includes('link=other')).length, 0)
+    assert.equal(state.calls.filter(call => call.includes('link=wrong')).length, 0)
 
     const built = await buildDownloadPlan(config, selections, { results })
     assert.deepEqual(built.review.blocked, [])
@@ -635,7 +685,6 @@ test('an unproven NZB is listed with its indexer page and can be downloaded when
         title: '[Vault] Show',
         size: Math.round(TOTAL * 1.05),
         infoUrl: `https://geek.test/details/abc?apikey=secret`,
-        commentUrl: 'https://geek.test/details/abc#comments',
         downloadUrl: `${PROWLARR}/2/download?apikey=${KEY}&link=close`,
       }),
     ],
@@ -644,12 +693,7 @@ test('an unproven NZB is listed with its indexer page and can be downloaded when
   try {
     const config = prowlarrConfig({ download_mode: 'usenet_only' })
     const results = privateResults()
-    await resolvePrivateNzb(
-      config,
-      source,
-      { titles: ['Show'], releaseGroup: 'Vault', tracker: 'AB', categories: [5070, 5000] },
-      { search: true },
-    )
+    await resolveSource(config, source, { titles: ['Show'], releaseGroup: 'Vault' }, { limit: 3 })
     const [row] = await usenetAvailability(config, [{ key: 'show-1', release: 0 }], results)
     assert.equal(row.aggregate, 'no_match')
     const [candidate] = row.hashes[0].candidates!
@@ -660,12 +704,14 @@ test('an unproven NZB is listed with its indexer page and can be downloaded when
         title: '[Vault] Show',
         indexer: 'Geek',
         size: Math.round(TOTAL * 1.05),
-        // The link carrying an API key is skipped for the next safe one.
-        info_url: 'https://geek.test/details/abc#comments',
+        // The page address carrying an API key is skipped for the next safe one, the result's GUID.
+        info_url: 'https://geek.test/details/abc',
         files_matched: 1,
         names_matched: 1,
         files_expected: 2,
         sizes_known: true,
+        checked: true,
+        proof: 'unverified',
       },
     )
     assert.ok(!JSON.stringify(row).includes(KEY) && !JSON.stringify(row).includes('secret'))
@@ -716,30 +762,26 @@ test('Prowlarr download redirects are followed to the indexer, and candidates th
   const restore = install(state)
   try {
     const config = prowlarrConfig({ download_mode: 'usenet_only' })
-    const lookup = await resolvePrivateNzb(
-      config,
-      source,
-      { titles: ['Show'], releaseGroup: 'Vault', tracker: 'AB', categories: [5070, 5000] },
-      { search: true },
-    )
-    assert.equal(lookup.kind, 'match')
+    const terms = { titles: ['Show'], releaseGroup: 'Vault' }
+    const lookup = await resolveSource(config, source, terms, { limit: 3 })
+    assert.equal(lookup.availability.state, 'available')
     assert.ok(state.calls.some(call => call.startsWith('GET https://geek.test/getnzb?id=proven')))
 
     state.nzbs = {}
-    invalidatePrivateSources()
-    const missing = await resolvePrivateNzb(
-      config,
-      source,
-      { titles: ['Show'], releaseGroup: 'Vault', tracker: 'AB', categories: [5070, 5000] },
-      { search: true },
-    )
-    assert.equal(missing.kind, 'no_match')
+    forgetUsenetSearches()
+    const missing = await resolveSource(config, source, terms, { limit: 3 })
+    assert.equal(missing.availability.state, 'no_match')
     const [row] = await usenetAvailability(config, [{ key: 'show-1', release: 0 }], privateResults())
+    // Neither file could be read. What a candidate says names its indexer and never what the indexer answered.
+    assert.deepEqual(
+      row.hashes[0].candidates!.map(candidate => [candidate.title, candidate.checked, candidate.unavailable]),
+      [
+        ['[Vault] Show', false, 'Geek did not send a usable NZB.'],
+        ['[Vault] Show v0', false, 'Geek did not send a usable NZB.'],
+      ],
+    )
     const candidates = row.hashes[0].candidates!
-    assert.equal(candidates.length, 2)
-    assert.match(candidates[0].unavailable!, /something other than a file/)
-    assert.equal(candidates[0].info_url, 'https://geek.test/details/magnet')
-    assert.match(candidates[1].unavailable!, /indexer refused the download \(HTTP 404\)/)
+    assert.equal(candidates[1].info_url, 'https://geek.test/details/magnet')
     const chosen = { key: 'show-1', release: 0, protocol: 'usenet' as const, nzb: candidates[0].entry_id }
     const built = await buildDownloadPlan(config, [chosen], { results: privateResults() })
     assert.equal(built.review.blocked[0].code, 'not_searched')
@@ -818,13 +860,7 @@ test('a public release the hash indexers lack can be searched on Prowlarr and se
     assert.equal(prowlarrCalls(state), 0)
 
     await usenetAvailability(config, selections, results, { search: selections })
-    await resolvePrivateNzb(
-      config,
-      { id: HASH, files: FILES },
-      { titles: ['Show'], releaseGroup: 'Vault', tracker: 'Nyaa', categories: [5070, 5000] },
-      { search: true },
-    )
-    const [found] = await usenetAvailability(config, selections, results)
+    const [found] = await settledAvailability(config, selections, results)
     assert.equal(found.search, 'prowlarr')
     assert.equal(found.aggregate, 'available')
 
@@ -859,13 +895,14 @@ test('search titles follow Sonarr: cleaned scene titles, then AniList titles, wi
     }),
     ['Banished From the Heros Party', 'Shin no Nakama'],
   )
-  assert.deepEqual(searchCategories('Sonarr'), [5070, 5000])
-  assert.deepEqual(searchCategories('Radarr'), [2000])
+  // Every title is returned; how many are searched is up to each search.
+  const many = ['One', 'Two', 'Three', 'Four', 'Five', 'Six']
+  assert.deepEqual(searchTitles({ title: 'Zero', search_titles: many, anilist_id: null }), ['Zero', ...many])
 })
 
-test('Usenet searches send the release group with each title, in the anime categories', async () => {
+test('Usenet searches ask each Usenet indexer by title and by release group, and never name a category', async () => {
   const queries: URLSearchParams[] = []
-  // The first title already finds a likely candidate; Sonarr still searches every title, and so does this.
+  // The candidate states no size, so it does not end the search and every query is sent.
   const state: FakeState = {
     calls: [],
     usenetResults: () => [
@@ -874,7 +911,7 @@ test('Usenet searches send the release group with each title, in the anime categ
         indexerId: 2,
         protocol: 'usenet',
         title: '[-ZR-] Show',
-        size: TOTAL,
+        size: 0,
         downloadUrl: `${PROWLARR}/2/download?link=likely`,
       }),
     ],
@@ -883,7 +920,7 @@ test('Usenet searches send the release group with each title, in the anime categ
   const routed = globalThis.fetch
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
-    if (url.pathname === '/api/v1/search') queries.push(url.searchParams)
+    if (url.pathname === '/2/api') queries.push(url.searchParams)
     return routed(input, init)
   }) as typeof fetch
   try {
@@ -891,16 +928,29 @@ test('Usenet searches send the release group with each title, in the anime categ
     const results = privateResults({ releaseGroup: '-ZR-' })
     results[0].title = "Banished From the Hero's Party"
     results[0].search_titles = ['Shin no Nakama ja Nai to Yuusha no Party wo Oidasareta node']
-    await usenetAvailability(config, [{ key: 'show-1', release: 0 }], results, {
-      search: [{ key: 'show-1', release: 0 }],
-    })
-    await resolvePrivateNzb(config, source, searchContext(results[0], results[0].releases[0]), { search: true })
+    const selections = [{ key: 'show-1', release: 0 }]
+    await usenetAvailability(config, selections, results, { search: selections })
+    await settledAvailability(config, selections, results)
     assert.deepEqual(
-      queries.map(query => query.get('query')),
-      ['ZR Banished From the Heros Party', 'ZR Shin no Nakama ja Nai to Yuusha no Party wo Oidasareta node'],
+      queries.map(query => query.get('q')),
+      [
+        // The file names do not carry the group, so the title alone is asked first, within the size of a post.
+        'Banished From the Heros Party',
+        'ZR Banished From the Heros Party',
+        'ZR Shin no Nakama ja Nai to Yuusha no Party wo Oidasareta node',
+      ],
     )
-    assert.deepEqual(queries[0].getAll('categories'), ['5070', '5000'])
-    assert.deepEqual(queries[0].getAll('indexerIds'), ['2'])
+    assert.deepEqual(
+      [queries[0].get('minsize'), queries[0].get('maxsize')],
+      [String(Math.floor(TOTAL * 0.97)), String(Math.ceil(TOTAL * 1.35))],
+    )
+    for (const query of queries) {
+      assert.equal(query.has('cat'), false)
+      assert.equal(query.has('categories'), false)
+    }
+    // Each Usenet indexer is asked on its own; the torrent indexers and the disabled one are not asked at all.
+    assert.equal(state.calls.filter(call => /\/\d+\/api\?/.test(call)).length, queries.length)
+    assert.equal(state.calls.filter(call => call.includes('/api/v1/search')).length, 0)
   } finally {
     globalThis.fetch = routed
     restore()
@@ -935,7 +985,8 @@ test('private-tracker downloads are offered only for trackers Prowlarr has an in
     })
     assert.equal(row.aggregate, 'not_configured')
     assert.equal(row.hashes[0].error, 'Prowlarr has no Usenet indexer.')
-    assert.equal(state.calls.filter(call => call.includes('/api/v1/search')).length, 0)
+    assert.equal(row.refreshing, false)
+    assert.equal(state.calls.filter(call => /\/api\/v1\/search|\/\d+\/api\?/.test(call)).length, 0)
   } finally {
     restore()
   }

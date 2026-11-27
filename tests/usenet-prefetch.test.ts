@@ -75,7 +75,7 @@ function stubFetch(probe: Probe) {
 
 function isolation(intervalMs: number): () => void {
   resetUsenetLookups()
-  usenetScheduler.options.minIntervalMs.animetosho = intervalMs
+  usenetScheduler.options.minIntervalMs = intervalMs
   bumpGeneration()
   return () => resetUsenetLookups()
 }
@@ -293,7 +293,8 @@ test('a rate-limited provider pauses: interactive lookups fail fast and backgrou
     const background = resolveUsenetHash(config(), hexHash(1), false, true)
     await until(() => usenetProviderPauses().length === 1)
     const [pause] = usenetProviderPauses()
-    assert.equal(pause.provider, 'animetosho')
+    assert.equal(pause.channel, 'animetosho')
+    assert.equal(pause.label, 'AnimeTosho')
     assert.equal(pause.reason, 'rate_limited')
     const interactive = await resolveUsenetHash(config(), hexHash(2))
     assert.equal(interactive.state, 'lookup_failed')
@@ -306,6 +307,30 @@ test('a rate-limited provider pauses: interactive lookups fail fast and backgrou
     assert.deepEqual(starts, [hexHash(1), hexHash(1)])
     assert.deepEqual(usenetProviderPauses(), [])
   } finally {
+    globalThis.fetch = original
+    usenetScheduler.options.pauseBaseMs = 30_000
+    resetUsenetLookups()
+  }
+})
+
+test('a running sweep reports the provider it waits on by its label', async () => {
+  isolation(0)
+  enableUsenetPrefetch()
+  usenetScheduler.options.pauseBaseMs = 300
+  let rateLimited = true
+  const original = globalThis.fetch
+  globalThis.fetch = (async () =>
+    rateLimited ? new Response('slow down', { status: 429 }) : new Response('nope', { status: 404 })) as typeof fetch
+  try {
+    prefetchUsenetAvailability(config(), [result('paused-sweep', 1)], 'test')
+    await until(() => Boolean(usenetPrefetchProgress().paused))
+    assert.deepEqual(usenetPrefetchProgress().paused, [
+      { provider: { id: 'animetosho', label: 'AnimeTosho' }, resume_in_seconds: 1, rate_limited: true },
+    ])
+    rateLimited = false
+    await until(() => !usenetPrefetchProgress().running)
+  } finally {
+    stopUsenetPrefetch()
     globalThis.fetch = original
     usenetScheduler.options.pauseBaseMs = 30_000
     resetUsenetLookups()

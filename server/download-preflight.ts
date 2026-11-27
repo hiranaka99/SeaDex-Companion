@@ -20,7 +20,7 @@ import type {
   PreflightBlocked,
 } from '../shared/download-contracts.js'
 import type { UsenetHashAvailability, UsenetUnitState } from '../shared/usenet-contracts.js'
-import type { Config, Release, ResultItem } from './types.js'
+import type { Config, PrivateSource, Release, ResultItem } from './types.js'
 import { downloadCategory } from './config.js'
 import { currentGeneration } from './config-generation.js'
 import { putPlan, type StoredPlan, type StoredPlanSelection } from './download-plans.js'
@@ -38,14 +38,8 @@ import {
   usenetSourceIds,
 } from './usenet.js'
 import { privateSearchSettings } from './prowlarr.js'
-import {
-  chosenPrivateNzb,
-  privateNzbState,
-  resolvePrivateNzb,
-  resolvePrivateTorrent,
-  searchContext,
-  type PrivateSearchContext,
-} from './private-sources.js'
+import { resolvePrivateTorrent, searchContext, type PrivateSearchContext } from './private-sources.js'
+import { chosenSearchCandidate, resolveSource, searchSnapshot } from './usenet-search.js'
 
 /** What a review resolves to before it is shown or sent: the public summary, the units behind it, and the rows that survive. */
 export interface PlannedDownloads {
@@ -55,9 +49,16 @@ export interface PlannedDownloads {
 }
 
 const EXTRA_FILE_LIMIT = 10
+/** NZBs a single review may fetch through Prowlarr for one source. Bulk reviews and acceptances fetch none. */
+const REVIEW_FETCHES = 3
+
+/** Whether a source found through Prowlarr may be searched and checked now, or only read from what is stored. */
+export type ResolveMode = 'stored' | 'search'
 
 /** Why a release the user's preferences exclude is blocked; it keeps the `invalid` code. */
 const EXCLUDED_RELEASE_COPY = 'Your release preferences exclude this release.'
+/** The candidate a row names is not one that was fetched and checked; it keeps the `not_searched` code. */
+const CHOSEN_NZB_COPY = 'The chosen NZB is no longer known or could not be fetched; search Prowlarr again.'
 
 const BLOCK_COPY: Record<PreflightBlocked['code'], string> = {
   invalid: 'A selected release is unavailable.',
@@ -69,8 +70,8 @@ const BLOCK_COPY: Record<PreflightBlocked['code'], string> = {
   no_torrent: 'This release has no supported public torrent hash.',
   private_no_match: 'Prowlarr found no copy of this private-tracker release with exactly its files.',
   private_lookup_failed: 'Could not search Prowlarr for this private-tracker release.',
-  not_searched:
-    'Search Usenet for this private-tracker release in its details first. Bulk downloads only use earlier searches, because every checked NZB counts against the indexer’s download limit.',
+  not_searched: 'This release has not been searched on Usenet yet. Open the review again, or search it in its details.',
+  not_verified: 'Usenet results for this release have not been checked yet.',
   usenet_unconfigured: 'Usenet acquisition needs SABnzbd and a provider before it can be used.',
   no_match: 'Not found on Usenet indexers.',
   processing: 'Not found on Usenet indexers yet; the indexer has not finished converting this source.',
@@ -91,6 +92,14 @@ const USENET_BLOCK: Partial<Record<UsenetUnitState, PreflightBlocked['code']>> =
   no_match: 'no_match',
   processing: 'processing',
   incomplete: 'incomplete',
+}
+
+/** What a source found through Prowlarr blocks its row with while it has no proven copy; anything else is no match. */
+const FILE_LIST_BLOCK: Partial<Record<UsenetUnitState, PreflightBlocked['code']>> = {
+  not_checked: 'not_searched',
+  unverified: 'not_verified',
+  lookup_failed: 'lookup_failed',
+  not_configured: 'usenet_unconfigured',
 }
 
 /** Rows that cannot be sent, in the order they were ruled out. A row keeps the first reason found for it. */
@@ -174,8 +183,8 @@ interface PlanContext {
   ownership(hash: string): Ownership
   /** Private-tracker torrents found through Prowlarr, by their real info hash. */
   privateTorrents: Map<string, { file: Uint8Array; sourceId: string }>
-  /** A single explicit download; a bulk review only reuses earlier Prowlarr searches for Usenet. */
-  single: boolean
+  /** `search` for a single review; a bulk review and an acceptance only read stored Prowlarr results for Usenet. */
+  resolve: ResolveMode
 }
 
 function selectionLabel(result: ResultItem, release: Release): string {
@@ -403,50 +412,52 @@ async function resolvePrivateTorrentRows(
 
 interface UsenetRowPlan {
   available: UsenetHashAvailability[]
-  blocked?: { code: PreflightBlocked['code']; detail?: string }
+  /** `detail` as `BlockedRows.add` takes it: appended to the code's copy, or replacing it. */
+  blocked?: { code: PreflightBlocked['code']; detail?: string | { reason: string } }
 }
 
-/** Searches Prowlarr for a Usenet copy of a private-tracker release, or reuses an earlier search in bulk. */
+/**
+ * The Usenet copy of one source that Prowlarr is searched for by its file list.
+ *
+ * - A candidate the user chose is taken as it was checked, whatever its proof; nothing is searched for the row.
+ * - A single review searches the source if no fresh result is stored and checks its best candidates.
+ * - A bulk review and an acceptance read what is stored, so they never cost a search or an NZB fetch.
+ */
+async function fileListCopy(
+  context: PlanContext,
+  row: ResolvedRow,
+  source: PrivateSource,
+): Promise<UsenetHashAvailability> {
+  const { config } = context
+  const chosen = row.nzb ? chosenSearchCandidate(config, source.id, row.nzb) : undefined
+  if (chosen) return chosen
+  if (context.resolve === 'search' && !row.nzb)
+    return (await resolveSource(config, source, row.search, { limit: REVIEW_FETCHES })).availability
+  return searchSnapshot(config, source.id).availability
+}
+
+/** Whether one of the copies is the candidate the row names. A row that names none always passes. */
+const hasChosenNzb = (row: ResolvedRow, copies: UsenetHashAvailability[]): boolean =>
+  !row.nzb || copies.some(copy => copy.state === 'available' && copy.entry_id === row.nzb)
+
+const CHOSEN_NZB_BLOCK: UsenetRowPlan = {
+  available: [],
+  blocked: { code: 'not_searched', detail: { reason: CHOSEN_NZB_COPY } },
+}
+
+/** A Usenet copy of a private-tracker release: every source still missing needs a proven or chosen NZB. */
 async function resolvePrivateUsenetRow(
   context: PlanContext,
   row: ResolvedRow,
   missing: string[],
-  refresh: boolean | undefined,
 ): Promise<UsenetRowPlan> {
   const sources = privateUsenetSources(context.config, row.source).filter(source => missing.includes(source.id))
-  const search = row.search
-  const lookups = await Promise.all(
-    sources.map(source => {
-      // An NZB the user chose from the candidates of an earlier search is used as is; nothing is searched again.
-      const chosen = row.nzb ? chosenPrivateNzb(context.config, source.id, row.nzb) : undefined
-      return chosen
-        ? Promise.resolve(chosen)
-        : resolvePrivateNzb(context.config, source, search, {
-            search: context.single,
-            refresh: context.single && refresh,
-          })
-    }),
-  )
-  if (row.nzb && !sources.some(source => chosenPrivateNzb(context.config, source.id, row.nzb!)))
-    return {
-      available: [],
-      blocked: {
-        code: 'not_searched',
-        detail: 'The chosen NZB is no longer known or could not be fetched; search Prowlarr again.',
-      },
-    }
-  const states = lookups.map((lookup, index) => privateNzbState(sources[index].id, lookup))
-  if (states.every(state => state.state === 'available')) return { available: states }
-  const miss = states.find(state => state.state !== 'available')!
-  const code: PreflightBlocked['code'] =
-    miss.state === 'not_checked'
-      ? 'not_searched'
-      : miss.state === 'lookup_failed'
-        ? 'lookup_failed'
-        : miss.state === 'not_configured'
-          ? 'usenet_unconfigured'
-          : 'no_match'
-  return { available: [], blocked: { code, detail: miss.error } }
+  const copies = await Promise.all(sources.map(source => fileListCopy(context, row, source)))
+  if (!hasChosenNzb(row, copies)) return CHOSEN_NZB_BLOCK
+  const miss = copies.find(copy => copy.state !== 'available')
+  if (!miss) return { available: copies }
+  // The detail is what the search or the check last said: no candidate, a daily limit, an indexer that failed.
+  return { available: [], blocked: { code: FILE_LIST_BLOCK[miss.state] ?? 'no_match', detail: miss.error } }
 }
 
 /** Looks up the sources of one row that no acquisition covers yet. */
@@ -459,29 +470,31 @@ async function resolveUsenetRow(
   const { config } = context
   const found = await resolveUsenetRelease(config, { ...row.source, info_hashes: missingHashes }, refresh)
   if (found.aggregate === 'available') return { available: found.hashes.filter(hash => hash.state === 'available') }
-  // A hash the hash indexers do not have may still have a copy Prowlarr found, or that a single download finds now.
-  const search = row.search
+  // Only a hash every hash indexer answered "no NZB" for may have a copy found through Prowlarr instead.
+  let searchable = false
   const hashes = await Promise.all(
     found.hashes.map(async (state): Promise<UsenetHashAvailability> => {
       if (state.state !== 'no_match') return state
       const source = prowlarrFallbackSource(config, row.source, state.hash)
       if (!source) return state
-      const chosen = row.nzb ? chosenPrivateNzb(config, source.id, row.nzb) : undefined
-      const lookup = chosen ?? (await resolvePrivateNzb(config, source, search, { search: context.single && !row.nzb }))
-      if (lookup.kind === 'not_checked')
-        return {
-          ...state,
-          error: row.nzb
-            ? 'The chosen NZB is no longer known or could not be fetched; search Prowlarr again.'
-            : 'Search Prowlarr for this release in its details to look beyond the hash indexers.',
-        }
-      return privateNzbState(source.id, lookup)
+      searchable = true
+      const copy = await fileListCopy(context, row, source)
+      // Prowlarr has no Usenet indexer to ask: what the hash indexers said stands.
+      if (copy.state === 'not_configured') return state
+      if (copy.state !== 'not_checked') return copy
+      return {
+        ...state,
+        error: 'Search Prowlarr for this release in its details to look beyond the hash indexers.',
+      }
     }),
   )
+  if (searchable && !hasChosenNzb(row, hashes)) return CHOSEN_NZB_BLOCK
   const aggregate = aggregateHashStates(hashes.map(hash => hash.state))
   if (aggregate === 'available') return { available: hashes.filter(hash => hash.state === 'available') }
   const absent = hashes.find(hash => hash.state === 'no_match' && hash.error)
   if (aggregate === 'no_match' && absent) return { available: [], blocked: { code: 'no_match', detail: absent.error } }
+  const unchecked = hashes.find(hash => hash.state === 'unverified')
+  if (aggregate === 'unverified') return { available: [], blocked: { code: 'not_verified', detail: unchecked?.error } }
   const failed = hashes.find(hash => hash.state === 'lookup_failed')
   const unresolved = failed?.providers_failed?.length ? ` (${failed.providers_failed.join(', ')} unresolved)` : ''
   return {
@@ -520,7 +533,7 @@ async function planUsenetUnits(context: PlanContext, rows: ResolvedRow[], refres
       !missing.length
         ? Promise.resolve({ available: [] })
         : privateRow
-          ? resolvePrivateUsenetRow(context, row, missing, refresh)
+          ? resolvePrivateUsenetRow(context, row, missing)
           : resolveUsenetRow(context, row, missing, refresh),
     )
   }
@@ -570,6 +583,12 @@ async function planUsenetUnits(context: PlanContext, rows: ResolvedRow[], refres
         : []
       const scopeExpanded = requested.length > 0 && (!filesKnown || extraFiles.length > 0)
       const scopeUnknown = requested.length > 0 && !filesKnown
+      // The file list a copy found through Prowlarr was checked against.
+      const listed =
+        availability.provider === 'prowlarr'
+          ? (privateUsenetSources(config, row.source).find(source => source.id === availability.hash) ??
+            prowlarrFallbackSource(config, row.source, availability.hash))
+          : null
       units.add({
         ...unitFor(availability.hash),
         status: existing ? 'existing' : 'new',
@@ -584,7 +603,9 @@ async function planUsenetUnits(context: PlanContext, rows: ResolvedRow[], refres
           ? { known_extra_files: extraFiles.slice(0, EXTRA_FILE_LIMIT), extra_file_count: extraFiles.length }
           : {}),
         ...(availability.provider ? { provider: availability.provider } : {}),
+        ...(availability.proof ? { proof: availability.proof } : {}),
         entryId: availability.entry_id,
+        ...(listed ? { sourceFiles: listed.files } : {}),
         ...(availability.title ? { nzb_name: `${availability.title}.nzb` } : {}),
         requiresAck: scopeExpanded || scopeUnknown,
       })
@@ -624,11 +645,15 @@ async function collectDiskChecks(
  * Protocol-aware planning. Validates selections against the live results and saved mode,
  * resolves Usenet availability without enqueueing, and deduplicates actual client units per
  * source hash. Nothing is stored or sent: a review and an acceptance both start here.
+ *
+ * `resolve` says what a Usenet copy found through Prowlarr may cost. With `stored`, the default, only stored
+ * results are read: no search and no NZB fetch. `search` is for a single review, which searches a source
+ * without a fresh result and checks its candidates.
  */
 export async function planDownloads(
   config: Config,
   selections: DownloadSelection[],
-  options: { results: ResultItem[]; refresh?: boolean },
+  options: { results: ResultItem[]; refresh?: boolean; resolve?: ResolveMode },
 ): Promise<PlannedDownloads> {
   const blocks = new BlockedRows()
   const rows = resolveRows(config, selections, options.results, blocks)
@@ -682,7 +707,7 @@ export async function planDownloads(
     units,
     ownership,
     privateTorrents,
-    single: selections.length === 1,
+    resolve: options.resolve ?? 'stored',
   }
   // Torrent units are listed before Usenet units.
   if (torrentRows.length) planTorrentUnits(context, torrentRows)
@@ -718,6 +743,7 @@ export async function planDownloads(
           entryId: _entryId,
           torrentFile: _torrentFile,
           sourceAlias: _sourceAlias,
+          sourceFiles: _sourceFiles,
           ...unit
         }) => unit,
       ),
@@ -735,13 +761,17 @@ export async function planDownloads(
   }
 }
 
-/** Plans a review and pins its resolved selections into an expiring server-side plan the browser confirms by ID. */
+/**
+ * Plans a review and pins its resolved selections into an expiring server-side plan the browser confirms by ID.
+ * A review of one release may search Prowlarr and check NZBs for it; a bulk review reads what is stored.
+ */
 export async function buildDownloadPlan(
   config: Config,
   selections: DownloadSelection[],
   options: { results: ResultItem[]; refresh?: boolean },
 ): Promise<{ review: DownloadPreflight; plan: StoredPlan }> {
-  const planned = await planDownloads(config, selections, options)
+  const resolve: ResolveMode = selections.length === 1 ? 'search' : 'stored'
+  const planned = await planDownloads(config, selections, { ...options, resolve })
   const plan = putPlan({
     config_generation: currentGeneration(),
     selections: planned.selections,

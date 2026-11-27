@@ -12,7 +12,13 @@ import { currentGeneration } from './config-generation.js'
 import type { StoredPlan } from './download-plans.js'
 import { planDownloads } from './download-preflight.js'
 import { downloadJobs } from './download-jobs.js'
-import { addDownloadRecord, markDownloadRemoved, setDownloadNative, type LibraryTarget } from './download-store.js'
+import {
+  addDownloadRecord,
+  markDownloadRemoved,
+  partLocalSize,
+  setDownloadNative,
+  type LibraryTarget,
+} from './download-store.js'
 import { CLIENT_FOR_PROTOCOL, downloadClients } from './download-clients.js'
 import type { DownloadClientAdapter, SubmissionUnit } from './download-client-types.js'
 import { HttpError } from './http-error.js'
@@ -76,6 +82,8 @@ function libraryTargets(selections: DownloadSelectionRef[], resultsById: Map<str
       season: result.season ?? null,
       part: release.part || '',
       group: release.releaseGroup,
+      // Kept so a later size mismatch can be told apart from files the library already held.
+      local_size: partLocalSize(result, release.part || ''),
     }
     targets.set(JSON.stringify(target), target)
   }
@@ -104,10 +112,13 @@ export async function acceptDownloadPlan(
       'Nothing in this review can be sent. Re-run the review after resolving the blocked releases.',
     )
 
-  // A plan the live state no longer supports is rejected the same way as any other stale review.
-  const { review, units } = await planDownloads(config, plan.selections, { results }).catch(error => {
-    throw error instanceof HttpError ? new PlanRejected(error.status, error.message) : error
-  })
+  // A plan the live state no longer supports is rejected the same way as any other stale review. Accepting
+  // reads stored Prowlarr results only, also for a single release: it never costs a search or an NZB fetch.
+  const { review, units } = await planDownloads(config, plan.selections, { results, resolve: 'stored' }).catch(
+    error => {
+      throw error instanceof HttpError ? new PlanRejected(error.status, error.message) : error
+    },
+  )
   if (plan.config_generation !== currentGeneration()) {
     throw new PlanRejected(409, 'Settings changed during acceptance. Re-run the review before submitting.')
   }
@@ -224,6 +235,7 @@ async function submitUnit(
     category: unit.category,
     scope: unit.whole_source ? undefined : unit.requestedPaths,
     provider: unit.provider,
+    proof: unit.proof,
     entry_id: unit.entryId,
     nzb_name: unit.nzb_name,
     card,

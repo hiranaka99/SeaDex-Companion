@@ -1,5 +1,5 @@
 import type { GroupedCard, ResultItem } from './types.js'
-import { groupResults, STATUS_LABEL, hasCardUpgrade, cardSizeDelta } from './utils.js'
+import { groupResults, STATUS_LABEL, hasCardUpgrade, cardSizeDelta, usenetPauseText } from './utils.js'
 
 function result(season: number, status: ResultItem['status']): ResultItem {
   return {
@@ -113,4 +113,32 @@ expect(
   hasCardUpgrade(groupResults([result(1, 'best'), result(2, 'missing')])[0]),
   false,
   'owned best and unlisted seasons are not upgrade candidates',
+)
+
+// Pauses name whatever the server reports: a hash indexer or any Prowlarr indexer.
+const pause = (label: string, rate_limited = true, resume_in_seconds = 30) => ({
+  provider: { id: label.toLowerCase(), label },
+  resume_in_seconds,
+  rate_limited,
+})
+expect(usenetPauseText(undefined), null, 'a sweep that waits on nothing has no pause text')
+expect(
+  usenetPauseText([pause('AnimeTosho')]),
+  'AnimeTosho is rate limiting. Resuming in about 30s.',
+  'a pause is described with the reported label',
+)
+expect(
+  usenetPauseText([pause('AnimeTosho'), pause('Indexer One', false, 120)]),
+  'AnimeTosho and Indexer One are not responding. Resuming in about 2 min.',
+  'two pauses report the longer wait',
+)
+expect(
+  usenetPauseText(['AnimeTosho', 'AmeNZB', 'Indexer One'].map(label => pause(label))),
+  'AnimeTosho, AmeNZB and Indexer One are rate limiting. Resuming in about 30s.',
+  'three pauses are listed by name',
+)
+expect(
+  usenetPauseText(['AnimeTosho', 'AmeNZB', 'Indexer One', 'Indexer Two'].map(label => pause(label))),
+  'AnimeTosho, AmeNZB and 2 more are rate limiting. Resuming in about 30s.',
+  'more pauses than the sidebar has room for are counted',
 )

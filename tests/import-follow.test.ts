@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { after, beforeEach, test } from 'node:test'
-import { DATA_DIR } from '../server/paths.js'
+import { after, beforeEach, test, type TestContext } from 'node:test'
+import { DATA_DIR, NZB_STORE_DIR, USENET_SEARCH_FILE } from '../server/paths.js'
 import {
   addDownloadRecord,
   findDownloadRecord,
@@ -26,8 +26,19 @@ import { applyConfigUpdate, DEFAULT_CONFIG } from '../server/config.js'
 import { qbEndpointId } from '../server/client-identity.js'
 import { resetQbRuntime } from '../server/qbittorrent.js'
 import { sendImportProblem } from '../server/notifications.js'
+import { resetProwlarrRuntime } from '../server/prowlarr.js'
+import { filesSourceId } from '../server/source-files.js'
+import {
+  rejectSearchCandidate,
+  resetUsenetSearch,
+  resolveSource,
+  searchScheduler,
+  searchSnapshot,
+  verifySource,
+} from '../server/usenet-search.js'
+import { candidateEntryId } from '../server/usenet-search-terms.js'
 import type { ArrInstance } from '../server/arr-instances.js'
-import type { Config, ResultItem } from '../server/types.js'
+import type { Config, PrivateSource, ResultItem } from '../server/types.js'
 
 const ledgerFile = join(DATA_DIR, 'owned_downloads.json')
 const cleanLedger = () => {
@@ -421,4 +432,278 @@ test('download progress reports the import state with the name of the instance',
     globalThis.fetch = original
     resetQbRuntime()
   }
+})
+
+// --- Outcome feedback: an NZB whose files are not the listed release -------------------
+
+const PROWLARR = 'http://prowlarr-feedback.test:9696'
+const PROWLARR_KEY = 'prowlarr-key-71ab'
+const prowlarrConfig = {
+  ...config,
+  tracker_mode: 'private',
+  prowlarr_enabled: true,
+  prowlarr_url: PROWLARR,
+  prowlarr_key: PROWLARR_KEY,
+} as Config
+const EPISODE_SIZES = [1_512_345_678, 1_398_765_432, 1_287_654_321]
+const EPISODES = EPISODE_SIZES.map((length, index) => ({
+  name: `[Vault] Show - 0${index + 1} (BD 1080p).mkv`,
+  length,
+}))
+const SOURCE: PrivateSource = { id: filesSourceId(EPISODES), files: EPISODES }
+const TOTAL = EPISODE_SIZES.reduce((sum, size) => sum + size, 0)
+const pageOf = (link: string) => `https://indexer2.test/details/${link}`
+const entryOf = (link: string) => candidateEntryId(2, pageOf(link))
+
+/** An NZB of the release: with the file sizes in the subjects it is exact, with the names only near-exact. */
+function nzbOf(withSizes: boolean) {
+  const files = EPISODES.map((file, index) => {
+    const total = Math.round(file.length * 1.031)
+    const part = Math.floor(total / 3)
+    const segments = [part, part, total - 2 * part]
+      .map((bytes, number) => `<segment bytes="${bytes}" number="${number + 1}">${index}.${number}@test</segment>`)
+      .join('')
+    const subject = `&quot;${file.name}&quot; yEnc (1/3)${withSizes ? ` ${file.length}` : ''}`
+    return `<file poster="p@test" date="1700000000" subject="${subject}"><groups><group>alt.binaries.test</group></groups><segments>${segments}</segments></file>`
+  })
+  return new TextEncoder().encode(
+    `<?xml version="1.0"?><nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">${files.join('')}</nzb>`,
+  )
+}
+
+/** Two posts of the release on one indexer: `first` is near-exact, `second` exact. */
+function feed(): Response {
+  const items = [
+    { title: '[Vault] Show (BD 1080p)', link: 'first', size: 1.08 },
+    { title: '[Vault] Show (BD 1080p) repost', link: 'second', size: 1.12 },
+  ].map(post => {
+    const proxy = `http://localhost:9696/2/download?${new URLSearchParams({ apikey: PROWLARR_KEY, link: post.link, file: post.title })}`
+    return [
+      `<item><title>${post.title}</title><guid>${pageOf(post.link)}</guid><link>${proxy.replace(/&/g, '&amp;')}</link>`,
+      `<enclosure url="${proxy.replace(/&/g, '&amp;')}" type="application/x-nzb" />`,
+      `<newznab:attr name="size" value="${Math.round(TOTAL * post.size)}" /><newznab:attr name="files" value="14" /></item>`,
+    ].join('')
+  })
+  return new Response(
+    `<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/"><channel><title>Prowlarr</title>${items.join('')}</channel></rss>`,
+    { headers: { 'content-type': 'application/rss+xml' } },
+  )
+}
+
+function forgetSearches(): void {
+  resetUsenetSearch()
+  resetProwlarrRuntime()
+  rmSync(USENET_SEARCH_FILE, { force: true })
+  rmSync(NZB_STORE_DIR, { recursive: true, force: true })
+}
+
+/** A fake Prowlarr behind `fetch`, and a fresh finder; both are put back when the test ends. */
+function finder(t: TestContext): { fetched: string[] } {
+  const original = globalThis.fetch
+  const pacing = { ...searchScheduler.options }
+  forgetSearches()
+  searchScheduler.options.minIntervalMs = 0
+  const fetched: string[] = []
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input))
+    if (url.origin !== PROWLARR) return new Response('not found', { status: 404 })
+    if (url.pathname === '/api/v1/indexer')
+      return Response.json([{ id: 2, name: 'Geek', protocol: 'usenet', privacy: 'private', enable: true }])
+    if (url.pathname === '/2/api') return feed()
+    if (url.pathname === '/2/download') {
+      const link = url.searchParams.get('link') ?? ''
+      fetched.push(link)
+      return new Response(nzbOf(link === 'second'))
+    }
+    throw new Error(`unexpected request: ${url.pathname}`)
+  }) as typeof fetch
+  t.after(() => {
+    globalThis.fetch = original
+    Object.assign(searchScheduler.options, pacing)
+    forgetSearches()
+  })
+  return { fetched }
+}
+
+const rejectFor = (config_: Config = prowlarrConfig) => ({
+  rejectCandidate: (sourceId: string, entryId: string) => rejectSearchCandidate(config_, sourceId, entryId),
+})
+
+/** A finished Usenet download of the Vault release, sent while the library held 900 bytes of the season. */
+function nzbRecord(changes: Partial<NewDownloadRecord> = {}) {
+  const download = addDownloadRecord({
+    protocol: 'usenet',
+    client: 'sabnzbd',
+    endpoint: 'sabnzbd:test',
+    native_id: 'SABnzbd_nzo_vault',
+    state: 'accepted',
+    source_hash: SOURCE.id,
+    category: 'sonarr-anime',
+    provider: 'prowlarr',
+    proof: 'near_exact',
+    entry_id: entryOf('first'),
+    card: { title: 'Show', season: 1, part: '', release_group: 'Vault', tracker: 'AB', size: TOTAL },
+    labels: ['Show S01 [Vault]'],
+    rows: [{ key: 'Sonarr:42:1:Vault', release: 0 }],
+    library: [{ key: 'Sonarr:item10', season: 1, part: '', group: 'Vault', local_size: 900 }],
+    ...changes,
+  })
+  setDownloadPhase(download.id, 'complete')
+  return download
+}
+
+/** The season after a scan: Vault's name on files of `localSize` bytes that are not the listed release. */
+const mismatched = (localSize = TOTAL + 4096) =>
+  result({
+    key: 'Sonarr:42:1:Vault',
+    best_group: 'Vault',
+    have: ['Vault'],
+    local_size: localSize,
+    mismatched_by_part: { '': ['Vault'] },
+    releases: [
+      {
+        kind: 'best',
+        releaseGroup: 'Vault',
+        tracker: 'AB',
+        quality: '',
+        tags: [],
+        size: TOTAL,
+        info_hashes: [],
+        torrent_available: false,
+      },
+    ],
+  })
+
+test('a near-exact download whose import shows a size mismatch rejects its candidate and is reported once', async t => {
+  finder(t)
+  const found = await resolveSource(prowlarrConfig, SOURCE, { titles: ['Show'], releaseGroup: 'Vault' }, { limit: 1 })
+  assert.deepEqual([found.availability.state, found.availability.proof], ['available', 'near_exact'])
+  const download = nzbRecord()
+  const { state, tick } = harness(Date.now())
+
+  assert.equal(settleImports([mismatched()], Date.now(), rejectFor()), 0, 'A mismatch is no import')
+  assert.deepEqual(
+    [tracking(download.id).state, tracking(download.id).message],
+    ['mismatch', 'The downloaded files are not the release SeaDex lists; their sizes differ.'],
+  )
+  const after = searchSnapshot(prowlarrConfig, SOURCE.id).availability
+  assert.equal(after.state, 'no_match')
+  assert.deepEqual(
+    after.candidates?.map(candidate => [candidate.entry_id, candidate.rejected]),
+    [
+      [entryOf('first'), true],
+      [entryOf('second'), undefined],
+    ],
+  )
+
+  assert.equal(importsToFollow(), true, 'The problem still has to be reported')
+  await tick()
+  await tick()
+  assert.deepEqual(state.problems, [
+    {
+      title: 'Show',
+      season: 1,
+      releaseGroup: 'Vault',
+      app: 'Sonarr',
+      state: 'mismatch',
+      message: 'The downloaded files are not the release SeaDex lists; their sizes differ.',
+    },
+  ])
+  assert.equal(importsToFollow(), false)
+
+  // Final: neither a later mismatch nor files that now match change or report it again.
+  const rejections: string[] = []
+  const counting = { rejectCandidate: (_sourceId: string, entryId: string) => rejections.push(entryId) > 0 }
+  settleImports([mismatched(TOTAL + 8192)], Date.now(), counting)
+  settleImports([result({ ...mismatched(), mismatched_by_part: undefined, verified_by_part: { '': ['Vault'] } })])
+  assert.deepEqual(rejections, [])
+  assert.equal(tracking(download.id).state, 'mismatch')
+  await tick()
+  assert.equal(state.problems.length, 1)
+
+  const original = globalThis.fetch
+  const sent: { content: string; embeds: { fields: { name: string; value: string }[] }[] }[] = []
+  globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    sent.push(JSON.parse(String(init?.body)))
+    return new Response(null, { status: 204 })
+  }) as typeof fetch
+  try {
+    assert.equal(await sendImportProblem(config, state.problems[0]), true)
+  } finally {
+    globalThis.fetch = original
+  }
+  assert.equal(sent[0].content, 'Show (S01) — The downloaded files are not the release SeaDex lists')
+  assert.deepEqual(sent[0].embeds[0].fields, [
+    { name: 'Release', value: 'Vault', inline: true },
+    { name: 'Library scan', value: 'The downloaded files are not the release SeaDex lists; their sizes differ.' },
+  ])
+})
+
+test('a candidate rejected after a mismatched import is skipped by the next verify', async t => {
+  const prowlarr = finder(t)
+  await resolveSource(prowlarrConfig, SOURCE, { titles: ['Show'], releaseGroup: 'Vault' }, { limit: 1 })
+  assert.deepEqual(prowlarr.fetched, ['first'])
+  nzbRecord()
+  settleImports([mismatched()], Date.now(), rejectFor())
+
+  const next = await verifySource(prowlarrConfig, SOURCE, { limit: 3 })
+  assert.deepEqual(prowlarr.fetched, ['first', 'second'], 'The rejected post is not fetched again')
+  assert.deepEqual(
+    [next.availability.state, next.availability.entry_id, next.availability.proof],
+    ['available', entryOf('second'), 'exact'],
+  )
+})
+
+test('an exact download, a hash-provider download and a torrent are never rejected for a mismatch', () => {
+  const rejections: string[] = []
+  const counting = { rejectCandidate: (_sourceId: string, entryId: string) => rejections.push(entryId) > 0 }
+  const exact = nzbRecord({ proof: 'exact' })
+  const hashed = nzbRecord({
+    source_hash: 'e'.repeat(40),
+    provider: 'animetosho',
+    proof: undefined,
+    entry_id: 'animetosho-1',
+  })
+  const amenzb = nzbRecord({ source_hash: 'f'.repeat(40), provider: 'amenzb', proof: undefined, entry_id: 'amenzb-1' })
+  const torrent = record({ library: [{ key: 'Sonarr:item10', season: 1, part: '', group: 'Vault', local_size: 900 }] })
+  setDownloadPhase(torrent.id, 'complete')
+
+  assert.equal(settleImports([mismatched()], Date.now(), counting), 0)
+  assert.deepEqual(rejections, [])
+  for (const download of [exact, hashed, amenzb, torrent])
+    assert.equal(tracking(download.id).state, 'pending', 'The download keeps waiting, as before')
+})
+
+test('a near-exact download from before entry IDs were kept is reported without a rejection', () => {
+  const rejections: string[] = []
+  const counting = { rejectCandidate: (_sourceId: string, entryId: string) => rejections.push(entryId) > 0 }
+  const download = nzbRecord({ entry_id: undefined })
+  assert.doesNotThrow(() => settleImports([mismatched()], Date.now(), counting))
+  assert.deepEqual(rejections, [])
+  assert.equal(tracking(download.id).state, 'mismatch')
+})
+
+test('a confirmed import and files that did not change since sending leave the search store alone', async t => {
+  finder(t)
+  await resolveSource(prowlarrConfig, SOURCE, { titles: ['Show'], releaseGroup: 'Vault' }, { limit: 1 })
+  const rejections: string[] = []
+  const counting = { rejectCandidate: (_sourceId: string, entryId: string) => rejections.push(entryId) > 0 }
+
+  // A record that predates the size snapshot cannot tell new files from old ones, so it is not judged.
+  const old = nzbRecord({ library: [{ key: 'Sonarr:item10', season: 1, part: '', group: 'Vault' }] })
+  assert.equal(settleImports([mismatched()], Date.now(), counting), 0)
+  assert.equal(tracking(old.id).state, 'pending')
+  // The library held another release of Vault before; a scan of other titles keeps this season's result.
+  const stale = nzbRecord()
+  assert.equal(settleImports([mismatched(900)], Date.now(), counting), 0)
+  assert.equal(tracking(stale.id).state, 'pending')
+  assert.deepEqual(rejections, [])
+
+  const imported = result({ ...mismatched(), status: 'best', mismatched_by_part: undefined })
+  assert.equal(settleImports([imported], Date.now(), counting), 2)
+  assert.deepEqual(rejections, [])
+  assert.deepEqual(
+    [searchSnapshot(prowlarrConfig, SOURCE.id).availability.state, tracking(stale.id).state],
+    ['available', 'imported'],
+  )
 })

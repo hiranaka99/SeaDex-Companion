@@ -93,8 +93,7 @@ async function fixture(
   const calls: URL[] = []
   let response = (url: URL): Response | Promise<Response> => match(url.searchParams.get('hash') || HASH)
   resetUsenetLookups()
-  usenetScheduler.options.minIntervalMs.animetosho = 0
-  usenetScheduler.options.minIntervalMs.amenzb = 0
+  usenetScheduler.options.minIntervalMs = 0
   globalThis.fetch = (async input => {
     const url = new URL(String(input))
     calls.push(url)
