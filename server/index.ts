@@ -22,9 +22,7 @@ import { scanRoutes } from './scan-routes.js'
 import { startScheduler } from './scheduler.js'
 import { APP_VERSION, reportUpdateState } from './updates.js'
 import { serveStatic, warmStaticCompression } from './static-files.js'
-import { flushUsenetCache, invalidateUsenetLookups } from './usenet.js'
-import { enableUsenetPrefetch, prefetchUsenetAvailability, stopUsenetPrefetch } from './usenet-prefetch.js'
-import { flushUsenetSearch, invalidateUsenetSearch } from './usenet-search.js'
+import { createUsenetRuntime, readLedger, usenetRuntime } from './usenet-runtime.js'
 import { errorMessage } from '../shared/errors.js'
 
 const routes: Route[] = [...scanRoutes, ...authRoutes, ...configRoutes, ...libraryRoutes, ...downloadRoutes]
@@ -58,9 +56,8 @@ function sendFailure(request: IncomingMessage, response: ServerResponse, url: UR
 export function makeServer() {
   migrateConfig()
   const config = loadConfig()
-  invalidateUsenetLookups(config)
-  // Search results stored for another Prowlarr connection are dropped as the store is read.
-  invalidateUsenetSearch(config)
+  // Cached observations and search results stored for other settings are dropped as the stores are read.
+  usenetRuntime().configChanged(undefined, config)
   try {
     migrateOwnedDownloads(qbEndpointId(config))
   } catch (error) {
@@ -86,13 +83,14 @@ function reportRestoredState(): void {
     'INFO',
     `Runtime state restored (saved results: ${saved?.length || 0}; owned acquisitions: ${downloadRecords().length}; hidden titles: ${config.hidden.length}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'})`,
   )
-  enableUsenetPrefetch()
   // Delay the startup sweep so the first interactive lookups after boot own the providers.
-  if (saved) setTimeout(() => prefetchUsenetAvailability(config, saved, 'startup'), 30_000).unref()
+  if (saved) setTimeout(() => usenetRuntime().resultsChanged(config, saved, readLedger(), 'startup'), 30_000).unref()
 }
 
 function main(): void {
   const port = Number.parseInt(process.env.PORT || '8080', 10)
+  // Background sweeps run only in the real server.
+  const usenet = createUsenetRuntime({ sweep: true })
   const scheduler = startScheduler()
   const server = makeServer()
   let shuttingDown = false
@@ -103,7 +101,6 @@ function main(): void {
     shuttingDown = true
     log('INFO', restart ? 'Restarting to apply an update' : `${signal} received; shutting down`)
     clearInterval(scheduler)
-    stopUsenetPrefetch()
     const deadline = setTimeout(() => {
       log('ERROR', 'Graceful shutdown timed out')
       process.exit(restart ? RESTART_EXIT_CODE : 1)
@@ -118,9 +115,8 @@ function main(): void {
       } catch (error) {
         log('ERROR', `AniList cache could not be saved: ${errorMessage(error)}`)
       }
-      const cacheSaved = flushUsenetCache()
-      const searchSaved = flushUsenetSearch()
-      process.exit(restart ? RESTART_EXIT_CODE : error || !cacheSaved || !searchSaved ? 1 : 0)
+      const usenetSaved = usenet.shutdown()
+      process.exit(restart ? RESTART_EXIT_CODE : error || !usenetSaved ? 1 : 0)
     })
   }
   if (process.env[LAUNCHER_ENV] === '1') onRestartRequest(() => shutdown('restart', true))
