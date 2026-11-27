@@ -5,7 +5,7 @@ import type {
   DownloadPhase,
   DownloadProgress,
   DownloadProtocol,
-} from '../../shared/download-contracts'
+} from '../../shared/download-contracts.js'
 
 /** One owned acquisition as reported by its download client. */
 export interface DownloadEntry {
@@ -68,3 +68,22 @@ export const importUnsettled = (entry: Pick<DownloadEntry, 'import'>) =>
 
 /** The display name of a download client. */
 export const clientName = (client: DownloadClient) => (client === 'sabnzbd' ? 'SABnzbd' : 'qBittorrent')
+
+const PHASE_LABEL: Record<DownloadPhase, string> = {
+  queued: 'Queued',
+  downloading: 'Downloading',
+  paused: 'Paused',
+  verifying: 'Verifying',
+  repairing: 'Repairing',
+  unpacking: 'Unpacking',
+  post_processing: 'Post-processing',
+  seeding: 'Seeding',
+  complete: 'Complete',
+  missing: 'Not in client',
+  unavailable: 'Unavailable',
+  acceptance_unknown: 'Awaiting confirmation',
+  error: 'Error',
+}
+
+/** The display name of a download phase. */
+export const phaseLabel = (phase: DownloadPhase) => PHASE_LABEL[phase] || 'Downloading'
