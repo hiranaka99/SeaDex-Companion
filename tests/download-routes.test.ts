@@ -5,6 +5,8 @@ import type { DownloadMode } from '../shared/download-contracts.js'
 import type { UsenetAvailabilityResult, UsenetUnitState } from '../shared/usenet-contracts.js'
 import { DEFAULT_CONFIG, publicConfig } from '../server/config.js'
 import { downloadRoutes } from '../frontend/src/download-routes.js'
+import { USENET_PROVIDERS } from '../server/usenet-providers.js'
+import { PROWLARR_CONNECTION_KEYS } from '../shared/usenet-contracts.js'
 import type { Config } from '../frontend/src/types.js'
 
 const SAB = { sabnzbd_url: 'http://sab.test', sabnzbd_key: 'sab-key' }
@@ -187,6 +189,21 @@ test('the availability fingerprint changes with the Usenet sources, not with the
       base,
       JSON.stringify(changes),
     )
+})
+
+test('the availability fingerprint changes with every setting that changes which indexer or Prowlarr answers', () => {
+  const sources = { ...PROWLARR, amenzb_enabled: true, amenzb_url: 'https://amenzb.test', amenzb_key: 'amenzb-key' }
+  const base = downloadRoutes(config('choose', sources)).availabilityFingerprint
+  const watched = [
+    ...Object.values(USENET_PROVIDERS).flatMap(provider => provider.configKeys),
+    ...PROWLARR_CONNECTION_KEYS,
+  ]
+  assert.ok(watched.includes('amenzb_key'), 'a secret setting is among them')
+  for (const key of watched) {
+    const current = { ...DEFAULT_CONFIG, ...sources }[key]
+    const changed = typeof current === 'boolean' ? !current : key.endsWith('_key') ? '' : 'https://changed.test'
+    assert.notEqual(downloadRoutes(config('choose', { ...sources, [key]: changed })).availabilityFingerprint, base, key)
+  }
 })
 
 test('Usenet is looked up for a public hash, and for a private release when Prowlarr has Usenet indexers', () => {

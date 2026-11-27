@@ -1,5 +1,5 @@
 import type { Config } from './types.js'
-import type { UsenetProvider } from '../shared/usenet-contracts.js'
+import { HASH_INDEXER_CONFIG_KEYS, type UsenetProvider } from '../shared/usenet-contracts.js'
 import { ANIMETOSHO_ENTRY_PATTERN, fetchAnimeToshoNzb, lookupAnimeTosho, testAnimeTosho } from './animetosho.js'
 import { AMENZB_ENTRY_PATTERN, fetchAmeNZBNzb, lookupAmeNZB, testAmeNZB } from './amenzb.js'
 import type { ProviderLookup, ProviderSettings, UsenetMatch } from './usenet-provider-types.js'
@@ -24,7 +24,7 @@ export interface UsenetProviderDefinition {
 export const USENET_PROVIDERS: Record<UsenetProvider, UsenetProviderDefinition> = {
   animetosho: {
     label: 'AnimeTosho',
-    configKeys: ['animetosho_enabled', 'animetosho_url'],
+    configKeys: HASH_INDEXER_CONFIG_KEYS.animetosho,
     entryPattern: ANIMETOSHO_ENTRY_PATTERN,
     connection: config => ({ baseUrl: config.animetosho_url }),
     usable: config => Boolean(config.animetosho_enabled && config.animetosho_url),
@@ -34,7 +34,7 @@ export const USENET_PROVIDERS: Record<UsenetProvider, UsenetProviderDefinition> 
   },
   amenzb: {
     label: 'AmeNZB',
-    configKeys: ['amenzb_enabled', 'amenzb_url', 'amenzb_key'],
+    configKeys: HASH_INDEXER_CONFIG_KEYS.amenzb,
     entryPattern: AMENZB_ENTRY_PATTERN,
     connection: config => ({ baseUrl: config.amenzb_url, apiKey: config.amenzb_key }),
     usable: config => Boolean(config.amenzb_enabled && config.amenzb_url && config.amenzb_key),

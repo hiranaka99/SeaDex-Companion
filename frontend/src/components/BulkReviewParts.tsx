@@ -6,6 +6,7 @@ import { displayDateTime } from '../datetime'
 import type { UsenetProof } from '../../../shared/usenet-contracts'
 import { checkBlockedReason, reviewStatusLabel } from '../usenet-review'
 import Icon from './Icons'
+import { protocolClientName } from '../download-entry'
 
 export function ReleaseSummary({ release }: { release: Release }) {
   const tags = [...new Set(release.tags || [])].filter(
@@ -47,9 +48,7 @@ export function OutcomeLabel({
   protocols: DownloadProtocol[]
 }) {
   if (!status) return null
-  const clients =
-    [...new Set(protocols.map(protocol => (protocol === 'usenet' ? 'SABnzbd' : 'qBittorrent')))].join(' and ') ||
-    'the download client'
+  const clients = [...new Set(protocols.map(protocolClientName))].join(' and ') || 'the download client'
   const copy =
     status === 'success'
       ? `Sent to ${clients}`

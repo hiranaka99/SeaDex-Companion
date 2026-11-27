@@ -267,7 +267,7 @@ All changes are in `server/prowlarr.ts`.
 Add `searchIndexer(settings, indexerId, params)`:
 
 - Request `GET /{id}/api` with `t=search`, `q`, `limit=100`, `extended=1`, and `minsize` and `maxsize` when the caller gives a size window. Authenticate with the `X-Api-Key` header, as every other call does. Use a 45-second timeout.
-- Parse the RSS with the existing bounded XML helpers (`parseProviderXml`, `findNewznabError`, `listOf`, `text`). Reuse the attribute reading in `server/amenzb.ts` by moving `newznabAttributes` and `elementText` to `server/usenet-provider-types.ts`.
+- Parse the RSS with the existing bounded XML helpers (`parseNewznabXml`, `findNewznabError`, `listOf`, `text`). Reuse the attribute reading in `server/amenzb.ts` by moving `newznabAttributes` and `elementText` to `server/usenet-provider-types.ts`.
 - Map each item to `ProwlarrRelease` plus `files`, `grabs`, `posted_at` and `categories`. Build `download_path` with the existing `downloadPath`, and `info_url` with the existing `infoUrl`.
 - Failures:
 

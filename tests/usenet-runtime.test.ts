@@ -5,7 +5,7 @@ import { setImmediate as nextTurn } from 'node:timers/promises'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import type { OwnedDownloadRecord } from '../server/download-store.js'
 import { RESULTS_FILE } from '../server/paths.js'
-import { prowlarrFingerprint, prowlarrIndexers } from '../server/prowlarr.js'
+import { prowlarrCoverage, prowlarrFingerprint, prowlarrIndexers } from '../server/prowlarr.js'
 import { saveLastResults } from '../server/results.js'
 import type { Config, Release, ResultItem } from '../server/types.js'
 import { cachedHashState, resolveUsenetHash } from '../server/usenet.js'
@@ -172,6 +172,25 @@ test('changed Prowlarr settings drop the indexer list and what other connections
   assert.ok(usenet.searchStore.get(fingerprint, HASH), 'turning Prowlarr off alone keeps its results')
   usenet.configChanged(prowlarrConfig(), prowlarrConfig({ prowlarr_key: 'another-key' }))
   assert.equal(usenet.searchStore.get(fingerprint, HASH), undefined, 'another key drops the old results')
+})
+
+test('Prowlarr coverage asks through the runtime fetch and fills its indexer list', async t => {
+  const asked: string[] = []
+  testUsenetRuntime(t, {
+    fetch: async input => {
+      const url = new URL(String(input))
+      asked.push(url.pathname)
+      return Response.json([
+        { id: 3, name: 'AnimeBytes', protocol: 'torrent', privacy: 'private' },
+        { id: 4, name: 'NZBgeek', protocol: 'usenet', privacy: 'private' },
+      ])
+    },
+  })
+  const settings = { baseUrl: PROWLARR, apiKey: KEY }
+  assert.deepEqual(await prowlarrCoverage(settings, ['AB', 'Nyaa']), { trackers: ['AB'], usenet: true })
+  assert.deepEqual(asked, ['/api/v1/indexer'])
+  await prowlarrIndexers(settings)
+  assert.equal(asked.length, 1, 'the list coverage read is the one the runtime keeps')
 })
 
 function release(hash: string, privateSource?: string): Release {

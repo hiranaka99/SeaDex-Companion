@@ -8,7 +8,7 @@ import {
 } from '../server/animetosho.js'
 import { fetchAmeNZBNzb, lookupAmeNZB, testAmeNZB } from '../server/amenzb.js'
 import { validateNzbBytes } from '../server/newznab-xml.js'
-import { LOOKUP_MAX_BYTES } from '../server/provider-http.js'
+import { LOOKUP_MAX_BYTES } from '../server/indexer-http.js'
 import { NZB_MAX_BYTES, readNzb } from '../server/usenet-provider-types.js'
 import type { ProviderSettings, UsenetMatch } from '../server/usenet-provider-types.js'
 
@@ -667,17 +667,32 @@ test('Credential-bearing requests never leave the configured provider origin', a
 
 // --- the NZB step ----------------------------------------------------------------
 
+/** Who the NZB step reads for in these tests. */
+const NZB_SOURCE = { indexer: 'AnimeTosho' }
+
+/** The failure the NZB step gave, or a failed assertion when it gave an NZB. */
+async function nzbFailure(response: Response) {
+  const read = await readNzb(response, NZB_SOURCE)
+  assert.ok(read.kind === 'failed', `expected a failure, got ${read.kind}`)
+  return read.failure
+}
+
 test('The NZB step returns a valid NZB as it was sent, and inflates a file-compressed one exactly once', async () => {
-  assert.deepEqual(await readNzb(bytesResponse(NZB_BYTES)), { kind: 'nzb', bytes: NZB_BYTES })
+  assert.deepEqual(await readNzb(bytesResponse(NZB_BYTES), NZB_SOURCE), { kind: 'nzb', bytes: NZB_BYTES })
   const compressed = await gzipBytes(NZB_BYTES)
   assert.deepEqual([compressed[0], compressed[1]], [0x1f, 0x8b])
-  assert.deepEqual(await readNzb(bytesResponse(compressed)), { kind: 'nzb', bytes: NZB_BYTES })
+  assert.deepEqual(await readNzb(bytesResponse(compressed), NZB_SOURCE), { kind: 'nzb', bytes: NZB_BYTES })
   // Compressed twice is not an NZB once inflated: the step never decompresses a second time.
-  const twice = await readNzb(bytesResponse(await gzipBytes(compressed)))
-  assert.equal(twice.kind, 'invalid')
+  const twice = await nzbFailure(bytesResponse(await gzipBytes(compressed)))
+  assert.equal(twice.code, 'invalid_response')
 })
 
 test('The NZB step enforces the byte cap as declared, while streaming and once decompressed', async () => {
+  const tooLarge = {
+    code: 'invalid_response',
+    message: 'AnimeTosho sent an NZB over the size limit',
+    scope: 'indexer',
+  }
   let pulled = false
   const declared = new Response(
     new ReadableStream<Uint8Array>(
@@ -691,23 +706,23 @@ test('The NZB step enforces the byte cap as declared, while streaming and once d
     ),
     { headers: { 'content-length': String(NZB_MAX_BYTES + 1) } },
   )
-  assert.deepEqual(await readNzb(declared), { kind: 'too_large' })
+  assert.deepEqual(await nzbFailure(declared), tooLarge)
   assert.equal(pulled, false, 'a declared length over the cap is refused before the body is read')
-  assert.deepEqual(await readNzb(new Response(streamBytes(NZB_MAX_BYTES + 1))), { kind: 'too_large' })
+  assert.deepEqual(await nzbFailure(new Response(streamBytes(NZB_MAX_BYTES + 1))), tooLarge)
   const bomb = await gzipBytes(new Uint8Array(NZB_MAX_BYTES + 1))
   assert.ok(bomb.length < NZB_MAX_BYTES)
-  assert.deepEqual(await readNzb(bytesResponse(bomb)), { kind: 'too_large' })
+  assert.deepEqual(await nzbFailure(bytesResponse(bomb)), tooLarge)
 })
 
-test('The NZB step recognises a Newznab error document, also a compressed one', async () => {
+test('The NZB step reads a Newznab error document by its code, also a compressed one', async () => {
   const document = newznab('', `<error code="100" description="Invalid API key ${API_KEY}"/>`)
-  assert.deepEqual(await readNzb(new Response(document)), { kind: 'error_document', code: 100 })
-  assert.deepEqual(await readNzb(new Response('<error code="500" description="Request limit reached"/>')), {
-    kind: 'error_document',
-    code: 500,
-  })
+  const refused = await nzbFailure(new Response(document))
+  assert.equal(refused.code, 'unauthorized')
+  assert.ok(!refused.message.includes(API_KEY), 'the description is never quoted')
+  const limited = await nzbFailure(new Response('<error code="500" description="Request limit reached"/>'))
+  assert.equal(limited.code, 'rate_limited')
   const compressed = await gzipBytes(new TextEncoder().encode(document))
-  assert.deepEqual(await readNzb(bytesResponse(compressed)), { kind: 'error_document', code: 100 })
+  assert.equal((await nzbFailure(bytesResponse(compressed))).code, 'unauthorized')
 })
 
 test('The NZB step reports anything else as not an NZB, with safe text', async () => {
@@ -720,12 +735,11 @@ test('The NZB step reports anything else as not an NZB, with safe text', async (
     [new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 0xff, 0xff]), /could not be decompressed/],
   ]
   for (const [body, message] of cases) {
-    const read = await readNzb(new Response(body))
-    assert.ok(read.kind === 'invalid', `expected invalid, got ${read.kind}`)
-    if (read.kind === 'invalid') {
-      assert.match(read.message, message)
-      assert.ok(!/[<>]/.test(read.message))
-    }
+    const failure = await nzbFailure(new Response(body))
+    assert.equal(failure.code, 'invalid_response')
+    assert.match(failure.message, /^AnimeTosho did not send a valid NZB/)
+    assert.match(failure.message, message)
+    assert.ok(!/[<>]/.test(failure.message))
   }
 })
 
@@ -737,7 +751,7 @@ test('A transport failure while the NZB is read is thrown for the caller to clas
       },
     }),
   )
-  await assert.rejects(readNzb(failing), /connection reset/)
+  await assert.rejects(readNzb(failing, NZB_SOURCE), /connection reset/)
   const reset = recorder(
     () =>
       new Response(

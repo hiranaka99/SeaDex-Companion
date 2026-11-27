@@ -481,10 +481,8 @@ test("A grab yields the NZB step's result, and anything but an NZB fails as the 
   const page = await failureOf(
     prowlarrGrabNzb(SETTINGS, RELEASE, recorder(() => new Response('<html><body>login</body></html>')).fetchImpl),
   )
-  assert.deepEqual(
-    [page.code, page.scope, page.message],
-    ['invalid_response', 'indexer', 'The indexer did not send a valid NZB'],
-  )
+  assert.deepEqual([page.code, page.scope], ['invalid_response', 'indexer'])
+  assert.match(page.message, /^The indexer did not send a valid NZB: .*wrong root element/)
   // Over the cap as sent or only once decompressed, the file is the indexer's, also when Prowlarr passed it on.
   const oversize = () => new Response(nzb, { headers: { 'content-length': String(NZB_MAX_BYTES + 1) } })
   const bomb = () => new Response(gzipSync(new Uint8Array(NZB_MAX_BYTES + 1)))
