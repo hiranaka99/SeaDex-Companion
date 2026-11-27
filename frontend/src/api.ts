@@ -306,8 +306,6 @@ export const controlDownload = (record_id: string, action: DownloadAction, delet
     body: JSON.stringify({ record_id, action, delete_files: deleteFiles }),
   })
 
-export const DOWNLOADS_CHANGED_EVENT = 'seadex:downloads-changed'
-
 export const preflightDownload = (selections: SelectionInput[], refresh = false, signal?: AbortSignal) =>
   api<DownloadPreflight>(
     '/api/download_bulk/preflight',
