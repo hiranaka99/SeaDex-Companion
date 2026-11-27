@@ -82,7 +82,7 @@ function usableFile(file: UsenetSourceFile): boolean {
 export async function lookupAnimeTosho(
   settings: ProviderSettings,
   hash: string,
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: typeof fetch,
 ): Promise<ProviderLookup> {
   const requested = hash.toLowerCase()
   if (!INFO_HASH_PATTERN.test(requested))
@@ -164,17 +164,14 @@ export async function lookupAnimeTosho(
 export async function fetchAnimeToshoNzb(
   settings: ProviderSettings,
   match: UsenetMatch,
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: typeof fetch,
 ): Promise<Uint8Array> {
   if (!ANIMETOSHO_ENTRY_PATTERN.test(match.entry_id)) throw new Error('AnimeTosho NZB reference was not usable')
   return await fetchProviderNzb(settings, `/nzb/${encodeURIComponent(match.entry_id)}`, 'AnimeTosho', fetchImpl)
 }
 
 /** Unauthenticated capabilities probe: proves the endpoint answers with Newznab-style XML. */
-export async function testAnimeTosho(
-  settings: ProviderSettings,
-  fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<void> {
+export async function testAnimeTosho(settings: ProviderSettings, fetchImpl: typeof fetch): Promise<void> {
   let response: Response
   try {
     response = await originRequest(lookupRequest(settings, '/api?t=caps', 'application/xml'), fetchImpl)

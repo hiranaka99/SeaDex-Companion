@@ -120,7 +120,7 @@ function toMatch(item: AmeNZBItem, requested: string): UsenetMatch {
 export async function lookupAmeNZB(
   settings: ProviderSettings,
   hash: string,
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: typeof fetch,
 ): Promise<ProviderLookup> {
   const requested = hash.toLowerCase()
   if (!INFO_HASH_PATTERN.test(requested))
@@ -132,10 +132,7 @@ export async function lookupAmeNZB(
  * Authenticated read-only search. Capabilities cannot validate a key/IP binding,
  * so this probes the hash endpoint instead and succeeds on any valid RSS answer.
  */
-export async function testAmeNZB(
-  settings: ProviderSettings,
-  fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<void> {
+export async function testAmeNZB(settings: ProviderSettings, fetchImpl: typeof fetch): Promise<void> {
   const result = await search(settings, PROBE_HASH, fetchImpl)
   if (result.kind === 'failed') throw new Error(result.message)
 }
@@ -144,7 +141,7 @@ export async function testAmeNZB(
 export async function fetchAmeNZBNzb(
   settings: ProviderSettings,
   match: UsenetMatch,
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: typeof fetch,
 ): Promise<Uint8Array> {
   if (!settings.apiKey) throw new Error('AmeNZB API key is not configured')
   if (!AMENZB_ENTRY_PATTERN.test(match.entry_id)) throw new Error('AmeNZB NZB reference was not usable')
