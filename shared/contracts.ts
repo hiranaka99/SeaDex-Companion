@@ -276,10 +276,8 @@ export interface Config {
   notify_enabled: boolean
   /** Also notify when a finished download is not imported by Sonarr or Radarr. */
   notify_import_problems: boolean
-  unhide_on_new_best: boolean
   datetime_format: string
   scan_schedule: ScanSchedule
-  hidden: string[]
 }
 
 export const SECRET_CONFIG_KEYS = [

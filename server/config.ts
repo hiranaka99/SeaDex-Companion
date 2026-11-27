@@ -66,10 +66,8 @@ export const DEFAULT_CONFIG: Config = {
   webhook: '',
   notify_enabled: true,
   notify_import_problems: true,
-  unhide_on_new_best: false,
   datetime_format: DEFAULT_DATETIME_FORMAT,
   scan_schedule: DEFAULT_SCAN_SCHEDULE,
-  hidden: [],
 }
 
 export const MAX_ARR_INSTANCES = 10
@@ -153,9 +151,6 @@ function readConfig(): Config {
   }))
   config.sonarr_url = arrBaseUrl(config.sonarr_url)
   config.radarr_url = arrBaseUrl(config.radarr_url)
-  config.hidden = Array.isArray(config.hidden)
-    ? config.hidden.filter((key): key is string => typeof key === 'string' && Boolean(key))
-    : []
   return config
 }
 
@@ -301,7 +296,6 @@ export function applyConfigUpdate(config: Config, input: unknown): Config {
   for (const key of [
     'notify_enabled',
     'notify_import_problems',
-    'unhide_on_new_best',
     'animetosho_enabled',
     'amenzb_enabled',
     'prowlarr_enabled',
@@ -333,10 +327,6 @@ export function applyConfigUpdate(config: Config, input: unknown): Config {
         'datetime_format must contain date/time tokens (YYYY MM DD HH mm ss) with only punctuation around them',
       )
   }
-  if ('hidden' in data)
-    next.hidden = Array.isArray(data.hidden)
-      ? data.hidden.filter((key): key is string => typeof key === 'string' && Boolean(key))
-      : []
   if ('scan_schedule' in data) next.scan_schedule = normalizeScanSchedule(data.scan_schedule)
   if ('sonarr_scope' in data) next.sonarr_scope = normalizeLibraryScope(data.sonarr_scope, 'sonarr_scope')
   if ('radarr_scope' in data) next.radarr_scope = normalizeLibraryScope(data.radarr_scope, 'radarr_scope')

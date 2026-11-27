@@ -6,8 +6,8 @@ export type Service = 'sonarr' | 'radarr' | 'qbittorrent' | 'sabnzbd' | 'animeto
 /** A fixed integration, or `arr:<id>` for an additional Sonarr or Radarr instance. */
 export type IntegrationService = Service | `arr:${string}`
 
-/** The settings form: the saved configuration without hidden titles, edited in place. */
-export type ConfigDraft = Partial<Omit<Config, 'hidden'>>
+/** The settings form: the saved configuration, edited in place. */
+export type ConfigDraft = Partial<Config>
 
 interface ServiceDefinition {
   label: string

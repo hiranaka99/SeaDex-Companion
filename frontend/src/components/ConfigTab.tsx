@@ -156,13 +156,13 @@ export default function ConfigTab({
       setGuidedSetup(!libraryConnected(config))
       if (config.radarr_url && !config.sonarr_url) setLibrarySource('radarr')
     }
-    const { hidden: _hidden, ...next } = config
+    const next: ConfigDraft = { ...config }
     next.scan_schedule = {
       ...config.scan_schedule,
       times: [...config.scan_schedule.times],
       weekdays: [...config.scan_schedule.weekdays],
     }
-    // Hidden-title updates from scans must preserve an unsaved settings draft.
+    // A configuration that comes back unchanged must preserve an unsaved settings draft.
     if (savedForm.current === JSON.stringify(next)) return
     savedForm.current = JSON.stringify(next)
     setForm(next)
@@ -1180,14 +1180,6 @@ export default function ConfigTab({
               onRunNow={onRunScan}
               disabled={scanDisabled}
             />
-            <ToggleRow
-              id="unhide-on-new-best"
-              className="border-t border-line pt-6"
-              label="Unhide anime with new best releases"
-              hint="Automatically restore hidden anime when a scan finds a new best release on SeaDex. Alternative releases do not trigger this."
-              checked={!!form.unhide_on_new_best}
-              onChange={checked => set('unhide_on_new_best', checked)}
-            />
             <div className="border-t border-line pt-6">
               <ToggleRow
                 id="arr-status-tags"
@@ -1388,7 +1380,7 @@ export default function ConfigTab({
       <ConfirmDialog
         open={clearDataOpen}
         title="Clear scanned data?"
-        description="This removes all saved scan results and AniList cache entries. Your configuration, hidden-title list, notification history, and torrent ownership records will remain. Run a new scan to rebuild the data."
+        description="This removes all saved scan results and AniList cache entries. Your configuration, notification history, and torrent ownership records will remain. Run a new scan to rebuild the data."
         confirmLabel="Clear scanned data"
         dangerous
         onConfirm={clearData}

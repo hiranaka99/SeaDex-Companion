@@ -23,7 +23,7 @@ export interface LibraryFilterRequest {
 }
 
 export interface GroupedCard {
-  /** Identity of the card: stable across scans and distinct per library instance. Hidden cards are saved by it. */
+  /** Identity of the card: stable across scans and distinct per library instance. */
   key: string
   title: string
   arr: string

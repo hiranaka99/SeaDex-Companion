@@ -55,5 +55,5 @@ export function baseGroupKey(result: GroupedResult): number | string {
   return `${result.arr}:${parts.length >= 2 ? parts[1] : result.title}`
 }
 
-/** The card identity as stored in hidden-title settings. */
+/** The card identity as a string: stable across scans and distinct per library instance. */
 export const cardKey = (result: GroupedResult): string => String(resultGroupKey(result))

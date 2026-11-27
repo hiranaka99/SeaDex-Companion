@@ -10,8 +10,6 @@ export interface LibraryFilters {
   episodes: boolean
   /** Only titles with release changes nobody has reviewed yet. */
   unseen: boolean
-  /** Show the hidden titles instead of the visible ones. */
-  hidden: boolean
 }
 
 export const DEFAULT_LIBRARY_FILTERS: LibraryFilters = {
@@ -21,7 +19,6 @@ export const DEFAULT_LIBRARY_FILTERS: LibraryFilters = {
   sort: 'recommended',
   episodes: false,
   unseen: false,
-  hidden: false,
 }
 
 const STATUSES: LibraryStatusFilter[] = ['', 'review', 'upgrade', 'partial', 'missing', 'best']
@@ -42,7 +39,6 @@ export function parseLibraryFilters(hash: string): LibraryFilters {
     sort: SORTS.includes(sort as LibrarySort) ? (sort as LibrarySort) : 'recommended',
     episodes: params.get('episodes') === '1',
     unseen: params.get('unseen') === '1',
-    hidden: params.get('hidden') === '1',
   }
 }
 
@@ -54,7 +50,6 @@ export function libraryFiltersHash(filters: LibraryFilters): string {
   if (filters.sort !== 'recommended') params.set('sort', filters.sort)
   if (filters.episodes) params.set('episodes', '1')
   if (filters.unseen) params.set('unseen', '1')
-  if (filters.hidden) params.set('hidden', '1')
   const query = params.toString()
   return `#${TAB}${query ? `?${query}` : ''}`
 }

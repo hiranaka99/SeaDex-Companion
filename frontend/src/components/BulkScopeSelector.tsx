@@ -46,8 +46,7 @@ export default function BulkScopeSelector({
         <p className="m-0 text-xs text-muted">
           {value === 'filtered'
             ? `${description}. Includes every matching page.`
-            : allDescription ||
-              'All library titles, regardless of your search, source, or status filters. Hidden titles start unchecked.'}
+            : allDescription || 'All library titles, regardless of your search, source, or status filters.'}
         </p>
       )}
     </div>

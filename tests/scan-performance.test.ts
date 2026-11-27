@@ -260,7 +260,6 @@ function scanFixture(overrides: ScanDependencies) {
     loadUserRules: () => ({ mappings: {}, exclusions: [] }),
     saveLastResults: () => {},
     autoNotifyNew: async () => 0,
-    unhideNewBestReleases: () => [],
     recordScanHistory: (previous, current, at, _file, trigger, metadata) =>
       buildScanHistoryEntry(previous, current, at, trigger, metadata),
     ...overrides,
@@ -718,13 +717,11 @@ test('the configuration is read once per file version and every reader gets its 
   const files = [CONFIG_FILE, SECRETS_KEY_FILE]
   const saved = files.map(file => (existsSync(file) ? readFileSync(file) : null))
   try {
-    saveConfig({ ...DEFAULT_CONFIG, sonarr_url: 'http://first', sonarr_key: 'secret', hidden: ['a'] })
+    saveConfig({ ...DEFAULT_CONFIG, sonarr_url: 'http://first', sonarr_key: 'secret' })
     const first = loadConfig()
     assert.equal(first.sonarr_key, 'secret')
-    first.hidden.push('changed by a caller')
     first.sonarr_scope.include_tags.push('changed by a caller')
-    assert.deepEqual(loadConfig().hidden, ['a'], 'One reader cannot change what another reads')
-    assert.deepEqual(loadConfig().sonarr_scope.include_tags, [])
+    assert.deepEqual(loadConfig().sonarr_scope.include_tags, [], 'One reader cannot change what another reads')
     saveConfig({ ...loadConfig(), sonarr_url: 'http://second' })
     assert.equal(loadConfig().sonarr_url, 'http://second', 'A saved change is read at once')
     writeFileSync(CONFIG_FILE, JSON.stringify({ sonarr_url: 'http://edited-by-hand' }))

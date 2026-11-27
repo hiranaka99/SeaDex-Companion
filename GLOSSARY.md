@@ -9,7 +9,7 @@ One Sonarr or Radarr connection whose titles are scanned. Every result belongs t
 _Avoid_: arr, source (a source is what a release is acquired by)
 
 **Primary instance**:
-The first Sonarr or the first Radarr, set up under its own settings. Results, rules and hidden titles saved before additional instances existed belong to it.
+The first Sonarr or the first Radarr, set up under its own settings. Results and rules saved before additional instances existed belong to it.
 _Avoid_: main instance, default instance
 
 **Additional instance**:
@@ -30,7 +30,7 @@ _Avoid_: ignored release
 
 **Ignored**:
 A season or part the user has set aside: no bulk download, notification or upgrade tag is made for it, although the library still shows that a better release exists.
-_Avoid_: excluded (that is a release ruled out by preferences)
+_Avoid_: excluded (that is a release ruled out by preferences), hidden (a removed feature)
 
 **Upgrade available**:
 SeaDex lists a better release for a season than the library holds. It is a fact about the catalog and the library, whatever the user has ignored.

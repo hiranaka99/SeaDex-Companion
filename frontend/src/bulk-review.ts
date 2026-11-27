@@ -1,5 +1,4 @@
 import { wantedParts } from '../../shared/download-plan.js'
-import { resultGroupKey } from '../../shared/ids.js'
 import { releaseIdentity } from '../../shared/releases.js'
 import type { UsenetAvailabilityResult } from '../../shared/usenet-contracts.js'
 import type { Release, ResultItem } from './types.js'
@@ -74,9 +73,6 @@ export function buildReview(
 
   return { ready, choices: ready.filter(group => group.options.length > 1), blocked }
 }
-
-/** The hidden-card key of the card a result belongs to. */
-export const hiddenKey = (result: ResultItem): string => String(resultGroupKey(result))
 
 /** Review rows read like the library: by title, then season, then cour. */
 export function byTitleSeasonPart(a: ReviewGroup, b: ReviewGroup): number {

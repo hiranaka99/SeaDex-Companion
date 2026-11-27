@@ -17,7 +17,7 @@ import {
   RESULTS_FILE,
   USER_RULES_FILE,
 } from '../server/paths.js'
-import { DEFAULT_CONFIG, loadConfig } from '../server/config.js'
+import { DEFAULT_CONFIG, loadConfig, saveConfig } from '../server/config.js'
 import { loadCache, loadLastResults, saveLastResults } from '../server/results.js'
 import { resultItem } from './support/results.js'
 import { loadScanHistory } from '../server/history.js'
@@ -393,14 +393,12 @@ test('persisted collections tolerate non-object JSON roots and invalid array ent
       for (const root of ['null', '[]', '7']) {
         for (const file of [CONFIG_FILE, CACHE_FILE, RESULTS_FILE, USER_RULES_FILE, HISTORY_FILE])
           writeFileSync(file, root)
-        assert.deepEqual(loadConfig().hidden, [])
+        assert.deepEqual(loadConfig().arr_instances, [])
         assert.deepEqual(loadCache(), {})
         assert.equal(loadLastResults(), null)
         assert.deepEqual(loadUserRules(), { mappings: {}, season_mappings: {}, exclusions: [] })
         assert.deepEqual(loadScanHistory(), [])
       }
-      writeFileSync(CONFIG_FILE, JSON.stringify({ hidden: ['valid', null, 5] }))
-      assert.deepEqual(loadConfig().hidden, ['valid'])
       writeFileSync(RESULTS_FILE, JSON.stringify({ results: [null, 7, [], { key: 'valid' }], last_run: 3 }))
       assert.deepEqual(
         loadLastResults()?.results.map(result => result.key),
@@ -410,6 +408,24 @@ test('persisted collections tolerate non-object JSON roots and invalid array ent
       assert.equal(loadLastResults()?.last_run, null)
     },
   )
+})
+
+test('a configuration saved before hiding was removed loads and saves without its hidden titles', async () => {
+  await preserveFiles([CONFIG_FILE, ENCRYPTED_SECRETS_FILE, LOG_FILE], () => {
+    writeFileSync(
+      CONFIG_FILE,
+      JSON.stringify({ sonarr_url: 'http://sonarr', hidden: ['42'], unhide_on_new_best: true }),
+    )
+    rmSync(LOG_FILE, { force: true })
+    const config = loadConfig()
+    assert.equal(config.sonarr_url, 'http://sonarr')
+    assert.ok(!('hidden' in config) && !('unhide_on_new_best' in config))
+    assert.deepEqual(readLogTail(), [], 'The removed keys are dropped without a warning')
+    saveConfig(config)
+    const stored = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'))
+    assert.equal(stored.sonarr_url, 'http://sonarr')
+    assert.ok(!('hidden' in stored) && !('unhide_on_new_best' in stored))
+  })
 })
 
 test('saved results are parsed once and read again whenever the results file changes', async () => {

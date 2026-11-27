@@ -81,7 +81,7 @@ function reportRestoredState(): void {
   const saved = loadLastResults()?.results
   log(
     'INFO',
-    `Runtime state restored (saved results: ${saved?.length || 0}; owned acquisitions: ${downloadRecords().length}; hidden titles: ${config.hidden.length}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'})`,
+    `Runtime state restored (saved results: ${saved?.length || 0}; owned acquisitions: ${downloadRecords().length}; auto-check: ${config.scan_schedule.enabled ? config.scan_schedule.mode : 'disabled'})`,
   )
   // Delay the startup sweep so the first interactive lookups after boot own the providers.
   if (saved) setTimeout(() => usenetRuntime().resultsChanged(config, saved, readLedger(), 'startup'), 30_000).unref()

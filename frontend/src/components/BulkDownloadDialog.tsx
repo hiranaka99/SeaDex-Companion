@@ -15,7 +15,6 @@ import { OutcomeLabel, ReleaseSummary, UsenetStatus } from './BulkReviewParts'
 import {
   buildReview,
   byTitleSeasonPart,
-  hiddenKey,
   optionAvailabilityKey,
   reviewProtocol,
   usenetEligibility,
@@ -32,7 +31,6 @@ interface Props {
   open: boolean
   results: ResultItem[]
   scopeControl: ReactNode
-  hiddenKeys: Set<string>
   busy: boolean
   /** Live/last bulk submission state while the dialog stays open. */
   job: DownloadJobStatus | null
@@ -48,7 +46,6 @@ export default function BulkDownloadDialog({
   open,
   results,
   scopeControl,
-  hiddenKeys,
   busy,
   job,
   routes,
@@ -179,9 +176,7 @@ export default function BulkDownloadDialog({
         }),
       ),
     )
-    setEnabled(
-      Object.fromEntries(reviewCandidates.ready.map(group => [group.id, !hiddenKeys.has(hiddenKey(group.result))])),
-    )
+    setEnabled(Object.fromEntries(reviewCandidates.ready.map(group => [group.id, true])))
     setProtocols({})
     setExpanded({})
     setView(reviewCandidates.ready.length || !reviewCandidates.blocked.length ? 'ready' : 'unavailable')
@@ -386,7 +381,6 @@ export default function BulkDownloadDialog({
               {readySorted.length ? (
                 <div className="space-y-1.5">
                   {readySorted.map(group => {
-                    const isHidden = hiddenKeys.has(hiddenKey(group.result))
                     const isChoice = group.options.length > 1
                     const status = groupStatus(group)
                     const statusClass =
@@ -527,12 +521,6 @@ export default function BulkDownloadDialog({
                               </>
                             )}
                           </span>
-                          {isHidden && (
-                            <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn">
-                              <Icon name="eye-off" size={12} />
-                              Hidden
-                            </span>
-                          )}
                           <span
                             className="ml-auto flex items-center gap-1.5 tabular-nums"
                             title={`${release.releaseGroup} · ${release.tracker}`}
@@ -627,12 +615,6 @@ export default function BulkDownloadDialog({
                                 </>
                               )}
                             </span>
-                            {isHidden && (
-                              <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn">
-                                <Icon name="eye-off" size={12} />
-                                Hidden
-                              </span>
-                            )}
                             {chosen ? (
                               <span className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-xs font-extrabold text-accent-bright">
                                 <Icon name="check" size={12} />
@@ -794,7 +776,6 @@ export default function BulkDownloadDialog({
               </h3>
               <div className="space-y-1.5">
                 {blockedSorted.map(group => {
-                  const isHidden = hiddenKeys.has(hiddenKey(group.result))
                   return (
                     <div
                       key={group.id}
@@ -829,12 +810,6 @@ export default function BulkDownloadDialog({
                           </>
                         )}
                       </span>
-                      {isHidden && (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn">
-                          <Icon name="eye-off" size={12} />
-                          Hidden
-                        </span>
-                      )}
                       <span
                         className="ml-auto min-w-0 truncate text-muted"
                         title={group.options.map(({ release }) => release.releaseGroup).join(' · ')}
