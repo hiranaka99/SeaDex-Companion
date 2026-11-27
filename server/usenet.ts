@@ -44,21 +44,56 @@ export const FILE_NAME_LIMIT = 200
 /** Background lookups wait out a pause and retry instead of recording a failure. */
 const BACKGROUND_ATTEMPTS = 3
 
-function hashScheduler(pacing: Partial<LookupPacing> = {}): LookupScheduler {
-  const scheduler = new LookupScheduler({ concurrency: 4, foregroundReserved: 1, minIntervalMs: 2_000, ...pacing })
+/** What the hash-indexer lookups run on. A Usenet runtime (`usenet-runtime.ts`) builds it and puts it in place. */
+export interface HashLookupParts {
+  scheduler: LookupScheduler
+  cache: PersistentUsenetCache
+  now: () => number
+  fetch: typeof fetch
+}
+
+/** The hash-indexer parts with this clock, fetch, cache file and pacing over the defaults. */
+export function hashLookupParts(
+  options: { now?: () => number; fetch?: typeof fetch; cacheFile?: string; pacing?: Partial<LookupPacing> } = {},
+): HashLookupParts {
+  const now = options.now ?? (() => Date.now())
+  return {
+    scheduler: hashScheduler(options.pacing, now),
+    cache: new PersistentUsenetCache(options.cacheFile),
+    now,
+    fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
+  }
+}
+
+function hashScheduler(pacing: Partial<LookupPacing> = {}, now?: () => number): LookupScheduler {
+  const scheduler = new LookupScheduler({ concurrency: 4, foregroundReserved: 1, minIntervalMs: 2_000, ...pacing }, now)
   for (const provider of USENET_PROVIDER_IDS) scheduler.describe(provider, { label: USENET_PROVIDERS[provider].label })
   return scheduler
 }
 
+let parts = hashLookupParts()
+
 /** Paces and prioritizes every hash-indexer request this module makes, one channel per provider. */
-export let usenetScheduler = hashScheduler()
+export let usenetScheduler = parts.scheduler
+
+/**
+ * Usenet runtime only: lookups from now on run on `next`. Running lookups are cancelled and what they learn is
+ * discarded.
+ */
+export function useHashLookupParts(next: HashLookupParts): void {
+  cancelUsenetWork()
+  warnings.clear()
+  parts = next
+  usenetScheduler = next.scheduler
+}
 
 /**
  * Tests: hash lookups from now on run on a fresh scheduler with this pacing over the defaults, which
  * forgets every channel's health. Work already queued finishes on the scheduler it was given to.
  */
 export function paceUsenetLookups(pacing: Partial<LookupPacing> = {}): void {
-  usenetScheduler = hashScheduler(pacing)
+  parts.scheduler = hashScheduler(pacing, parts.now)
+  usenetScheduler = parts.scheduler
 }
 
 /** Active pauses of the hash indexers and of the Usenet indexers in Prowlarr, for status reporting. */
@@ -81,7 +116,7 @@ export function sabnzbdConfigured(config: Config): boolean {
 }
 
 /** Provider failure warnings repeat at most once per minute per provider; sweeps must not spam the log. */
-const warnings = new WarningThrottle()
+const warnings = new WarningThrottle({ now: () => parts.now() })
 function logProviderFailure(provider: UsenetProvider, message: string): void {
   warnings.warn(provider, `Usenet provider lookup failed (${provider}): ${message}`)
 }
@@ -96,7 +131,6 @@ function unexpectedFailure(provider: UsenetProvider, error: unknown): ProviderLo
 type LookupResult = { kind: 'settled'; lookup: ProviderLookup; checkedAt: number } | typeof CANCELLED
 const CANCELLED = { kind: 'cancelled' } as const
 
-const cache = new PersistentUsenetCache()
 /** Invalidated when provider configuration changes; results of older work are discarded. */
 const lookupEpoch = new LookupEpoch()
 /** One provider lookup of one hash, across the attempts it takes, by cache key. */
@@ -110,7 +144,7 @@ function cancelUsenetWork(): void {
 
 export function invalidateUsenetLookups(config: Config): void {
   cancelUsenetWork()
-  cache.retainCompatible(
+  parts.cache.retainCompatible(
     Object.fromEntries(
       USENET_PROVIDER_IDS.map(provider => [
         provider,
@@ -122,18 +156,18 @@ export function invalidateUsenetLookups(config: Config): void {
 
 export function resetUsenetLookups(restoreFromDisk = false): void {
   cancelUsenetWork()
-  cache.reset(restoreFromDisk)
+  parts.cache.reset(restoreFromDisk)
   usenetScheduler.reset()
   warnings.clear()
 }
 
 export function flushUsenetCache(): boolean {
-  return cache.flush()
+  return parts.cache.flush()
 }
 
 /** Forget observations for source hashes that no current result references. */
 export function retainUsenetHashes(hashes: ReadonlySet<string>): number {
-  return cache.retainHashes(hashes)
+  return parts.cache.retainHashes(hashes)
 }
 
 const isAbsence = (lookup: ProviderLookup | undefined) => lookup?.kind === 'no_match' || lookup?.kind === 'deleted'
@@ -166,7 +200,7 @@ async function runLookup(
           background: flight.background,
           signal,
           guardMs: LOOKUP_GUARD_MS,
-          work: () => USENET_PROVIDERS[provider].lookup(settings, hash),
+          work: () => USENET_PROVIDERS[provider].lookup(settings, hash, parts.fetch),
           outcome: settled => (settled.ok ? settled.value : UNEXPECTED),
         }),
       )
@@ -206,22 +240,22 @@ async function providerLookup(
   if (!refresh) {
     const running = lookups.join(key, background)
     if (running) return running.promise
-    const hit = cache.get(key)
-    if (hit?.failure && Date.now() < hit.retryAt) return { kind: 'settled', lookup: hit.failure, checkedAt: 0 }
-    if (hit?.lookup && !hit.failure && Date.now() - hit.checkedAt < ttlFor(hit.lookup, hit.negativeStreak))
+    const hit = parts.cache.get(key)
+    if (hit?.failure && parts.now() < hit.retryAt) return { kind: 'settled', lookup: hit.failure, checkedAt: 0 }
+    if (hit?.lookup && !hit.failure && parts.now() - hit.checkedAt < ttlFor(hit.lookup, hit.negativeStreak))
       return { kind: 'settled', lookup: hit.lookup, checkedAt: hit.checkedAt }
   }
   return lookups.start(key, { background }, flight =>
     runLookup(flight, provider, { ...connection, signal: flight.signal }, hash).then((lookup): LookupResult => {
       if (lookup.kind === 'cancelled' || !flight.current) return CANCELLED
-      const at = Date.now()
-      const previous = cache.get(key)
+      const at = parts.now()
+      const previous = parts.cache.get(key)
       if (lookup.kind === 'failed') {
         // A failed refresh keeps the previous observation next to the retry state.
         logProviderFailure(provider, lookup.message)
         const retryAt =
           at + Math.max(FAILURE_TTL_MS, lookup.retry_after_ms || 0, usenetScheduler.pausedUntil(provider) - at)
-        cache.set(
+        parts.cache.set(
           {
             provider,
             fingerprint,
@@ -241,7 +275,7 @@ async function providerLookup(
       const negativeStreak = isAbsence(lookup)
         ? (isAbsence(previous?.lookup) ? previous?.negativeStreak || 1 : 0) + 1
         : 0
-      cache.set(
+      parts.cache.set(
         {
           provider,
           fingerprint,
@@ -422,9 +456,9 @@ function hashSnapshot(config: Config, hash: string): { result: UsenetHashAvailab
   const queried: UsenetHashAvailability[] = []
   let needsRefresh = false
   let unknown = false
-  const now = Date.now()
+  const now = parts.now()
   for (const { provider, key } of configuredProviderKeys(config, hash)) {
-    const record = cache.get(key)
+    const record = parts.cache.get(key)
     const stale = Boolean(
       record?.lookup && (record.failure || now - record.checkedAt >= ttlFor(record.lookup, record.negativeStreak)),
     )
@@ -527,5 +561,5 @@ export async function fetchUsenetNzb(
     )
   const settings = providerSettings(config, provider)
   if (!settings) throw new Error('The Usenet provider used by this plan is no longer configured')
-  return USENET_PROVIDERS[provider].fetchNzb(settings, lookup.match)
+  return USENET_PROVIDERS[provider].fetchNzb(settings, lookup.match, parts.fetch)
 }

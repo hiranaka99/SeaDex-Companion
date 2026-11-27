@@ -6,36 +6,11 @@ import { testIntegration } from './integration-tests.js'
 import { log } from './logging.js'
 import { invalidateQbSnapshots } from './qbittorrent.js'
 import { refreshAutocheckSchedule } from './scheduler.js'
-import { invalidateUsenetLookups } from './usenet.js'
-import { USENET_PROVIDERS } from './usenet-providers.js'
-import { prefetchSavedResults } from './usenet-prefetch.js'
-import { invalidateUsenetSearch } from './usenet-search.js'
-import { invalidatePrivateSources } from './private-sources.js'
-import { resetProwlarrRuntime } from './prowlarr.js'
+import { usenetRuntime } from './usenet-runtime.js'
 import { SECRET_CONFIG_KEYS } from '../shared/contracts.js'
 import { errorMessage } from '../shared/errors.js'
 import { asRecord } from '../shared/guards.js'
 import type { Config, JsonObject } from './types.js'
-
-/** Settings that change which provider answers lookups (and so invalidate in-flight work). */
-const USENET_PROVIDER_KEYS = Object.values(USENET_PROVIDERS).flatMap(provider => provider.configKeys)
-/**
- * Settings that only decide whether the background sweep runs and what its search stage looks for. A changed
- * search limit restarts the sweep so it applies at once; it invalidates nothing.
- */
-const USENET_ELIGIBILITY_KEYS = [
-  'download_mode',
-  'sabnzbd_url',
-  'sabnzbd_key',
-  'prowlarr_background_search',
-  'prowlarr_search_limit',
-  'tracker_mode',
-] as const
-/**
- * Settings that change which Prowlarr answers searches. The two daily limits are not among them: a changed
- * limit applies to the next search or fetch and invalidates nothing.
- */
-const PROWLARR_KEYS = ['prowlarr_enabled', 'prowlarr_url', 'prowlarr_key'] as const
 
 /** A rejected settings change is the caller's mistake, not a server failure. */
 function validated<Result>(build: () => Result): Result {
@@ -72,19 +47,8 @@ export function saveSettings(data: JsonObject): Config {
   saveConfig(config)
   invalidateQbSnapshots()
   bumpGeneration()
-  // Unrelated settings must not cancel in-flight provider lookups or restart the sweep.
-  const providersChanged = USENET_PROVIDER_KEYS.some(key => previous[key] !== config[key])
-  if (providersChanged) invalidateUsenetLookups(config)
-  const prowlarrChanged = PROWLARR_KEYS.some(key => previous[key] !== config[key])
-  if (prowlarrChanged) {
-    invalidatePrivateSources()
-    // Search results, usage counters and stored NZBs are kept for the configured connection only.
-    invalidateUsenetSearch(config)
-    resetProwlarrRuntime()
-  }
   invalidatePlans()
-  if (providersChanged || prowlarrChanged || USENET_ELIGIBILITY_KEYS.some(key => previous[key] !== config[key]))
-    prefetchSavedResults(config)
+  usenetRuntime().configChanged(previous, config)
   refreshAutocheckSchedule(config)
   log('INFO', `Configuration saved (${describeSave(config, data)})`)
   return config

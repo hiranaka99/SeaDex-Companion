@@ -1,4 +1,3 @@
-import { downloadRecords, type OwnedDownloadRecord } from './download-store.js'
 import { log } from './logging.js'
 import {
   ProwlarrError,
@@ -10,22 +9,10 @@ import {
 } from './prowlarr.js'
 import { loadLastResults } from './results.js'
 import { exclusionRuleKey, loadUserRules } from './user-rules.js'
-import { torrentHashes } from '../shared/download-plan.js'
-import {
-  cachedHashState,
-  retainUsenetHashes,
-  sabnzbdConfigured,
-  usenetProviderPauses,
-  usenetProvidersEnabled,
-} from './usenet.js'
+import { cachedHashState, sabnzbdConfigured, usenetProviderPauses, usenetProvidersEnabled } from './usenet.js'
 import { fileListSources, resolveUsenetCopies, searchInBackground } from './usenet-copies.js'
-import {
-  backgroundSearchesSpent,
-  retainSearchSources,
-  searchSnapshot,
-  searchStore,
-  type UsenetSourceOutcome,
-} from './usenet-search.js'
+import { readLedger, usenetRuntime } from './usenet-runtime.js'
+import { backgroundSearchesSpent, searchSnapshot, searchStore, type UsenetSourceOutcome } from './usenet-search.js'
 import type { ProwlarrSearchStatus, UsenetPrefetchProgress, UsenetSearchSummary } from '../shared/contracts.js'
 import type { UsenetUnitState } from '../shared/usenet-contracts.js'
 import type { Config, PrivateSource, Release, ResultItem } from './types.js'
@@ -42,7 +29,13 @@ import type { Config, PrivateSource, Release, ResultItem } from './types.js'
  * the hash indexers cannot provide. The search stage never fetches an NZB.
  */
 
-let enabled = false
+/** Whether sweeps run and the clock they are timed on. A Usenet runtime (`usenet-runtime.ts`) puts it in place. */
+export interface SweepParts {
+  enabled: boolean
+  now: () => number
+}
+
+let sweep: SweepParts = { enabled: false, now: () => Date.now() }
 let sweepEpoch = 0
 const idle = (): UsenetPrefetchProgress => ({ running: false, checked: 0, total: 0 })
 let progress = idle()
@@ -50,7 +43,7 @@ let progress = idle()
 /** Live progress of the background availability sweep, for the sidebar. */
 export function usenetPrefetchProgress(): UsenetPrefetchProgress {
   if (!progress.running) return idle()
-  const now = Date.now()
+  const now = sweep.now()
   const paused = usenetProviderPauses().map(pause => ({
     provider: { id: pause.channel, label: pause.label },
     resume_in_seconds: Math.max(1, Math.ceil((pause.until - now) / 1000)),
@@ -63,9 +56,20 @@ export function usenetPrefetchProgress(): UsenetPrefetchProgress {
   }
 }
 
+/** Usenet runtime only: sweeps from now on follow `next`. A running sweep is superseded. */
+export function useSweepParts(next: SweepParts): void {
+  stopUsenetPrefetch()
+  sweep = next
+}
+
+/** Whether the runtime in use runs background sweeps. */
+export function usenetSweepEnabled(): boolean {
+  return sweep.enabled
+}
+
 /** Prefetch only runs in the real server; tests opt in explicitly. */
 export function enableUsenetPrefetch(): void {
-  enabled = true
+  sweep.enabled = true
 }
 
 /** The hash lookups run with SABnzbd, a download mode that may use Usenet, and a hash indexer. */
@@ -163,52 +167,21 @@ function searchItems(
 }
 
 /**
- * A ledger record is active until it is removed or settled. Settled is imported by Sonarr or Radarr, or, for
- * a download nobody follows an import for, finished in its client. Anything else may still need its search
- * record: a download that ends up not imported rejects the candidate it was sent for.
+ * Starts a background sweep over `results`; any running sweep is superseded. Pruning the stores is the
+ * runtime's (`resultsChanged`), which calls this.
  */
-function activeRecord(record: OwnedDownloadRecord): boolean {
-  if (record.removed_at) return false
-  if (record.import) return record.import.state !== 'imported'
-  return record.last_phase !== 'complete' && record.last_phase !== 'seeding'
-}
-
-/**
- * Keep cached observations only for hashes the current results still reference, and search records only for
- * the sources they reference or an active download record names.
- */
-function pruneCache(results: ResultItem[]): void {
-  if (!results.length) return
-  const releases = results.flatMap(result => result.releases || [])
-  const hashes = new Set(releases.flatMap(release => torrentHashes(release)))
-  const removed = retainUsenetHashes(hashes)
-  if (removed) log('INFO', `Usenet cache dropped ${removed} observation(s) for releases no longer in the results`)
-  let ledger: OwnedDownloadRecord[]
-  try {
-    ledger = downloadRecords().filter(activeRecord)
-  } catch {
-    // Without the ledger nothing tells which records a download still needs.
-    log('WARNING', 'Usenet search records were not pruned: the download ledger could not be read')
-    return
-  }
-  const sources = new Set([
-    ...hashes,
-    ...releases.flatMap(release => (release.private_sources || []).map(source => source.id)),
-    ...ledger.flatMap(record => [record.source_hash, record.source_alias ?? '']).filter(Boolean),
-  ])
-  const dropped = retainSearchSources(sources)
-  if (dropped) log('INFO', `Usenet search store dropped ${dropped} record(s) for releases no longer in the results`)
-}
-
-/** Starts a background sweep over the saved results; any running sweep is superseded. */
-export function prefetchUsenetAvailability(config: Config, results: ResultItem[], reason: string): void {
+export function startUsenetSweep(config: Config, results: ResultItem[], reason: string): void {
   const epoch = ++sweepEpoch
   progress = idle()
-  if (!enabled) return
-  pruneCache(results)
+  if (!sweep.enabled) return
   const stages = { hashes: usenetPrefetchEligible(config), search: usenetSearchSweepEligible(config) }
   if (!stages.hashes && !stages.search) return
   void runSweep(epoch, config, results, reason, stages)
+}
+
+/** Starts a background sweep over the saved results through the runtime in use, which prunes the stores first. */
+export function prefetchUsenetAvailability(config: Config, results: ResultItem[], reason: string): void {
+  usenetRuntime().resultsChanged(config, results, readLedger(), reason)
 }
 
 /** Cancels any running sweep (scanned data cleared). */
@@ -246,7 +219,7 @@ async function runSweep(
   let hashProgress = { checked: 0, total: 0 }
   try {
     if (stages.hashes) {
-      const started = Date.now()
+      const started = sweep.now()
       progress = { running: true, checked: 0, total: releases }
       log('INFO', `Usenet availability prefetch started (${releases} releases; ${reason})`)
       let checked = 0
@@ -266,7 +239,7 @@ async function runSweep(
       if (!ownsProgress()) return
       log(
         'INFO',
-        `Usenet availability prefetch finished (${checked} releases in ${((Date.now() - started) / 1000).toFixed(0)}s)`,
+        `Usenet availability prefetch finished (${checked} releases in ${((sweep.now() - started) / 1000).toFixed(0)}s)`,
       )
       hashProgress = { checked, total: releases }
     }
@@ -323,7 +296,7 @@ async function searchStage(
     progress = { running: true, ...hashProgress, search: { checked, total: due.length } }
   }
   report(0)
-  const started = Date.now()
+  const started = sweep.now()
   log('INFO', `Prowlarr background search started (${due.length} release(s); ${indexers.length} Usenet indexer(s))`)
   const tally: Tally = { searched: 0, with_candidates: 0, without_candidates: 0, failed: 0, deferred: 0 }
   const queries = new Map<string, number>()
@@ -342,7 +315,7 @@ async function searchStage(
   const settings = prowlarrSettings(config)
   if (!ownsProgress() || !settings) return
   const summary: UsenetSearchSummary = {
-    finished_at: new Date(Date.now()).toISOString(),
+    finished_at: new Date(sweep.now()).toISOString(),
     ...tally,
     queries: [...queries].map(([indexer, count]) => ({ indexer, count })),
   }
@@ -350,7 +323,7 @@ async function searchStage(
   const sent = summary.queries.map(entry => `${entry.indexer} ${entry.count}`).join(', ') || 'none'
   log(
     'INFO',
-    `Prowlarr background search finished (${tally.searched} release(s) searched: ${tally.with_candidates} with candidates, ${tally.without_candidates} without, ${tally.failed} failed; ${tally.deferred} deferred by the daily search limit; queries: ${sent}; ${((Date.now() - started) / 1000).toFixed(0)}s)`,
+    `Prowlarr background search finished (${tally.searched} release(s) searched: ${tally.with_candidates} with candidates, ${tally.without_candidates} without, ${tally.failed} failed; ${tally.deferred} deferred by the daily search limit; queries: ${sent}; ${((sweep.now() - started) / 1000).toFixed(0)}s)`,
   )
 }
 
