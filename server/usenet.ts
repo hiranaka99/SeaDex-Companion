@@ -1,10 +1,9 @@
-import type { Config, ResultItem } from './types.js'
+import type { Config } from './types.js'
 import { sabnzbdApiUrl } from './config.js'
 import { HttpError } from './http-error.js'
 import { log } from './logging.js'
 import { torrentHashes } from '../shared/download-plan.js'
 import { INFO_HASH_PATTERN } from '../shared/ids.js'
-import { releaseIdentity } from '../shared/releases.js'
 import type { EstimatableRelease } from '../shared/download-estimate.js'
 import type {
   UsenetAvailabilityResult,
@@ -13,18 +12,8 @@ import type {
   UsenetSource,
   UsenetUnitState,
 } from '../shared/usenet-contracts.js'
-import type { PrivateSource, Release } from '../shared/contracts.js'
-import { knownProwlarrIndexers, privateSearchSettings, prowlarrSettings } from './prowlarr.js'
-import { searchContext } from './private-sources.js'
 import type { SourceFile } from './source-files.js'
-import {
-  cancelSourceCheck,
-  resolveSource,
-  searchNzbBytes,
-  searchSnapshot,
-  usenetSearchPauses,
-  type UsenetSearchContext,
-} from './usenet-search.js'
+import { searchNzbBytes, usenetSearchPauses } from './usenet-search.js'
 import { LOOKUP_TIMEOUT_MS, type ProviderLookup, type ProviderSettings } from './usenet-provider-types.js'
 import { PersistentUsenetCache, providerFingerprint, usenetCacheKey } from './usenet-cache.js'
 import { providerSettings, USENET_PROVIDER_IDS, USENET_PROVIDERS } from './usenet-providers.js'
@@ -47,7 +36,8 @@ const NEGATIVE_TTL_STEPS_MS = [HOUR, 6 * HOUR, DAY, 7 * DAY]
 const PROCESSING_TTL_MS = 10 * MINUTE
 const FAILURE_TTL_MS = MINUTE
 const LOOKUP_GUARD_MS = LOOKUP_TIMEOUT_MS + 5_000
-const FILE_NAME_LIMIT = 200
+/** The most file names a public availability row lists. */
+export const FILE_NAME_LIMIT = 200
 /** Background lookups wait out a pause and retry instead of recording a failure. */
 const BACKGROUND_ATTEMPTS = 3
 
@@ -73,44 +63,6 @@ export function usenetConfigured(config: Config): boolean {
 
 export function sabnzbdConfigured(config: Config): boolean {
   return Boolean(sabnzbdApiUrl(config) && config.sabnzbd_key)
-}
-
-/** Private-tracker sources Prowlarr can search for, when the release has no public torrent hash. */
-export function privateUsenetSources(
-  config: Config,
-  release: Pick<Release, 'info_hashes' | 'private_sources'>,
-): PrivateSource[] {
-  if (torrentHashes(release).length || !privateSearchSettings(config)) return []
-  return release.private_sources || []
-}
-
-/**
- * A public torrent as a source Prowlarr can search for once the hash indexers lack it: its hash and exact file
- * list. Null without Prowlarr, or when SeaDex lists no complete file list to check a copy against.
- */
-export function prowlarrFallbackSource(
-  config: Config,
-  release: Pick<Release, 'torrent_files'>,
-  hash: string,
-): PrivateSource | null {
-  if (!prowlarrSettings(config) || prowlarrHasUsenet(config) === false) return null
-  const files = (release.torrent_files || []).find(catalog => catalog.hash.toLowerCase() === hash)?.files
-  if (!files?.length || !files.every(file => file.name && Number.isSafeInteger(file.length) && file.length >= 0))
-    return null
-  return { id: hash, files }
-}
-
-/** Whether Prowlarr has a Usenet indexer: false only when its current indexer list says so, never while unknown. */
-export function prowlarrHasUsenet(config: Config): boolean | undefined {
-  const settings = prowlarrSettings(config)
-  if (!settings) return false
-  return knownProwlarrIndexers(settings)?.some(indexer => indexer.protocol === 'usenet')
-}
-
-/** The Usenet source identities a release is acquired by: its torrent hashes, or its private sources' file-list IDs. */
-export function usenetSourceIds(config: Config, release: Pick<Release, 'info_hashes' | 'private_sources'>): string[] {
-  const hashes = torrentHashes(release)
-  return hashes.length ? hashes : privateUsenetSources(config, release).map(source => source.id)
 }
 
 /** Provider failure warnings repeat at most once per minute per provider; sweeps must not spam the log. */
@@ -412,7 +364,7 @@ function hashState(provider: UsenetProvider, lookup: ProviderLookup): UsenetHash
   }
 }
 
-function availabilityMetadata(
+export function availabilityMetadata(
   states: UsenetHashAvailability[],
 ): Pick<UsenetAvailabilityResult, 'checked_at' | 'stale' | 'refreshing' | 'refresh_error'> {
   const times = states
@@ -573,6 +525,27 @@ function hashSnapshot(config: Config, hash: string): { result: UsenetHashAvailab
   return { result: withoutMatch(hash, queried, unknown ? 'not_checked' : 'no_match'), needsRefresh }
 }
 
+/**
+ * What the cache knows about one hash right now, without waiting on a provider. A missing or stale observation,
+ * or any with `refresh`, is refreshed in the background, at most once per hash in `refreshed`.
+ */
+export function observeUsenetHash(
+  config: Config,
+  hash: string,
+  refresh: boolean,
+  refreshed: Set<string>,
+): UsenetHashAvailability {
+  const snapshot = hashSnapshot(config, hash)
+  if ((refresh || snapshot.needsRefresh) && !refreshed.has(hash)) {
+    refreshed.add(hash)
+    scheduleHashRefresh(config, hash, refresh, false)
+  }
+  return {
+    ...snapshot.result,
+    refreshing: snapshot.result.refreshing === true || refreshChains.has(refreshKey(config, hash)),
+  }
+}
+
 /** What the hash indexers answered for one hash as far as the cache knows, without any request or refresh. */
 export function cachedHashState(config: Config, hash: string): UsenetUnitState {
   return hashSnapshot(config, hash).result.state
@@ -609,187 +582,6 @@ export class UsenetSelectionError extends HttpError {
   constructor(status: 400 | 409, message: string) {
     super(status, message, { ok: false })
   }
-}
-
-/** NZBs an explicit search may fetch for one source, and a row selected in a bulk review. */
-const SEARCH_FETCHES = 3
-const VERIFY_FETCHES = 1
-
-interface RowRef {
-  key: string
-  release: number
-}
-
-const rowId = (row: RowRef) => `${row.key}\u0000${row.release}`
-
-/** Every source of a release that Prowlarr may be searched for by its file list, whatever is known about it. */
-function fileListSources(config: Config, release: Release): PrivateSource[] {
-  const sources = privateUsenetSources(config, release)
-  if (sources.length) return sources
-  return torrentHashes(release).flatMap(hash => prowlarrFallbackSource(config, release, hash) ?? [])
-}
-
-/**
- * Cached or unchecked snapshots for the selected releases, returned immediately. Missing and
- * stale observations are refreshed in the background, once per hash however many rows share it.
- *
- * A source found through Prowlarr reports what is stored about it, and nothing is ever awaited from
- * Prowlarr. Work starts only for the rows named, and reports through later snapshots:
- *
- * - `search`: the source is searched again and up to three of its candidates are fetched and checked.
- * - `verify`: a source nothing was concluded about yet (`not_checked`, `unverified`) is searched if it has no
- *   fresh result, and its best candidate is fetched and checked. Any other source is left as it is.
- * - `cancelVerify`: what `verify` rows still wait for is dropped first; a fetch under way finishes.
- */
-export async function usenetAvailability(
-  config: Config,
-  selections: { key: string; release: number; identity?: string }[],
-  results: ResultItem[],
-  {
-    refresh = false,
-    background = false,
-    search = [],
-    verify = [],
-    cancelVerify = [],
-  }: { refresh?: boolean; background?: boolean; search?: RowRef[]; verify?: RowRef[]; cancelVerify?: RowRef[] } = {},
-): Promise<UsenetAvailabilityResult[]> {
-  const resultsByKey = new Map(results.map(result => [result.key, result]))
-  // Prowlarr is asked only for the rows named: each checked NZB counts against the indexer's grab limit.
-  const searched = new Set(search.map(rowId))
-  const verified = new Set(verify.map(rowId))
-  const selected = selections.map(selection => {
-    const release =
-      Number.isSafeInteger(selection.release) && selection.release >= 0
-        ? resultsByKey.get(selection.key)?.releases?.[selection.release]
-        : undefined
-    if (!release)
-      throw new UsenetSelectionError(
-        400,
-        'The selected release no longer exists. Refresh the results before checking availability.',
-      )
-    const identity = releaseIdentity(release)
-    if (selection.identity !== undefined && selection.identity !== identity) {
-      throw new UsenetSelectionError(
-        409,
-        'The selected release changed. Refresh the results before checking availability.',
-      )
-    }
-    return { selection, release, identity }
-  })
-  // Withdrawn before anything starts, so a row that is cancelled and selected again starts over.
-  for (const row of cancelVerify) {
-    const release =
-      Number.isSafeInteger(row.release) && row.release >= 0
-        ? resultsByKey.get(row.key)?.releases?.[row.release]
-        : undefined
-    if (release) for (const source of fileListSources(config, release)) cancelSourceCheck(config, source.id)
-  }
-  const scheduled = new Set<string>()
-  const started = new Set<string>()
-  /** What is stored about one source's Prowlarr search, after starting the work its row asks for. Never waits. */
-  const searchState = (
-    source: PrivateSource,
-    context: UsenetSearchContext,
-    asked: 'search' | 'verify' | undefined,
-  ): UsenetHashAvailability => {
-    if (asked && !started.has(source.id)) {
-      const { state } = searchSnapshot(config, source.id).availability
-      const options =
-        asked === 'search'
-          ? { limit: SEARCH_FETCHES, refresh: true }
-          : state === 'not_checked' || state === 'unverified'
-            ? { limit: VERIFY_FETCHES, cancellable: true }
-            : undefined
-      if (options) {
-        started.add(source.id)
-        // Failures come back as states of the source; only a defect lands here, and its text is not logged.
-        void resolveSource(config, source, context, options).catch(error =>
-          log('WARNING', `Prowlarr NZB search stopped: ${error instanceof Error ? error.name : 'unknown error'}`),
-        )
-      }
-    }
-    const snapshot = searchSnapshot(config, source.id)
-    return {
-      ...snapshot.availability,
-      checked_at: isoTime(snapshot.checkedAt),
-      stale: snapshot.stale,
-      refreshing: snapshot.running,
-    }
-  }
-  return selected.map(({ selection, release, identity }) => {
-    const privateSources = privateUsenetSources(config, release)
-    const result = resultsByKey.get(selection.key)
-    const context = searchContext(result, release)
-    const asked = searched.has(rowId(selection)) ? 'search' : verified.has(rowId(selection)) ? 'verify' : undefined
-    if (privateSources.length) {
-      // Prowlarr without a Usenet indexer cannot find a copy; say so instead of offering a search.
-      const noUsenet = prowlarrHasUsenet(config) === false
-      const hashes = privateSources.map((source): UsenetHashAvailability => {
-        if (noUsenet)
-          return {
-            hash: source.id,
-            state: 'not_configured',
-            provider: 'prowlarr',
-            error: 'Prowlarr has no Usenet indexer.',
-            checked_at: '',
-            stale: false,
-            refreshing: false,
-          }
-        return searchState(source, context, asked)
-      })
-      return {
-        key: selection.key,
-        release: selection.release,
-        identity,
-        hashes,
-        aggregate: aggregateHashStates(hashes.map(hash => hash.state)),
-        search: 'prowlarr' as const,
-        ...availabilityMetadata(hashes),
-      }
-    }
-    const sourceHashes = torrentHashes(release)
-    const hashes: UsenetHashAvailability[] = sourceHashes.length
-      ? sourceHashes.map(hash => {
-          const snapshot = hashSnapshot(config, hash)
-          if ((refresh || snapshot.needsRefresh) && !scheduled.has(hash)) {
-            scheduled.add(hash)
-            scheduleHashRefresh(config, hash, refresh, background)
-          }
-          return {
-            ...snapshot.result,
-            refreshing: snapshot.result.refreshing === true || refreshChains.has(refreshKey(config, hash)),
-          }
-        })
-      : [{ hash: '', state: 'unsupported_hash', stale: false, refreshing: false }]
-    // Where the hash indexers have nothing, Prowlarr may have found (or may be asked to find) a copy.
-    let fallback = false
-    let viaProwlarr = false
-    const merged = hashes.map((state): UsenetHashAvailability => {
-      if (state.state !== 'no_match') return state
-      const source = prowlarrFallbackSource(config, release, state.hash)
-      if (!source) return state
-      fallback = true
-      const found = searchState(source, context, asked)
-      if (found.state === 'not_checked' && !found.refreshing) return state
-      viaProwlarr = true
-      return { ...found, ...(state.providers_checked ? { providers_checked: state.providers_checked } : {}) }
-    })
-    // The public projection bounds filename lists; a truncated list is no longer a complete manifest.
-    const publicHashes = merged.map(hash =>
-      hash.file_names && hash.file_names.length > FILE_NAME_LIMIT
-        ? { ...hash, files_known: false, file_names: hash.file_names.slice(0, FILE_NAME_LIMIT) }
-        : hash,
-    )
-    return {
-      key: selection.key,
-      release: selection.release,
-      identity,
-      hashes: publicHashes,
-      aggregate: aggregateHashStates(merged.map(hash => hash.state)),
-      ...(viaProwlarr ? { search: 'prowlarr' as const } : fallback ? { fallback: 'prowlarr' as const } : {}),
-      ...availabilityMetadata(merged),
-    }
-  })
 }
 
 /**

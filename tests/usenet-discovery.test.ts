@@ -11,8 +11,8 @@ import {
   resolveUsenetRelease,
   usenetScheduler,
   UsenetSelectionError,
-  usenetAvailability,
 } from '../server/usenet.js'
+import { usenetAvailability } from '../server/usenet-copies.js'
 import { LookupScheduler, ProviderPausedError, type LookupJob } from '../server/usenet-scheduler.js'
 import { releaseIdentity } from '../shared/releases.js'
 import type { Release, ResultItem } from '../server/types.js'

@@ -10,13 +10,8 @@ import {
   stopUsenetPrefetch,
   usenetPrefetchProgress,
 } from '../server/usenet-prefetch.js'
-import {
-  resetUsenetLookups,
-  resolveUsenetHash,
-  usenetScheduler,
-  usenetAvailability,
-  usenetProviderPauses,
-} from '../server/usenet.js'
+import { resetUsenetLookups, resolveUsenetHash, usenetScheduler, usenetProviderPauses } from '../server/usenet.js'
+import { usenetAvailability } from '../server/usenet-copies.js'
 import { retryAfterMs } from '../server/usenet-provider-types.js'
 import type { Release, ResultItem } from '../server/types.js'
 

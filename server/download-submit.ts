@@ -114,7 +114,7 @@ export async function acceptDownloadPlan(
 
   // A plan the live state no longer supports is rejected the same way as any other stale review. Accepting
   // reads stored Prowlarr results only, also for a single release: it never costs a search or an NZB fetch.
-  const { review, units } = await planDownloads(config, plan.selections, { results, resolve: 'stored' }).catch(
+  const { review, units } = await planDownloads(config, plan.selections, { results, intent: 'acceptance' }).catch(
     error => {
       throw error instanceof HttpError ? new PlanRejected(error.status, error.message) : error
     },

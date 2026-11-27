@@ -28,18 +28,10 @@ import { downloadRecords, type OwnedDownloadRecord } from './download-store.js'
 import { downloadClients } from './download-clients.js'
 import type { ClientPresence, DownloadClientAdapter, SubmissionUnit } from './download-client-types.js'
 import { HttpError } from './http-error.js'
-import {
-  aggregateHashStates,
-  privateUsenetSources,
-  prowlarrFallbackSource,
-  resolveUsenetRelease,
-  sabnzbdConfigured,
-  usenetConfigured,
-  usenetSourceIds,
-} from './usenet.js'
+import { sabnzbdConfigured, usenetConfigured } from './usenet.js'
+import { resolveUsenetCopies, usenetSourceIds, type CopyIntent, type UsenetCopies } from './usenet-copies.js'
 import { privateSearchSettings } from './prowlarr.js'
 import { resolvePrivateTorrent, searchContext, type PrivateSearchContext } from './private-sources.js'
-import { chosenSearchCandidate, resolveSource, searchSnapshot } from './usenet-search.js'
 
 /** What a review resolves to before it is shown or sent: the public summary, the units behind it, and the rows that survive. */
 export interface PlannedDownloads {
@@ -49,11 +41,9 @@ export interface PlannedDownloads {
 }
 
 const EXTRA_FILE_LIMIT = 10
-/** NZBs a single review may fetch through Prowlarr for one source. Bulk reviews and acceptances fetch none. */
-const REVIEW_FETCHES = 3
 
-/** Whether a source found through Prowlarr may be searched and checked now, or only read from what is stored. */
-export type ResolveMode = 'stored' | 'search'
+/** Who plans: what a Usenet copy may cost is the resolver's budget for that intent (see `CopyIntent`). */
+export type PlanIntent = Extract<CopyIntent, 'single_review' | 'bulk_review' | 'acceptance'>
 
 /** Why a release the user's preferences exclude is blocked; it keeps the `invalid` code. */
 const EXCLUDED_RELEASE_COPY = 'Your release preferences exclude this release.'
@@ -89,6 +79,8 @@ const BLOCK_COPY: Record<PreflightBlocked['code'], string> = {
 /** Usenet outcomes that have their own wording; every other non-available outcome is a failed lookup. */
 const USENET_BLOCK: Partial<Record<UsenetUnitState, PreflightBlocked['code']>> = {
   not_configured: 'usenet_unconfigured',
+  // Only a Prowlarr search still running elsewhere leaves a hash unchecked once the hash indexers answered.
+  not_checked: 'not_searched',
   no_match: 'no_match',
   processing: 'processing',
   incomplete: 'incomplete',
@@ -129,6 +121,8 @@ interface ResolvedRow extends DownloadSelectionRef {
   identity: string
   protocol: DownloadProtocol
   source: Release
+  /** The library result the release belongs to. */
+  result: ResultItem
   category: string
   label: string
   /** Prowlarr search terms for this release: titles, release group, tracker and categories. */
@@ -183,8 +177,7 @@ interface PlanContext {
   ownership(hash: string): Ownership
   /** Private-tracker torrents found through Prowlarr, by their real info hash. */
   privateTorrents: Map<string, { file: Uint8Array; sourceId: string }>
-  /** `search` for a single review; a bulk review and an acceptance only read stored Prowlarr results for Usenet. */
-  resolve: ResolveMode
+  intent: PlanIntent
 }
 
 function selectionLabel(result: ResultItem, release: Release): string {
@@ -296,6 +289,7 @@ function resolveRows(
       identity: releaseIdentity(release),
       protocol,
       source: release,
+      result,
       category: downloadCategory(config, result, protocol),
       label: selectionLabel(result, release),
       search: searchContext(result, release),
@@ -412,105 +406,59 @@ async function resolvePrivateTorrentRows(
 
 interface UsenetRowPlan {
   available: UsenetHashAvailability[]
+  /** The file lists a copy found through Prowlarr was checked against, by source. */
+  listed: PrivateSource[]
   /** `detail` as `BlockedRows.add` takes it: appended to the code's copy, or replacing it. */
   blocked?: { code: PreflightBlocked['code']; detail?: string | { reason: string } }
 }
 
-/**
- * The Usenet copy of one source that Prowlarr is searched for by its file list.
- *
- * - A candidate the user chose is taken as it was checked, whatever its proof; nothing is searched for the row.
- * - A single review searches the source if no fresh result is stored and checks its best candidates.
- * - A bulk review and an acceptance read what is stored, so they never cost a search or an NZB fetch.
- */
-async function fileListCopy(
-  context: PlanContext,
-  row: ResolvedRow,
-  source: PrivateSource,
-): Promise<UsenetHashAvailability> {
-  const { config } = context
-  const chosen = row.nzb ? chosenSearchCandidate(config, source.id, row.nzb) : undefined
-  if (chosen) return chosen
-  if (context.resolve === 'search' && !row.nzb)
-    return (await resolveSource(config, source, row.search, { limit: REVIEW_FETCHES })).availability
-  return searchSnapshot(config, source.id).availability
-}
+/** The hint for a hash the hash indexers lack while nothing is known from Prowlarr about it. */
+const SEARCH_PROWLARR_HINT = 'Search Prowlarr for this release in its details to look beyond the hash indexers.'
 
-/** Whether one of the copies is the candidate the row names. A row that names none always passes. */
-const hasChosenNzb = (row: ResolvedRow, copies: UsenetHashAvailability[]): boolean =>
-  !row.nzb || copies.some(copy => copy.state === 'available' && copy.entry_id === row.nzb)
-
-const CHOSEN_NZB_BLOCK: UsenetRowPlan = {
-  available: [],
-  blocked: { code: 'not_searched', detail: { reason: CHOSEN_NZB_COPY } },
-}
-
-/** A Usenet copy of a private-tracker release: every source still missing needs a proven or chosen NZB. */
-async function resolvePrivateUsenetRow(
-  context: PlanContext,
-  row: ResolvedRow,
-  missing: string[],
-): Promise<UsenetRowPlan> {
-  const sources = privateUsenetSources(context.config, row.source).filter(source => missing.includes(source.id))
-  const copies = await Promise.all(sources.map(source => fileListCopy(context, row, source)))
-  if (!hasChosenNzb(row, copies)) return CHOSEN_NZB_BLOCK
-  const miss = copies.find(copy => copy.state !== 'available')
-  if (!miss) return { available: copies }
-  // The detail is what the search or the check last said: no candidate, a daily limit, an indexer that failed.
-  return { available: [], blocked: { code: FILE_LIST_BLOCK[miss.state] ?? 'no_match', detail: miss.error } }
-}
-
-/** Looks up the sources of one row that no acquisition covers yet. */
-async function resolveUsenetRow(
-  context: PlanContext,
-  row: ResolvedRow,
-  missingHashes: string[],
-  refresh: boolean | undefined,
-): Promise<UsenetRowPlan> {
-  const { config } = context
-  const found = await resolveUsenetRelease(config, { ...row.source, info_hashes: missingHashes }, refresh)
-  if (found.aggregate === 'available') return { available: found.hashes.filter(hash => hash.state === 'available') }
-  // Only a hash every hash indexer answered "no NZB" for may have a copy found through Prowlarr instead.
-  let searchable = false
-  const hashes = await Promise.all(
-    found.hashes.map(async (state): Promise<UsenetHashAvailability> => {
-      if (state.state !== 'no_match') return state
-      const source = prowlarrFallbackSource(config, row.source, state.hash)
-      if (!source) return state
-      searchable = true
-      const copy = await fileListCopy(context, row, source)
-      // Prowlarr has no Usenet indexer to ask: what the hash indexers said stands.
-      if (copy.state === 'not_configured') return state
-      if (copy.state !== 'not_checked') return copy
-      return {
-        ...state,
-        error: 'Search Prowlarr for this release in its details to look beyond the hash indexers.',
-      }
-    }),
-  )
-  if (searchable && !hasChosenNzb(row, hashes)) return CHOSEN_NZB_BLOCK
-  const aggregate = aggregateHashStates(hashes.map(hash => hash.state))
-  if (aggregate === 'available') return { available: hashes.filter(hash => hash.state === 'available') }
-  const absent = hashes.find(hash => hash.state === 'no_match' && hash.error)
-  if (aggregate === 'no_match' && absent) return { available: [], blocked: { code: 'no_match', detail: absent.error } }
-  const unchecked = hashes.find(hash => hash.state === 'unverified')
-  if (aggregate === 'unverified') return { available: [], blocked: { code: 'not_verified', detail: unchecked?.error } }
+/** What the Usenet copies of one row's missing sources allow: units to plan, or why the row is blocked. */
+function usenetRowPlan(row: ResolvedRow, copies: UsenetCopies): UsenetRowPlan {
+  const { hashes, fileListSources: listed } = copies
+  const blocked = (code: PreflightBlocked['code'], detail?: string | { reason: string }): UsenetRowPlan => ({
+    available: [],
+    listed,
+    blocked: { code, detail },
+  })
+  // The candidate a row names must be one of the copies: fetched, graded and not rejected.
+  if (listed.length && row.nzb && !hashes.some(copy => copy.state === 'available' && copy.entry_id === row.nzb))
+    return blocked('not_searched', { reason: CHOSEN_NZB_COPY })
+  if (copies.by === 'file_list') {
+    // Every source of a private-tracker release needs a proven or chosen NZB.
+    const miss = hashes.find(copy => copy.state !== 'available')
+    if (!miss) return { available: hashes, listed }
+    // The detail is what the search or the check last said: no candidate, a daily limit, an indexer that failed.
+    return blocked(FILE_LIST_BLOCK[miss.state] ?? 'no_match', miss.error)
+  }
+  const { aggregate } = copies
+  if (aggregate === 'available') return { available: hashes.filter(hash => hash.state === 'available'), listed }
+  if (aggregate === 'no_match') {
+    const absent = hashes.find(hash => hash.state === 'no_match' && hash.error)
+    const unsearched = hashes.some(
+      hash =>
+        hash.state === 'no_match' && hash.provider !== 'prowlarr' && listed.some(source => source.id === hash.hash),
+    )
+    const detail = absent?.error ?? (unsearched ? SEARCH_PROWLARR_HINT : undefined)
+    if (detail) return blocked('no_match', detail)
+  }
+  if (aggregate === 'unverified')
+    return blocked('not_verified', hashes.find(hash => hash.state === 'unverified')?.error)
   const failed = hashes.find(hash => hash.state === 'lookup_failed')
   const unresolved = failed?.providers_failed?.length ? ` (${failed.providers_failed.join(', ')} unresolved)` : ''
-  return {
-    available: [],
-    blocked: {
-      code: USENET_BLOCK[aggregate] ?? 'lookup_failed',
-      detail: failed ? `${failed.error || 'provider unavailable'}${unresolved}` : undefined,
-    },
-  }
+  return blocked(
+    USENET_BLOCK[aggregate] ?? 'lookup_failed',
+    failed ? `${failed.error || 'provider unavailable'}${unresolved}` : undefined,
+  )
 }
 
 /** An NZB always carries its whole source, so a row scoped to some files may need the user's acknowledgement. */
 async function planUsenetUnits(context: PlanContext, rows: ResolvedRow[], refresh: boolean | undefined): Promise<void> {
   const { config, blocks, units, clients } = context
-  // Lookups run concurrently per row; provider-level concurrency and caching live in the resolver.
-  const lookups = new Map<string, Promise<UsenetRowPlan>>()
+  const plans = new Map<string, UsenetRowPlan>()
+  const lookups: { row: ResolvedRow; missing: string[] }[] = []
   for (const row of rows) {
     if (blocks.has(row)) continue
     const required = usenetSourceIds(config, row.source)
@@ -518,7 +466,7 @@ async function planUsenetUnits(context: PlanContext, rows: ResolvedRow[], refres
       const detail = row.source.private_sources?.length
         ? 'Private-tracker releases are found on Usenet through Prowlarr; set it up under Configuration.'
         : undefined
-      lookups.set(rowKey(row), Promise.resolve({ available: [], blocked: { code: 'no_match', detail } }))
+      plans.set(rowKey(row), { available: [], listed: [], blocked: { code: 'no_match', detail } })
       continue
     }
     const unresolved = required.map(hash => context.ownership(hash)).filter(owner => owner.unresolved)
@@ -527,20 +475,25 @@ async function planUsenetUnits(context: PlanContext, rows: ResolvedRow[], refres
       continue
     }
     const missing = required.filter(hash => !context.ownership(hash).record)
-    const privateRow = !torrentHashes(row.source).length
-    lookups.set(
-      rowKey(row),
-      !missing.length
-        ? Promise.resolve({ available: [] })
-        : privateRow
-          ? resolvePrivateUsenetRow(context, row, missing)
-          : resolveUsenetRow(context, row, missing, refresh),
-    )
+    if (missing.length) lookups.push({ row, missing })
+    else plans.set(rowKey(row), { available: [], listed: [] })
   }
+  // Only the sources no acquisition covers yet are looked up; caching and pacing live in the resolver.
+  const copies = await resolveUsenetCopies(
+    config,
+    lookups.map(({ row, missing }) => ({
+      release: row.source,
+      result: row.result,
+      intent: context.intent,
+      only: missing,
+      ...(refresh ? { refresh } : {}),
+      ...(row.nzb ? { nzb: row.nzb } : {}),
+    })),
+  )
+  lookups.forEach(({ row }, index) => plans.set(rowKey(row), usenetRowPlan(row, copies[index])))
   for (const row of rows) {
-    const lookup = lookups.get(rowKey(row))
-    if (!lookup || blocks.has(row)) continue
-    const plan = await lookup
+    const plan = plans.get(rowKey(row))
+    if (!plan || blocks.has(row)) continue
     if (plan.blocked) {
       blocks.add(row, plan.blocked.code, plan.blocked.detail)
       continue
@@ -585,10 +538,7 @@ async function planUsenetUnits(context: PlanContext, rows: ResolvedRow[], refres
       const scopeUnknown = requested.length > 0 && !filesKnown
       // The file list a copy found through Prowlarr was checked against.
       const listed =
-        availability.provider === 'prowlarr'
-          ? (privateUsenetSources(config, row.source).find(source => source.id === availability.hash) ??
-            prowlarrFallbackSource(config, row.source, availability.hash))
-          : null
+        availability.provider === 'prowlarr' ? plan.listed.find(source => source.id === availability.hash) : undefined
       units.add({
         ...unitFor(availability.hash),
         status: existing ? 'existing' : 'new',
@@ -646,14 +596,14 @@ async function collectDiskChecks(
  * resolves Usenet availability without enqueueing, and deduplicates actual client units per
  * source hash. Nothing is stored or sent: a review and an acceptance both start here.
  *
- * `resolve` says what a Usenet copy found through Prowlarr may cost. With `stored`, the default, only stored
- * results are read: no search and no NZB fetch. `search` is for a single review, which searches a source
- * without a fresh result and checks its candidates.
+ * `intent` says what a Usenet copy may cost (see `CopyIntent`). An `acceptance`, the default, and a
+ * `bulk_review` only read stored Prowlarr results: no search and no NZB fetch. A `single_review` searches a
+ * source without a fresh result and checks its candidates.
  */
 export async function planDownloads(
   config: Config,
   selections: DownloadSelection[],
-  options: { results: ResultItem[]; refresh?: boolean; resolve?: ResolveMode },
+  options: { results: ResultItem[]; refresh?: boolean; intent?: PlanIntent },
 ): Promise<PlannedDownloads> {
   const blocks = new BlockedRows()
   const rows = resolveRows(config, selections, options.results, blocks)
@@ -707,7 +657,7 @@ export async function planDownloads(
     units,
     ownership,
     privateTorrents,
-    resolve: options.resolve ?? 'stored',
+    intent: options.intent ?? 'acceptance',
   }
   // Torrent units are listed before Usenet units.
   if (torrentRows.length) planTorrentUnits(context, torrentRows)
@@ -770,8 +720,8 @@ export async function buildDownloadPlan(
   selections: DownloadSelection[],
   options: { results: ResultItem[]; refresh?: boolean },
 ): Promise<{ review: DownloadPreflight; plan: StoredPlan }> {
-  const resolve: ResolveMode = selections.length === 1 ? 'search' : 'stored'
-  const planned = await planDownloads(config, selections, { ...options, resolve })
+  const intent: PlanIntent = selections.length === 1 ? 'single_review' : 'bulk_review'
+  const planned = await planDownloads(config, selections, { ...options, intent })
   const plan = putPlan({
     config_generation: currentGeneration(),
     selections: planned.selections,

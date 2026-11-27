@@ -1,6 +1,5 @@
 import { downloadRecords, type OwnedDownloadRecord } from './download-store.js'
 import { log } from './logging.js'
-import { searchContext } from './private-sources.js'
 import {
   ProwlarrError,
   knownProwlarrIndexers,
@@ -14,17 +13,14 @@ import { exclusionRuleKey, loadUserRules } from './user-rules.js'
 import { torrentHashes } from '../shared/download-plan.js'
 import {
   cachedHashState,
-  privateUsenetSources,
-  prowlarrFallbackSource,
-  resolveUsenetRelease,
   retainUsenetHashes,
   sabnzbdConfigured,
   usenetProviderPauses,
   usenetProvidersEnabled,
 } from './usenet.js'
+import { fileListSources, resolveUsenetCopies, searchInBackground } from './usenet-copies.js'
 import {
   backgroundSearchesSpent,
-  resolveSource,
   retainSearchSources,
   searchSnapshot,
   searchStore,
@@ -141,11 +137,10 @@ interface SearchItem {
 }
 
 /**
- * The sources of the planned releases a file-list search can look for, in plan order and once each: the
- * private-tracker sources of a release without a hash, and each hash that every enabled hash indexer answered
- * "no NZB" for, when SeaDex lists its files. A failed or still-processing hash lookup never qualifies.
+ * The sources of the planned releases a file-list search can look for (`fileListSources`), in plan order and
+ * once each, given what the hash indexers answered for each hash.
  */
-function fileListSources(
+function searchItems(
   config: Config,
   plan: ReturnType<typeof prefetchPlan>,
   results: ResultItem[],
@@ -157,13 +152,7 @@ function fileListSources(
   for (const entry of plan) {
     const result = byKey.get(entry.key)
     for (const release of entry.releases) {
-      const sources = [
-        ...privateUsenetSources(config, release),
-        ...torrentHashes(release).flatMap(hash =>
-          hashState(hash) === 'no_match' ? (prowlarrFallbackSource(config, release, hash) ?? []) : [],
-        ),
-      ]
-      for (const source of sources) {
+      for (const source of fileListSources(config, release, hashState)) {
         if (seen.has(source.id)) continue
         seen.add(source.id)
         items.push({ source, release, result })
@@ -261,10 +250,13 @@ async function runSweep(
       progress = { running: true, checked: 0, total: releases }
       log('INFO', `Usenet availability prefetch started (${releases} releases; ${reason})`)
       let checked = 0
+      const byKey = new Map(results.map(result => [result.key, result]))
       for (const entry of plan) {
         if (!ownsProgress()) return
-        const answers = await Promise.all(
-          entry.releases.map(release => resolveUsenetRelease(config, release, false, true)),
+        const result = byKey.get(entry.key)
+        const answers = await resolveUsenetCopies(
+          config,
+          entry.releases.map(release => ({ release, result, intent: 'sweep' as const })),
         )
         if (!ownsProgress()) return
         for (const answer of answers) for (const hash of answer.hashes) if (hash.hash) states.set(hash.hash, hash.state)
@@ -289,7 +281,7 @@ async function runSweep(
       log('INFO', 'Prowlarr background search skipped: Prowlarr has no Usenet indexer')
       return
     }
-    const due = fileListSources(config, plan, results, hash => states.get(hash)).filter(item => {
+    const due = searchItems(config, plan, results, hash => states.get(hash)).filter(item => {
       const snapshot = searchSnapshot(config, item.source.id)
       return snapshot.stale && !snapshot.running
     })
@@ -340,9 +332,7 @@ async function searchStage(
       tally.deferred += due.length - index
       break
     }
-    const outcome = await resolveSource(config, item.source, searchContext(item.result, item.release), {
-      background: true,
-    })
+    const outcome = await searchInBackground(config, item)
     // A changed Prowlarr connection cancels the search, and the settings change starts another sweep.
     if (!ownsProgress() || outcome.cancelled) return
     countOutcome(tally, outcome)
@@ -374,7 +364,7 @@ export function usenetSearchStatus(config: Config, results: ResultItem[]): Prowl
   if (!settings) return { eligible_sources: 0, pending_sources: 0, usenet_indexers: 0 }
   const indexers = knownProwlarrIndexers(settings)?.filter(indexer => indexer.protocol === 'usenet') ?? []
   const sources = results.length
-    ? fileListSources(config, readablePlan(results), results, hash => cachedHashState(config, hash))
+    ? searchItems(config, readablePlan(results), results, hash => cachedHashState(config, hash))
     : []
   const summary = searchStore.summary()
   return {
