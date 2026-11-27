@@ -33,7 +33,14 @@ import {
 import { gradeNzb, nzbFiles, type NzbFile, type NzbGrade, type SourceFile } from './source-files.js'
 import type { Config, PrivateSource } from './types.js'
 import { NZB_MAX_BYTES, gunzipOnce, safeText } from './usenet-provider-types.js'
-import { LookupScheduler, ProviderPausedError, type ChannelPause, type LookupJob } from './usenet-scheduler.js'
+import {
+  LookupGuardTimeout,
+  LookupScheduler,
+  ProviderPausedError,
+  type ChannelPause,
+  type LookupHandle,
+  type LookupPacing,
+} from './usenet-scheduler.js'
 import {
   RETRY_MIN_MS,
   failedAvailability,
@@ -85,7 +92,20 @@ const NZB_CHANGED = 'The NZB changed since it was checked. Re-run the review bef
  * per indexer. It is apart from the scheduler of the hash indexers, so a slow search never takes a slot
  * from hash lookups.
  */
-export const searchScheduler = new LookupScheduler({ concurrency: 3, foregroundReserved: 1, minIntervalMs: 2_000 })
+export let searchScheduler = prowlarrScheduler()
+
+function prowlarrScheduler(pacing: Partial<LookupPacing> = {}): LookupScheduler {
+  return new LookupScheduler({ concurrency: 3, foregroundReserved: 1, minIntervalMs: 2_000, ...pacing })
+}
+
+/**
+ * Tests: requests to Prowlarr's indexers from now on run on a fresh scheduler with this pacing over the
+ * defaults, which forgets every channel's health and name. Work already queued finishes on the scheduler it
+ * was given to; the next read of the indexer list names the channels again.
+ */
+export function paceUsenetSearch(pacing: Partial<LookupPacing> = {}): void {
+  searchScheduler = prowlarrScheduler(pacing)
+}
 
 /** Search records, fetched NZBs, usage counters and the sweep summary, on the default paths. */
 export const searchStore = new UsenetSearchStore()
@@ -149,7 +169,7 @@ interface SearchFlight {
   promise: Promise<SearchResult>
   controller: AbortController
   /** Requests waiting for or holding a slot, so a caller that starts waiting can promote them. */
-  jobs: Set<LookupJob>
+  jobs: Set<LookupHandle<unknown>>
   background: boolean
   /** Only callers whose check may be cancelled wait for this search, so cancelling them cancels it. */
   loose: boolean
@@ -202,6 +222,8 @@ const NOTHING: SearchResult = { complete: false, deferred: false, queries: [] }
 const SEARCH_CANCELLED: SearchResult = { complete: true, deferred: false, queries: [], cancelled: true }
 const VERIFY_CANCELLED: VerifyResult = { fetched: 0, cancelled: true }
 const ANSWERED = { kind: 'answered' }
+/** A background search the daily limit refused once it had its slot: nothing was asked. */
+const REFUSED: unique symbol = Symbol('refused')
 
 const searches = new Map<string, SearchFlight>()
 const verifies = new Map<string, VerifyFlight>()
@@ -242,28 +264,10 @@ function connectionFingerprint(config: Config): string | null {
     : null
 }
 
-class GuardTimeout extends Error {}
-
-/** Settles with `work`, or rejects once the work is cancelled or still pending after `guardMs`. */
-async function bounded<T>(work: Promise<T>, signal: AbortSignal, guardMs: number): Promise<T> {
-  const stop = Promise.withResolvers<never>()
-  const cancel = () => stop.reject(signal.reason)
-  const timer = setTimeout(() => stop.reject(new GuardTimeout()), guardMs)
-  timer.unref?.()
-  signal.addEventListener('abort', cancel, { once: true })
-  if (signal.aborted) cancel()
-  try {
-    return await Promise.race([work, stop.promise])
-  } finally {
-    clearTimeout(timer)
-    signal.removeEventListener('abort', cancel)
-  }
-}
-
 /** Any error of a request as a typed failure. Only the client's own texts are kept: they never carry an address. */
 function requestFailure(error: unknown, operation: string, scope: ProwlarrFailureScope = 'indexer'): ProwlarrError {
   if (error instanceof ProwlarrError) return error
-  if (error instanceof GuardTimeout)
+  if (error instanceof LookupGuardTimeout)
     return new ProwlarrError('timeout', `The ${operation} did not finish in time`, undefined, scope)
   return new ProwlarrError('network', `The ${operation} failed`, undefined, scope)
 }
@@ -586,13 +590,34 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
     return true
   }
   const ask = async (run: IndexerRun, query: SearchQuery): Promise<void> => {
-    const job: LookupJob = { channel: run.channel, background: flight.background, controller: flight.controller }
-    if (job.background && refused(run)) return
+    if (flight.background && refused(run)) return
+    const job = searchScheduler.schedule({
+      channel: run.channel,
+      background: flight.background,
+      signal,
+      guardMs: SEARCH_GUARD_MS,
+      work: async (): Promise<ProwlarrSearchResult[] | typeof REFUSED> => {
+        // Background work is counted and limited, read with the slot in hand because other sources use the
+        // same budget. A search someone waits for is paced only, also when it started in the background.
+        if (flight.background) {
+          if (refused(run)) return REFUSED
+          searchStore.countSearch(fingerprint, run.indexer.id)
+        }
+        run.queries++
+        return searchIndexer({ ...settings, signal }, run.indexer, query)
+      },
+      outcome: settled => {
+        if (settled.ok) return settled.value === REFUSED ? undefined : ANSWERED
+        const failure = requestFailure(settled.error, 'search')
+        // A failure of Prowlarr itself says nothing about the indexer.
+        return failure.scope === 'prowlarr' ? undefined : failedOutcome(failure)
+      },
+    })
     flight.jobs.add(job)
+    let results: ProwlarrSearchResult[] | typeof REFUSED
     try {
-      await searchScheduler.acquire(job)
+      results = await job.result
     } catch (error) {
-      flight.jobs.delete(job)
       if (error instanceof ProviderPausedError) {
         const rateLimited = searchScheduler.pausedFailure(run.channel, error.until).code === 'rate_limited'
         fail(
@@ -603,36 +628,21 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
             ? `${run.name} is rate limiting requests and is not asked for now.`
             : `Requests to ${run.name} are failing; it is not asked for now.`,
         )
-      } else if (!cancelled()) fail(run, 0, 'network', `${run.name} could not be searched.`)
-      return
-    }
-    let results: ProwlarrSearchResult[]
-    try {
-      signal.throwIfAborted()
-      // Background work is counted and limited, read with the slot in hand because other sources use the
-      // same budget. A search someone waits for is paced only, also when it started in the background.
-      if (job.background) {
-        if (refused(run)) return
-        searchStore.countSearch(fingerprint, run.indexer.id)
+        return
       }
-      run.queries++
-      results = await bounded(searchIndexer({ ...settings, signal }, run.indexer, query), signal, SEARCH_GUARD_MS)
-    } catch (error) {
       if (cancelled()) return
       const failure = requestFailure(error, 'search')
       // Prowlarr refusing its key fails everything; anything else is this indexer's failure only.
       if (failure.scope === 'prowlarr') fatal ??= failure
       else {
-        searchScheduler.recordOutcome(run.channel, failedOutcome(failure))
         fail(run, retryTime(run.channel, failure, Date.now()), failure.code, failure.message)
         warnOnce(run.channel, `Prowlarr search of ${run.name} failed: ${failure.message}`)
       }
       return
     } finally {
-      searchScheduler.release()
       flight.jobs.delete(job)
     }
-    searchScheduler.recordOutcome(run.channel, ANSWERED)
+    if (results === REFUSED) return
     for (const result of results) {
       const candidate = candidateOf(result, run.name)
       if (candidate && isPlausible(candidate, facts)) found.set(candidate.entry_id, candidate)
@@ -688,8 +698,7 @@ function sharedSearch(request: SearchRequest, background: boolean, loose: boolea
     if (!loose) running.loose = false
     if (!background && running.background) {
       running.background = false
-      for (const job of running.jobs) job.background = false
-      searchScheduler.pump()
+      for (const job of running.jobs) job.promote()
     }
     // "Search again" asks every indexer; a running search that asked only some is followed by one that does.
     return request.refresh
@@ -778,6 +787,10 @@ function logGrade(indexer: string, grade: NzbGrade): void {
   log('INFO', `Usenet NZB from ${indexer} graded ${grade.proof}; ${ratio}`)
 }
 
+/** What a fetch that had its slot came to, short of a failed request. */
+type FetchResult =
+  { kind: 'fetched'; nzb: Uint8Array; files: NzbFile[] } | { kind: 'blocked'; reason: string } | { kind: 'withdrawn' }
+
 /**
  * One NZB through Prowlarr, on the indexer's channel and counted against the daily limit before it is asked
  * for. Aborting `queued` gives up the wait for the slot (`withdrawn`); once the request is sent only
@@ -791,55 +804,48 @@ async function fetchNzb(
   indexer: string,
   controller: AbortController,
   queued: AbortController = controller,
-): Promise<
-  | { kind: 'fetched'; nzb: Uint8Array; files: NzbFile[] }
-  | { kind: 'blocked'; reason: string }
-  | { kind: 'failed'; failure: ProwlarrError }
-  | { kind: 'cancelled' }
-  | { kind: 'withdrawn' }
-> {
+): Promise<FetchResult | { kind: 'failed'; failure: ProwlarrError } | { kind: 'cancelled' }> {
   const channel = channelOf(candidate.indexer_id)
   const { signal } = controller
+  /** The fetch had its slot: from then on aborting `queued` no longer withdraws it. */
+  let started = false
   try {
-    await searchScheduler.acquire({ channel, background: false, controller: queued })
+    return await searchScheduler.schedule<FetchResult>({
+      channel,
+      signal,
+      waitSignal: queued.signal,
+      guardMs: FETCH_GUARD_MS,
+      work: async () => {
+        started = true
+        // Given up between getting the slot and using it: nothing was asked for yet.
+        if (queued.signal.aborted) return { kind: 'withdrawn' }
+        // Read with the slot in hand: checks of other sources spend the same daily limit.
+        const block = fetchBlock(config, fingerprint, candidate.indexer_id, indexer, Date.now())
+        if (block) return { kind: 'blocked', reason: block }
+        searchStore.countFetch(fingerprint, candidate.indexer_id)
+        const path = downloadPathFromRef(settings, { indexer_id: candidate.indexer_id, ...candidate.download })
+        const bytes = await prowlarrDownload({ ...settings, signal }, { download_path: path }, NZB_MAX_BYTES)
+        try {
+          const nzb = await gunzipOnce(bytes, NZB_MAX_BYTES)
+          // `nzbFiles` validates the NZB before it reads it.
+          return { kind: 'fetched', nzb, files: nzbFiles(nzb) }
+        } catch {
+          throw new ProwlarrError('invalid_response', 'The indexer did not send a valid NZB', undefined, 'indexer')
+        }
+      },
+      outcome: settled => {
+        if (settled.ok) return settled.value.kind === 'fetched' ? ANSWERED : undefined
+        const failure = requestFailure(settled.error, 'NZB download')
+        // What an indexer did, its channel learns; a failure of Prowlarr says nothing about the indexer.
+        return failure.scope === 'indexer' ? failedOutcome(failure) : undefined
+      },
+    }).result
   } catch (error) {
     if (signal.aborted) return { kind: 'cancelled' }
+    if (started) return { kind: 'failed', failure: requestFailure(error, 'NZB download') }
     if (queued.signal.aborted) return { kind: 'withdrawn' }
     const until = error instanceof ProviderPausedError ? error.until : searchScheduler.pausedUntil(channel)
     return { kind: 'blocked', reason: searchScheduler.pausedFailure(channel, until).message }
-  }
-  try {
-    signal.throwIfAborted()
-    // Given up between getting the slot and using it: nothing was asked for yet.
-    if (queued.signal.aborted) return { kind: 'withdrawn' }
-    // Read with the slot in hand: checks of other sources spend the same daily limit.
-    const block = fetchBlock(config, fingerprint, candidate.indexer_id, indexer, Date.now())
-    if (block) return { kind: 'blocked', reason: block }
-    searchStore.countFetch(fingerprint, candidate.indexer_id)
-    const path = downloadPathFromRef(settings, { indexer_id: candidate.indexer_id, ...candidate.download })
-    const bytes = await bounded(
-      prowlarrDownload({ ...settings, signal }, { download_path: path }, NZB_MAX_BYTES),
-      signal,
-      FETCH_GUARD_MS,
-    )
-    let fetched: { kind: 'fetched'; nzb: Uint8Array; files: NzbFile[] }
-    try {
-      const nzb = await gunzipOnce(bytes, NZB_MAX_BYTES)
-      // `nzbFiles` validates the NZB before it reads it.
-      fetched = { kind: 'fetched', nzb, files: nzbFiles(nzb) }
-    } catch {
-      throw new ProwlarrError('invalid_response', 'The indexer did not send a valid NZB', undefined, 'indexer')
-    }
-    searchScheduler.recordOutcome(channel, ANSWERED)
-    return fetched
-  } catch (error) {
-    if (signal.aborted) return { kind: 'cancelled' }
-    const failure = requestFailure(error, 'NZB download')
-    // What an indexer did, its channel learns; a failure of Prowlarr says nothing about the indexer.
-    if (failure.scope === 'indexer') searchScheduler.recordOutcome(channel, failedOutcome(failure))
-    return { kind: 'failed', failure }
-  } finally {
-    searchScheduler.release()
   }
 }
 

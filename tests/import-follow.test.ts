@@ -32,7 +32,7 @@ import {
   rejectSearchCandidate,
   resetUsenetSearch,
   resolveSource,
-  searchScheduler,
+  paceUsenetSearch,
   searchSnapshot,
   verifySource,
 } from '../server/usenet-search.js'
@@ -500,9 +500,8 @@ function forgetSearches(): void {
 /** A fake Prowlarr behind `fetch`, and a fresh finder; both are put back when the test ends. */
 function finder(t: TestContext): { fetched: string[] } {
   const original = globalThis.fetch
-  const pacing = { ...searchScheduler.options }
   forgetSearches()
-  searchScheduler.options.minIntervalMs = 0
+  paceUsenetSearch({ minIntervalMs: 0 })
   const fetched: string[] = []
   globalThis.fetch = async (input: RequestInfo | URL) => {
     const url = new URL(String(input))
@@ -519,7 +518,7 @@ function finder(t: TestContext): { fetched: string[] } {
   }
   t.after(() => {
     globalThis.fetch = original
-    Object.assign(searchScheduler.options, pacing)
+    paceUsenetSearch()
     forgetSearches()
   })
   return { fetched }
