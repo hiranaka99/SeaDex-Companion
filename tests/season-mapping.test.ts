@@ -398,6 +398,7 @@ describe('release selection and combined cours', () => {
         return []
       },
       loadCache: () => ({}),
+      recordReleaseChanges: () => {},
       saveLastResults: () => undefined,
       autoNotifyNew: async () => 0,
     }).run({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr/api/v3' })
@@ -432,6 +433,7 @@ describe('release selection and combined cours', () => {
         throw new Error('Sonarr unavailable')
       },
       loadCache: () => ({}),
+      recordReleaseChanges: () => {},
       saveLastResults: () => assert.fail('failed scans must not be saved'),
       autoNotifyNew: async () => 0,
     }).run(DEFAULT_CONFIG)
@@ -453,6 +455,7 @@ describe('release selection and combined cours', () => {
       },
       localItems: async () => [],
       loadCache: () => ({}),
+      recordReleaseChanges: () => {},
       saveLastResults: () => assert.fail('cancelled scans must not be saved'),
       autoNotifyNew: async () => 0,
     }).run(DEFAULT_CONFIG)
@@ -473,6 +476,7 @@ describe('release selection and combined cours', () => {
       },
       anilistChain: async () => [],
       loadCache: () => ({}),
+      recordReleaseChanges: () => {},
       saveLastResults: () => undefined,
       autoNotifyNew: async () => 0,
     }).run(DEFAULT_CONFIG, 'sonarr', { sonarrIds: [2] })
@@ -494,6 +498,7 @@ describe('release selection and combined cours', () => {
       await createScanService({
         seadexBest: async () => new Map(),
         loadCache: () => ({}),
+        recordReleaseChanges: () => {},
         saveLastResults: () => undefined,
         autoNotifyNew: async () => 0,
       }).run({
@@ -789,6 +794,7 @@ async function scanWith(
     localItems: async () => items,
     anilistChain: async () => chain,
     loadCache: () => ({}),
+    recordReleaseChanges: () => {},
     saveLastResults: () => undefined,
     autoNotifyNew: async () => 0,
   }).run({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr/api/v3' })

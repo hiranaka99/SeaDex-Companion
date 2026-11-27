@@ -680,6 +680,7 @@ test('a change in the trackers Prowlarr covers makes the next scan a baseline, a
   let indexers: ProwlarrIndexer[] | null = [animeBytes]
   const reads: unknown[] = []
   const saves: { baseline: boolean | undefined; assessment: string | undefined }[] = []
+  let baseline: boolean | undefined
   const local = season()
   const listing = [privateCandidate('Vault', 7), ...publicAlternatives()]
   const service = createScanService({
@@ -697,8 +698,12 @@ test('a change in the trackers Prowlarr covers makes the next scan a baseline, a
       if (!indexers) throw new Error('Prowlarr is not answering')
       return indexers
     },
+    recordReleaseChanges: comparison => {
+      // A baseline because the settings changed; a first scan is one anyway.
+      baseline = comparison.baseline && !comparison.firstScan
+    },
     saveLastResults: (results, lastRun, options) => {
-      saves.push({ baseline: options?.baseline, assessment: options?.settings?.assessment })
+      saves.push({ baseline, assessment: options?.settings?.assessment })
       saveLastResults(results, lastRun, options)
     },
   })

@@ -419,6 +419,7 @@ test('the same anime in two instances stays two results, two cards, and two sour
       ]),
     anilistChain: async () => [{ season: 1, id: 42, ids: [42], episodeCount: 2, parts: [{ id: 42, episodeCount: 2 }] }],
     loadCache: () => ({}),
+    recordReleaseChanges: () => {},
     saveLastResults: () => {},
     autoNotifyNew: async () => 0,
     recordScanHistory: () => ({}) as never,

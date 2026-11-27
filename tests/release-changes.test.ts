@@ -13,6 +13,7 @@ import {
 } from '../server/release-changes.js'
 import { normalizeResults } from '../server/result-model.js'
 import { buildScanHistoryEntry, loadScanHistory, recordScanHistory } from '../server/history.js'
+import { compareScans } from '../server/scan-comparison.js'
 import { groupResults } from '../frontend/src/utils.js'
 import { groupReleaseChanges, latestReleaseChange } from '../frontend/src/release-changes.js'
 import type { Release, ResultItem } from '../shared/contracts.js'
@@ -70,7 +71,7 @@ test('alternative-only additions, updates, and removals are detected with unchan
     describeReleaseChanges(added, old).map(change => change.kind),
     ['removed'],
   )
-  assert.equal(buildScanHistoryEntry([old], [added], 'today').changes[0].type, 'changed')
+  assert.equal(buildScanHistoryEntry(compareScans([old], [added]), 'today').changes[0].type, 'changed')
 })
 
 test("a group's second release on the same tracker is a new listing, not an edit of the first", () => {
@@ -168,10 +169,10 @@ test('history and unseen changes keep the same before/after data after a later s
       ],
     })
     const later = result({ ...current, notes_by_part: { 'Cour 1': 'Final guidance', 'Cour 2': '-' } })
-    recordReleaseChanges([previous], [current], file, '2026-11-18T10:00:00Z')
-    recordScanHistory([previous], [current], '2026-11-18T10:00:00Z', historyFile)
-    recordReleaseChanges([current], [later], file, '2026-11-18T11:00:00Z')
-    recordScanHistory([current], [later], '2026-11-18T11:00:00Z', historyFile)
+    recordReleaseChanges(compareScans([previous], [current]), file, '2026-11-18T10:00:00Z')
+    recordScanHistory(compareScans([previous], [current]), '2026-11-18T10:00:00Z', historyFile)
+    recordReleaseChanges(compareScans([current], [later]), file, '2026-11-18T11:00:00Z')
+    recordScanHistory(compareScans([current], [later]), '2026-11-18T11:00:00Z', historyFile)
     const oldHistory = loadScanHistory(historyFile)[1].changes[0]
     assert.equal(oldHistory.type, 'resolved')
     const [replacement, editedNote, addedNote] = oldHistory.release_changes!
@@ -187,18 +188,18 @@ test('history and unseen changes keep the same before/after data after a later s
     assert.deepEqual(unseen[0].release_replacement, replacement.release_replacement)
     assert.deepEqual(unseen[1].note_change, editedNote.note_change)
     assert.deepEqual(unseen.at(-1)?.note_change, { previous: 'Special edition', next: null })
-    assert.equal(buildScanHistoryEntry([later], [later], 'unchanged').changes.length, 0)
+    assert.equal(buildScanHistoryEntry(compareScans([later], [later]), 'unchanged').changes.length, 0)
   }))
 
 test('first scan establishes a baseline and unseen events survive unchanged scans and reloads', () =>
   fixture(file => {
     const old = result(),
       next = result({ releases: [release(), alternative] })
-    recordReleaseChanges([], [old], file)
+    recordReleaseChanges(compareScans([], [old]), file)
     assert.deepEqual(withReleaseChanges([old], file)[0].unseen_changes, [])
-    recordReleaseChanges([old], [next], file, '2026-11-04T12:00:00.000Z')
+    recordReleaseChanges(compareScans([old], [next]), file, '2026-11-04T12:00:00.000Z')
     const saved = readFileSync(file, 'utf8')
-    recordReleaseChanges([next], [next], file)
+    recordReleaseChanges(compareScans([next], [next]), file)
     assert.equal(readFileSync(file, 'utf8'), saved)
     assert.equal(withReleaseChanges([next], file)[0].unseen_changes?.length, 1)
     assert.equal(Object.keys(loadReleaseChanges(file)).length, 1)
@@ -208,10 +209,10 @@ test('reviewing a snapshot never clears events from a later scan, and unchanged 
   fixture(file => {
     const old = result(),
       next = result({ releases: [release(), alternative] })
-    recordReleaseChanges([old], [next], file)
+    recordReleaseChanges(compareScans([old], [next]), file)
     const seen = withReleaseChanges([next], file)[0].unseen_changes!.map(change => change.id)
     const newest = result({ releases: [release({ quality: '2160p' }), alternative] })
-    recordReleaseChanges([next], [newest], file)
+    recordReleaseChanges(compareScans([next], [newest]), file)
     assert.equal(reviewReleaseChanges(seen, file), 1)
     const remaining = withReleaseChanges([newest], file)[0].unseen_changes!
     assert.equal(remaining.length, 1)
@@ -224,7 +225,7 @@ test('reviewing a snapshot never clears events from a later scan, and unchanged 
       ),
       1,
     )
-    recordReleaseChanges([newest], [newest], file)
+    recordReleaseChanges(compareScans([newest], [newest]), file)
     assert.deepEqual(withReleaseChanges([newest], file)[0].unseen_changes, [])
   }))
 
@@ -232,10 +233,10 @@ test('undoing a review restores exactly the reviewed changes, once, beside newer
   fixture(file => {
     const old = result(),
       next = result({ releases: [release(), alternative] })
-    recordReleaseChanges([old], [next], file)
+    recordReleaseChanges(compareScans([old], [next]), file)
     const reviewed = withReleaseChanges([next], file)[0].unseen_changes!
     const newest = result({ releases: [release({ quality: '2160p' }), alternative] })
-    recordReleaseChanges([next], [newest], file)
+    recordReleaseChanges(compareScans([next], [newest]), file)
     assert.equal(
       reviewReleaseChanges(
         reviewed.map(change => change.id),
@@ -251,15 +252,27 @@ test('undoing a review restores exactly the reviewed changes, once, beside newer
     assert.ok(unseen.some(change => change.id === reviewed[0].id))
   }))
 
+test('a title re-added under a new item ID keeps the release changes it had not reviewed', () =>
+  fixture(file => {
+    const old = result(),
+      next = result({ releases: [release(), alternative] })
+    recordReleaseChanges(compareScans([old], [next]), file)
+    const unseen = withReleaseChanges([next], file)[0].unseen_changes!
+    const readded = result({ library_key: 'Sonarr:item2', releases: [release(), alternative] })
+    recordReleaseChanges(compareScans([next], [readded]), file)
+    assert.deepEqual(withReleaseChanges([readded], file)[0].unseen_changes, unseen)
+    assert.deepEqual(Object.keys(loadReleaseChanges(file)), [releaseResultIdentity(readded)])
+  }))
+
 test('removed titles and cleared scan baselines prune stale events; malformed storage recovers', () =>
   fixture(file => {
     const old = result(),
       next = result({ releases: [release(), alternative] })
-    recordReleaseChanges([old], [next], file)
-    recordReleaseChanges([], [next], file)
+    recordReleaseChanges(compareScans([old], [next]), file)
+    recordReleaseChanges(compareScans([], [next]), file)
     assert.deepEqual(loadReleaseChanges(file), {})
-    recordReleaseChanges([old], [next], file)
-    recordReleaseChanges([next], [], file)
+    recordReleaseChanges(compareScans([old], [next]), file)
+    recordReleaseChanges(compareScans([next], []), file)
     assert.deepEqual(loadReleaseChanges(file), {})
     writeFileSync(
       file,

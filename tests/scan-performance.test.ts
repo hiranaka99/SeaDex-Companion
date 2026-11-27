@@ -4,12 +4,11 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { localItems } from '../server/library.js'
 import { CACHE_FILE, CONFIG_FILE, SECRETS_KEY_FILE } from '../server/paths.js'
 import { flushCache, loadCache, saveCache } from '../server/results.js'
-import { resultItem } from './support/results.js'
 import { createAniListClient } from '../server/anilist-client.js'
 import { anilistChain, anilistSeason } from '../server/anilist.js'
 import { ANILIST_CACHE_TTL, loadAniListMedia } from '../server/anilist-metadata.js'
 import { DEFAULT_CONFIG, loadConfig, saveConfig } from '../server/config.js'
-import { buildScanHistoryEntry, previousResultMatcher } from '../server/history.js'
+import { buildScanHistoryEntry } from '../server/history.js'
 import { scanRequests } from '../server/http.js'
 import { createScanService, type ScanDependencies } from '../server/scan.js'
 import { getState, setState } from '../server/scan-state.js'
@@ -258,10 +257,11 @@ function scanFixture(overrides: ScanDependencies) {
     seadexBest: async () => new Map(),
     loadCache: () => ({}),
     loadUserRules: () => ({ mappings: {}, exclusions: [] }),
+    recordReleaseChanges: () => {},
     saveLastResults: () => {},
     autoNotifyNew: async () => 0,
-    recordScanHistory: (previous, current, at, _file, trigger, metadata) =>
-      buildScanHistoryEntry(previous, current, at, trigger, metadata),
+    recordScanHistory: (comparison, at, _file, trigger, metadata) =>
+      buildScanHistoryEntry(comparison, at, trigger, metadata),
     ...overrides,
   })
 }
@@ -529,12 +529,13 @@ test('a failed metadata batch preserves the previous scan results and failure ou
         id,
         options,
       ),
+    recordReleaseChanges: () => {},
     saveLastResults: () => {
       saved = true
     },
-    recordScanHistory: (previous, current, at, _file, trigger, metadata) => {
+    recordScanHistory: (comparison, at, _file, trigger, metadata) => {
       outcome = metadata?.outcome
-      return buildScanHistoryEntry(previous, current, at, trigger, metadata)
+      return buildScanHistoryEntry(comparison, at, trigger, metadata)
     },
   })
   try {
@@ -587,11 +588,12 @@ test('scan history records torrent replacements once and ignores private-tracker
           },
         ],
       ]),
+    recordReleaseChanges: () => {},
     saveLastResults: results => {
       saved = JSON.parse(JSON.stringify(results))
     },
-    recordScanHistory: (previous, current, at, _file, trigger, metadata) => {
-      const entry = buildScanHistoryEntry(previous, current, at, trigger, metadata)
+    recordScanHistory: (comparison, at, _file, trigger, metadata) => {
+      const entry = buildScanHistoryEntry(comparison, at, trigger, metadata)
       history.push(entry)
       return entry
     },
@@ -620,25 +622,6 @@ test('scan history records torrent replacements once and ignores private-tracker
   } finally {
     setState(before)
   }
-})
-
-test('a scan end matches every result to its earlier one from a single index', () => {
-  const results = Array.from({ length: 3000 }, (_, index) =>
-    resultItem({
-      key: `Sonarr:${index}:1:Group`,
-      library_key: `Sonarr:item${index}`,
-      arr: 'Sonarr',
-      title: `Anime ${index}`,
-      season: 1,
-    }),
-  )
-  const started = performance.now()
-  const previousOf = previousResultMatcher(results)
-  const matched = results.filter(result => previousOf(result) === result).length
-  assert.equal(matched, results.length)
-  assert.equal(previousOf(resultItem({ arr: 'Radarr', title: 'Unknown', season: 0 })), null)
-  // Rebuilding the index for each result took seconds at this size.
-  assert.ok(performance.now() - started < 1000, 'Matching a large library must not be quadratic')
 })
 
 test('AniList metadata is written when a scan ends instead of after every title', async () => {

@@ -2,7 +2,8 @@ import { isRecord } from '../shared/guards.js'
 import { randomUUID } from 'node:crypto'
 import { RELEASE_CHANGES_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
-import { describeRegression, describeReleaseChanges, releaseResultIdentity } from '../shared/release-changes.js'
+import { releaseResultIdentity } from '../shared/release-changes.js'
+import type { ScanComparison } from './scan-comparison.js'
 import type { ReleaseChange, ResultItem } from '../shared/contracts.js'
 
 type ChangeStore = Record<string, ReleaseChange[]>
@@ -36,34 +37,29 @@ export function loadReleaseChanges(file = RELEASE_CHANGES_FILE): ChangeStore {
 }
 
 /**
- * `baseline` records nothing new: results computed under different preferences are not comparable,
- * so their differences are neither SeaDex changes nor regressions. Earlier unseen changes are kept.
+ * Adds each season's release changes and regression to the changes waiting for review. A baseline scan adds
+ * nothing: results computed under different preferences are not comparable, so their differences are neither
+ * SeaDex changes nor regressions. Earlier unseen changes are kept, and move with a title re-added under a new
+ * item ID. A season new to the library starts with none, and the changes of seasons that are gone are dropped.
  */
 export function recordReleaseChanges(
-  previous: ResultItem[],
-  current: ResultItem[],
+  comparison: ScanComparison,
   file = RELEASE_CHANGES_FILE,
   detectedAt = new Date().toISOString(),
-  options: { baseline?: boolean } = {},
 ): void {
   const stored = loadReleaseChanges(file)
-  const before = new Map(previous.map(result => [releaseResultIdentity(result), result]))
   const next: ChangeStore = {}
-  for (const result of current) {
-    const key = releaseResultIdentity(result),
-      old = before.get(key)
-    // New installations, cleared scan data, and newly discovered titles establish a baseline.
-    const regression = old && !options.baseline ? describeRegression(old, result) : null
-    const additions =
-      old && !options.baseline
-        ? [...describeReleaseChanges(old, result), ...(regression ? [regression] : [])].map(change => ({
-            ...change,
-            id: randomUUID(),
-            detected_at: detectedAt,
-          }))
-        : []
-    const changes = old ? [...(stored[key] || []), ...additions] : []
-    if (changes.length) next[key] = changes
+  for (const season of comparison.seasons) {
+    if (!season.previous) continue
+    const additions = comparison.baseline
+      ? []
+      : [...season.releaseChanges, ...(season.regression ? [season.regression] : [])].map(change => ({
+          ...change,
+          id: randomUUID(),
+          detected_at: detectedAt,
+        }))
+    const changes = [...(stored[releaseResultIdentity(season.previous)] || []), ...additions]
+    if (changes.length) next[releaseResultIdentity(season.current)] = changes
   }
   if (JSON.stringify(next) !== JSON.stringify(stored)) writeJsonAtomic(file, next)
 }

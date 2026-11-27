@@ -61,9 +61,10 @@ async function scan(rules: UserRules, overrides: ScanDependencies = {}) {
     seadexBest: async () => new Map([100, 200, 201, 900].map(id => [id, catalog(id)])),
     loadCache: () => ({}),
     loadUserRules: () => rules,
+    recordReleaseChanges: () => {},
     saveLastResults: () => {},
     autoNotifyNew: async () => 0,
-    recordScanHistory: (previous, current, runAt) => buildScanHistoryEntry(previous, current, runAt),
+    recordScanHistory: (comparison, runAt) => buildScanHistoryEntry(comparison, runAt),
     ...overrides,
   }).run(DEFAULT_CONFIG)
   assert.equal(getState().error, null)

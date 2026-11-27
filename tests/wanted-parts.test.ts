@@ -9,7 +9,7 @@ import {
   type UnwantedReason,
 } from '../shared/download-plan.js'
 import { autoNotifyNew, type NotifiedResult } from '../server/notifications.js'
-import { setState } from '../server/scan-state.js'
+import { compareScans } from '../server/scan-comparison.js'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { groupResults, upgradeSummary } from '../frontend/src/utils.js'
 import { resultItem } from './support/results.js'
@@ -177,49 +177,44 @@ describe('notifications announce wanted parts', () => {
   const deliveries = () => {
     let saved = new Set<string>()
     const sent: string[] = []
-    return {
-      sent,
-      dependencies: {
-        load: () => new Set(saved),
-        save: (keys: Set<string>) => {
-          saved = new Set(keys)
-        },
-        send: async (_webhook: string, results: NotifiedResult[], onSent?: (result: NotifiedResult) => void) => {
-          for (const result of results) {
-            sent.push(result.key)
-            onSent?.(result)
-          }
-          return results.length
-        },
+    const dependencies = {
+      load: () => new Set(saved),
+      save: (keys: Set<string>) => {
+        saved = new Set(keys)
+      },
+      send: async (_webhook: string, results: NotifiedResult[], onSent?: (result: NotifiedResult) => void) => {
+        for (const result of results) {
+          sent.push(result.key)
+          onSent?.(result)
+        }
+        return results.length
       },
     }
+    /** A scan ending with these results. */
+    const notify = (results: ResultItem[]) => autoNotifyNew(config, results, compareScans([], results), dependencies)
+    return { sent, notify }
   }
   /** Cour 1 is held at its best release; only the ignored Cour 2 remains. */
   const ignoredRemainder = () => asResult(split({ owned_by_part: { 'Cour 1': ['One'] }, excluded_parts: ['Cour 2'] }))
 
   test('a season whose only remaining part is ignored is not announced', async () => {
-    const { sent, dependencies } = deliveries()
-    setState({ results: [ignoredRemainder()] })
-    assert.equal(await autoNotifyNew(config, dependencies), 0)
+    const { sent, notify } = deliveries()
+    assert.equal(await notify([ignoredRemainder()]), 0)
     assert.deepEqual(sent, [])
   })
 
   test('a season with a wanted part is announced once', async () => {
-    const { sent, dependencies } = deliveries()
-    setState({ results: [asResult(split({ excluded_parts: ['Cour 2'] }))] })
-    await autoNotifyNew(config, dependencies)
-    await autoNotifyNew(config, dependencies)
+    const { sent, notify } = deliveries()
+    await notify([asResult(split({ excluded_parts: ['Cour 2'] }))])
+    await notify([asResult(split({ excluded_parts: ['Cour 2'] }))])
     assert.deepEqual(sent, ['split'])
   })
 
   test('ignoring a part and restoring it does not announce the same upgrade again', async () => {
-    const { sent, dependencies } = deliveries()
-    setState({ results: [asResult(split({ owned_by_part: { 'Cour 1': ['One'] } }))] })
-    await autoNotifyNew(config, dependencies)
-    setState({ results: [ignoredRemainder()] })
-    await autoNotifyNew(config, dependencies)
-    setState({ results: [asResult(split({ owned_by_part: { 'Cour 1': ['One'] } }))] })
-    await autoNotifyNew(config, dependencies)
+    const { sent, notify } = deliveries()
+    await notify([asResult(split({ owned_by_part: { 'Cour 1': ['One'] } }))])
+    await notify([ignoredRemainder()])
+    await notify([asResult(split({ owned_by_part: { 'Cour 1': ['One'] } }))])
     assert.deepEqual(sent, ['split'])
   })
 })
