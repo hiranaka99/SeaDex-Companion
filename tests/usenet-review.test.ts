@@ -714,7 +714,7 @@ test('accepting a plan spends no search and no fetch, also when its stored resul
   // With the result in place, the other plan is sent from the store alone.
   await buildDownloadPlan(settings, [row('Alpha')], { results, clients: downloadClients(settings) })
   // Not even the indexer list is read: the process restarted, so none is known.
-  assert.equal(usenet.runtime.shutdown(), true)
+  assert.equal(usenet.runtime.flush(), true)
   usenet.restart()
   fake.calls.length = 0
   const sent = await accept(config(), reopened.plan, results)

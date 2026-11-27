@@ -2,7 +2,14 @@ import fs from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { usenetCacheJournalFile } from '../../server/usenet-cache.js'
-import { createUsenetRuntime, type UsenetRuntime, type UsenetRuntimeOptions } from '../../server/usenet-runtime.js'
+import type { Config, ResultItem } from '../../server/types.js'
+import {
+  createUsenetRuntime,
+  readLedger,
+  usenetRuntime,
+  type UsenetRuntime,
+  type UsenetRuntimeOptions,
+} from '../../server/usenet-runtime.js'
 
 export interface TestUsenetRuntime {
   /** The runtime in use: the one created first, or the one the last `restart` created. */
@@ -78,4 +85,9 @@ export function testUsenetRuntime(
   }
   t?.after(handle.close)
   return handle
+}
+
+/** New results, as after a scan: the runtime in use prunes its stores by the ledger and sweeps `results`. */
+export function sweepResults(config: Config, results: ResultItem[], reason: string): void {
+  usenetRuntime().resultsChanged(config, results, readLedger(), reason)
 }
