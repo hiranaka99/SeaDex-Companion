@@ -19,7 +19,7 @@ import {
   trackerIndexers,
 } from '../server/prowlarr.js'
 import { invalidatePrivateSources, trackerTorrentId } from '../server/private-sources.js'
-import { resetUsenetSearch, resolveSource, searchScheduler } from '../server/usenet-search.js'
+import { paceUsenetSearch, resetUsenetSearch, resolveSource } from '../server/usenet-search.js'
 import { cleanSearchTitle, searchTitles } from '../server/search-titles.js'
 import { buildDownloadPlan } from '../server/download-preflight.js'
 import { consumePlan } from '../server/download-plans.js'
@@ -183,7 +183,6 @@ function forgetUsenetSearches(): void {
 
 function install(state: FakeState): () => void {
   const original = globalThis.fetch
-  const pacing = { ...searchScheduler.options }
   resetQbRuntime()
   resetOwnedRuntime()
   resetProwlarrRuntime()
@@ -191,7 +190,7 @@ function install(state: FakeState): () => void {
   forgetUsenetSearches()
   purgeTestDataDir()
   // Requests to the fake indexers need no spacing.
-  searchScheduler.options.minIntervalMs = 0
+  paceUsenetSearch({ minIntervalMs: 0 })
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     state.calls.push(`${init?.method || 'GET'} ${url.href}`)
@@ -286,7 +285,7 @@ function install(state: FakeState): () => void {
   }
   return () => {
     globalThis.fetch = original
-    Object.assign(searchScheduler.options, pacing)
+    paceUsenetSearch()
     resetQbRuntime()
     resetOwnedRuntime()
     resetProwlarrRuntime()

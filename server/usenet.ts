@@ -22,7 +22,9 @@ import {
   ProviderPausedError,
   TRANSIENT_CODES,
   type ChannelPause,
-  type LookupJob,
+  type LookupHandle,
+  type LookupOutcome,
+  type LookupPacing,
 } from './usenet-scheduler.js'
 
 const MINUTE = 60_000
@@ -41,10 +43,22 @@ export const FILE_NAME_LIMIT = 200
 /** Background lookups wait out a pause and retry instead of recording a failure. */
 const BACKGROUND_ATTEMPTS = 3
 
+function hashScheduler(pacing: Partial<LookupPacing> = {}): LookupScheduler {
+  const scheduler = new LookupScheduler({ concurrency: 4, foregroundReserved: 1, minIntervalMs: 2_000, ...pacing })
+  for (const provider of USENET_PROVIDER_IDS) scheduler.describe(provider, { label: USENET_PROVIDERS[provider].label })
+  return scheduler
+}
+
 /** Paces and prioritizes every hash-indexer request this module makes, one channel per provider. */
-export const usenetScheduler = new LookupScheduler({ concurrency: 4, foregroundReserved: 1, minIntervalMs: 2_000 })
-for (const provider of USENET_PROVIDER_IDS)
-  usenetScheduler.describe(provider, { label: USENET_PROVIDERS[provider].label })
+export let usenetScheduler = hashScheduler()
+
+/**
+ * Tests: hash lookups from now on run on a fresh scheduler with this pacing over the defaults, which
+ * forgets every channel's health. Work already queued finishes on the scheduler it was given to.
+ */
+export function paceUsenetLookups(pacing: Partial<LookupPacing> = {}): void {
+  usenetScheduler = hashScheduler(pacing)
+}
 
 /** Active pauses of the hash indexers and of the Usenet indexers in Prowlarr, for status reporting. */
 export function usenetProviderPauses(): ChannelPause[] {
@@ -80,42 +94,26 @@ function unexpectedFailure(provider: UsenetProvider, error: unknown): ProviderLo
   return { kind: 'failed', code: 'network', message: 'Provider lookup failed' }
 }
 
-/**
- * Rejects when `work` has not settled within `guardMs`. The provider fetches
- * carry their own timeouts; this wall-clock guard is the last line of defense
- * so one never-settling call cannot poison inFlight/cache for the lifetime of
- * the process. The guard timer never keeps the event loop alive.
- */
-export async function raceWithWallClockGuard<T>(work: Promise<T>, guardMs: number): Promise<T> {
-  const guard = Promise.withResolvers<never>()
-  const timer = setTimeout(() => guard.reject(new Error('lookup exceeded the wall-clock guard')), guardMs)
-  timer.unref?.()
-  try {
-    return await Promise.race([work, guard.promise])
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-async function cancelableLookup<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-  const cancellation = Promise.withResolvers<never>()
-  const cancel = () => cancellation.reject(signal.reason)
-  signal.addEventListener('abort', cancel, { once: true })
-  if (signal.aborted) cancel()
-  try {
-    return await Promise.race([work, cancellation.promise])
-  } finally {
-    signal.removeEventListener('abort', cancel)
-  }
-}
-
 /** What one provider lookup came to: an answer worth caching, or nothing because the work was superseded. */
 type LookupResult = { kind: 'settled'; lookup: ProviderLookup; checkedAt: number } | typeof CANCELLED
 const CANCELLED = { kind: 'cancelled' } as const
 
-interface Flight {
+/** One provider lookup of one hash, across the attempts it takes. */
+interface Lookup {
+  controller: AbortController
+  /** Background work until someone waits on it. */
+  background: boolean
+  /** The attempt waiting for or holding a slot. */
+  attempt?: LookupHandle<ProviderLookup>
+}
+interface Flight extends Lookup {
   promise: Promise<LookupResult>
-  job: LookupJob
+}
+
+/** Someone now waits on a lookup that started in the background. */
+function promote(lookup: Lookup): void {
+  lookup.background = false
+  lookup.attempt?.promote()
 }
 interface RefreshChain {
   promise: Promise<UsenetHashAvailability>
@@ -134,8 +132,7 @@ function cancelUsenetWork(): void {
   inFlight = new Map()
   for (const chain of refreshChains.values()) chain.cancelled = true
   refreshChains = new Map()
-  for (const { job } of cancelled.values()) job.controller.abort()
-  usenetScheduler.pump()
+  for (const flight of cancelled.values()) flight.controller.abort()
 }
 
 export function invalidateUsenetLookups(config: Config): void {
@@ -176,55 +173,43 @@ function ttlFor(lookup: ProviderLookup, negativeStreak = 1): number {
   return FAILURE_TTL_MS
 }
 
-/** Runs one provider request, turning unexpected errors into a typed failure. Cancellation propagates. */
-async function requestLookup(
-  provider: UsenetProvider,
-  settings: ProviderSettings,
-  hash: string,
-  signal: AbortSignal,
-): Promise<ProviderLookup> {
-  try {
-    return await raceWithWallClockGuard(
-      cancelableLookup(USENET_PROVIDERS[provider].lookup(settings, hash), signal),
-      LOOKUP_GUARD_MS,
-    )
-  } catch (error) {
-    if (signal.aborted) throw error
-    return unexpectedFailure(provider, error)
-  }
-}
+/** What an error no provider client classified tells the channel: the provider is not answering. */
+const UNEXPECTED: LookupOutcome = { kind: 'failed', code: 'network' }
 
-/** Takes scheduler slots until the provider answers. Background work waits out a pause rather than recording a transient failure. */
+/** Schedules attempts until the provider answers. Background work waits out a pause rather than recording a transient failure. */
 async function runLookup(
-  job: LookupJob,
+  lookup: Lookup,
   provider: UsenetProvider,
   settings: ProviderSettings,
   hash: string,
 ): Promise<ProviderLookup | { kind: 'cancelled' }> {
-  const { signal } = job.controller
-  try {
-    for (let attempt = 1; ; attempt++) {
-      await usenetScheduler.acquire(job)
-      let lookup: ProviderLookup
-      try {
-        signal.throwIfAborted()
-        lookup = await requestLookup(provider, settings, hash, signal)
-      } finally {
-        usenetScheduler.release()
-      }
-      usenetScheduler.recordOutcome(provider, lookup)
-      const retry =
-        lookup.kind === 'failed' &&
-        job.background &&
-        attempt < BACKGROUND_ATTEMPTS &&
-        TRANSIENT_CODES.has(lookup.code) &&
-        usenetScheduler.isPaused(provider)
-      if (!retry) return lookup
+  const { signal } = lookup.controller
+  for (let attempt = 1; ; attempt++) {
+    let answer: ProviderLookup
+    try {
+      lookup.attempt = usenetScheduler.schedule({
+        channel: provider,
+        background: lookup.background,
+        signal,
+        guardMs: LOOKUP_GUARD_MS,
+        work: () => USENET_PROVIDERS[provider].lookup(settings, hash),
+        outcome: settled => (settled.ok ? settled.value : UNEXPECTED),
+      })
+      answer = await lookup.attempt.result
+    } catch (error) {
+      if (error instanceof ProviderPausedError) return usenetScheduler.pausedFailure(provider, error.until)
+      if (signal.aborted) return CANCELLED
+      answer = unexpectedFailure(provider, error)
+    } finally {
+      lookup.attempt = undefined
     }
-  } catch (error) {
-    if (error instanceof ProviderPausedError) return usenetScheduler.pausedFailure(provider, error.until)
-    if (signal.aborted) return CANCELLED
-    return unexpectedFailure(provider, error)
+    const retry =
+      answer.kind === 'failed' &&
+      lookup.background &&
+      attempt < BACKGROUND_ATTEMPTS &&
+      TRANSIENT_CODES.has(answer.code) &&
+      usenetScheduler.isPaused(provider)
+    if (!retry) return answer
   }
 }
 
@@ -245,14 +230,11 @@ async function providerLookup(
     }
   const fingerprint = providerFingerprint(provider, connection)
   const key = usenetCacheKey(provider, fingerprint, hash)
-  if (refresh) inFlight.get(key)?.job.controller.abort()
+  if (refresh) inFlight.get(key)?.controller.abort()
   else {
     const running = inFlight.get(key)
     if (running) {
-      if (!background) {
-        running.job.background = false
-        usenetScheduler.pump()
-      }
+      if (!background) promote(running)
       return running.promise
     }
     const hit = cache.get(key)
@@ -260,18 +242,18 @@ async function providerLookup(
     if (hit?.lookup && !hit.failure && Date.now() - hit.checkedAt < ttlFor(hit.lookup, hit.negativeStreak))
       return { kind: 'settled', lookup: hit.lookup, checkedAt: hit.checkedAt }
   }
-  const job: LookupJob = { channel: provider, background, controller: new AbortController() }
-  const settings: ProviderSettings = { ...connection, signal: job.controller.signal }
+  const controller = new AbortController()
+  const settings: ProviderSettings = { ...connection, signal: controller.signal }
   const epoch = lookupEpoch
-  const flight: Flight = {
-    job,
-    promise: runLookup(job, provider, settings, hash)
+  const state: Lookup = { controller, background }
+  const flight: Flight = Object.assign(state, {
+    promise: runLookup(state, provider, settings, hash)
       .then((lookup): LookupResult => {
         if (
           lookup.kind === 'cancelled' ||
           inFlight.get(key) !== flight ||
           lookupEpoch !== epoch ||
-          job.controller.signal.aborted
+          controller.signal.aborted
         )
           return CANCELLED
         const at = Date.now()
@@ -295,7 +277,7 @@ async function providerLookup(
             },
             connection,
           )
-          job.controller.abort()
+          controller.abort()
           return { kind: 'settled', lookup, checkedAt: 0 }
         }
         const negativeStreak = isAbsence(lookup)
@@ -319,7 +301,7 @@ async function providerLookup(
       .finally(() => {
         if (inFlight.get(key) === flight) inFlight.delete(key)
       }),
-  }
+  })
   inFlight.set(key, flight)
   return flight.promise
 }
@@ -468,18 +450,16 @@ function scheduleHashRefresh(config: Config, hash: string, refresh: boolean, bac
   const previous = refreshChains.get(key)
   if (previous && !refresh) {
     // Someone is now waiting on work that started in the background.
-    if (!background) {
+    if (!background)
       for (const entry of keys) {
         const running = inFlight.get(entry.key)
-        if (running) running.job.background = false
+        if (running) promote(running)
       }
-      usenetScheduler.pump()
-    }
     return
   }
   if (refresh) {
     if (previous) previous.cancelled = true
-    for (const entry of keys) inFlight.get(entry.key)?.job.controller.abort()
+    for (const entry of keys) inFlight.get(entry.key)?.controller.abort()
   }
   const chain: RefreshChain = {
     cancelled: false,

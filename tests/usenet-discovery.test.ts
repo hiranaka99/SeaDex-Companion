@@ -5,17 +5,17 @@ import { DEFAULT_CONFIG } from '../server/config.js'
 import { bumpGeneration } from '../server/config-generation.js'
 import {
   aggregateHashStates,
+  paceUsenetLookups,
   resetUsenetLookups,
-  raceWithWallClockGuard,
   resolveUsenetHash,
   resolveUsenetRelease,
-  usenetScheduler,
   UsenetSelectionError,
 } from '../server/usenet.js'
 import { usenetAvailability } from '../server/usenet-copies.js'
-import { LookupScheduler, ProviderPausedError, type LookupJob } from '../server/usenet-scheduler.js'
+import { LookupGuardTimeout, LookupScheduler, ProviderPausedError } from '../server/usenet-scheduler.js'
 import { releaseIdentity } from '../shared/releases.js'
 import type { Release, ResultItem } from '../server/types.js'
+import { holdJob, runJob } from './support/lookup-jobs.js'
 
 const HASH = 'a'.repeat(40)
 const OTHER = 'b'.repeat(40)
@@ -90,7 +90,7 @@ const animetoshoMatch = () =>
 function isolation() {
   const original = globalThis.fetch
   resetUsenetLookups()
-  usenetScheduler.options.minIntervalMs = 0
+  paceUsenetLookups({ minIntervalMs: 0 })
   const generation = bumpGeneration()
   return { original, generation }
 }
@@ -415,10 +415,94 @@ test('a refresh bypasses a wedged in-flight lookup instead of inheriting its han
   }
 })
 
-test('the wall-clock guard rejects a provider call that never settles', async () => {
+test('the wall-clock guard fails a job whose work never settles and frees its slot', async () => {
+  const scheduler = new LookupScheduler({ concurrency: 1, foregroundReserved: 0, minIntervalMs: 0 })
   const started = Date.now()
-  await assert.rejects(raceWithWallClockGuard(new Promise<never>(() => {}), 20), /wall-clock guard/)
+  const stuck = holdJob(scheduler, 'animetosho', { guardMs: 20 })
+  await assert.rejects(stuck.handle.result, (error: unknown) => error instanceof LookupGuardTimeout)
   assert.ok(Date.now() - started < 5_000, 'the guard must not keep the process waiting')
+  assert.equal(await runJob(scheduler, 'animetosho', 'next'), 'next', 'the only slot is free again')
+})
+
+test('a job that fails, times out or is cancelled always frees its slot', async () => {
+  const scheduler = new LookupScheduler({ concurrency: 1, foregroundReserved: 0, minIntervalMs: 0 })
+  const recorded: string[] = []
+  const job = (work: () => Promise<string>, signal = new AbortController().signal, guardMs = 60_000) =>
+    scheduler.schedule({
+      channel: 'animetosho',
+      signal,
+      guardMs,
+      work,
+      outcome: settled => {
+        recorded.push(settled.ok ? settled.value : 'error')
+        // Not a transient code: three failures in a row would pause the channel.
+        return settled.ok ? { kind: 'no_match' } : { kind: 'failed', code: 'invalid_response' }
+      },
+    }).result
+
+  await assert.rejects(
+    job(async () => {
+      throw new Error('provider exploded')
+    }),
+    /provider exploded/,
+  )
+  await assert.rejects(
+    job(() => {
+      throw new Error('thrown before any promise')
+    }),
+    /thrown before any promise/,
+  )
+  await assert.rejects(
+    job(() => new Promise<never>(() => {}), undefined, 20),
+    (error: unknown) => error instanceof LookupGuardTimeout,
+  )
+  assert.deepEqual(recorded, ['error', 'error', 'error'], 'a failed job tells its channel')
+
+  const running = new AbortController()
+  const cancelledWhileRunning = job(() => new Promise<never>(() => {}), running.signal)
+  const queued = new AbortController()
+  let queuedRan = false
+  const cancelledWhileQueued = job(async () => {
+    queuedRan = true
+    return 'queued'
+  }, queued.signal)
+  await nextTurn()
+  queued.abort()
+  await assert.rejects(cancelledWhileQueued, { name: 'AbortError' })
+  running.abort()
+  await assert.rejects(cancelledWhileRunning, { name: 'AbortError' })
+  assert.equal(queuedRan, false, 'work cancelled in the queue never runs')
+  assert.deepEqual(recorded, ['error', 'error', 'error'], 'a cancelled job tells its channel nothing')
+
+  const abortedBeforehand = new AbortController()
+  abortedBeforehand.abort()
+  await assert.rejects(
+    job(async () => 'never', abortedBeforehand.signal),
+    { name: 'AbortError' },
+  )
+
+  assert.equal(await job(async () => 'answered'), 'answered', 'after all that the only slot is still free')
+  assert.deepEqual(recorded, ['error', 'error', 'error', 'answered'])
+})
+
+test('a queued background job promoted through its handle takes the slot reserved for foreground work', async () => {
+  const scheduler = new LookupScheduler({ concurrency: 2, foregroundReserved: 1, minIntervalMs: 0 })
+  const first = holdJob(scheduler, 'animetosho', { background: true })
+  await first.started
+  const second = holdJob(scheduler, 'animetosho', { background: true })
+  const third = holdJob(scheduler, 'amenzb', { background: true })
+  await nextTurn()
+  assert.equal(second.startedAt(), 0, 'background work leaves the reserved slot alone')
+  second.handle.promote()
+  await second.started
+  assert.equal(third.startedAt(), 0, 'promoting one job promotes no other')
+  // Promoting a job that already runs changes nothing.
+  second.handle.promote()
+  await second.finish()
+  assert.equal(third.startedAt(), 0, 'the freed slot stays reserved while background work holds the other')
+  await first.finish()
+  await third.started
+  await third.finish()
 })
 
 test('invalidation cancels active and queued work without leaking global permits or overwriting a fresh cache', async () => {
@@ -457,11 +541,6 @@ test('invalidation cancels active and queued work without leaking global permits
   }
 })
 
-const lookupJob = (channel: string, background = false): LookupJob => ({
-  channel,
-  background,
-  controller: new AbortController(),
-})
 const RATE_LIMITED = { kind: 'failed', code: 'rate_limited' } as const
 
 test('rate limiting widens a channel interval up to 15 seconds and every 20 answers narrow it down to the minimum', t => {
@@ -518,26 +597,25 @@ test('a new minimum applies at once to a channel unless rate limiting widened it
   assert.equal(scheduler.interval('prowlarr:7'), 1_000)
   scheduler.reset()
   assert.equal(scheduler.interval('prowlarr:7'), 1_000, 'a reset keeps the description')
-  scheduler.options.minIntervalMs = 0
-  assert.equal(scheduler.interval('prowlarr:8'), 0, 'a channel without its own minimum follows the scheduler')
+  assert.equal(
+    new LookupScheduler({ minIntervalMs: 0 }).interval('prowlarr:8'),
+    0,
+    'a channel without its own minimum follows the scheduler',
+  )
 })
 
 test('a channel created on first use is paced by its own interval and leaves other channels alone', async () => {
   const scheduler = new LookupScheduler({ concurrency: 3, foregroundReserved: 1, minIntervalMs: 80 })
-  const started: Record<string, number> = {}
-  const acquire = (name: string, channel: string) =>
-    scheduler.acquire(lookupJob(channel)).then(() => {
-      started[name] = Date.now()
-    })
-  const first = acquire('first', 'prowlarr:7')
-  const second = acquire('second', 'prowlarr:7')
-  const other = acquire('other', 'prowlarr:8')
-  await Promise.all([first, other])
-  assert.equal(started.second, undefined, 'the second request on a channel waits for its interval')
-  assert.ok(started.other - started.first < 70, 'another channel does not wait for it')
-  await second
-  assert.ok(started.second - started.first >= 70, `started too early: ${started.second - started.first}ms`)
-  for (let slot = 0; slot < 3; slot++) scheduler.release()
+  const first = holdJob(scheduler, 'prowlarr:7')
+  const second = holdJob(scheduler, 'prowlarr:7')
+  const other = holdJob(scheduler, 'prowlarr:8')
+  await Promise.all([first.started, other.started])
+  assert.equal(second.startedAt(), 0, 'the second request on a channel waits for its interval')
+  assert.ok(other.startedAt() - first.startedAt() < 70, 'another channel does not wait for it')
+  await second.started
+  const spacing = second.startedAt() - first.startedAt()
+  assert.ok(spacing >= 70, `started too early: ${spacing}ms`)
+  await Promise.all([first, second, other].map(job => job.finish()))
 
   scheduler.recordOutcome('prowlarr:7', RATE_LIMITED)
   assert.equal(scheduler.interval('prowlarr:7'), 120)
@@ -558,58 +636,53 @@ test('a channel created on first use is paced by its own interval and leaves oth
 test('a paused channel fails queued foreground work fast and makes background work wait out the pause', async () => {
   const scheduler = new LookupScheduler({ concurrency: 2, foregroundReserved: 1, minIntervalMs: 0, pauseBaseMs: 250 })
   scheduler.describe('prowlarr:7', { label: 'Indexer Seven' })
-  await scheduler.acquire(lookupJob('prowlarr:7'))
-  await scheduler.acquire(lookupJob('prowlarr:7'))
-  const foreground = scheduler.acquire(lookupJob('prowlarr:7'))
-  let backgroundStartedAt = 0
-  const background = scheduler.acquire(lookupJob('prowlarr:7', true)).then(() => {
-    backgroundStartedAt = Date.now()
-  })
-  const elsewhere = scheduler.acquire(lookupJob('prowlarr:8'))
+  const limited = holdJob(scheduler, 'prowlarr:7')
+  const answering = holdJob(scheduler, 'prowlarr:7')
+  await Promise.all([limited.started, answering.started])
+  const foreground = holdJob(scheduler, 'prowlarr:7')
+  const background = holdJob(scheduler, 'prowlarr:7', { background: true })
+  const elsewhere = holdJob(scheduler, 'prowlarr:8')
 
-  scheduler.recordOutcome('prowlarr:7', RATE_LIMITED)
+  await limited.finish(RATE_LIMITED)
   const until = scheduler.pausedUntil('prowlarr:7')
-  scheduler.release()
-  scheduler.release()
+  assert.ok(until > Date.now(), 'the outcome of the finished job paused its channel')
   await assert.rejects(
-    foreground,
+    foreground.handle.result,
     (error: unknown) => error instanceof ProviderPausedError && error.channel === 'prowlarr:7' && error.until === until,
   )
-  await assert.rejects(scheduler.acquire(lookupJob('prowlarr:7')), ProviderPausedError)
+  await answering.finish()
+  await assert.rejects(runJob(scheduler, 'prowlarr:7', 'paused'), ProviderPausedError)
   assert.match(
     scheduler.pausedFailure('prowlarr:7', until).message,
     /^Indexer Seven is rate limiting lookups; retrying in about/,
   )
-  await elsewhere
-  scheduler.release()
-  assert.equal(backgroundStartedAt, 0, 'background work does not start while its channel is paused')
-  await background
-  assert.ok(backgroundStartedAt >= until, 'background work starts once the pause is over')
+  await elsewhere.started
+  await elsewhere.finish()
+  assert.equal(background.startedAt(), 0, 'background work does not start while its channel is paused')
+  await background.started
+  assert.ok(background.startedAt() >= until, 'background work starts once the pause is over')
   assert.deepEqual(scheduler.pauses(), [])
-  scheduler.release()
+  await background.finish()
 })
 
 test('scheduler instances share no capacity: lookups that never finish on one leave every slot of the other free', async () => {
   const hashes = new LookupScheduler({ concurrency: 4, foregroundReserved: 1, minIntervalMs: 0 })
   const searches = new LookupScheduler({ concurrency: 3, foregroundReserved: 1, minIntervalMs: 0 })
-  // Three background searches and a foreground one that are never released.
-  const jobs = [true, true, true, false].map(background => lookupJob('prowlarr:7', background))
-  const started = jobs.map(() => false)
-  const stuck = jobs.map((job, index) =>
-    searches.acquire(job).then(
-      () => {
-        started[index] = true
-      },
-      () => {},
-    ),
-  )
+  // Three background searches and a foreground one that never finish.
+  const stuck = [true, true, true, false].map(background => holdJob(searches, 'prowlarr:7', { background }))
   await nextTurn()
-  assert.deepEqual(started, [true, true, false, true], 'background work leaves the reserved slot to foreground work')
+  assert.deepEqual(
+    stuck.map(job => job.startedAt() > 0),
+    [true, true, false, true],
+    'background work leaves the reserved slot to foreground work',
+  )
   searches.recordOutcome('animetosho', RATE_LIMITED)
 
-  await Promise.all(Array.from({ length: 4 }, () => hashes.acquire(lookupJob('animetosho'))))
+  const lookups = Array.from({ length: 4 }, () => holdJob(hashes, 'animetosho'))
+  await Promise.all(lookups.map(job => job.started))
   assert.equal(hashes.isPaused('animetosho'), false, 'instances do not share channel health either')
-  assert.equal(started[2], false, 'the full scheduler keeps its own work queued')
-  jobs[2].controller.abort()
-  await Promise.all(stuck)
+  assert.equal(stuck[2].startedAt(), 0, 'the full scheduler keeps its own work queued')
+  stuck[2].controller.abort()
+  await assert.rejects(stuck[2].handle.result, { name: 'AbortError' })
+  await Promise.all([...stuck.filter(job => job.startedAt()), ...lookups].map(job => job.finish()))
 })
