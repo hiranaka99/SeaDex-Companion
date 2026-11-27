@@ -13,7 +13,7 @@ import {
 } from '../useCardDownloads'
 import Icon from './Icons'
 import DetailsQuality, { QUALITY_ICONS, QUALITY_TONES } from './DetailsQuality'
-import type { DownloadEntry } from './DownloadsPanel'
+import type { DownloadEntry } from '../download-entry'
 import ReleaseDetails from './ReleaseDetails'
 
 import type { DownloadProtocol } from '../api'
