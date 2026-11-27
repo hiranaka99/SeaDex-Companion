@@ -495,7 +495,7 @@ export default function AnimeTab({
   const knownSpace = space.filter(location => location.free_bytes !== null)
   const freeBytes = knownSpace.length ? Math.min(...knownSpace.map(location => location.free_bytes!)) : null
   const spaceShort = freeBytes !== null && downloadEstimate.bytes > freeBytes
-  const libraryConfigured = libraryConnected(config)
+  const connected = libraryConnected(config)
   const autoCheckLabel = timeUntilCheck(status.next_check)
   const scheduleDescription = describeSchedule(config?.scan_schedule)
   const lastScanLabel = lastRun ? `Last scan ${displayTimeAgo(lastRun)}` : 'No completed scan'
@@ -585,7 +585,7 @@ export default function AnimeTab({
               hasUpgrades ? 'border-line bg-panel text-ink hover:bg-panel-raised' : 'library-action-emphasis',
             )}
             onClick={onScan}
-            disabled={!libraryConfigured || status.running || bulk.busy !== null || bulkOperationActive}
+            disabled={!connected || status.running || bulk.busy !== null || bulkOperationActive}
           >
             {status.running ? (
               <span className="size-4 animate-spin rounded-full border-2 border-current/30 border-t-current" />
@@ -883,7 +883,7 @@ export default function AnimeTab({
             type="button"
             className={cx(buttonBase, 'border-warn/35 bg-warn/10 text-ink hover:bg-warn/18')}
             onClick={onScan}
-            disabled={!libraryConfigured || bulk.busy !== null || bulkOperationActive}
+            disabled={!connected || bulk.busy !== null || bulkOperationActive}
           >
             <Icon name="play" size={16} />
             Scan library
@@ -1046,30 +1046,26 @@ export default function AnimeTab({
             <Icon name="library" size={26} />
           </span>
           <h2 className="mb-2 text-lg font-bold">
-            {libraryConfigured ? 'Your library is ready to be scanned' : 'Connect your library first'}
+            {connected ? 'Your library is ready to be scanned' : 'Connect your library first'}
           </h2>
           <p className="mx-auto mb-5 max-w-md text-sm text-muted">
-            {libraryConfigured
+            {connected
               ? 'Compare your Sonarr and Radarr collection with the best releases available on SeaDex.'
               : 'Configure Sonarr or Radarr before running your first scan.'}
           </p>
           <div className="flex flex-wrap justify-center gap-2">
             <button
               type="button"
-              className={
-                libraryConfigured ? buttonPrimary : cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')
-              }
+              className={connected ? buttonPrimary : cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink')}
               onClick={onScan}
-              disabled={!libraryConfigured}
+              disabled={!connected}
             >
               <Icon name="play" size={17} />
               Scan library
             </button>
             <button
               type="button"
-              className={
-                libraryConfigured ? cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink') : buttonPrimary
-              }
+              className={connected ? cx(buttonBase, 'border-line bg-panel text-ink hover:text-ink') : buttonPrimary}
               onClick={onOpenConfig}
             >
               <Icon name="settings" size={17} />

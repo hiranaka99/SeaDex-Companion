@@ -2,7 +2,13 @@ import { errorMessage } from '../shared/errors.js'
 import { api } from './http.js'
 import { arrBaseUrl, arrApiUrl, sonarrApiUrl } from './arr-urls.js'
 import { log } from './logging.js'
-import { configuredArrInstances, instanceFields, instanceOf, type ArrInstance } from '../shared/arr-instances.js'
+import {
+  configuredArrInstances,
+  instanceFields,
+  instanceOf,
+  type ArrInstance,
+  type InstanceSettings,
+} from '../shared/arr-instances.js'
 import { scopeIsEmpty } from '../shared/settings.js'
 import type { Config, JsonObject, ScanScope, LocalFile, LocalItem, LocalSeason } from './types.js'
 
@@ -337,10 +343,8 @@ export async function localItems(config: Config, scope: ScanScope = {}): Promise
   ).flatMap(library => library.items)
 }
 
-type InstanceSource = Parameters<typeof instanceOf>[0]
-
 export function arrItemUrl(
-  config: InstanceSource,
+  config: InstanceSettings,
   item: { arr: string; instance?: string; id?: number; slug?: string },
 ): string | null {
   const base = arrBaseUrl(instanceOf(config, item)?.url)
