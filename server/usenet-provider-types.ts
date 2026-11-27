@@ -152,6 +152,7 @@ export function newznabAttributes(item: Record<string, unknown>): Map<string, st
 /** Collapse markup/control characters and bound the length of any failure text. */
 export function safeText(value: string, limit = SAFE_MESSAGE_LIMIT): string {
   const collapsed = value
+    // oxlint-disable-next-line no-control-regex -- control characters are what this strips
     .replace(/[\u0000-\u001f\u007f<>]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()

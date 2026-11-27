@@ -934,7 +934,8 @@ try {
       const request = pending.get(message.id)
       if (!request) return
       pending.delete(message.id)
-      message.error ? request.reject(new Error(message.error.message)) : request.resolve(message.result)
+      if (message.error) request.reject(new Error(message.error.message))
+      else request.resolve(message.result)
     } else if (message.method === 'Runtime.exceptionThrown')
       errors.push(message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text)
   })
@@ -4064,6 +4065,7 @@ try {
       dirname(profile) !== resolve(tmpdir()) ||
       !basename(profile).startsWith('seadex-browser-')
     )
+      // oxlint-disable-next-line no-unsafe-finally -- never delete anything outside this run's own profile
       throw new Error('Unexpected browser profile cleanup target')
     execFileSync(
       'powershell.exe',

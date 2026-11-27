@@ -220,16 +220,23 @@ test('A result page link is never a download link and never carries a key', asyn
       itemXml({ title: 'Linkless', guid: 'https://geek.test/details/linkless', link: '' }),
       // No GUID: the result is still identified, without the key that its download link carries.
       itemXml({ title: 'Nameless', guid: '', link: proxyLink(2, 'nameless', 'Nameless') }),
+      // A key-free indexer download address is still a download link, not a result page.
+      itemXml({
+        title: 'Keyless',
+        guid: 'https://geek.test/getnzb/keyless.nzb',
+        link: proxyLink(2, 'keyless', 'Keyless'),
+      }),
     ].join(''),
   )
   const results = await searchIndexer(SETTINGS, GEEK, { q: 'x' }, recorder(() => xmlResponse(body)).fetchImpl)
   assert.deepEqual(
     results.map(result => result.title),
-    ['Keyed', 'Proxy only', 'Plain', 'Nameless'],
+    ['Keyed', 'Proxy only', 'Plain', 'Nameless', 'Keyless'],
   )
-  const [keyed, proxyOnly, plain, nameless] = results
+  const [keyed, proxyOnly, plain, nameless, keyless] = results
   assert.equal('info_url' in keyed, false)
   assert.equal('info_url' in proxyOnly, false)
+  assert.equal('info_url' in keyless, false)
   assert.equal(proxyOnly.size, null)
   assert.equal(plain.info_url, 'https://geek.test/details/plain')
   assert.equal(plain.size, 4096)

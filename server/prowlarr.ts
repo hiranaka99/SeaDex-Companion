@@ -395,7 +395,7 @@ function infoUrl(settings: ProwlarrSettings, ...candidates: unknown[]): string |
       continue
     }
     if (url.protocol !== 'https:' && url.protocol !== 'http:') continue
-    if (url.origin === prowlarr || /\/(?:download|getnzb|api)/i.test(url.pathname)) continue
+    if (url.origin === prowlarr || /\/(?:download|getnzb|api)\b/i.test(url.pathname)) continue
     if (url.username || url.password || candidate.includes(settings.apiKey)) continue
     if ([...url.searchParams.keys()].some(name => CREDENTIAL_PARAMS.test(name))) continue
     return url.href

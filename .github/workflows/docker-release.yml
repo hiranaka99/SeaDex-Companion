@@ -78,6 +78,7 @@ jobs:
       - name: Test the released source
         run: |
           npm ci
+          npm run lint
           npm test
 
       - name: Build the in-app update package
