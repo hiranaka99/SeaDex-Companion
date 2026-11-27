@@ -1,0 +1,80 @@
+# Dependabot version updates. See docs/development.md#dependency-updates.
+version: 2
+
+updates:
+  # Backend and tooling (/) and the React frontend (/frontend).
+  - package-ecosystem: npm
+    directories:
+      - /
+      - /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Berlin
+    # Skip releases younger than this, so a compromised or broken publish is
+    # usually caught and pulled before it reaches a pull request. Security
+    # updates are not delayed.
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - javascript
+    commit-message:
+      prefix: deps
+      prefix-development: deps-dev
+    ignore:
+      # Types track the Node.js major the app runs on (Dockerfile, CI, engines);
+      # bump them together with the runtime.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+    # Minor and patch updates arrive as one pull request per group and
+    # directory; major updates stay separate so each can be reviewed alone.
+    # Production packages in the root lockfile are part of the container
+    # runtime, so changing them makes a release image-only. Keeping them apart
+    # from tooling updates lets those changes be batched into one release.
+    groups:
+      production:
+        dependency-type: production
+        update-types: [minor, patch]
+      development:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  # Workflow actions are pinned to commit SHAs; Dependabot updates the SHA and
+  # its version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Berlin
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
+    labels:
+      - dependencies
+      - github_actions
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ['*']
+
+  # node:<major>-alpine already receives Node.js patch and minor releases on
+  # every image build, so this only proposes new Node.js major versions.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Berlin
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: docker

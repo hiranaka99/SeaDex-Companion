@@ -62,6 +62,20 @@ Tests that look up hashes, search Prowlarr or sweep build their own Usenet runti
 
 See [maintainability notes](maintainability.md) for runtime ownership, persistence, and compatibility details.
 
+## Dependency updates
+
+[Dependabot](https://docs.github.com/code-security/dependabot) is configured in [`.github/dependabot.yml`](../.github/dependabot.yml). Every Monday it checks for new versions and opens pull requests, which run CI like any other pull request:
+
+- **npm** (`/` and `/frontend`): minor and patch updates are grouped into one pull request per directory for production packages and one for development packages. Each major update gets its own pull request. Releases younger than 3 days (7 for majors) are skipped, which gives the registry time to catch broken or compromised publishes. `@types/node` majors are ignored because they follow the Node.js runtime.
+- **GitHub Actions**: all action updates arrive in one pull request, with the pinned SHA and its version comment updated together.
+- **Docker**: proposes a new `node:<major>-alpine` base image. Patch and minor Node.js releases already arrive on every image build. A Node.js major update also needs `node-version` in both workflows, `engines` in `package.json`, and `@types/node` changed in the same pull request. Close pull requests for odd-numbered, non-LTS majors; Dependabot then ignores that version.
+
+Dependabot security updates are separate from this schedule. They open a pull request as soon as an advisory affects a locked version, with no cooldown.
+
+A production package update in the root `package-lock.json` changes the container runtime, so the next release needs a new image instead of an in-app update (see [In-app update package](#in-app-update-package)). Batch these updates into one release where possible. Frontend packages and development packages do not affect the runtime.
+
+To control Dependabot from a pull request, comment `@dependabot rebase`, `@dependabot recreate`, `@dependabot ignore this major version`, or `@dependabot ignore this dependency`.
+
 ## Publishing a release
 
 The [Publish Docker image workflow](../.github/workflows/docker-release.yml) builds and pushes Linux amd64 and arm64 images when a GitHub release is published.
