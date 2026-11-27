@@ -4,31 +4,18 @@ import { displayDateTime } from '../datetime'
 import { usenetPauseText } from '../utils'
 import { sweepProgress } from '../usenet-review'
 import Icon from './Icons'
-
-export interface BulkOperationState {
-  action: 'start' | 'cancel'
-  phase: 'running' | 'success' | 'warning' | 'error'
-  settled: number
-  total: number
-  added: number
-  failed: number
-  message: string
-  failures?: { label: string; error: string }[]
-  jobId?: string
-}
+import type { BulkOperationState } from '../bulk-operation'
+import { useBulkOperation } from '../useBulkOperation'
 
 interface Props {
   status: Status
   scanCompleted: string | null
   scanCancelledDismissed?: boolean
-  bulk: BulkOperationState | null
   onRetryScan: () => void
   onCancelScan: () => void
   onOpenLibrary: () => void
   onOpenConfig: () => void
-  onDismissBulk: () => void
   onDismissScan: () => void
-  onReviewBulk?: () => void
 }
 
 export function isScanNoticeVisible(
@@ -67,15 +54,16 @@ export default function OperationCenter({
   status,
   scanCompleted,
   scanCancelledDismissed = false,
-  bulk,
   onRetryScan,
   onCancelScan,
   onOpenLibrary,
   onOpenConfig,
-  onDismissBulk,
   onDismissScan,
-  onReviewBulk,
 }: Props) {
+  const bulkOperation = useBulkOperation()
+  const bulk = bulkOperation.operation
+  const onDismissBulk = bulkOperation.dismiss
+  const onReviewBulk = bulkOperation.reviewAvailable ? bulkOperation.requestReview : undefined
   const scanVisible = isScanNoticeVisible(status, scanCompleted, scanCancelledDismissed)
   const usenet = status.usenet_prefetch
   if (!scanVisible && !bulk && !usenet?.running) return null

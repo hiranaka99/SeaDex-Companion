@@ -1,16 +1,17 @@
 import { normalizeTorrentPath as normalizeFile, releaseFilesMatch, releaseOwned } from '../../../shared/download-plan'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Config, Release, ResultItem } from '../types'
-import { findsPrivateTorrent, formatBytes, formatEta, seasonLabel, sizeDelta } from '../utils'
+import { formatBytes, formatEta, seasonLabel, sizeDelta } from '../utils'
+import type { DownloadRoutes } from '../download-routes'
 import { buttonBase, cx, downloadTextTone } from '../styles'
 import Icon from './Icons'
-import { DownloadActions, ImportStatusLine, clientName, phaseLabel, type DownloadEntry } from './DownloadsPanel'
-import { estimateDownloads } from '../../../shared/download-estimate'
-import type { DownloadPhase, DownloadProtocol, UsenetAvailabilityResult } from '../api'
+import { DownloadActions, ImportStatusLine } from './DownloadsPanel'
+import { clientName, phaseLabel, protocolClientName, type DownloadEntry } from '../download-entry'
+import type { DownloadPhase, DownloadProtocol } from '../api'
 import type { UsenetCandidate } from '../../../shared/usenet-contracts'
 import { DiskLine } from './PlanReview'
-import type { DetailsDownloadState, LowSpaceHold } from '../useCardDownloads'
-import { episodeRangeLabel, releaseIdentity } from '../../../shared/releases'
+import { releaseFileScope } from '../release-actions'
+import type { ReleaseActions } from '../useReleaseActions'
 import { DEFAULT_TRACKER_MODE } from '../../../shared/settings'
 import { displayDateTimeMinutes } from '../datetime'
 import { availabilityErrors } from '../usenet-observation'
@@ -28,36 +29,10 @@ interface Props {
   result: ResultItem
   release: Release
   config: Config | null
-  state: DetailsDownloadState
-  busy: boolean
-  /** This release is being sent right now. */
-  sending: boolean
-  /** Some release on this card is being sent, so no other send may start. */
-  sendLocked: boolean
-  /** Effective protocol for this release (resolved against the download mode). */
-  protocol: DownloadProtocol
-  availability?: UsenetAvailabilityResult
-  availabilityLoading: boolean
-  sabnzbdConfigured: boolean
-  onProtocol: (protocol: DownloadProtocol) => void
-  onRefreshAvailability: () => void
-  /** Searches Prowlarr's Usenet indexers for this release now. */
-  onSearchProwlarr: () => void
-  /** Fetches the best search result's NZB and compares its files with this release. */
-  onCheckProwlarr: () => void
-  onDownload: () => void
-  /** Sends an unproven NZB the user chose from a Prowlarr search for this private-tracker release. */
-  onDownloadNzb: (nzb: string) => void
-  /** A send that stopped because a client reported too little free space, or no free space at all. */
-  lowSpace: Pick<LowSpaceHold, 'reason' | 'checks'> | null
-  onSendAnyway: () => void
-  onCancelLowSpace: () => void
-  /** Why the last send of this release failed. */
-  sendError: string | null
-  onDismissSendError: () => void
-  onPause: (entry: DownloadEntry) => void
-  onResume: (entry: DownloadEntry) => void
-  onRemove: (entry: DownloadEntry) => void
+  /** What this release can be sent through. */
+  routes: DownloadRoutes
+  /** The row's transfers, send state, availability and verdict, and what it can do. */
+  actions: ReleaseActions
 }
 
 const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() || path
@@ -81,52 +56,33 @@ const PHASE_ORDER: DownloadPhase[] = [
   'complete',
 ]
 
-export default function ReleaseDetails({
-  result: r,
-  release: rel,
-  config,
-  state,
-  busy,
-  sending,
-  sendLocked,
-  protocol,
-  availability,
-  availabilityLoading,
-  sabnzbdConfigured,
-  onProtocol,
-  onRefreshAvailability,
-  onSearchProwlarr,
-  onCheckProwlarr,
-  onDownload,
-  onDownloadNzb,
-  lowSpace,
-  onSendAnyway,
-  onCancelLowSpace,
-  sendError,
-  onDismissSendError,
-  onPause,
-  onResume,
-  onRemove,
-}: Props) {
+export default function ReleaseDetails({ result: r, release: rel, config, routes, actions }: Props) {
+  const {
+    transfers,
+    busy,
+    sending,
+    sendLocked,
+    lowSpace,
+    error: sendError,
+    availability: currentAvailability,
+    availabilityLoading,
+    route,
+    verdict,
+  } = actions
   const isBest = rel.kind === 'best'
   const localSize = rel.part ? r.local_size_by_part?.[rel.part] || 0 : r.local_size
   const delta = sizeDelta(rel.size, localSize)
-  const transfers = state.transfers
   const active = transfers.filter(transfer => transfer.phase !== 'complete')
   const complete = transfers.length > 0 && active.length === 0
   const inClient = active.length > 0
-  const mode = config?.download_mode || 'torrent_only'
   const publicOnly = (config?.tracker_mode || DEFAULT_TRACKER_MODE) === 'public'
-  const category = (r.arr === 'Sonarr' ? config?.sonarr_category : config?.radarr_category)?.trim() || r.arr
-  const usenetEnabled = mode !== 'torrent_only'
-  const sabReady = sabnzbdConfigured || Boolean(config?.sabnzbd_url && config?.sabnzbd_key_configured)
-  const currentAvailability = availability?.identity === releaseIdentity(rel) ? availability : undefined
+  const usenetEnabled = routes.usenetAllowed
   const usenet = usenetEnabled
     ? describeUsenet(
         currentAvailability,
-        sabReady,
+        routes.usenetReady,
         Boolean(rel.private_sources?.length),
-        Boolean(config?.prowlarr_enabled && config.prowlarr_url && config.prowlarr_key_configured),
+        routes.prowlarrConfigured,
       )
     : null
   /** The row shows a Prowlarr result (a private-tracker release, or a public one the hash indexers lack). */
@@ -139,59 +95,16 @@ export default function ReleaseDetails({
     Boolean(currentAvailability?.hashes.some(item => item.provider === 'prowlarr' && item.state !== 'not_checked'))
   const availabilityRefreshing = availabilityLoading || currentAvailability?.refreshing === true
   const refreshError = currentAvailability ? availabilityErrors([currentAvailability]) : null
-  const chosen: DownloadProtocol = mode === 'torrent_only' ? 'torrent' : mode === 'usenet_only' ? 'usenet' : protocol
+  const chosen: DownloadProtocol = verdict.protocol
   /** A private-tracker torrent the server finds through Prowlarr and checks file by file before sending. */
-  const viaProwlarr = findsPrivateTorrent(rel, config)
-  const torrentUsable = rel.torrent_available || viaProwlarr
-  const usenetUsable = usenet?.usable === true
-  const protocolUsable = chosen === 'torrent' ? torrentUsable : usenetUsable
-  const disabled = inClient || complete || !protocolUsable
+  const viaProwlarr = route.torrent.viaProwlarr
+  const torrentUsable = route.torrent.sendable
+  const usenetUsable = route.usenet.sendable
+  const disabled = !verdict.enabled
   /** Owning this release already; sending it again is a deliberate re-download, not an upgrade. */
   const owned = releaseOwned(r, rel)
 
-  const fileScope = useMemo(() => {
-    const estimate = estimateDownloads([{ release: rel, category: '' }])
-    const privateFiles = rel.torrent_available ? [] : (rel.private_sources || []).flatMap(source => source.files)
-    const selected = [...new Map((rel.selected_files || []).map(name => [normalizeFile(name), name])).values()]
-    // SeaDex lists a private torrent's files with exact sizes, even without its hash.
-    const privateBytes = privateFiles.length
-      ? (selected.length
-          ? privateFiles.filter(file => selected.some(name => normalizeFile(name) === normalizeFile(file.name)))
-          : privateFiles
-        ).reduce((sum, file) => sum + file.length, 0)
-      : null
-    const exact =
-      privateBytes !== null ||
-      (estimate.torrents.length > 0 && estimate.unknown_torrents === 0 && estimate.approximate_torrents === 0)
-    const catalogs = new Map<string, { name: string; sizes: number[] }>()
-    const sources = [
-      ...(rel.torrent_files || []).filter(catalog =>
-        rel.info_hashes.some(hash => hash.toLowerCase() === catalog.hash.toLowerCase()),
-      ),
-      ...(privateFiles.length ? [{ hash: '', files: privateFiles }] : []),
-    ]
-    for (const catalog of sources) {
-      for (const file of catalog.files) {
-        const key = normalizeFile(file.name)
-        const current = catalogs.get(key) || { name: file.name, sizes: [] }
-        current.sizes.push(file.length)
-        catalogs.set(key, current)
-      }
-    }
-    const names = selected.length ? selected : [...catalogs.values()].map(file => file.name)
-    return {
-      selected: selected.length > 0,
-      exact,
-      bytes: privateBytes ?? estimate.new_bytes,
-      approximateBytes:
-        !selected.length && estimate.unknown_torrents === 0 && estimate.torrents.length > 0 ? estimate.new_bytes : null,
-      files: names.map(name => {
-        const sizes = catalogs.get(normalizeFile(name))?.sizes || []
-        const size = sizes.length === 1 && Number.isSafeInteger(sizes[0]) && sizes[0] >= 0 ? sizes[0] : null
-        return { name, size }
-      }),
-    }
-  }, [rel])
+  const fileScope = useMemo(() => releaseFileScope(rel), [rel])
   const sizeLabel = fileScope.exact
     ? formatBytes(fileScope.bytes) || '0 B'
     : fileScope.approximateBytes !== null
@@ -199,11 +112,6 @@ export default function ReleaseDetails({
       : 'size unavailable'
   const fileCount = `${fileScope.files.length} selected file${fileScope.files.length === 1 ? '' : 's'}`
   const scopeLabel = fileScope.selected ? `${fileCount} · ${sizeLabel}` : `Whole release · ${sizeLabel}`
-  // Movies have no episodes; a number in a movie's filename is a version, year or audio layout.
-  const episodes = useMemo(
-    () => (r.arr === 'Sonarr' ? episodeRangeLabel(fileScope.files.map(file => file.name)) : null),
-    [fileScope, r.arr],
-  )
   /** Re-sending an owned release waits for a second click, so a duplicate download is never one stray tap away. */
   const [confirmingRedownload, setConfirmingRedownload] = useState(false)
   /** An unproven NZB is only sent after the person confirms it is the release. */
@@ -334,36 +242,8 @@ export default function ReleaseDetails({
     }
   })()
 
-  const buttonTitle = complete
-    ? `Download completed in ${clientName(transfers[0].client)}`
-    : inClient
-      ? `${phaseLabel(active[0].phase)} in ${clientName(active[0].client)}`
-      : chosen === 'usenet'
-        ? usenetUsable
-          ? `Send this release to SABnzbd (category: ${r.arr === 'Sonarr' ? config?.sabnzbd_sonarr_category : config?.sabnzbd_radarr_category})`
-          : usenet?.detail || 'Usenet is not available for this release'
-        : rel.torrent_available
-          ? `Send this release to qBittorrent (category: ${category})`
-          : viaProwlarr
-            ? `Find this release on ${rel.tracker.trim() || 'its tracker'} through Prowlarr, check its files, and send it to qBittorrent (category: ${category})`
-            : 'No magnet available (private tracker)'
-  const buttonLabel = complete
-    ? 'Download completed'
-    : inClient
-      ? phaseLabel(active[0].phase)
-      : !protocolUsable
-        ? chosen === 'usenet'
-          ? 'Usenet unavailable'
-          : 'Unavailable'
-        : chosen === 'usenet'
-          ? owned
-            ? 'Re-download on Usenet'
-            : 'Download on Usenet'
-          : fileScope.selected
-            ? `${owned ? 'Re-download' : 'Download'} ${fileScope.files.length} file${fileScope.files.length === 1 ? '' : 's'}`
-            : owned
-              ? 'Re-download'
-              : 'Download release'
+  const buttonTitle = verdict.reason
+  const buttonLabel = verdict.label
 
   // The kind label already says BEST, so a SeaDex "Best" tag would repeat it.
   const tags = [...new Set([...(rel.dual_audio ? ['Dual Audio'] : []), ...(rel.tags || [])])].filter(
@@ -381,12 +261,7 @@ export default function ReleaseDetails({
   // Naming the target only helps where several releases compete for the same season or cour.
   const competing = r.releases.filter(other => (other.part || '') === (rel.part || '')).length > 1
   const targeted = Boolean(rel.target) && competing && !verified && !complete && !inClient
-  /**
-   * One release per row is the recommended action: the preferred target, or SeaDex's best release when nothing is
-   * targeted. Owned and excluded releases stay available but never look like the next step.
-   */
-  const recommended =
-    !owned && !rel.excluded_by && (rel.target === true || (isBest && !r.releases.some(other => other.target)))
+  const recommended = verdict.recommended
   // While an inline alert asks for a decision, the button it holds back steps aside so the alert leads.
   const held = lowSpace !== null || confirmingRedownload || confirmingNzb !== null
   const buttonTone = complete
@@ -400,20 +275,8 @@ export default function ReleaseDetails({
           : 'border-line-strong bg-panel text-ink enabled:hover:bg-panel-raised'
   const statusCopy = complete ? `Download completed in ${clientName(transfers[0].client)}` : ''
   const usenetCategory = r.arr === 'Sonarr' ? config?.sabnzbd_sonarr_category : config?.sabnzbd_radarr_category
-  const destination = chosen === 'usenet' ? 'SABnzbd' : 'qBittorrent'
-  const canSend = !inClient && !complete && protocolUsable && (chosen === 'usenet' || torrentUsable)
-  // What the send covers and where it goes, under the size, so the send is decided from one place.
-  const sendFacts = canSend
-    ? [
-        chosen === 'usenet' ? 'Whole Usenet source' : fileScope.selected ? fileCount : 'Whole release',
-        chosen === 'torrent' ? episodes : null,
-        chosen === 'torrent' && viaProwlarr ? 'found through Prowlarr' : null,
-        `to ${destination}`,
-        'free space checked on send',
-      ]
-        .filter(Boolean)
-        .join(' · ')
-    : ''
+  const destination = protocolClientName(chosen)
+  const sendFacts = verdict.facts
   const usenetBytes = currentAvailability?.hashes[0]?.total_bytes || 0
   /** The two figures a send is decided on: what it downloads, and how the library grows if it replaces your files. */
   const downloadSize =
@@ -577,7 +440,7 @@ export default function ReleaseDetails({
             <button
               type="button"
               className="touch-target inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 font-semibold text-accent-bright hover:bg-accent/10"
-              onClick={onRefreshAvailability}
+              onClick={actions.refresh}
               title="Re-check AnimeTosho and AmeNZB for this season"
               aria-label={`Re-check Usenet sources · ${seasonLabel(r)}`}
             >
@@ -589,7 +452,7 @@ export default function ReleaseDetails({
             <button
               type="button"
               className="touch-target inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 font-semibold text-accent-bright hover:bg-accent/10"
-              onClick={onSearchProwlarr}
+              onClick={actions.search}
               title="Search the Usenet indexers in Prowlarr for this release. Each NZB checked counts toward the indexer's download limit."
               aria-label={`${prowlarrSearched ? 'Search Prowlarr again' : 'Search Prowlarr'} · ${seasonLabel(r)} · ${rel.releaseGroup}`}
             >
@@ -601,7 +464,7 @@ export default function ReleaseDetails({
             <button
               type="button"
               className="touch-target inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 font-semibold text-accent-bright hover:bg-accent/10 disabled:cursor-not-allowed disabled:opacity-50"
-              onClick={onCheckProwlarr}
+              onClick={actions.check}
               disabled={availabilityRefreshing}
               title="Fetch the best result's NZB and compare its files with this release. It counts toward the indexer's download limit."
               aria-label={`Check now · ${seasonLabel(r)} · ${rel.releaseGroup}`}
@@ -678,8 +541,10 @@ export default function ReleaseDetails({
                             buttonBase,
                             'min-h-9 shrink-0 border-line-strong bg-panel px-2.5 text-xs text-ink enabled:hover:bg-panel-raised',
                           )}
-                          disabled={!sabReady || inClient || complete || sendLocked || lowSpace !== null}
-                          title={sabReady ? 'Send this NZB to SABnzbd after confirming it' : 'Set up SABnzbd first'}
+                          disabled={!routes.usenetReady || inClient || complete || sendLocked || lowSpace !== null}
+                          title={
+                            routes.usenetReady ? 'Send this NZB to SABnzbd after confirming it' : 'Set up SABnzbd first'
+                          }
                           aria-label={`Download this NZB · ${candidate.title}`}
                           onClick={() => {
                             setConfirmingRedownload(false)
@@ -700,7 +565,7 @@ export default function ReleaseDetails({
       )}
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
         <div className="min-w-0 flex-1 basis-44">
-          {mode === 'choose' && !inClient && !complete && (
+          {routes.mode === 'choose' && !inClient && !complete && (
             <div
               className="mb-2.5 flex flex-wrap items-center gap-1.5"
               role="radiogroup"
@@ -718,7 +583,7 @@ export default function ReleaseDetails({
                       ? 'Find on the private tracker through Prowlarr and download with qBittorrent'
                       : 'No magnet available (private tracker)'
                 }
-                onClick={() => onProtocol('torrent')}
+                onClick={() => actions.pickProtocol('torrent')}
                 className={cx(
                   'cursor-pointer rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors',
                   chosen === 'torrent'
@@ -735,7 +600,7 @@ export default function ReleaseDetails({
                 aria-checked={chosen === 'usenet'}
                 disabled={!usenetUsable}
                 title={usenet?.detail || 'Usenet availability not checked'}
-                onClick={() => onProtocol('usenet')}
+                onClick={() => actions.pickProtocol('usenet')}
                 className={cx(
                   'cursor-pointer rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors',
                   chosen === 'usenet'
@@ -856,7 +721,7 @@ export default function ReleaseDetails({
                 aria-label={`${buttonLabel} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`}
                 aria-description={buttonTitle}
                 data-recommended={recommended || undefined}
-                onClick={owned ? () => setConfirmingRedownload(true) : holdFocus(onDownload)}
+                onClick={owned ? () => setConfirmingRedownload(true) : holdFocus(actions.send)}
               >
                 {sending ? (
                   <span
@@ -868,9 +733,7 @@ export default function ReleaseDetails({
                 ) : (
                   <Icon name="download" size={17} />
                 )}
-                <span className="min-w-0 wrap-anywhere">
-                  {sending ? `Sending to ${chosen === 'usenet' ? 'SABnzbd' : 'qBittorrent'}…` : buttonLabel}
-                </span>
+                <span className="min-w-0 wrap-anywhere">{sending ? `Sending to ${destination}…` : buttonLabel}</span>
               </button>
             )}
       </div>
@@ -899,7 +762,7 @@ export default function ReleaseDetails({
                 buttonBase,
                 'min-h-11 border-warn/45 bg-warn/12 px-3 text-xs text-warn enabled:hover:bg-warn/20',
               )}
-              onClick={holdFocus(onSendAnyway)}
+              onClick={holdFocus(actions.sendAnyway)}
               disabled={sendLocked}
             >
               <Icon name="download" size={15} />
@@ -912,7 +775,7 @@ export default function ReleaseDetails({
                 'min-h-11 border-line bg-panel px-3 text-xs text-ink enabled:hover:bg-panel-raised',
               )}
               ref={lowSpaceRef}
-              onClick={holdFocus(onCancelLowSpace)}
+              onClick={holdFocus(actions.cancelLowSpace)}
             >
               Cancel
             </button>
@@ -942,7 +805,7 @@ export default function ReleaseDetails({
               onClick={holdFocus(() => {
                 const entry = confirmingNzb.entry_id
                 setConfirmingNzb(null)
-                onDownloadNzb(entry)
+                actions.sendNzb(entry)
               })}
             >
               <Icon name="download" size={15} />
@@ -983,7 +846,7 @@ export default function ReleaseDetails({
               disabled={sendLocked || disabled}
               onClick={holdFocus(() => {
                 setConfirmingRedownload(false)
-                onDownload()
+                actions.send()
               })}
             >
               <Icon name="download" size={15} />
@@ -1017,7 +880,7 @@ export default function ReleaseDetails({
                 'min-h-11 border-line-strong bg-panel px-3 text-xs text-ink enabled:hover:bg-panel-raised',
               )}
               ref={retryRef}
-              onClick={holdFocus(onDownload)}
+              onClick={holdFocus(actions.send)}
               disabled={sendLocked || disabled}
             >
               <Icon name="refresh" size={15} />
@@ -1029,7 +892,7 @@ export default function ReleaseDetails({
                 buttonBase,
                 'min-h-11 border-transparent bg-transparent px-3 text-xs text-muted enabled:hover:text-ink',
               )}
-              onClick={holdFocus(onDismissSendError)}
+              onClick={holdFocus(actions.dismissError)}
             >
               Dismiss
             </button>
@@ -1213,9 +1076,9 @@ export default function ReleaseDetails({
             <DownloadActions
               entry={transfer}
               busy={busy}
-              onPause={() => onPause(transfer)}
-              onResume={() => onResume(transfer)}
-              onRemove={() => onRemove(transfer)}
+              onPause={() => actions.pause(transfer)}
+              onResume={() => actions.resume(transfer)}
+              onRemove={() => actions.remove(transfer)}
               name={nested ? name?.label : undefined}
             />
           </span>

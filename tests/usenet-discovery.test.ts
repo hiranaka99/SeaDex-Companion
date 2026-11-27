@@ -3,19 +3,14 @@ import { test } from 'node:test'
 import { setImmediate as nextTurn } from 'node:timers/promises'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { bumpGeneration } from '../server/config-generation.js'
-import {
-  aggregateHashStates,
-  paceUsenetLookups,
-  resetUsenetLookups,
-  resolveUsenetHash,
-  resolveUsenetRelease,
-  UsenetSelectionError,
-} from '../server/usenet.js'
+import { aggregateHashStates, resolveUsenetHash, resolveUsenetRelease, UsenetSelectionError } from '../server/usenet.js'
 import { usenetAvailability } from '../server/usenet-copies.js'
-import { LookupGuardTimeout, LookupScheduler, ProviderPausedError } from '../server/usenet-scheduler.js'
+import { LookupGuardTimeout } from '../server/lookup-flights.js'
+import { LookupScheduler, ProviderPausedError } from '../server/usenet-scheduler.js'
 import { releaseIdentity } from '../shared/releases.js'
 import type { Release, ResultItem } from '../server/types.js'
 import { holdJob, runJob } from './support/lookup-jobs.js'
+import { testUsenetRuntime, type TestUsenetRuntime } from './support/usenet-runtime.js'
 
 const HASH = 'a'.repeat(40)
 const OTHER = 'b'.repeat(40)
@@ -50,9 +45,13 @@ interface Fixture {
   amenzb?: () => Response | Promise<Response>
 }
 
-function router(fixture: Fixture): { calls: string[]; fetchImpl: typeof fetch } {
+/** How the runtime in use reaches the hash indexers; set by `router`. */
+let routed: typeof fetch = async input => {
+  throw new Error(`unexpected provider request: ${String(input)}`)
+}
+
+function router(fixture: Fixture): { calls: string[] } {
   const calls: string[] = []
-  const original = globalThis.fetch
   const fetchImpl = (async (input: RequestInfo | URL) => {
     const url = String(input)
     calls.push(url)
@@ -62,12 +61,22 @@ function router(fixture: Fixture): { calls: string[]; fetchImpl: typeof fetch } 
       return (fixture.amenzb ?? (() => new Response('not found', { status: 404 })))()
     throw new Error(`unexpected provider request: ${url}`)
   }) as typeof fetch
-  globalThis.fetch = fetchImpl
-  return { calls, fetchImpl: original === undefined ? fetchImpl : fetchImpl }
+  routed = fetchImpl
+  return { calls }
 }
 
-function restore(original: typeof fetch) {
-  globalThis.fetch = original
+let usenet: TestUsenetRuntime | undefined
+
+/** A fresh runtime on empty data paths that asks the hash indexers through `router`. */
+function freshRuntime(): TestUsenetRuntime {
+  usenet?.close()
+  usenet = testUsenetRuntime(undefined, { fetch: (input, init) => routed(input, init) })
+  return usenet
+}
+
+function restore() {
+  usenet?.close()
+  usenet = undefined
 }
 
 const animetoshoMatch = () =>
@@ -88,15 +97,13 @@ const animetoshoMatch = () =>
   })
 
 function isolation() {
-  const original = globalThis.fetch
-  resetUsenetLookups()
-  paceUsenetLookups({ minIntervalMs: 0 })
+  const runtime = freshRuntime()
   const generation = bumpGeneration()
-  return { original, generation }
+  return { runtime, generation }
 }
 
 test('a hash matched by AnimeTosho resolves as available with the provider manifest', async () => {
-  const { original } = isolation()
+  isolation()
   const routed = router({ animetosho: animetoshoMatch })
   try {
     const state = await resolveUsenetHash(config(), HASH)
@@ -110,12 +117,12 @@ test('a hash matched by AnimeTosho resolves as available with the provider manif
     assert.equal(routed.calls.length, 1)
     assert.equal(routed.calls[0], `https://feed.animetosho.net/json?show=torrent&hash=${HASH}`)
   } finally {
-    restore(original)
+    restore()
   }
 })
 
-test('successful lookups are cached until explicitly reset', async () => {
-  const { original } = isolation()
+test('successful lookups are cached for the life of the runtime', async () => {
+  isolation()
   let hits = 0
   const routed = router({
     animetosho: () => {
@@ -127,17 +134,17 @@ test('successful lookups are cached until explicitly reset', async () => {
     await resolveUsenetHash(config(), HASH)
     await resolveUsenetHash(config(), HASH)
     assert.equal(hits, 1, 'positive results must be served from the cache')
-    resetUsenetLookups()
+    freshRuntime()
     await resolveUsenetHash(config(), HASH)
-    assert.equal(hits, 2, 'an explicit test reset forces a fresh lookup')
+    assert.equal(hits, 2, 'a fresh runtime on empty data asks again')
     assert.equal(routed.calls.length, 2)
   } finally {
-    restore(original)
+    restore()
   }
 })
 
 test('any provider failure keeps the hash lookup_failed instead of claiming no match', async () => {
-  const { original } = isolation()
+  isolation()
   router({
     animetosho: () => new Response('gone', { status: 404 }), // definitive no_match from animetosho
     amenzb: () => new Response('boom', { status: 503 }),
@@ -148,18 +155,18 @@ test('any provider failure keeps the hash lookup_failed instead of claiming no m
     assert.equal(state.error_code, 'server')
     assert.deepEqual(state.providers_failed, ['amenzb'])
   } finally {
-    restore(original)
+    restore()
   }
 })
 
 test('definitive no_match requires every enabled provider to complete cleanly', async () => {
-  const { original } = isolation()
+  isolation()
   router({ animetosho: () => new Response('nope', { status: 404 }), amenzb: () => amenzbEmpty() })
   try {
     const state = await resolveUsenetHash(config(), HASH)
     assert.equal(state.state, 'no_match')
   } finally {
-    restore(original)
+    restore()
   }
 })
 
@@ -171,7 +178,7 @@ function amenzbEmpty(): Response {
 }
 
 test('AnimeTosho processing surfaces as processing, never as failure', async () => {
-  const { original } = isolation()
+  isolation()
   router({
     animetosho: () =>
       Response.json({
@@ -189,12 +196,12 @@ test('AnimeTosho processing surfaces as processing, never as failure', async () 
     const state = await resolveUsenetHash({ ...config(), amenzb_enabled: false }, HASH)
     assert.equal(state.state, 'processing')
   } finally {
-    restore(original)
+    restore()
   }
 })
 
 test('release aggregation waits for every source hash: one miss makes the release incomplete', async () => {
-  const { original } = isolation()
+  isolation()
   const routed = router({
     animetosho: () =>
       String(routed.calls.at(-1)).includes(`hash=${HASH}`) ? animetoshoMatch() : new Response('nope', { status: 404 }),
@@ -209,7 +216,7 @@ test('release aggregation waits for every source hash: one miss makes the releas
     assert.equal(byHash.get(HASH), 'available')
     assert.equal(byHash.get(OTHER), 'no_match')
   } finally {
-    restore(original)
+    restore()
   }
 })
 
@@ -225,19 +232,19 @@ test('aggregate precedence: not_configured outranks failures, failures outrank p
 })
 
 test('disabling providers keeps them from being contacted and marks not_configured when none remain', async () => {
-  const { original } = isolation()
+  isolation()
   const routed = router({})
   try {
     const state = await resolveUsenetHash({ ...config(), animetosho_enabled: false, amenzb_enabled: false }, HASH)
     assert.equal(state.state, 'not_configured')
     assert.equal(routed.calls.length, 0)
   } finally {
-    restore(original)
+    restore()
   }
 })
 
 test('availability resolves the release identity and reports the checked hash set per selection', async () => {
-  const { original } = isolation()
+  isolation()
   router({ animetosho: animetoshoMatch })
   try {
     await resolveUsenetHash(config(), HASH)
@@ -250,12 +257,12 @@ test('availability resolves the release identity and reports the checked hash se
     assert.equal(availability[0].identity, releaseIdentity(results[0].releases[0]))
     assert.ok(availability[0].checked_at)
   } finally {
-    restore(original)
+    restore()
   }
 })
 
 test('availability rejects replacement identities before any selected release is queried', async () => {
-  const { original } = isolation()
+  isolation()
   const routed = router({ animetosho: animetoshoMatch })
   try {
     const previous = release()
@@ -280,12 +287,12 @@ test('availability rejects replacement identities before any selected release is
     )
     assert.equal(routed.calls.length, 0)
   } finally {
-    restore(original)
+    restore()
   }
 })
 
 test('availability rejects missing and invalid release selections without provider work', async () => {
-  const { original } = isolation()
+  isolation()
   const routed = router({ animetosho: animetoshoMatch })
   try {
     const results = [{ key: 'show-1', releases: [release()] }] as unknown as ResultItem[]
@@ -302,12 +309,12 @@ test('availability rejects missing and invalid release selections without provid
     }
     assert.equal(routed.calls.length, 0)
   } finally {
-    restore(original)
+    restore()
   }
 })
 
 test('server resolvers retain complete manifests while public availability bounds display names', async () => {
-  const { original } = isolation()
+  isolation()
   const files = Array.from({ length: 205 }, (_, index) => ({ name: `Show - ${index + 1}.mkv`, size: 100 }))
   const routed = router({
     animetosho: () =>
@@ -345,12 +352,12 @@ test('server resolvers retain complete manifests while public availability bound
     )
     assert.equal(routed.calls.length, 1)
   } finally {
-    restore(original)
+    restore()
   }
 })
 
 test('discovery preserves reported file counts without trusting malformed manifests', async () => {
-  const { original } = isolation()
+  isolation()
   router({
     animetosho: () =>
       Response.json({
@@ -371,24 +378,24 @@ test('discovery preserves reported file counts without trusting malformed manife
     assert.equal(state.files_known, false)
     assert.equal(state.file_names, undefined)
   } finally {
-    restore(original)
+    restore()
   }
 })
 
 test('unsupported releases report unsupported_hash without provider traffic', async () => {
-  const { original } = isolation()
+  isolation()
   const routed = router({})
   try {
     const state = await resolveUsenetHash(config(), 'not-a-info-hash')
     assert.equal(state.state, 'unsupported_hash')
     assert.equal(routed.calls.length, 0)
   } finally {
-    restore(original)
+    restore()
   }
 })
 
 test('a refresh bypasses a wedged in-flight lookup instead of inheriting its hang', async () => {
-  const { original } = isolation()
+  isolation()
   let hang = true
   const started = Promise.withResolvers<void>()
   const stalled = Promise.withResolvers<Response>()
@@ -411,7 +418,7 @@ test('a refresh bypasses a wedged in-flight lookup instead of inheriting its han
     await nextTurn()
     assert.equal((await resolveUsenetHash({ ...config(), amenzb_enabled: false }, HASH)).state, 'available')
   } finally {
-    restore(original)
+    restore()
   }
 })
 
@@ -506,7 +513,7 @@ test('a queued background job promoted through its handle takes the slot reserve
 })
 
 test('invalidation cancels active and queued work without leaking global permits or overwriting a fresh cache', async () => {
-  const { original } = isolation()
+  const { runtime } = isolation()
   const settings = { ...config(), amenzb_enabled: false }
   const stalled = Promise.withResolvers<Response>()
   let requests = 0
@@ -522,7 +529,7 @@ test('invalidation cancels active and queued work without leaking global permits
   try {
     await nextTurn()
     assert.equal(requests, 3, 'background work leaves one slot reserved for interactive lookups')
-    resetUsenetLookups()
+    runtime.runtime.configChanged(settings, { ...settings, amenzb_key: 'another-key' })
     const cancelled = await Promise.all(pending)
     assert.ok(cancelled.every(state => state.state === 'lookup_failed'))
     assert.equal(requests, 3, 'queued cancelled lookups must not issue provider requests')
@@ -535,9 +542,8 @@ test('invalidation cancels active and queued work without leaking global permits
       Array.from({ length: 8 }, (_, index) => resolveUsenetHash(settings, (index + 20).toString(16).padStart(40, '0'))),
     )
   } finally {
-    resetUsenetLookups()
+    restore()
     await Promise.all(pending)
-    restore(original)
   }
 })
 

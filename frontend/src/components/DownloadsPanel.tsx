@@ -1,67 +1,8 @@
 import { formatBytes, formatEta } from '../utils'
 import Icon from './Icons'
 import { cx, downloadTextTone } from '../styles'
-import type { DownloadCapabilities, DownloadPhase, DownloadProtocol, DownloadProgress } from '../api'
-import type { DownloadImport } from '../../../shared/download-contracts'
-
-/** One owned acquisition as reported by its download client. */
-export interface DownloadEntry {
-  record_id: string
-  protocol: DownloadProtocol
-  client: DownloadProgress['client']
-  phase: DownloadPhase
-  capabilities: DownloadCapabilities
-  progress: number
-  downloaded: number
-  total_size: number
-  speed: number
-  title: string
-  season: string
-  releaseGroup: string
-  category: string
-  size: number
-  error?: string
-  /** The client at a different URL no longer serves this record. */
-  unbound?: boolean
-  /** Client-native source hash (torrent info hash), used to look up the release's file list. */
-  source_hash?: string
-  /** Selected torrent files; absent means the whole source. */
-  scope?: string[]
-  /** Whether Sonarr or Radarr imported the finished download; absent for downloads that are not followed. */
-  import?: DownloadImport
-}
-
-export function toDownloadEntry(p: DownloadProgress): DownloadEntry {
-  const season = p.season === null ? p.part || 'Release' : p.part ? `S${p.season} · ${p.part}` : `S${p.season}`
-  return {
-    record_id: p.record_id,
-    protocol: p.protocol,
-    client: p.client,
-    phase: p.phase,
-    capabilities: p.capabilities,
-    progress: p.progress,
-    downloaded: p.downloaded,
-    total_size: p.total_size,
-    speed: p.speed,
-    title: p.title,
-    season,
-    releaseGroup: p.release_group || p.title,
-    category: p.category,
-    size: p.size,
-    error: p.error,
-    unbound: p.state === 'unbound',
-    source_hash: p.source_hash,
-    ...(p.scope ? { scope: p.scope } : {}),
-    ...(p.import ? { import: p.import } : {}),
-  }
-}
-
-/** A finished download that still needs the person's attention or is waiting on Sonarr or Radarr. */
-export const importUnsettled = (entry: Pick<DownloadEntry, 'import'>) =>
-  entry.import?.state === 'pending' ||
-  entry.import?.state === 'blocked' ||
-  entry.import?.state === 'not_imported' ||
-  entry.import?.state === 'mismatch'
+import type { DownloadPhase } from '../api'
+import { clientName, phaseLabel, type DownloadEntry } from '../download-entry'
 
 /** What happened to a finished download in Sonarr or Radarr, in words and a tone; null while it is still downloading. */
 export function importStatus(
@@ -105,31 +46,12 @@ export function ImportStatusLine({ entry }: { entry: Pick<DownloadEntry, 'import
   )
 }
 
-const PHASE_LABEL: Record<DownloadPhase, string> = {
-  queued: 'Queued',
-  downloading: 'Downloading',
-  paused: 'Paused',
-  verifying: 'Verifying',
-  repairing: 'Repairing',
-  unpacking: 'Unpacking',
-  post_processing: 'Post-processing',
-  seeding: 'Seeding',
-  complete: 'Complete',
-  missing: 'Not in client',
-  unavailable: 'Unavailable',
-  acceptance_unknown: 'Awaiting confirmation',
-  error: 'Error',
-}
-
 /** Copy that names the recovery, never a URL or credential. */
 const PHASE_HINT: Partial<Record<DownloadPhase, string>> = {
   missing: 'This download is no longer in the client. Remove the entry and send it again if you still want it.',
   unavailable: 'The download client is currently unreachable. Progress resumes when it answers.',
   error: 'The client reported an error. Open the client for details, then remove and retry.',
 }
-
-export const clientName = (client: DownloadEntry['client']) => (client === 'sabnzbd' ? 'SABnzbd' : 'qBittorrent')
-export const phaseLabel = (phase: DownloadPhase) => PHASE_LABEL[phase] || 'Downloading'
 
 /** Progress is meaningful only while bytes move or the client verifies them. */
 const showsProgress = (phase: DownloadPhase) =>

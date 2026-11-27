@@ -23,6 +23,7 @@ import {
 import { parseTorrentFile, TORRENT_FILE_MAX_BYTES } from './torrent-file.js'
 import { sameFiles, type SourceFile } from './source-files.js'
 import { searchTitles } from './search-titles.js'
+import { usenetParts } from './usenet-runtime.js'
 
 /** What the search terms are built from. No search names a category: Prowlarr drops every result outside it. */
 export interface PrivateSearchContext {
@@ -70,27 +71,47 @@ interface Entry {
   value: PrivateTorrentLookup
 }
 
-const torrents = new Map<string, Entry>()
-const inFlight = new Map<string, Promise<PrivateTorrentLookup>>()
-let epoch = 0
+/**
+ * The private torrents found or missed recently and the lookups under way, with the clock that dates them and
+ * the fetch Prowlarr is asked with. A Usenet runtime (`usenet-runtime.ts`) builds it and owns it.
+ */
+export class PrivateTorrentCache {
+  readonly torrents = new Map<string, Entry>()
+  readonly inFlight = new Map<string, Promise<PrivateTorrentLookup>>()
+  readonly now: () => number
+  readonly fetch: typeof fetch
+  private epoch = 0
+  private running = 0
+  private readonly waiting: (() => void)[] = []
 
-/** Forget every observation, for a changed Prowlarr connection. Running work is discarded when it settles. */
-export function invalidatePrivateSources(): void {
-  epoch++
-  torrents.clear()
-  inFlight.clear()
-}
+  constructor(options: { now: () => number; fetch: typeof fetch }) {
+    this.now = options.now
+    this.fetch = options.fetch
+  }
 
-let running = 0
-const waiting: (() => void)[] = []
-async function limited<T>(work: () => Promise<T>): Promise<T> {
-  while (running >= SEARCH_CONCURRENCY) await new Promise<void>(resolve => waiting.push(resolve))
-  running++
-  try {
-    return await work()
-  } finally {
-    running--
-    waiting.shift()?.()
+  /** Forget every observation, for a changed Prowlarr connection. Running work is discarded when it settles. */
+  invalidate(): void {
+    this.epoch++
+    this.torrents.clear()
+    this.inFlight.clear()
+  }
+
+  /** A check that holds until the next invalidation. */
+  stamp(): () => boolean {
+    const at = this.epoch
+    return () => at === this.epoch
+  }
+
+  /** Runs `work` once fewer than `SEARCH_CONCURRENCY` lookups run. */
+  async limited<T>(work: () => Promise<T>): Promise<T> {
+    while (this.running >= SEARCH_CONCURRENCY) await new Promise<void>(resolve => this.waiting.push(resolve))
+    this.running++
+    try {
+      return await work()
+    } finally {
+      this.running--
+      this.waiting.shift()?.()
+    }
   }
 }
 
@@ -110,10 +131,11 @@ async function searchAll(
   queries: string[],
   indexerIds: number[],
   enough: (results: ProwlarrRelease[]) => boolean,
+  fetchImpl: typeof fetch,
 ): Promise<ProwlarrRelease[]> {
   const seen = new Map<string, ProwlarrRelease>()
   for (const query of new Set(queries.filter(Boolean))) {
-    for (const release of await searchProwlarr(settings, query, indexerIds))
+    for (const release of await searchProwlarr(settings, query, indexerIds, fetchImpl))
       seen.set(`${release.indexer_id}\u0000${release.guid}`, release)
     if (enough([...seen.values()])) break
   }
@@ -135,6 +157,7 @@ async function findTorrent(
   settings: ProwlarrSettings,
   source: PrivateSource,
   context: PrivateSearchContext,
+  fetchImpl: typeof fetch,
 ): Promise<PrivateTorrentLookup> {
   const tracker = context.tracker || 'the tracker'
   const indexers = trackerIndexers(await prowlarrIndexers(settings), context.tracker)
@@ -152,6 +175,7 @@ async function findTorrent(
     context.titles.slice(0, TITLE_LIMIT),
     indexers.map(indexer => indexer.id),
     found => Boolean(id) && found.some(release => namesTorrent(release, id)),
+    fetchImpl,
   )
   // The tracker's own torrent ID is checked first; a torrent of the same size is the fallback.
   const candidates = results
@@ -162,7 +186,7 @@ async function findTorrent(
     let bytes: Uint8Array
     let parsed: ReturnType<typeof parseTorrentFile>
     try {
-      bytes = await prowlarrDownload(settings, candidate, TORRENT_FILE_MAX_BYTES)
+      bytes = await prowlarrDownload(settings, candidate, TORRENT_FILE_MAX_BYTES, fetchImpl)
       parsed = parseTorrentFile(bytes)
     } catch (error) {
       // An unreadable file is one failed candidate; an unreachable Prowlarr fails the lookup.
@@ -196,26 +220,28 @@ export async function resolvePrivateTorrent(
   const settings = privateSearchSettings(config)
   if (!settings) return { kind: 'unconfigured', reason: 'Prowlarr is not set up.' }
   const key = sourceKey(settings, source.id)
+  const current = usenetParts().privateSources
   if (!refresh) {
-    const hit = torrents.get(key)
-    if (hit && Date.now() - hit.at < hit.ttl) return hit.value
+    const hit = current.torrents.get(key)
+    if (hit && current.now() - hit.at < hit.ttl) return hit.value
   }
   // One lookup runs once, however many callers ask at the same time.
-  const shared = inFlight.get(key)
+  const shared = current.inFlight.get(key)
   if (shared) return shared
-  const started = epoch
-  const promise = limited(() => findTorrent(settings, source, context))
+  const valid = current.stamp()
+  const promise = current
+    .limited(() => findTorrent(settings, source, context, current.fetch))
     .catch((error): PrivateTorrentLookup => failed(error))
     .then(value => {
-      if (started === epoch) {
+      if (valid()) {
         if (value.kind === 'failed') log('WARNING', `Prowlarr torrent lookup failed: ${value.message}`)
-        torrents.set(key, { at: Date.now(), ttl: TTL[value.kind], value })
+        current.torrents.set(key, { at: current.now(), ttl: TTL[value.kind], value })
       }
       return value
     })
     .finally(() => {
-      if (inFlight.get(key) === promise) inFlight.delete(key)
+      if (current.inFlight.get(key) === promise) current.inFlight.delete(key)
     })
-  inFlight.set(key, promise)
+  current.inFlight.set(key, promise)
   return promise
 }

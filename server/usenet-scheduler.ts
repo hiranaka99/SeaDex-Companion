@@ -1,4 +1,5 @@
 import { log } from './logging.js'
+import { guarded } from './lookup-flights.js'
 import type { UsenetFailureCode } from '../shared/usenet-contracts.js'
 import type { ProviderLookup } from './usenet-provider-types.js'
 
@@ -15,7 +16,7 @@ export interface LookupRequest<T> {
   signal: AbortSignal
   /** Gives up only the wait for a slot; work that started runs on. `signal` when left out. */
   waitSignal?: AbortSignal
-  /** How long the work may hold the slot; past it the job fails with `LookupGuardTimeout`. */
+  /** How long the work may hold the slot; past it the job fails with `LookupGuardTimeout` (`lookup-flights.ts`). */
   guardMs: number
   /** The request itself, run with the slot in hand. */
   work: () => Promise<T>
@@ -36,13 +37,6 @@ export interface LookupHandle<T> {
   result: Promise<T>
   /** Someone now waits on the job: from here on it is foreground work. Nothing changes once it started. */
   promote(): void
-}
-
-/** The work of a job held its slot longer than its guard allows; the slot was freed. */
-export class LookupGuardTimeout extends Error {
-  constructor() {
-    super('lookup exceeded the wall-clock guard')
-  }
 }
 
 /** How a scheduler paces its channels; fixed when the scheduler is created. */
@@ -147,23 +141,6 @@ function describeWait(ms: number): string {
   return seconds < 90 ? `${seconds} seconds` : `${Math.ceil(seconds / 60)} minutes`
 }
 
-/** Settles with `work`, or rejects once `signal` aborts or `work` is still pending after `guardMs`. */
-async function guarded<T>(work: Promise<T>, signal: AbortSignal, guardMs: number): Promise<T> {
-  const stop = Promise.withResolvers<never>()
-  const cancel = () => stop.reject(signal.reason)
-  // The provider clients carry their own timeouts; this is the last line of defense, and never keeps the process alive.
-  const timer = setTimeout(() => stop.reject(new LookupGuardTimeout()), guardMs)
-  timer.unref?.()
-  signal.addEventListener('abort', cancel, { once: true })
-  if (signal.aborted) cancel()
-  try {
-    return await Promise.race([work, stop.promise])
-  } finally {
-    clearTimeout(timer)
-    signal.removeEventListener('abort', cancel)
-  }
-}
-
 const idle = (): ChannelState => ({
   lastStartedAt: 0,
   widenedMs: 0,
@@ -187,7 +164,11 @@ export class LookupScheduler {
   private active = 0
   private timer?: NodeJS.Timeout
 
-  constructor(pacing: Partial<LookupPacing> = {}) {
+  /** `now` is the clock pacing and pauses are measured on. */
+  constructor(
+    pacing: Partial<LookupPacing> = {},
+    private readonly now: () => number = () => Date.now(),
+  ) {
     this.pacing = { ...DEFAULT_PACING, ...pacing }
   }
 
@@ -232,7 +213,7 @@ export class LookupScheduler {
     return Math.max(state.minIntervalMs ?? this.pacing.minIntervalMs, state.widenedMs)
   }
 
-  isPaused(channel: string, now = Date.now()): boolean {
+  isPaused(channel: string, now = this.now()): boolean {
     return now < this.channel(channel).pausedUntil
   }
 
@@ -242,7 +223,7 @@ export class LookupScheduler {
 
   /** Active channel pauses, for status reporting. */
   pauses(): ChannelPause[] {
-    const now = Date.now()
+    const now = this.now()
     return [...this.channels]
       .filter(([, state]) => now < state.pausedUntil)
       .map(([channel, state]) => ({
@@ -260,7 +241,7 @@ export class LookupScheduler {
    */
   pause(channel: string, until: number, reason: UsenetFailureCode): void {
     const state = this.channel(channel)
-    if (until <= Date.now() || until <= state.pausedUntil) return
+    if (until <= this.now() || until <= state.pausedUntil) return
     state.pausedUntil = until
     state.reason = reason
     this.pump()
@@ -277,7 +258,7 @@ export class LookupScheduler {
   /** The failure a lookup reports when its channel is paused until `until`. */
   pausedFailure(channel: string, until: number): Extract<ProviderLookup, { kind: 'failed' }> {
     const { label, reason } = this.channel(channel)
-    const remaining = Math.max(0, until - Date.now())
+    const remaining = Math.max(0, until - this.now())
     const cause = reason === 'rate_limited' ? 'is rate limiting lookups' : 'lookups are failing'
     return {
       kind: 'failed',
@@ -307,7 +288,7 @@ export class LookupScheduler {
     if (!outcome.code || !TRANSIENT_CODES.has(outcome.code)) return
     health.failures++
     if (outcome.code !== 'rate_limited' && health.failures < this.pacing.transientFailuresBeforePause) return
-    const now = Date.now()
+    const now = this.now()
     const requested = outcome.retry_after_ms || 0
     // Concurrent requests that fail together escalate the pause, and widen the spacing, only once.
     if (this.isPaused(channel, now)) {
@@ -379,14 +360,14 @@ export class LookupScheduler {
     const { concurrency, foregroundReserved } = this.pacing
     clearTimeout(this.timer)
     this.timer = undefined
-    const startedAt = Date.now()
+    const startedAt = this.now()
     for (const waiter of [...this.waiting]) {
       if (waiter.background || !this.isPaused(waiter.channel, startedAt)) continue
       this.dequeue(waiter)
       waiter.paused(this.pausedUntil(waiter.channel))
     }
     while (this.active < concurrency && this.waiting.length) {
-      const now = Date.now()
+      const now = this.now()
       const ready = ({ channel }: Waiter) => now >= this.readyAt(channel)
       const next =
         this.waiting.find(waiter => !waiter.background && ready(waiter)) ??
@@ -410,7 +391,7 @@ export class LookupScheduler {
         this.timer = undefined
         this.pump()
       },
-      Math.max(0, soonest - Date.now()),
+      Math.max(0, soonest - this.now()),
     )
   }
 
