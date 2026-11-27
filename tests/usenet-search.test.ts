@@ -1598,7 +1598,7 @@ test('the stored file holds neither the Prowlarr key nor a download address', as
   })
   await resolveSource(config(), SOURCE, TERMS, { limit: 3 })
   await searchSource(config(), release('Other'), terms('Other'), { background: true })
-  assert.equal(usenet.runtime.shutdown(), true)
+  assert.equal(usenet.runtime.flush(), true)
   const text = fs.readFileSync(usenet.paths.search, 'utf8')
   assert.ok(text.includes('"link":"first"'), 'the reference is stored without its address')
   for (const secret of [KEY, 'apikey', '/download', 'localhost', PROWLARR]) assert.ok(!text.includes(secret), secret)

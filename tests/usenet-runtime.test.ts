@@ -57,7 +57,7 @@ test('a fresh runtime looks hashes up through its own fetch and writes its cache
   assert.equal(answer.state, 'available')
   assert.equal(calls.length, 1)
   assert.equal(calls[0].origin, ANIMETOSHO)
-  assert.equal(usenet.shutdown(), true)
+  assert.equal(usenet.flush(), true)
   assert.ok(fs.existsSync(paths.cache), 'the cache is written to the runtime path')
 })
 
