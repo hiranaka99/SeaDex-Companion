@@ -67,11 +67,6 @@ export function useLibraryData() {
       if (!current()) return
       api.invalidateDownloadProgress()
       setResults(data.results || [])
-      const hidden = data.hidden
-      if (hidden)
-        setConfig(saved =>
-          saved && JSON.stringify(saved.hidden) !== JSON.stringify(hidden) ? { ...saved, hidden } : saved,
-        )
       setLastRun(data.last_run || null)
       setResultsError('')
       return true

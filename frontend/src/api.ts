@@ -189,8 +189,7 @@ export const getUpdateStatus = () => api<UpdateStatus>('/api/update/status', {},
 export const installUpdate = () =>
   api<{ ok: boolean; version: string; restarting: boolean }>('/api/update/install', { method: 'POST' }, 6 * 60_000)
 
-export const getResults = () =>
-  api<{ results: ResultItem[]; last_run: string | null; hidden?: string[] }>('/api/results')
+export const getResults = () => api<{ results: ResultItem[]; last_run: string | null }>('/api/results')
 
 export const getScanHistory = () => api<{ scans: ScanHistoryEntry[] }>('/api/history')
 
@@ -258,13 +257,6 @@ export const getLogs = (lines = 500) => api<{ lines: string[]; total: number }>(
 export const startScan = () => api<{ ok: boolean; error?: string }>('/api/scan', { method: 'POST' })
 
 export const cancelScan = () => api<{ ok: boolean; error?: string }>('/api/scan/cancel', { method: 'POST' })
-
-export const setHidden = (key: string, hidden: boolean) =>
-  api<{ ok: boolean; hidden: string[] }>('/api/hidden', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, hidden }),
-  })
 
 // ---------------------------------------------------------------------------
 // Downloads

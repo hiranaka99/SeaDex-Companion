@@ -15,7 +15,6 @@ import { OutcomeLabel, ReleaseSummary, UsenetStatus } from './BulkReviewParts'
 import {
   buildReview,
   byTitleSeasonPart,
-  hiddenKey,
   optionAvailabilityKey,
   reviewProtocol,
   usenetEligibility,
@@ -32,7 +31,6 @@ interface Props {
   open: boolean
   results: ResultItem[]
   scopeControl: ReactNode
-  hiddenKeys: Set<string>
   busy: boolean
   /** Live/last bulk submission state while the dialog stays open. */
   job: DownloadJobStatus | null
@@ -48,7 +46,6 @@ export default function BulkDownloadDialog({
   open,
   results,
   scopeControl,
-  hiddenKeys,
   busy,
   job,
   routes,
@@ -179,9 +176,8 @@ export default function BulkDownloadDialog({
         }),
       ),
     )
-    setEnabled(
-      Object.fromEntries(reviewCandidates.ready.map(group => [group.id, !hiddenKeys.has(hiddenKey(group.result))])),
-    )
+    // No entry means checked, so every ready row starts in the batch.
+    setEnabled({})
     setProtocols({})
     setExpanded({})
     setView(reviewCandidates.ready.length || !reviewCandidates.blocked.length ? 'ready' : 'unavailable')
@@ -386,7 +382,6 @@ export default function BulkDownloadDialog({
               {readySorted.length ? (
                 <div className="space-y-1.5">
                   {readySorted.map(group => {
-                    const isHidden = hiddenKeys.has(hiddenKey(group.result))
                     const isChoice = group.options.length > 1
                     const status = groupStatus(group)
                     const statusClass =
@@ -527,12 +522,6 @@ export default function BulkDownloadDialog({
                               </>
                             )}
                           </span>
-                          {isHidden && (
-                            <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn">
-                              <Icon name="eye-off" size={12} />
-                              Hidden
-                            </span>
-                          )}
                           <span
                             className="ml-auto flex items-center gap-1.5 tabular-nums"
                             title={`${release.releaseGroup} · ${release.tracker}`}
@@ -627,12 +616,6 @@ export default function BulkDownloadDialog({
                                 </>
                               )}
                             </span>
-                            {isHidden && (
-                              <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn">
-                                <Icon name="eye-off" size={12} />
-                                Hidden
-                              </span>
-                            )}
                             {chosen ? (
                               <span className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-xs font-extrabold text-accent-bright">
                                 <Icon name="check" size={12} />
@@ -793,67 +776,56 @@ export default function BulkDownloadDialog({
                 Not downloadable right now
               </h3>
               <div className="space-y-1.5">
-                {blockedSorted.map(group => {
-                  const isHidden = hiddenKeys.has(hiddenKey(group.result))
-                  return (
-                    <div
-                      key={group.id}
-                      className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warn/25 bg-warn/6 px-3 py-2 text-xs"
-                    >
-                      {protocols[group.id] === 'usenet' && selected[group.id] !== undefined && (
-                        <label className="touch-target inline-flex cursor-pointer items-center gap-2">
-                          <input
-                            type="checkbox"
-                            disabled={locked}
-                            className="size-4 accent-good"
-                            checked={enabled[group.id] !== false}
-                            onChange={event =>
-                              setEnabled(current => ({ ...current, [group.id]: event.target.checked }))
-                            }
-                            aria-label={`Include unavailable Usenet choice · ${group.result.title}`}
-                          />
-                          <span>
-                            {enabled[group.id] === false
-                              ? 'Excluded from batch'
-                              : 'Selected Usenet source unavailable. Uncheck to exclude.'}
-                          </span>
-                        </label>
-                      )}
-                      <span className="font-semibold text-ink">{group.result.title}</span>
-                      <span className="rounded border border-warn/25 px-1.5 py-0.5 text-xs font-extrabold text-warn">
-                        {seasonLabel(group.result)}
-                        {group.part && (
-                          <>
-                            {' '}
-                            <span className="ml-1.5 border-l border-line-strong pl-1.5">{group.part}</span>
-                          </>
-                        )}
-                      </span>
-                      {isHidden && (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-xs font-extrabold text-warn">
-                          <Icon name="eye-off" size={12} />
-                          Hidden
+                {blockedSorted.map(group => (
+                  <div
+                    key={group.id}
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warn/25 bg-warn/6 px-3 py-2 text-xs"
+                  >
+                    {protocols[group.id] === 'usenet' && selected[group.id] !== undefined && (
+                      <label className="touch-target inline-flex cursor-pointer items-center gap-2">
+                        <input
+                          type="checkbox"
+                          disabled={locked}
+                          className="size-4 accent-good"
+                          checked={enabled[group.id] !== false}
+                          onChange={event => setEnabled(current => ({ ...current, [group.id]: event.target.checked }))}
+                          aria-label={`Include unavailable Usenet choice · ${group.result.title}`}
+                        />
+                        <span>
+                          {enabled[group.id] === false
+                            ? 'Excluded from batch'
+                            : 'Selected Usenet source unavailable. Uncheck to exclude.'}
                         </span>
+                      </label>
+                    )}
+                    <span className="font-semibold text-ink">{group.result.title}</span>
+                    <span className="rounded border border-warn/25 px-1.5 py-0.5 text-xs font-extrabold text-warn">
+                      {seasonLabel(group.result)}
+                      {group.part && (
+                        <>
+                          {' '}
+                          <span className="ml-1.5 border-l border-line-strong pl-1.5">{group.part}</span>
+                        </>
                       )}
-                      <span
-                        className="ml-auto min-w-0 truncate text-muted"
-                        title={group.options.map(({ release }) => release.releaseGroup).join(' · ')}
-                      >
-                        {group.options.length
-                          ? `Private: ${group.options.map(({ release }) => release.releaseGroup).join(' · ')}`
-                          : 'No public magnet available'}
-                      </span>
-                      {usenetEnabled &&
-                        group.options.map(option => (
-                          <UsenetStatus
-                            key={option.index}
-                            row={availabilityOf(group.result, option)}
-                            loading={Boolean(currentAvailability?.loading)}
-                          />
-                        ))}
-                    </div>
-                  )
-                })}
+                    </span>
+                    <span
+                      className="ml-auto min-w-0 truncate text-muted"
+                      title={group.options.map(({ release }) => release.releaseGroup).join(' · ')}
+                    >
+                      {group.options.length
+                        ? `Private: ${group.options.map(({ release }) => release.releaseGroup).join(' · ')}`
+                        : 'No public magnet available'}
+                    </span>
+                    {usenetEnabled &&
+                      group.options.map(option => (
+                        <UsenetStatus
+                          key={option.index}
+                          row={availabilityOf(group.result, option)}
+                          loading={Boolean(currentAvailability?.loading)}
+                        />
+                      ))}
+                  </div>
+                ))}
                 {serverBlocked.map(row => {
                   const item = results.find(entry => entry.key === row.key)
                   if (!item) return null

@@ -93,8 +93,6 @@ let config = {
   webhook: '',
   webhook_configured: false,
   notify_enabled: false,
-  unhide_on_new_best: false,
-  hidden: [],
   scan_schedule: {
     enabled: false,
     mode: 'interval',
@@ -473,7 +471,6 @@ async function handleRequest(req, res) {
     } else if (path === '/api/results') {
       resultRequests++
       response = {
-        hidden: config.hidden,
         results: fixtureResults || [
           example,
           {
@@ -2300,46 +2297,14 @@ try {
 
     await click('Configuration')
     await wait(`document.querySelector('input[name=sonarr_url]')`)
-    await openSettingsTab('Automation')
-    const unhideSwitch = '[role=switch][aria-labelledby=unhide-on-new-best-label]'
-    assert.equal(await evaluate(`document.querySelector('${unhideSwitch}').getAttribute('aria-checked')`), 'false')
-    await evaluate(`document.querySelector('${unhideSwitch}').focus()`)
-    await key('Enter')
-    assert.equal(await evaluate(`document.querySelector('${unhideSwitch}').getAttribute('aria-checked')`), 'true')
-    await capture('unhide-setting-desktop')
-    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
-    await evaluate(`document.querySelector('${unhideSwitch}').scrollIntoView({ block: 'center' })`)
-    assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth`), 'Unhide setting fits mobile width')
-    await capture('unhide-setting-mobile')
-    await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
     await fill('input[name=sonarr_url]', 'http://draft.local')
     await wait(`document.body.textContent.includes('Unsaved changes')`)
-    config.hidden = ['1']
-    revision++
-    await pause(10_500)
-    await wait(`!document.querySelector('.library-grid [aria-label="Details for Example anime"]')`)
-    assert.equal(
-      await evaluate(`document.querySelector('input[name=sonarr_url]').value`),
-      'http://draft.local',
-      'Visibility updates preserve unsaved configuration',
-    )
-    config.hidden = []
-    revision++
-    await pause(10_500)
-    await wait(`document.querySelector('.library-grid [aria-label="Details for Example anime"]')`)
-    assert.equal(
-      await evaluate(`document.querySelector('${unhideSwitch}').getAttribute('aria-checked')`),
-      'true',
-      'Automatic unhiding preserves the settings draft',
-    )
-    console.log('PASS unhide setting keyboard control, mobile layout, live visibility refresh, and draft preservation')
     await click('Scan history')
     await click('Configuration')
     assert.equal(await evaluate(`document.querySelector('input[name=sonarr_url]').value`), 'http://draft.local')
     await click('Save configuration')
     await wait(`document.body.textContent.includes('All configuration changes saved')`)
     assert.equal(saved.at(-1).sonarr_url, 'http://draft.local')
-    assert.equal(saved.at(-1).unhide_on_new_best, true)
     console.log('PASS settings draft survives navigation and saves')
 
     await fill('input[name=sonarr_url]', 'http://next.local')
@@ -3055,16 +3020,15 @@ try {
       notes: 'Compare the audio and source before choosing.',
       releases: example.releases.map(rel => ({ ...rel, dual_audio: true, tags: ['BD', 'HEVC'] })),
     }
-    const hidden = {
+    const other = {
       ...example,
-      key: 'Sonarr:hidden:1',
-      title: 'Hidden upgrade',
+      key: 'Sonarr:other:1',
+      title: 'Other upgrade',
       group_id: 3,
       anilist_id: 3,
-      releases: [release('Hidden group', 'e')],
+      releases: [release('Other group', 'e')],
     }
-    fixtureResults = [example, movie, hidden]
-    config.hidden = ['3']
+    fixtureResults = [example, movie, other]
     preflightMode = 'enough'
     revision++
     await evaluate(`location.hash='anime'; location.reload()`)
@@ -3076,7 +3040,7 @@ try {
     assert.equal(await evaluate(`document.querySelector('[aria-label="Bulk action scope"]').value`), 'filtered')
     assert.ok(
       await evaluate(
-        `!document.querySelector('dialog[open]').textContent.includes('Hidden upgrade') && !document.querySelector('dialog[open]').textContent.includes('Example anime')`,
+        `!document.querySelector('dialog[open]').textContent.includes('Other upgrade') && !document.querySelector('dialog[open]').textContent.includes('Example anime')`,
       ),
       'Current review follows the source filter',
     )
@@ -3090,9 +3054,9 @@ try {
     await wait(`document.querySelector('dialog[open]')?.textContent.includes('3 eligible')`)
     assert.ok(
       await evaluate(
-        `[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Hidden upgrade')).querySelector('input').checked === false`,
+        `[...document.querySelectorAll('dialog[open] label')].find(label => label.textContent.includes('Other upgrade')).querySelector('input').checked === true`,
       ),
-      'Whole-library review keeps hidden titles unchecked',
+      'Whole-library review checks every ready row',
     )
     await select('[aria-label="Bulk action scope"]', 'filtered')
     await wait(`document.querySelector('dialog[open]')?.textContent.includes('1 eligible')`)
@@ -3234,7 +3198,7 @@ try {
       'Bulk cancellation keeps files by default',
     )
     const reviewedCancelIds = cancelableDownloads.map(item => item.record_id)
-    const arrivedAfterReview = { ...cancelableFor(hidden, 2), record_id: 'record-arrived-after-review' }
+    const arrivedAfterReview = { ...cancelableFor(other, 2), record_id: 'record-arrived-after-review' }
     cancelableDownloads.push(arrivedAfterReview)
     await click('Remove 2 downloads')
     await wait(`document.body.textContent.includes('Cancelled 2 downloads; files were kept')`)
@@ -3251,7 +3215,7 @@ try {
     )
     await dismissToasts()
     console.log(
-      'PASS filtered/all-library bulk scope, hidden defaults, recommendation evidence, immutable background batches, and client-scoped cancellation',
+      'PASS filtered/all-library bulk scope, every ready row checked, recommendation evidence, immutable background batches, and client-scoped cancellation',
     )
 
     const beforeLargeScope = { config, fixtureResults, preflightMode, progressMode }
@@ -3260,7 +3224,6 @@ try {
       download_mode: 'usenet_only',
       sabnzbd_url: 'http://sab.local',
       sabnzbd_key_configured: true,
-      hidden: [],
     }
     fixtureResults = Array.from({ length: 201 }, (_, index) => {
       const hash = (index + 1).toString(16).padStart(40, '0')
@@ -3899,7 +3862,6 @@ try {
     episodes: 6,
     cover: null,
   }))
-  config.hidden = []
   progressMode = 'absent'
   for (const width of [320, 1440]) {
     fixtureResults = [

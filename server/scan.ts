@@ -14,7 +14,6 @@ import { loadLocalLibrary, arrItemUrl, isScopedScan, scopeIds, type LibraryLoad 
 import { anilistChain, anilistSeason } from './anilist.js'
 
 import { autoNotifyNew } from './notifications.js'
-import { unhideNewBestReleases } from './hidden.js'
 import { readLedger, usenetRuntime } from './usenet-runtime.js'
 import { syncArrTags } from './arr-tags.js'
 import { settleImports } from './import-follow.js'
@@ -138,7 +137,6 @@ export interface ScanDependencies {
   loadCache?: typeof loadCache
   saveLastResults?: typeof saveLastResults
   autoNotifyNew?: typeof autoNotifyNew
-  unhideNewBestReleases?: typeof unhideNewBestReleases
   loadUserRules?: typeof loadUserRules
   onScanFinished?: (config: Config, results: ResultItem[]) => void
   /** Writes status tags back to Sonarr and Radarr when that is enabled. */
@@ -159,7 +157,6 @@ export function createScanService(overrides: ScanDependencies = {}) {
     loadCache,
     saveLastResults,
     autoNotifyNew,
-    unhideNewBestReleases,
     loadUserRules,
     recordScanHistory,
     prowlarrIndexers,
@@ -412,11 +409,6 @@ async function performScan(
       dependencies.settleImports(finalResults)
     } catch (error) {
       log('WARNING', `Could not update import tracking: ${errorMessage(error)}`)
-    }
-    try {
-      dependencies.unhideNewBestReleases(settingsChanged ? [] : previousResults, finalResults)
-    } catch (error) {
-      log('WARNING', `Could not restore hidden anime with new best releases: ${errorMessage(error)}`)
     }
     try {
       const metadata = {

@@ -1,7 +1,6 @@
 import { searchAniListTitles } from './anilist.js'
 import { loadConfig } from './config.js'
 import { resultsForRequest } from './downloads.js'
-import { setCardHidden } from './hidden.js'
 import { loadScanHistory } from './history.js'
 import { HttpError } from './http-error.js'
 import { readJson, sendJson } from './http-response.js'
@@ -18,7 +17,6 @@ import {
   validSeasonMappingIds,
 } from './user-rules.js'
 import { readLedger, usenetRuntime } from './usenet-runtime.js'
-import { cardKey } from '../shared/ids.js'
 import { isRecord } from '../shared/guards.js'
 import type { ReleaseChange } from '../shared/contracts.js'
 
@@ -37,7 +35,6 @@ export const libraryRoutes: Route[] = [
     sendJson(response, 200, {
       ...payload,
       results: applyUserRulesToResults(withReleaseChanges(payload.results)),
-      hidden: loadConfig().hidden,
     })
   }),
   route('GET', '/api/history', ({ response }) => sendJson(response, 200, { scans: loadScanHistory() })),
@@ -102,18 +99,6 @@ export const libraryRoutes: Route[] = [
       `${excluded ? 'Ignored' : 'Restored'} ${libraryKey} season ${season || 'Movie'}${part ? ` ${part}` : ''} for bulk downloads and notifications`,
     )
     sendJson(response, 200, { ok: true, excluded })
-  }),
-  route('POST', '/api/hidden', async ({ request, response }) => {
-    const data = await readJson(request)
-    const key = String(data.key || '').trim()
-    if (!key) throw new HttpError(400, 'No key provided', { ok: false })
-    const hidden = setCardHidden(key, Boolean(data.hidden))
-    const title = resultsForRequest().find(result => cardKey(result) === key)?.title || key
-    log(
-      'INFO',
-      `${data.hidden ? 'Hidden' : 'Restored'} library title: ${title} (key: ${key}; hidden total: ${hidden.length})`,
-    )
-    sendJson(response, 200, { ok: true, hidden })
   }),
   route('POST', '/api/release-changes/review', async ({ request, response }) => {
     const { ids } = await readJson(request)
