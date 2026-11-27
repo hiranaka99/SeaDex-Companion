@@ -34,13 +34,16 @@ export function episodeFromFilename(name: string): ParsedEpisode | null {
   if (!VIDEO_FILE.test(filename) || /NCOP|NCED/i.test(filename)) return null
   const standard = filename.match(/S(\d{1,3})E(\d{1,3}(?:\.\d+)?)/i)
   if (standard) return { season: Number(standard[1]), episode: Number(standard[2]), explicit: true }
-  const named = filename.match(/\b(?:Episode|Ep\.?)\s*[._-]*\s*(\d{1,3}(?:\.\d+)?)(?=[ ._[\]()-]|$)/i)
+  const named = filename.match(/\b(?:Episode|Ep\.?)\s*[._-]*\s*(\d{1,3}(?:\.\d+)?)(?:v\d{1,2})?(?=[ ._[\]()-]|$)/i)
   if (named) return { season: null, episode: Number(named[1]), explicit: true }
   // Unlabelled absolute episode numbers are common in whole-season encodes.
   // Only use these when no explicitly numbered episodes exist in the torrent.
   // Audio channel layouts such as "E-AC3 5.1" or "AAC 2.0" are not episode numbers, and a number never
   // matches as just the whole part of a decimal, so "5.1)" cannot read as episode 5.
-  const absolute = filename.replace(AUDIO_CHANNELS, ' ').match(/(?:^|[\s_-])(\d{1,3}(?:\.\d+)?)(?!\.?\d)(?=[\s(.\]]|$)/)
+  // A version suffix marks a re-release of the episode, so "01v2" is episode 1.
+  const absolute = filename
+    .replace(AUDIO_CHANNELS, ' ')
+    .match(/(?:^|[\s_-])(\d{1,3}(?:\.\d+)?)(?!\.?\d)(?:v\d{1,2})?(?=[\s(.\]]|$)/)
   return absolute ? { season: null, episode: Number(absolute[1]), explicit: false } : null
 }
 
