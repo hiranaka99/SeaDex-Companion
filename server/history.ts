@@ -4,7 +4,7 @@ import { titleKey } from './anilist.js'
 import { isSeasonUpgradable } from '../shared/download-plan.js'
 import { isRecord } from '../shared/guards.js'
 import { describeRegression, describeReleaseChanges } from '../shared/release-changes.js'
-import { sourceKeyOf, sourceNameOf } from './arr-instances.js'
+import { sourceKeyOf, sourceNameOf } from '../shared/arr-instances.js'
 import type { ResultItem, ScanHistoryChange, ScanHistoryEntry, ScanTrigger } from '../shared/contracts.js'
 
 /** Facts about one scan run that are recorded next to its result changes. */

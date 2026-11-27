@@ -13,7 +13,7 @@ import {
   type PreflightBlocked,
 } from '../shared/download-contracts.js'
 import type { Config, Release, ResultItem } from './types.js'
-import { downloadCategory } from './config.js'
+import { downloadCategory } from '../shared/arr-instances.js'
 import { currentGeneration } from './config-generation.js'
 import { putPlan, type StoredPlan, type StoredPlanSelection } from './download-plans.js'
 import { downloadRecords } from './download-store.js'

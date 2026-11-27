@@ -4,7 +4,6 @@ import { test } from 'node:test'
 import {
   applyConfigUpdate,
   DEFAULT_CONFIG,
-  downloadCategory,
   integrationConfig,
   loadConfig,
   publicConfig,
@@ -13,7 +12,16 @@ import {
 } from '../server/config.js'
 import { CONFIG_FILE, ENCRYPTED_SECRETS_FILE, SECRETS_KEY_FILE } from '../server/paths.js'
 import { loadLocalLibrary } from '../server/library.js'
-import { arrInstances, configuredArrInstances, parseLibraryKey } from '../server/arr-instances.js'
+import {
+  arrInstances,
+  configuredArrInstances,
+  downloadCategory,
+  instanceCategory,
+  instanceOf,
+  libraryConnected,
+  parseLibraryKey,
+  sourceNameOf,
+} from '../shared/arr-instances.js'
 import { libraryItemKey } from '../server/user-rules.js'
 import { arrScopeOptions, testIntegration } from '../server/integration-tests.js'
 import { assessmentSignature, createScanService, librarySignature, resultSettingsChanged } from '../server/scan.js'
@@ -207,7 +215,7 @@ test('a scope whose tags cannot be read fails that source instead of scanning ev
   await assert.rejects(() => withFetch(serveArr(routes), () => loadLocalLibrary(config)), /Sonarr: HTTP 404/)
 })
 
-const extra = (changes: JsonObject = {}) => ({
+const additionalInstance = (changes: JsonObject = {}) => ({
   id: 'uhd4k',
   kind: 'sonarr',
   name: 'Sonarr 4K',
@@ -219,7 +227,7 @@ const extra = (changes: JsonObject = {}) => ({
 })
 
 test('additional instances are validated, keep their key when it is left blank, and never expose it', () => {
-  const saved = applyConfigUpdate(DEFAULT_CONFIG, { arr_instances: [extra()] })
+  const saved = applyConfigUpdate(DEFAULT_CONFIG, { arr_instances: [additionalInstance()] })
   assert.deepEqual(saved.arr_instances, [
     {
       id: 'uhd4k',
@@ -233,7 +241,7 @@ test('additional instances are validated, keep their key when it is left blank, 
     },
   ])
   const edited = applyConfigUpdate(saved, {
-    arr_instances: [extra({ key: '', name: 'UHD', scope: { anime_only: true, include_tags: 'A, b' } })],
+    arr_instances: [additionalInstance({ key: '', name: 'UHD', scope: { anime_only: true, include_tags: 'A, b' } })],
   })
   assert.equal(edited.arr_instances[0].key, 'second-key', 'A blank key keeps the stored one')
   assert.deepEqual(edited.arr_instances[0].scope, {
@@ -248,15 +256,18 @@ test('additional instances are validated, keep their key when it is left blank, 
   )
   assert.deepEqual(applyConfigUpdate(saved, { arr_instances: [] }).arr_instances, [])
   for (const [instances, message] of [
-    [[extra({ id: 'sonarr' })], /identifier/],
-    [[extra({ id: 'UP' })], /identifier/],
-    [[extra(), extra()], /identifiers must be unique/],
-    [[extra({ name: ' ' })], /name of 1 to 40/],
-    [[extra({ name: 'radarr' })], /already used/],
-    [[extra(), extra({ id: 'other1', name: 'sonarr 4k' })], /already used/],
-    [[extra({ kind: 'lidarr' })], /either Sonarr or Radarr/],
-    [[extra({ kind: 'radarr' })], /cannot change between/],
-    [Array.from({ length: 11 }, (_, index) => extra({ id: `inst${index}`, name: `Instance ${index}` })), /At most 10/],
+    [[additionalInstance({ id: 'sonarr' })], /identifier/],
+    [[additionalInstance({ id: 'UP' })], /identifier/],
+    [[additionalInstance(), additionalInstance()], /identifiers must be unique/],
+    [[additionalInstance({ name: ' ' })], /name of 1 to 40/],
+    [[additionalInstance({ name: 'radarr' })], /already used/],
+    [[additionalInstance(), additionalInstance({ id: 'other1', name: 'sonarr 4k' })], /already used/],
+    [[additionalInstance({ kind: 'lidarr' })], /either Sonarr or Radarr/],
+    [[additionalInstance({ kind: 'radarr' })], /cannot change between/],
+    [
+      Array.from({ length: 11 }, (_, index) => additionalInstance({ id: `inst${index}`, name: `Instance ${index}` })),
+      /At most 10/,
+    ],
   ] as const)
     assert.throws(() => applyConfigUpdate(saved, { arr_instances: instances }), message)
 })
@@ -270,7 +281,7 @@ test('instance keys are stored encrypted with the other credentials', () => {
       applyConfigUpdate(DEFAULT_CONFIG, {
         sonarr_url: 'http://sonarr',
         sonarr_key: 'first-key',
-        arr_instances: [extra()],
+        arr_instances: [additionalInstance()],
       }),
     )
     assert.equal(readFileSync(CONFIG_FILE, 'utf8').includes('second-key'), false)
@@ -295,7 +306,10 @@ test('instance keys are stored encrypted with the other credentials', () => {
 
 test('every instance has its own identity, download categories, and webhook scope', () => {
   const config = applyConfigUpdate(sonarr({ sonarr_category: 'tv', sabnzbd_sonarr_category: 'nzb-tv' }), {
-    arr_instances: [extra(), extra({ id: 'films2', kind: 'radarr', name: 'Radarr 4K', url: '', key: '' })],
+    arr_instances: [
+      additionalInstance(),
+      additionalInstance({ id: 'films2', kind: 'radarr', name: 'Radarr 4K', url: '', key: '' }),
+    ],
   })
   assert.deepEqual(
     arrInstances(config).map(instance => [instance.id, instance.name, instance.primary]),
@@ -330,9 +344,48 @@ test('every instance has its own identity, download categories, and webhook scop
   )
 })
 
+test('the browser sees the same instances, categories, and connection as the server', () => {
+  const config = applyConfigUpdate(sonarr({ sonarr_category: 'tv', sabnzbd_sonarr_category: 'nzb-tv' }), {
+    arr_instances: [
+      additionalInstance(),
+      additionalInstance({ id: 'films2', kind: 'radarr', name: 'Radarr 4K', url: 'http://radarr4k/', key: '' }),
+    ],
+  })
+  const browser = publicConfig(config)
+  assert.deepEqual(
+    arrInstances(browser).map(instance => [instance.id, instance.configured]),
+    arrInstances(config).map(instance => [instance.id, instance.configured]),
+  )
+  assert.deepEqual(
+    configuredArrInstances(browser).map(instance => instance.id),
+    ['sonarr', 'uhd4k'],
+    'A saved key counts as configured although the browser never sees it',
+  )
+  const additional = instanceOf(browser, { arr: 'Sonarr', instance: 'uhd4k' })
+  assert.equal(additional?.name, 'Sonarr 4K')
+  assert.equal(additional && instanceCategory(additional, 'usenet'), 'nzb-4k')
+  assert.equal(downloadCategory(browser, { arr: 'Sonarr', instance: 'uhd4k' }, 'torrent'), 'sonarr-4k')
+  assert.equal(downloadCategory(browser, { arr: 'Sonarr' }, 'usenet'), 'nzb-tv')
+  const blank = publicConfig(applyConfigUpdate(config, { radarr_category: '  ', sabnzbd_radarr_category: '' }))
+  assert.equal(downloadCategory(blank, { arr: 'Radarr' }, 'torrent'), '', 'A blank category sends without one')
+  assert.equal(downloadCategory(blank, { arr: 'Radarr' }, 'usenet'), '')
+  assert.equal(sourceNameOf({ arr: 'Sonarr', instance: 'uhd4k', instance_name: 'Sonarr 4K' }), 'Sonarr 4K')
+  assert.equal(sourceNameOf({ arr: 'Radarr' }), 'Radarr')
+})
+
+test('a library is connected through any instance, primary or additional', () => {
+  assert.equal(libraryConnected(publicConfig(DEFAULT_CONFIG)), false)
+  assert.equal(libraryConnected(publicConfig(sonarr())), true)
+  assert.equal(libraryConnected(publicConfig(sonarr({ sonarr_key: '' }))), false, 'An address alone is not enough')
+  const onlyAdditional = applyConfigUpdate(DEFAULT_CONFIG, { arr_instances: [additionalInstance()] })
+  assert.equal(libraryConnected(onlyAdditional), true)
+  assert.equal(libraryConnected(publicConfig(onlyAdditional)), true)
+  assert.equal(libraryConnected(null), false)
+})
+
 test('the same anime in two instances stays two results, two cards, and two sources of errors', async () => {
   resetRuntimeForTests()
-  const config = applyConfigUpdate(sonarr(), { arr_instances: [extra()] })
+  const config = applyConfigUpdate(sonarr(), { arr_instances: [additionalInstance()] })
   const routes = {
     ...sonarrRoutes('sonarr', [series(10, 'Shared Anime')]),
     ...sonarrRoutes('sonarr4k', [series(10, 'Shared Anime')]),
@@ -416,7 +469,7 @@ test('the same anime in two instances stays two results, two cards, and two sour
 
 test('an additional instance is tested and offers its tags and root folders from the unsaved draft', async () => {
   const draft = integrationConfig(DEFAULT_CONFIG, 'arr:uhd4k', {
-    arr_instances: [extra()],
+    arr_instances: [additionalInstance()],
     sonarr_url: 'http://ignored',
   })
   assert.equal(draft.sonarr_url, '', 'Only the instance list of the draft applies')
@@ -442,7 +495,7 @@ test('an additional instance is tested and offers its tags and root folders from
   await assert.rejects(
     () =>
       testIntegration(
-        integrationConfig(DEFAULT_CONFIG, 'arr:uhd4k', { arr_instances: [extra({ key: '' })] }),
+        integrationConfig(DEFAULT_CONFIG, 'arr:uhd4k', { arr_instances: [additionalInstance({ key: '' })] }),
         'arr:uhd4k',
       ),
     /Sonarr 4K URL and API key are required/,
@@ -535,7 +588,7 @@ test('saved results are stale once scope, instances, or release preferences chan
     resultSettingsChanged({ ...config, sonarr_scope: { ...config.sonarr_scope, anime_only: true } }, saved),
     true,
   )
-  assert.equal(resultSettingsChanged(applyConfigUpdate(config, { arr_instances: [extra()] }), saved), true)
+  assert.equal(resultSettingsChanged(applyConfigUpdate(config, { arr_instances: [additionalInstance()] }), saved), true)
   assert.equal(
     resultSettingsChanged({ ...config, sonarr_category: 'other', notify_enabled: false }, saved),
     false,

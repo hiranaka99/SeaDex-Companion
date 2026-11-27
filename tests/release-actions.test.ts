@@ -97,6 +97,46 @@ test('a public torrent release sends the whole release to qBittorrent and is the
   })
 })
 
+test('a release names the category of the instance it came from, or that it has none', () => {
+  const settings = config('choose', {
+    sabnzbd_sonarr_category: 'anime-nzb',
+    arr_instances: [
+      {
+        id: 'uhd4k',
+        kind: 'sonarr',
+        name: 'Sonarr 4K',
+        url: 'http://sonarr4k',
+        key: 'second-key',
+        category: 'sonarr-4k',
+        sabnzbd_category: 'nzb-4k',
+        scope: { anime_only: false, include_tags: [], exclude_tags: [], root_folders: [] },
+      },
+    ],
+  })
+  const additional = season([publicRelease], { instance: 'uhd4k', instance_name: 'Sonarr 4K' })
+  assert.equal(verdictFor(settings, additional).reason, 'Send this release to qBittorrent (category: sonarr-4k)')
+  const routes = downloadRoutes(settings)
+  const viaUsenet = sendVerdict({
+    result: additional,
+    release: publicRelease,
+    config: settings,
+    routes,
+    route: routes.release(publicRelease, row('available'), 'usenet'),
+    availability: row('available'),
+    transfers: [],
+  })
+  assert.equal(viaUsenet.reason, 'Send this release to SABnzbd (category: nzb-4k)')
+
+  const blank = config('torrent_only', { sonarr_category: '' })
+  assert.equal(
+    verdictFor(blank, season([publicRelease])).reason,
+    'Send this release to qBittorrent without a category',
+    'The server sends no category, so the row does not name the application instead',
+  )
+  const removed = season([publicRelease], { instance: 'gone', instance_name: 'Gone' })
+  assert.equal(verdictFor(settings, removed).reason, 'Send this release to qBittorrent without a category')
+})
+
 test('a release no route can send names why in its verdict', () => {
   const torrentOnly = verdictFor(config('torrent_only'), season([privateRelease]))
   assert.equal(torrentOnly.enabled, false)

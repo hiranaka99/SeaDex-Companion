@@ -31,7 +31,7 @@ import { filesSourceId } from '../server/source-files.js'
 import { rejectSearchCandidate, resolveSource, searchSnapshot, verifySource } from '../server/usenet-search.js'
 import { candidateEntryId } from '../server/usenet-search-terms.js'
 import { testUsenetRuntime } from './support/usenet-runtime.js'
-import type { ArrInstance } from '../server/arr-instances.js'
+import type { ArrInstance } from '../shared/arr-instances.js'
 import type { Config, PrivateSource, ResultItem } from '../server/types.js'
 
 const ledgerFile = join(DATA_DIR, 'owned_downloads.json')
