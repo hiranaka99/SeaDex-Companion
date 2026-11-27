@@ -17,8 +17,9 @@ import {
   type DownloadClientAdapter,
   type DownloadSpaceLocation,
   type LiveJob,
-  type SubmissionUnit,
+  type TorrentUnit,
 } from './download-client-types.js'
+import { planTorrentUnits } from './torrent-units.js'
 
 const QUEUED_STATES: Record<string, true> = { queuedDL: true, queuedUP: true, metaDL: true }
 const DOWNLOADING_STATES: Record<string, true> = {
@@ -72,7 +73,7 @@ function liveTorrent(torrent: JsonObject): LiveJob {
 }
 
 /** Free space per qBittorrent save path; categories sharing a path share one check. */
-async function torrentDiskChecks(config: Config, units: SubmissionUnit[]): Promise<DiskSpaceCheck[]> {
+async function torrentDiskChecks(config: Config, units: TorrentUnit[]): Promise<DiskSpaceCheck[]> {
   const categories = [...new Set(units.map(unit => unit.category))]
   const grouped = new Map<string, { check: DiskSpaceCheck; unsized: number }>()
   for (const location of await qbGetDownloadStorage(config, categories)) {
@@ -139,8 +140,9 @@ async function torrentFreeSpace(
   }
 }
 
-export function qbittorrentAdapter(config: Config): DownloadClientAdapter {
+export function qbittorrentAdapter(config: Config): DownloadClientAdapter<TorrentUnit> {
   const endpointId = qbEndpointId(config)
+  const identity = { protocol: 'torrent', client: 'qbittorrent', endpointId } as const
   return {
     protocol: 'torrent',
     client: 'qbittorrent',
@@ -164,15 +166,17 @@ export function qbittorrentAdapter(config: Config): DownloadClientAdapter {
         return { ids: new Set(), complete: false }
       }
     },
+    planUnits: (rows, review) => planTorrentUnits(config, identity, rows, review.blocks),
+    recordFields: unit => (unit.whole_source ? {} : { scope: unit.send.requestedPaths }),
     async submit(unit, ownership) {
       await qbAddTorrent(
         config,
         // A private tracker's torrent is added from the .torrent file found through Prowlarr.
-        unit.torrentFile
-          ? { hash: unit.source_hash, file: unit.torrentFile }
+        unit.send.torrentFile
+          ? { hash: unit.source_hash, file: unit.send.torrentFile }
           : `magnet:?xt=urn:btih:${unit.source_hash}`,
         unit.category,
-        unit.requestedPaths,
+        unit.send.requestedPaths,
         undefined,
         {
           record: () => ownership.accepted([unit.source_hash]),
