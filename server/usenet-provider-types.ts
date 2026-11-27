@@ -302,7 +302,7 @@ export async function readResponseCapped(response: Response, maxBytes: number): 
  * applied Content-Encoding, so gzip magic in the body means the file itself is
  * compressed; decompressing again would corrupt it.
  */
-export async function gunzipOnce(bytes: Uint8Array, maxBytes: number): Promise<Uint8Array> {
+async function gunzipOnce(bytes: Uint8Array, maxBytes: number): Promise<Uint8Array> {
   if (!(bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b)) return bytes
   const source = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -313,22 +313,6 @@ export async function gunzipOnce(bytes: Uint8Array, maxBytes: number): Promise<U
   // The DOM lib types the gzip sink as BufferSource rather than Uint8Array.
   const gzip = new DecompressionStream('gzip') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>
   return await readStreamCapped(source.pipeThrough(gzip), maxBytes)
-}
-
-/** Read an NZB body under the byte cap with one round of file-decompression. */
-export async function readNzbBody(settings: ProviderSettings, response: Response): Promise<Uint8Array> {
-  let bytes: Uint8Array
-  try {
-    bytes = await readResponseCapped(response, NZB_MAX_BYTES)
-  } catch (error) {
-    if (error instanceof ResponseTooLargeError) throw new Error(error.message)
-    throw new Error(classifyFailure(error, settings, 'NZB fetch').message)
-  }
-  try {
-    return await gunzipOnce(bytes, NZB_MAX_BYTES)
-  } catch {
-    throw new Error('compressed NZB response could not be decompressed')
-  }
 }
 
 /**
@@ -456,5 +440,82 @@ export function validateNzbBytes(bytes: Uint8Array): void {
         throw new Error('NZB response contained an invalid segment')
       }
     }
+  }
+}
+
+/** What reading an NZB response gave: the validated, decompressed NZB, or why it is not one. */
+export type NzbRead =
+  | { kind: 'nzb'; bytes: Uint8Array }
+  /** The body crossed `NZB_MAX_BYTES`, as sent or once decompressed. */
+  | { kind: 'too_large' }
+  /** The indexer answered with a Newznab error document instead of the file, whatever its status. */
+  | { kind: 'error_document'; code: number }
+  /** Not an NZB: undecompressable, malformed, or the wrong document. `message` is safe text. */
+  | { kind: 'invalid'; message: string }
+
+/**
+ * The one step every NZB fetch goes through, for the hash indexers and Prowlarr grabs alike: the body is
+ * read under the byte cap, a file-compressed NZB is inflated once, a Newznab error document is recognised
+ * and what is left must be a valid NZB. A transport failure while reading is thrown, for the caller to
+ * classify the way its other transport failures are.
+ */
+export async function readNzb(response: Response): Promise<NzbRead> {
+  let bytes: Uint8Array
+  try {
+    bytes = await readResponseCapped(response, NZB_MAX_BYTES)
+  } catch (error) {
+    if (error instanceof ResponseTooLargeError) return { kind: 'too_large' }
+    throw error
+  }
+  try {
+    bytes = await gunzipOnce(bytes, NZB_MAX_BYTES)
+  } catch (error) {
+    if (error instanceof ResponseTooLargeError) return { kind: 'too_large' }
+    return { kind: 'invalid', message: 'compressed NZB response could not be decompressed' }
+  }
+  // Checked once decompressed, so a compressed error document is recognised too.
+  const reported = detectXmlError(bytes)
+  if (reported) return { kind: 'error_document', code: reported.code }
+  try {
+    validateNzbBytes(bytes)
+  } catch (error) {
+    return { kind: 'invalid', message: safeText(error instanceof Error ? error.message : 'NZB response was not valid') }
+  }
+  return { kind: 'nzb', bytes }
+}
+
+/**
+ * Fetch an NZB from a hash indexer's configured origin and return it validated. Every failure is thrown as
+ * an `Error` whose message is safe text; an error document is classified without its description.
+ */
+export async function fetchProviderNzb(
+  settings: ProviderSettings,
+  path: string,
+  provider: string,
+  fetchImpl: typeof fetch,
+): Promise<Uint8Array> {
+  let response: Response
+  try {
+    response = await providerRequest(settings, path, 'application/octet-stream', NZB_TIMEOUT_MS, fetchImpl)
+  } catch (error) {
+    throw new Error(classifyFailure(error, settings, 'NZB fetch').message)
+  }
+  const status = httpStatusFailure(response, provider)
+  if (status) throw new Error(status.message)
+  let read: NzbRead
+  try {
+    read = await readNzb(response)
+  } catch (error) {
+    throw new Error(classifyFailure(error, settings, 'NZB fetch').message)
+  }
+  switch (read.kind) {
+    case 'nzb':
+      return read.bytes
+    case 'too_large':
+      throw new Error(new ResponseTooLargeError().message)
+    case 'error_document':
+      throw new Error(classifyNewznabError(read.code, provider).message)
+    case 'invalid':
+      throw new Error(read.message)
   }
 }

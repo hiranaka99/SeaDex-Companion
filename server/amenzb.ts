@@ -9,28 +9,24 @@ import {
   AMENZB_ENTRY_PATTERN,
   LOOKUP_MAX_BYTES,
   LOOKUP_TIMEOUT_MS,
-  NZB_TIMEOUT_MS,
   ProviderProtocolError,
   ResponseTooLargeError,
-  classifyFailure,
   classifyNewznabError,
   decodeText,
-  detectXmlError,
   elementText,
   failedFrom,
   failedLookup,
+  fetchProviderNzb,
   findNewznabError,
   httpStatusFailure,
   listOf,
   newznabAttributes,
   parseProviderXml,
   providerRequest,
-  readNzbBody,
   readResponseCapped,
   safeByteSize,
   safeText,
   text,
-  validateNzbBytes,
 } from './usenet-provider-types.js'
 import type { ProviderLookup, ProviderSettings, UsenetMatch } from './usenet-provider-types.js'
 
@@ -192,21 +188,6 @@ export async function fetchAmeNZBNzb(
   if (!settings.apiKey) throw new Error('AmeNZB API key is not configured')
   if (!AMENZB_ENTRY_PATTERN.test(match.entry_id)) throw new Error('AmeNZB NZB reference was not usable')
   const path = `/api?t=get&apikey=${encodeURIComponent(settings.apiKey)}&id=${encodeURIComponent(match.entry_id)}`
-
-  let response: Response
-  try {
-    response = await providerRequest(settings, path, 'application/octet-stream', NZB_TIMEOUT_MS, fetchImpl)
-  } catch (error) {
-    throw new Error(classifyFailure(error, settings, 'NZB fetch').message)
-  }
-
-  const status = httpStatusFailure(response, 'AmeNZB')
-  if (status) throw new Error(status.message)
-
-  const bytes = await readNzbBody(settings, response)
-  // Indexers answer `t=get` failures with a Newznab error document, not a status code.
-  const reported = detectXmlError(bytes)
-  if (reported) throw new Error(classifyNewznabError(reported.code, 'AmeNZB').message)
-  validateNzbBytes(bytes)
-  return bytes
+  // Indexers answer `t=get` failures with a Newznab error document, not a status code; the shared step rejects it.
+  return await fetchProviderNzb(settings, path, 'AmeNZB', fetchImpl)
 }
