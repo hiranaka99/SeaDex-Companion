@@ -1,7 +1,7 @@
 import { formatBytes } from '../utils'
 import Icon from './Icons'
 import type { DiskSpaceCheck, DownloadPreflight } from '../api'
-import { clientName } from './DownloadsPanel'
+import { clientName } from '../download-entry'
 
 function DiskStatus({ check }: { check: DiskSpaceCheck }) {
   const free = check.free_bytes === null ? null : formatBytes(check.free_bytes) || '0 B'

@@ -11,8 +11,7 @@ import * as api from './api'
 import { releaseIdentity } from '../../shared/releases'
 import type { Release, ResultItem, GroupedCard } from './types'
 
-import type { DownloadEntry } from './components/DownloadsPanel'
-import { toDownloadEntry, clientName, importUnsettled } from './components/DownloadsPanel'
+import { toDownloadEntry, clientName, importUnsettled, type DownloadEntry } from './download-entry'
 import { formatBytes, seasonLabel } from './utils'
 import type { DiskSpaceCheck, DownloadProtocol, UsenetAvailabilityResult } from './api'
 import { availabilityKey, observeUsenetAvailability, type AvailabilitySnapshot } from './usenet-observation'
@@ -145,29 +144,17 @@ export function useCardDownloads(group: GroupedCard, notify: Notify, detailsShow
         })
         return
       }
-      const receipt = await api.submitDownload(preflight.plan_id, { whole_source: true, disk_space: true })
-      const where = clientName(receipt.client)
-      if (receipt.acceptance_unknown || receipt.failures?.some(failure => failure.code === 'acceptance_unknown')) {
-        report(`${where} was asked to start this download but did not confirm it. Check ${where} before retrying.`)
-      } else if (!receipt.ok) throw new Error(receipt.error || 'The download client rejected the submission')
-      else notify(`Sent ${label} to ${where}${freeSpaceNote(preflight.disk_space)}`, 'success')
+      const outcome = await api.sendDownload(preflight.plan_id, protocol, { whole_source: true, disk_space: true })
+      if (outcome.kind === 'rejected') report(outcome.reason)
+      else if (outcome.kind === 'acceptance_unknown') {
+        const where = clientName(outcome.client)
+        report(
+          `${outcome.reason ?? `${where} was asked to start this download but did not confirm it.`} Check ${where} before retrying.`,
+        )
+      } else notify(`Sent ${label} to ${clientName(outcome.client)}${freeSpaceNote(preflight.disk_space)}`, 'success')
     } catch (error) {
       if (controller.signal.aborted) return
-      if (
-        error instanceof api.SubmissionError &&
-        (error.detail?.acceptance_unknown ||
-          (Array.isArray(error.detail?.failures) &&
-            error.detail.failures.some(failure => failure?.code === 'acceptance_unknown')))
-      ) {
-        const where = clientName(
-          error.detail?.client === 'sabnzbd' || error.detail?.client === 'qbittorrent'
-            ? error.detail.client
-            : protocol === 'usenet'
-              ? 'sabnzbd'
-              : 'qbittorrent',
-        )
-        report(`${error.message} Check ${where} before retrying.`)
-      } else report(errorMessage(error))
+      report(errorMessage(error))
     } finally {
       sending.current = false
       setSendingRelease(null)
