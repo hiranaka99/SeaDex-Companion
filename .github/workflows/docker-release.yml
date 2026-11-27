@@ -74,16 +74,19 @@ jobs:
         with:
           node-version: '26'
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
 
       - name: Test the released source
         run: |
           npm ci
+          npm --prefix frontend ci
           npm run lint
           npm test
 
       - name: Build the in-app update package
         run: |
-          npm --prefix frontend ci
           npm run build
           node scripts/release-bundle.mjs bundle release-assets
 
