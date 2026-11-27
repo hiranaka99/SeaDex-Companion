@@ -1,3 +1,4 @@
+import { libraryConnected } from '../../../shared/arr-instances.js'
 import { errorMessage } from '../../../shared/errors.js'
 import {
   useCallback,
@@ -494,9 +495,7 @@ export default function AnimeTab({
   const knownSpace = space.filter(location => location.free_bytes !== null)
   const freeBytes = knownSpace.length ? Math.min(...knownSpace.map(location => location.free_bytes!)) : null
   const spaceShort = freeBytes !== null && downloadEstimate.bytes > freeBytes
-  const libraryConfigured = Boolean(
-    (config?.sonarr_url && config.sonarr_key_configured) || (config?.radarr_url && config.radarr_key_configured),
-  )
+  const libraryConfigured = libraryConnected(config)
   const autoCheckLabel = timeUntilCheck(status.next_check)
   const scheduleDescription = describeSchedule(config?.scan_schedule)
   const lastScanLabel = lastRun ? `Last scan ${displayTimeAgo(lastRun)}` : 'No completed scan'

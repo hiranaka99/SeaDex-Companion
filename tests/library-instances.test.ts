@@ -4,7 +4,6 @@ import { test } from 'node:test'
 import {
   applyConfigUpdate,
   DEFAULT_CONFIG,
-  downloadCategory,
   integrationConfig,
   loadConfig,
   publicConfig,
@@ -13,7 +12,16 @@ import {
 } from '../server/config.js'
 import { CONFIG_FILE, ENCRYPTED_SECRETS_FILE, SECRETS_KEY_FILE } from '../server/paths.js'
 import { loadLocalLibrary } from '../server/library.js'
-import { arrInstances, configuredArrInstances, parseLibraryKey } from '../server/arr-instances.js'
+import {
+  arrInstances,
+  configuredArrInstances,
+  downloadCategory,
+  instanceCategory,
+  instanceOf,
+  libraryConnected,
+  parseLibraryKey,
+  sourceNameOf,
+} from '../shared/arr-instances.js'
 import { libraryItemKey } from '../server/user-rules.js'
 import { arrScopeOptions, testIntegration } from '../server/integration-tests.js'
 import { assessmentSignature, createScanService, librarySignature, resultSettingsChanged } from '../server/scan.js'
@@ -328,6 +336,42 @@ test('every instance has its own identity, download categories, and webhook scop
     ['nzb-tv', 'radarr-anime', 'nzb-4k'],
     'An unconfigured instance adds no category to check',
   )
+})
+
+test('the browser sees the same instances, categories, and connection as the server', () => {
+  const config = applyConfigUpdate(sonarr({ sonarr_category: 'tv', sabnzbd_sonarr_category: 'nzb-tv' }), {
+    arr_instances: [
+      extra(),
+      extra({ id: 'films2', kind: 'radarr', name: 'Radarr 4K', url: 'http://radarr4k/', key: '' }),
+    ],
+  })
+  const browser = publicConfig(config)
+  assert.deepEqual(
+    arrInstances(browser).map(instance => [instance.id, instance.configured]),
+    arrInstances(config).map(instance => [instance.id, instance.configured]),
+  )
+  assert.deepEqual(
+    configuredArrInstances(browser).map(instance => instance.id),
+    ['sonarr', 'uhd4k'],
+    'A saved key counts as configured although the browser never sees it',
+  )
+  const additional = instanceOf(browser, { arr: 'Sonarr', instance: 'uhd4k' })
+  assert.equal(additional?.name, 'Sonarr 4K')
+  assert.equal(additional && instanceCategory(additional, 'usenet'), 'nzb-4k')
+  assert.equal(downloadCategory(browser, { arr: 'Sonarr', instance: 'uhd4k' }, 'torrent'), 'sonarr-4k')
+  assert.equal(downloadCategory(browser, { arr: 'Sonarr' }, 'usenet'), 'nzb-tv')
+  assert.equal(sourceNameOf({ arr: 'Sonarr', instance: 'uhd4k', instance_name: 'Sonarr 4K' }), 'Sonarr 4K')
+  assert.equal(sourceNameOf({ arr: 'Radarr' }), 'Radarr')
+})
+
+test('a library is connected through any instance, primary or additional', () => {
+  assert.equal(libraryConnected(publicConfig(DEFAULT_CONFIG)), false)
+  assert.equal(libraryConnected(publicConfig(sonarr())), true)
+  assert.equal(libraryConnected(publicConfig(sonarr({ sonarr_key: '' }))), false, 'An address alone is not enough')
+  const onlyAdditional = applyConfigUpdate(DEFAULT_CONFIG, { arr_instances: [extra()] })
+  assert.equal(libraryConnected(onlyAdditional), true)
+  assert.equal(libraryConnected(publicConfig(onlyAdditional)), true)
+  assert.equal(libraryConnected(null), false)
 })
 
 test('the same anime in two instances stays two results, two cards, and two sources of errors', async () => {

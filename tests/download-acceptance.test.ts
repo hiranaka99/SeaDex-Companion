@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 // static imports continue below
 import { test } from 'node:test'
-import { downloadCategory } from '../server/config.js'
+import { downloadCategory } from '../shared/arr-instances.js'
 import { downloadClients } from '../server/download-clients.js'
 import { buildDownloadPlan } from '../server/download-preflight.js'
 import { spaceVerdict } from '../server/download-client-types.js'

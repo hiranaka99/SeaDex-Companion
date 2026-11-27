@@ -26,7 +26,7 @@ import {
 } from './matching.js'
 import { verifyPart, type PartVerification } from './verification.js'
 import { sameRelease } from '../shared/releases.js'
-import { sourceKeyOf } from './arr-instances.js'
+import { sourceKeyOf } from '../shared/arr-instances.js'
 import {
   DEFAULT_RELEASE_PREFERENCES,
   DEFAULT_TRACKER_MODE,

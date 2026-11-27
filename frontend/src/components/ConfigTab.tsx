@@ -1,3 +1,4 @@
+import { libraryConnected } from '../../../shared/arr-instances.js'
 import { errorMessage } from '../../../shared/errors.js'
 import type {
   ArrKind,
@@ -152,9 +153,7 @@ export default function ConfigTab({
     if (!config) return
     if (!setupInitialized.current) {
       setupInitialized.current = true
-      setGuidedSetup(
-        !((config.sonarr_url && config.sonarr_key_configured) || (config.radarr_url && config.radarr_key_configured)),
-      )
+      setGuidedSetup(!libraryConnected(config))
       if (config.radarr_url && !config.sonarr_url) setLibrarySource('radarr')
     }
     const { hidden: _hidden, ...next } = config

@@ -4,7 +4,7 @@ import { LibraryFilterRequest, ResultItem, ScanHistoryChange, ScanHistoryEntry }
 import Icon from './Icons'
 import { buttonBase, control, cx } from '../styles'
 import { displayDateTime } from '../datetime'
-import { sourceName } from '../utils'
+import { sourceNameOf } from '../../../shared/arr-instances'
 import { STATUS_PRESENTATION } from '../status-presentation'
 import {
   changeTypeLabel,
@@ -892,7 +892,7 @@ export default function HistoryTab({
       currentResult,
       sourceOf: change => {
         const result = currentResult(change)
-        return result ? sourceName(result) : change.arr
+        return result ? sourceNameOf(result) : change.arr
       },
       onOpenResult,
     }

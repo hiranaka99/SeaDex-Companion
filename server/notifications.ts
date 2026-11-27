@@ -8,7 +8,7 @@ import { log } from './logging.js'
 import { errorMessage } from '../shared/errors.js'
 import { isSeasonUpgradable } from '../shared/download-plan.js'
 import { seasonTag } from '../shared/ids.js'
-import { sourceNameOf } from './arr-instances.js'
+import { sourceNameOf } from '../shared/arr-instances.js'
 import type { ImportProblem } from './import-follow.js'
 import type { Config, JsonObject, ResultItem } from './types.js'
 
