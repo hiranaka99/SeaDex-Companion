@@ -20,7 +20,7 @@ import {
   downloadRef,
   knownProwlarrIndexers,
   privateSearchSettings,
-  prowlarrNzbDownload,
+  prowlarrGrabNzb,
   prowlarrFingerprint,
   prowlarrIndexers,
   prowlarrSettings,
@@ -818,11 +818,7 @@ async function fetchNzb(
     searchStore.countFetch(fingerprint, candidate.indexer_id)
     const path = downloadPathFromRef(settings, { indexer_id: candidate.indexer_id, ...candidate.download })
     // Arrives decompressed and validated: anything but an NZB already failed as the indexer's.
-    const nzb = await bounded(
-      prowlarrNzbDownload({ ...settings, signal }, { download_path: path }),
-      signal,
-      FETCH_GUARD_MS,
-    )
+    const nzb = await bounded(prowlarrGrabNzb({ ...settings, signal }, { download_path: path }), signal, FETCH_GUARD_MS)
     const files = nzbFiles(nzb)
     searchScheduler.recordOutcome(channel, ANSWERED)
     return { kind: 'fetched', nzb, files }
