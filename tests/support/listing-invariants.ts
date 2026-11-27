@@ -1,7 +1,7 @@
 import type { Release, ResultItem } from '../../shared/contracts.js'
 import { normalizeTorrentPath } from '../../shared/download-plan.js'
 import { normalizeInfoHash } from '../../shared/ids.js'
-import { sameRelease } from '../../shared/releases.js'
+import { VIDEO_FILE, sameRelease } from '../../shared/releases.js'
 
 const label = (release: Release) => `${release.releaseGroup} (${release.tracker})`
 const partOf = (release: Release) => release.part || 'the season'
@@ -28,9 +28,20 @@ const listing = (release: Release) => ({
   source_files: release.private_sources?.flatMap(source => source.files),
 })
 
+/** The files a listing selects: its explicit `selected_files`, or every video file when the whole source is taken. */
+function selectedFilesOf(release: Release): string[] {
+  if (release.selected_files?.length) return release.selected_files
+  const listed = [
+    ...(release.torrent_files || []).flatMap(torrent => torrent.files),
+    ...(release.private_sources || []).flatMap(source => source.files),
+  ]
+  return listed.filter(file => VIDEO_FILE.test(file.name)).map(file => file.name)
+}
+
 /**
  * Rules every season result's release listing keeps, whatever the catalog and library:
- * - each part selects its own files, so no torrent file is selected for two parts;
+ * - each part selects its own files, so no source file is selected for two parts (whether selected explicitly
+ *   or by taking the whole source);
  * - a part lists each release once, so two listings proven to be one release (a shared torrent, or the same
  *   video files byte for byte) never appear in the same part.
  * Returns one sentence per broken rule, empty when the listing keeps them all.
@@ -39,7 +50,7 @@ export function listingViolations(result: ResultItem): string[] {
   const violations: string[] = []
   const selectedIn = new Map<string, string>()
   for (const release of result.releases) {
-    for (const file of new Set(release.selected_files)) {
+    for (const file of new Set(selectedFilesOf(release))) {
       const path = normalizeTorrentPath(file)
       const earlier = new Set<string>()
       for (const torrent of torrentsOf(release, path)) {

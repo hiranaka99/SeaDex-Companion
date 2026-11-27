@@ -12,6 +12,7 @@ import { normalizeResults } from '../server/result-model.js'
 import { saveLastResults } from '../server/results.js'
 import { assessmentSignature, createScanService } from '../server/scan.js'
 import { getState } from '../server/scan-state.js'
+import { filesSourceId } from '../server/source-files.js'
 import { releaseOffered, releaseOwned, releaseSatisfies, wantedParts } from '../shared/download-plan.js'
 import { releaseIdentity } from '../shared/releases.js'
 import {
@@ -123,7 +124,7 @@ function privateCandidate(
   extra: Partial<ReleaseCandidate> = {},
 ): ReleaseCandidate {
   const release = candidate(group, episodeGb, { tracker, info_hashes: ['<redacted>'], ...extra })
-  return { ...release, private_sources: [{ id: `files:${'a'.repeat(40)}`, files: release.source_files! }] }
+  return { ...release, private_sources: [{ id: filesSourceId(release.source_files!), files: release.source_files! }] }
 }
 const publicAlternatives = () => [candidate('Mini', 1, { is_best: false }), candidate('Bigger', 3, { is_best: false })]
 /** The note a release carries when reachable-tracker mode passes it over. */

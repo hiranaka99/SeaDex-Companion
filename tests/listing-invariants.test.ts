@@ -81,3 +81,19 @@ test('releases without a torrent hash or file list are never taken for one torre
   const result = resultItem({ releases: [unidentified('Cour 1', [1, 2]), unidentified('Cour 2', [2, 3])] })
   assert.deepEqual(listingViolations(result), [])
 })
+
+test('an unscoped batch listed in two parts is a listing violation', () => {
+  const result = resultItem({ releases: [release('Cour 1', {}), release('Cour 2', {})] })
+  assert.deepEqual(
+    listingViolations(result),
+    batch.map(file => `sam (Nyaa) selects "${file.name}" in both Cour 1 and Cour 2`),
+  )
+})
+
+test('a batch scoped in one part and left unscoped in another is a listing violation', () => {
+  const result = resultItem({ releases: [cour('Cour 1', [1, 2]), release('Cour 2', {})] })
+  assert.deepEqual(listingViolations(result), [
+    `sam (Nyaa) selects "${episode(1)}" in both Cour 1 and Cour 2`,
+    `sam (Nyaa) selects "${episode(2)}" in both Cour 1 and Cour 2`,
+  ])
+})

@@ -60,7 +60,7 @@ Rules that conflict with deliberate patterns in this codebase are switched off i
 
 Tests that look up hashes, search Prowlarr or sweep build their own Usenet runtime with `testUsenetRuntime` from `tests/support/usenet-runtime.ts`, and hand it their fake hash indexers and Prowlarr as its `fetch`. The global `fetch` fakes only the download clients and other services. `restart()` simulates a new process on the same data paths, and `fresh()` one on empty data paths.
 
-Tests that assess a season import `assessSeason` from `tests/support/assessment.ts`. It fails any result that breaks a listing rule from `tests/support/listing-invariants.ts`: a torrent file selected for two parts, or one release listed twice in a part.
+Tests that assess a season import `assessSeason` from `tests/support/assessment.ts`. It fails any result that breaks a listing rule from `tests/support/listing-invariants.ts`: a source file selected for two parts (explicitly or by taking the whole source), or one release listed twice in a part.
 
 ### Replaying SeaDex entries
 

@@ -42,6 +42,7 @@ import {
 import { join } from 'node:path'
 import { assessSeason } from './support/assessment.js'
 import { qbPhase } from '../server/qbittorrent-adapter.js'
+import { episodeFromFilename, episodeRangeLabel } from '../shared/releases.js'
 
 async function preserveFiles(files: string[], action: () => void | Promise<void>) {
   const saved = files.map(file => (existsSync(file) ? readFileSync(file) : null))
@@ -1024,6 +1025,55 @@ test('a version suffix such as "01v2" still names the episode', async () => {
   assert.equal(episodeFromFilename('[sam] Dr. STONE - New World - 01v2 [BD 1080p FLAC] [C878A21C].mkv')?.episode, 1)
   assert.equal(episodeFromFilename('[Group] Show - Episode 05v3 [1080p].mkv')?.episode, 5)
   assert.equal(episodeFromFilename('[Group] Show - 13.5v2 [1080p].mkv')?.episode, 13.5)
+  assert.equal(episodeFromFilename('Show.S01E01v2.1080p.BluRay.mkv')?.episode, 1)
+})
+
+test('dot-separated SxxExx tags such as ".1080p" are not read as fractional episodes', () => {
+  assert.deepEqual(episodeFromFilename('Fate.Zero.2011.S01E01.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv'), {
+    season: 1,
+    episode: 1,
+    explicit: true,
+  })
+  assert.equal(episodeFromFilename('Trigun.1998.S01E01.576p.DVD.x265.AC35.1.DUAL-SneedFix.mkv')?.episode, 1)
+  assert.deepEqual(
+    episodeFromFilename('Yamada-kun.and.the.Seven.Witches.S00E01.480p.DVDRip.Opus2.0.x264-Headpatter.mkv'),
+    { season: 0, episode: 1, explicit: true },
+  )
+  assert.deepEqual(episodeFromFilename('Clannad.After.Story.2008.s02e01.1080p.BluRay.Opus.2.0.x265.v2-UDF.mkv'), {
+    season: 2,
+    episode: 1,
+    explicit: true,
+  })
+  assert.equal(episodeFromFilename('Hinomaru.Sumo.S01E13.100-yen-coin.Training.1080p.REMUX-FraMeSToR.mkv')?.episode, 13)
+  assert.equal(episodeFromFilename('Show.Episode.04.2011.1080p.BluRay.mkv')?.episode, 4)
+  assert.equal(episodeFromFilename('NANA - S01E11.5 (1080p VRV Dual Audio WEB-DL -KS-).mkv')?.episode, 11.5)
+  assert.equal(episodeFromFilename('Show.S01E11.5v2.1080p.BluRay.mkv')?.episode, 11.5)
+  assert.equal(episodeFromFilename('Show.S01E01E02.1080p.BluRay.mkv')?.episode, 1)
+  assert.equal(episodeFromFilename('Show.S01E01END.mkv')?.episode, 1)
+
+  const files = Array.from({ length: 25 }, (_, index) => ({
+    name: `Fate.Zero.2011.S01E${String(index + 1).padStart(2, '0')}.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv`,
+    length: 4_000_000_000 + index,
+  }))
+  const candidate = {
+    releaseGroup: 'LYS1TH3A',
+    tracker: 'Nyaa',
+    quality: '1080p Blu-ray',
+    tags: [],
+    dual_audio: true,
+    size: files.reduce((sum, file) => sum + file.length, 0),
+    file_count: files.length,
+    info_hashes: ['b'.repeat(40)],
+    is_best: true,
+    source_files: files,
+    torrent_files: [{ hash: 'b'.repeat(40), files }],
+  }
+  const part1 = scopeReleaseToPart(candidate, 13, 0, 2, 0, 1)
+  const part2 = scopeReleaseToPart(candidate, 12, 1, 2, 13, 1)
+  assert.equal(part1.selected_files?.length, 13)
+  assert.equal(episodeRangeLabel(part1.selected_files || []), 'Eps 1–13')
+  assert.equal(part2.selected_files?.length, 12)
+  assert.equal(episodeRangeLabel(part2.selected_files || []), 'Eps 14–25')
 })
 
 test('a whole-season batch with re-released episodes is one release with the same cour on a private tracker', async () => {

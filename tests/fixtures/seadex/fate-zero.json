@@ -1,0 +1,784 @@
+{
+  "items": [
+    {
+      "alID": 10087,
+      "collectionId": "3l2x9nxip35gqb5",
+      "collectionName": "entries",
+      "comparison": "https://slow.pics/c/5LIkIbfC,https://slow.pics/c/db0EnfW4,https://slow.pics/c/aHBkv4cI,https://slow.pics/c/pTFrlTGv",
+      "created": "2024-06-30 16:05:34.525Z",
+      "expand": {
+        "trs": [
+          {
+            "collectionId": "oiwizhmushn5qqh",
+            "collectionName": "torrents",
+            "created": "2024-06-30 16:05:33.838Z",
+            "dualAudio": true,
+            "files": [
+              {
+                "length": 6424767714,
+                "name": "Fate.Zero.2011.S01E01.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4085072729,
+                "name": "Fate.Zero.2011.S01E02.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3793320356,
+                "name": "Fate.Zero.2011.S01E03.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4604015106,
+                "name": "Fate.Zero.2011.S01E04.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4918476684,
+                "name": "Fate.Zero.2011.S01E05.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3819353958,
+                "name": "Fate.Zero.2011.S01E06.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4399125595,
+                "name": "Fate.Zero.2011.S01E07.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4623675989,
+                "name": "Fate.Zero.2011.S01E08.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4069110094,
+                "name": "Fate.Zero.2011.S01E09.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3737606985,
+                "name": "Fate.Zero.2011.S01E10.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4557632075,
+                "name": "Fate.Zero.2011.S01E11.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4614474953,
+                "name": "Fate.Zero.2011.S01E12.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4909353882,
+                "name": "Fate.Zero.2011.S01E13.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4827615900,
+                "name": "Fate.Zero.2011.S01E14.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 6042002971,
+                "name": "Fate.Zero.2011.S01E15.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 5202886257,
+                "name": "Fate.Zero.2011.S01E16.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4153977669,
+                "name": "Fate.Zero.2011.S01E17.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3299732380,
+                "name": "Fate.Zero.2011.S01E18.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3964586738,
+                "name": "Fate.Zero.2011.S01E19.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3544707660,
+                "name": "Fate.Zero.2011.S01E20.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3971234549,
+                "name": "Fate.Zero.2011.S01E21.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4002420782,
+                "name": "Fate.Zero.2011.S01E22.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4223577875,
+                "name": "Fate.Zero.2011.S01E23.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3598823945,
+                "name": "Fate.Zero.2011.S01E24.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3575530579,
+                "name": "Fate.Zero.2011.S01E25.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              }
+            ],
+            "groupedUrl": "",
+            "id": "o69pgclm4pbjnnf",
+            "infoHash": "b7c4496f615255f727dbba831a072eae58fbec0c",
+            "isBest": true,
+            "releaseGroup": "LYS1TH3A",
+            "tags": [],
+            "tracker": "Nyaa",
+            "updated": "2025-03-24 16:38:53.831Z",
+            "url": "https://nyaa.si/view/1816742"
+          },
+          {
+            "collectionId": "oiwizhmushn5qqh",
+            "collectionName": "torrents",
+            "created": "2024-06-30 16:05:34.417Z",
+            "dualAudio": true,
+            "files": [
+              {
+                "length": 6424767714,
+                "name": "Fate.Zero.2011.S01E01.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4085072729,
+                "name": "Fate.Zero.2011.S01E02.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3793320356,
+                "name": "Fate.Zero.2011.S01E03.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4604015106,
+                "name": "Fate.Zero.2011.S01E04.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4918476684,
+                "name": "Fate.Zero.2011.S01E05.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3819353958,
+                "name": "Fate.Zero.2011.S01E06.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4399125595,
+                "name": "Fate.Zero.2011.S01E07.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4623675989,
+                "name": "Fate.Zero.2011.S01E08.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4069110094,
+                "name": "Fate.Zero.2011.S01E09.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3737606985,
+                "name": "Fate.Zero.2011.S01E10.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4557632075,
+                "name": "Fate.Zero.2011.S01E11.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4614474953,
+                "name": "Fate.Zero.2011.S01E12.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4909353882,
+                "name": "Fate.Zero.2011.S01E13.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              }
+            ],
+            "groupedUrl": "",
+            "id": "netn928mgzd30nm",
+            "infoHash": "<redacted>",
+            "isBest": true,
+            "releaseGroup": "LYS1TH3A",
+            "tags": [],
+            "tracker": "AB",
+            "updated": "2025-03-24 16:38:51.937Z",
+            "url": "/torrents.php?id=9083&torrentid=1063637"
+          },
+          {
+            "collectionId": "oiwizhmushn5qqh",
+            "collectionName": "torrents",
+            "created": "2024-06-30 16:05:34.046Z",
+            "dualAudio": false,
+            "files": [
+              {
+                "length": 6372359321,
+                "name": "[Okay-Subs] Fate Zero - 01 [CB5EC3DA].mkv"
+              },
+              {
+                "length": 6018027577,
+                "name": "[Okay-Subs] Fate Zero - 15 [6BEE1F43].mkv"
+              },
+              {
+                "length": 5177472083,
+                "name": "[Okay-Subs] Fate Zero - 16 [E951D5EB].mkv"
+              },
+              {
+                "length": 4894035867,
+                "name": "[Okay-Subs] Fate Zero - 05 [A6FBC17D].mkv"
+              },
+              {
+                "length": 4880639119,
+                "name": "[Okay-Subs] Fate Zero - 13 [7F5CDAA2].mkv"
+              },
+              {
+                "length": 4803311108,
+                "name": "[Okay-Subs] Fate Zero - 14 [C7EAB101].mkv"
+              },
+              {
+                "length": 4599527059,
+                "name": "[Okay-Subs] Fate Zero - 08 [C2493325].mkv"
+              },
+              {
+                "length": 4583218047,
+                "name": "[Okay-Subs] Fate Zero - 12 [E89A6B79].mkv"
+              },
+              {
+                "length": 4579138208,
+                "name": "[Okay-Subs] Fate Zero - 04 [73305118].mkv"
+              },
+              {
+                "length": 4526175588,
+                "name": "[Okay-Subs] Fate Zero - 11 [F7743C74].mkv"
+              },
+              {
+                "length": 4373172478,
+                "name": "[Okay-Subs] Fate Zero - 07 [301FFCB6].mkv"
+              },
+              {
+                "length": 4199768073,
+                "name": "[Okay-Subs] Fate Zero - 23 [FC0F0BD2].mkv"
+              },
+              {
+                "length": 4126823340,
+                "name": "[Okay-Subs] Fate Zero - 17 [59FAB0E4].mkv"
+              },
+              {
+                "length": 4059044424,
+                "name": "[Okay-Subs] Fate Zero - 02 [621957C8].mkv"
+              },
+              {
+                "length": 4041539854,
+                "name": "[Okay-Subs] Fate Zero - 09 [ABC0A0EA].mkv"
+              },
+              {
+                "length": 3977672568,
+                "name": "[Okay-Subs] Fate Zero - 22 [031F0DFA].mkv"
+              },
+              {
+                "length": 3947779002,
+                "name": "[Okay-Subs] Fate Zero - 21 [24B1C7A9].mkv"
+              },
+              {
+                "length": 3939845272,
+                "name": "[Okay-Subs] Fate Zero - 19 [41705FBE].mkv"
+              },
+              {
+                "length": 3792915770,
+                "name": "[Okay-Subs] Fate Zero - 06 [403C47D3].mkv"
+              },
+              {
+                "length": 3766796567,
+                "name": "[Okay-Subs] Fate Zero - 03 [191D1D0C].mkv"
+              },
+              {
+                "length": 3712946401,
+                "name": "[Okay-Subs] Fate Zero - 10 [D24E9A49].mkv"
+              },
+              {
+                "length": 3572863725,
+                "name": "[Okay-Subs] Fate Zero - 24 [71ED3B1A].mkv"
+              },
+              {
+                "length": 3550309250,
+                "name": "[Okay-Subs] Fate Zero - 25 [E32ADCA0].mkv"
+              },
+              {
+                "length": 3518675408,
+                "name": "[Okay-Subs] Fate Zero - 20 [550EAB86].mkv"
+              },
+              {
+                "length": 3275848690,
+                "name": "[Okay-Subs] Fate Zero - 18 [23F0D7FE].mkv"
+              }
+            ],
+            "groupedUrl": "",
+            "id": "4yb23d40gl5px2e",
+            "infoHash": "d277d7a5083070ef5bae582b909be91a2a0a20dd",
+            "isBest": true,
+            "releaseGroup": "Okay-Subs",
+            "tags": [],
+            "tracker": "Nyaa",
+            "updated": "2025-03-24 16:38:53.944Z",
+            "url": "https://nyaa.si/view/1691909"
+          },
+          {
+            "collectionId": "oiwizhmushn5qqh",
+            "collectionName": "torrents",
+            "created": "2025-03-24 16:38:52.096Z",
+            "dualAudio": false,
+            "files": [
+              {
+                "length": 6372359321,
+                "name": "[Okay-Subs] Fate Zero - 01 [CB5EC3DA].mkv"
+              },
+              {
+                "length": 4059044424,
+                "name": "[Okay-Subs] Fate Zero - 02 [621957C8].mkv"
+              },
+              {
+                "length": 3766796567,
+                "name": "[Okay-Subs] Fate Zero - 03 [191D1D0C].mkv"
+              },
+              {
+                "length": 4579138208,
+                "name": "[Okay-Subs] Fate Zero - 04 [73305118].mkv"
+              },
+              {
+                "length": 4894035867,
+                "name": "[Okay-Subs] Fate Zero - 05 [A6FBC17D].mkv"
+              },
+              {
+                "length": 3792915770,
+                "name": "[Okay-Subs] Fate Zero - 06 [403C47D3].mkv"
+              },
+              {
+                "length": 4373172478,
+                "name": "[Okay-Subs] Fate Zero - 07 [301FFCB6].mkv"
+              },
+              {
+                "length": 4599527059,
+                "name": "[Okay-Subs] Fate Zero - 08 [C2493325].mkv"
+              },
+              {
+                "length": 4041539854,
+                "name": "[Okay-Subs] Fate Zero - 09 [ABC0A0EA].mkv"
+              },
+              {
+                "length": 3712946401,
+                "name": "[Okay-Subs] Fate Zero - 10 [D24E9A49].mkv"
+              },
+              {
+                "length": 4526175588,
+                "name": "[Okay-Subs] Fate Zero - 11 [F7743C74].mkv"
+              },
+              {
+                "length": 4583218047,
+                "name": "[Okay-Subs] Fate Zero - 12 [E89A6B79].mkv"
+              },
+              {
+                "length": 4880639119,
+                "name": "[Okay-Subs] Fate Zero - 13 [7F5CDAA2].mkv"
+              }
+            ],
+            "groupedUrl": "",
+            "id": "8f238bdy1t16gr2",
+            "infoHash": "<redacted>",
+            "isBest": true,
+            "releaseGroup": "Okay-Subs",
+            "tags": [],
+            "tracker": "AB",
+            "updated": "2025-03-24 16:38:52.096Z",
+            "url": "/torrents.php?id=9083&torrentid=1163046"
+          }
+        ]
+      },
+      "id": "f5bn1annq2uyfmw",
+      "incomplete": false,
+      "notes": "Okay-Subs is JPN/GBR BD Encode+SCY\nLYS1TH3A is Okay-Subs with dub and Aniplex subs from GBR BD",
+      "theoreticalBest": "",
+      "trs": [
+        "o69pgclm4pbjnnf",
+        "netn928mgzd30nm",
+        "4yb23d40gl5px2e",
+        "8f238bdy1t16gr2"
+      ],
+      "updated": "2025-03-24 16:38:52.155Z"
+    },
+    {
+      "alID": 11741,
+      "collectionId": "3l2x9nxip35gqb5",
+      "collectionName": "entries",
+      "comparison": "https://slow.pics/c/9FLXpzgm",
+      "created": "2024-06-30 16:05:37.935Z",
+      "expand": {
+        "trs": [
+          {
+            "collectionId": "oiwizhmushn5qqh",
+            "collectionName": "torrents",
+            "created": "2024-06-30 16:05:33.838Z",
+            "dualAudio": true,
+            "files": [
+              {
+                "length": 6424767714,
+                "name": "Fate.Zero.2011.S01E01.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4085072729,
+                "name": "Fate.Zero.2011.S01E02.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3793320356,
+                "name": "Fate.Zero.2011.S01E03.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4604015106,
+                "name": "Fate.Zero.2011.S01E04.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4918476684,
+                "name": "Fate.Zero.2011.S01E05.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3819353958,
+                "name": "Fate.Zero.2011.S01E06.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4399125595,
+                "name": "Fate.Zero.2011.S01E07.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4623675989,
+                "name": "Fate.Zero.2011.S01E08.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4069110094,
+                "name": "Fate.Zero.2011.S01E09.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3737606985,
+                "name": "Fate.Zero.2011.S01E10.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4557632075,
+                "name": "Fate.Zero.2011.S01E11.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4614474953,
+                "name": "Fate.Zero.2011.S01E12.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4909353882,
+                "name": "Fate.Zero.2011.S01E13.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4827615900,
+                "name": "Fate.Zero.2011.S01E14.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 6042002971,
+                "name": "Fate.Zero.2011.S01E15.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 5202886257,
+                "name": "Fate.Zero.2011.S01E16.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4153977669,
+                "name": "Fate.Zero.2011.S01E17.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3299732380,
+                "name": "Fate.Zero.2011.S01E18.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3964586738,
+                "name": "Fate.Zero.2011.S01E19.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3544707660,
+                "name": "Fate.Zero.2011.S01E20.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3971234549,
+                "name": "Fate.Zero.2011.S01E21.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4002420782,
+                "name": "Fate.Zero.2011.S01E22.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4223577875,
+                "name": "Fate.Zero.2011.S01E23.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3598823945,
+                "name": "Fate.Zero.2011.S01E24.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3575530579,
+                "name": "Fate.Zero.2011.S01E25.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              }
+            ],
+            "groupedUrl": "",
+            "id": "o69pgclm4pbjnnf",
+            "infoHash": "b7c4496f615255f727dbba831a072eae58fbec0c",
+            "isBest": true,
+            "releaseGroup": "LYS1TH3A",
+            "tags": [],
+            "tracker": "Nyaa",
+            "updated": "2025-03-24 16:38:53.831Z",
+            "url": "https://nyaa.si/view/1816742"
+          },
+          {
+            "collectionId": "oiwizhmushn5qqh",
+            "collectionName": "torrents",
+            "created": "2024-06-30 16:05:37.778Z",
+            "dualAudio": true,
+            "files": [
+              {
+                "length": 4827615900,
+                "name": "Fate.Zero.2011.S01E14.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 6042002971,
+                "name": "Fate.Zero.2011.S01E15.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 5202886257,
+                "name": "Fate.Zero.2011.S01E16.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4153977669,
+                "name": "Fate.Zero.2011.S01E17.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3299732380,
+                "name": "Fate.Zero.2011.S01E18.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3964586738,
+                "name": "Fate.Zero.2011.S01E19.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3544707660,
+                "name": "Fate.Zero.2011.S01E20.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3971234549,
+                "name": "Fate.Zero.2011.S01E21.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4002420782,
+                "name": "Fate.Zero.2011.S01E22.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 4223577875,
+                "name": "Fate.Zero.2011.S01E23.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3598823945,
+                "name": "Fate.Zero.2011.S01E24.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              },
+              {
+                "length": 3575530579,
+                "name": "Fate.Zero.2011.S01E25.1080p.BluRay.Opus2.0.H.265-LYS1TH3A.mkv"
+              }
+            ],
+            "groupedUrl": "",
+            "id": "wrhxu71rgr3up4e",
+            "infoHash": "<redacted>",
+            "isBest": true,
+            "releaseGroup": "LYS1TH3A",
+            "tags": [],
+            "tracker": "AB",
+            "updated": "2025-03-24 16:38:53.888Z",
+            "url": "/torrents.php?id=10467&torrentid=1063919"
+          },
+          {
+            "collectionId": "oiwizhmushn5qqh",
+            "collectionName": "torrents",
+            "created": "2024-06-30 16:05:34.046Z",
+            "dualAudio": false,
+            "files": [
+              {
+                "length": 6372359321,
+                "name": "[Okay-Subs] Fate Zero - 01 [CB5EC3DA].mkv"
+              },
+              {
+                "length": 6018027577,
+                "name": "[Okay-Subs] Fate Zero - 15 [6BEE1F43].mkv"
+              },
+              {
+                "length": 5177472083,
+                "name": "[Okay-Subs] Fate Zero - 16 [E951D5EB].mkv"
+              },
+              {
+                "length": 4894035867,
+                "name": "[Okay-Subs] Fate Zero - 05 [A6FBC17D].mkv"
+              },
+              {
+                "length": 4880639119,
+                "name": "[Okay-Subs] Fate Zero - 13 [7F5CDAA2].mkv"
+              },
+              {
+                "length": 4803311108,
+                "name": "[Okay-Subs] Fate Zero - 14 [C7EAB101].mkv"
+              },
+              {
+                "length": 4599527059,
+                "name": "[Okay-Subs] Fate Zero - 08 [C2493325].mkv"
+              },
+              {
+                "length": 4583218047,
+                "name": "[Okay-Subs] Fate Zero - 12 [E89A6B79].mkv"
+              },
+              {
+                "length": 4579138208,
+                "name": "[Okay-Subs] Fate Zero - 04 [73305118].mkv"
+              },
+              {
+                "length": 4526175588,
+                "name": "[Okay-Subs] Fate Zero - 11 [F7743C74].mkv"
+              },
+              {
+                "length": 4373172478,
+                "name": "[Okay-Subs] Fate Zero - 07 [301FFCB6].mkv"
+              },
+              {
+                "length": 4199768073,
+                "name": "[Okay-Subs] Fate Zero - 23 [FC0F0BD2].mkv"
+              },
+              {
+                "length": 4126823340,
+                "name": "[Okay-Subs] Fate Zero - 17 [59FAB0E4].mkv"
+              },
+              {
+                "length": 4059044424,
+                "name": "[Okay-Subs] Fate Zero - 02 [621957C8].mkv"
+              },
+              {
+                "length": 4041539854,
+                "name": "[Okay-Subs] Fate Zero - 09 [ABC0A0EA].mkv"
+              },
+              {
+                "length": 3977672568,
+                "name": "[Okay-Subs] Fate Zero - 22 [031F0DFA].mkv"
+              },
+              {
+                "length": 3947779002,
+                "name": "[Okay-Subs] Fate Zero - 21 [24B1C7A9].mkv"
+              },
+              {
+                "length": 3939845272,
+                "name": "[Okay-Subs] Fate Zero - 19 [41705FBE].mkv"
+              },
+              {
+                "length": 3792915770,
+                "name": "[Okay-Subs] Fate Zero - 06 [403C47D3].mkv"
+              },
+              {
+                "length": 3766796567,
+                "name": "[Okay-Subs] Fate Zero - 03 [191D1D0C].mkv"
+              },
+              {
+                "length": 3712946401,
+                "name": "[Okay-Subs] Fate Zero - 10 [D24E9A49].mkv"
+              },
+              {
+                "length": 3572863725,
+                "name": "[Okay-Subs] Fate Zero - 24 [71ED3B1A].mkv"
+              },
+              {
+                "length": 3550309250,
+                "name": "[Okay-Subs] Fate Zero - 25 [E32ADCA0].mkv"
+              },
+              {
+                "length": 3518675408,
+                "name": "[Okay-Subs] Fate Zero - 20 [550EAB86].mkv"
+              },
+              {
+                "length": 3275848690,
+                "name": "[Okay-Subs] Fate Zero - 18 [23F0D7FE].mkv"
+              }
+            ],
+            "groupedUrl": "",
+            "id": "4yb23d40gl5px2e",
+            "infoHash": "d277d7a5083070ef5bae582b909be91a2a0a20dd",
+            "isBest": true,
+            "releaseGroup": "Okay-Subs",
+            "tags": [],
+            "tracker": "Nyaa",
+            "updated": "2025-03-24 16:38:53.944Z",
+            "url": "https://nyaa.si/view/1691909"
+          },
+          {
+            "collectionId": "oiwizhmushn5qqh",
+            "collectionName": "torrents",
+            "created": "2025-03-24 16:38:54.107Z",
+            "dualAudio": false,
+            "files": [
+              {
+                "length": 4803311108,
+                "name": "[Okay-Subs] Fate Zero - 14 [C7EAB101].mkv"
+              },
+              {
+                "length": 6018027577,
+                "name": "[Okay-Subs] Fate Zero - 15 [6BEE1F43].mkv"
+              },
+              {
+                "length": 5177472083,
+                "name": "[Okay-Subs] Fate Zero - 16 [E951D5EB].mkv"
+              },
+              {
+                "length": 4126823340,
+                "name": "[Okay-Subs] Fate Zero - 17 [59FAB0E4].mkv"
+              },
+              {
+                "length": 3275848690,
+                "name": "[Okay-Subs] Fate Zero - 18 [23F0D7FE].mkv"
+              },
+              {
+                "length": 3939845272,
+                "name": "[Okay-Subs] Fate Zero - 19 [41705FBE].mkv"
+              },
+              {
+                "length": 3518675408,
+                "name": "[Okay-Subs] Fate Zero - 20 [550EAB86].mkv"
+              },
+              {
+                "length": 3947779002,
+                "name": "[Okay-Subs] Fate Zero - 21 [24B1C7A9].mkv"
+              },
+              {
+                "length": 3977672568,
+                "name": "[Okay-Subs] Fate Zero - 22 [031F0DFA].mkv"
+              },
+              {
+                "length": 4199768073,
+                "name": "[Okay-Subs] Fate Zero - 23 [FC0F0BD2].mkv"
+              },
+              {
+                "length": 3572863725,
+                "name": "[Okay-Subs] Fate Zero - 24 [71ED3B1A].mkv"
+              },
+              {
+                "length": 3550309250,
+                "name": "[Okay-Subs] Fate Zero - 25 [E32ADCA0].mkv"
+              }
+            ],
+            "groupedUrl": "",
+            "id": "lhh2mvly9py41i9",
+            "infoHash": "<redacted>",
+            "isBest": true,
+            "releaseGroup": "Okay-Subs",
+            "tags": [],
+            "tracker": "AB",
+            "updated": "2025-03-24 16:38:54.107Z",
+            "url": "/torrents.php?id=10467&torrentid=1163048"
+          }
+        ]
+      },
+      "id": "77d1ujaxsar6br2",
+      "incomplete": false,
+      "notes": "Okay-Subs is JPN/GBR BD Encode+SCY\nLYS1TH3A is Okay-Subs with dub and Aniplex subs from GBR BD",
+      "theoreticalBest": "",
+      "trs": [
+        "o69pgclm4pbjnnf",
+        "wrhxu71rgr3up4e",
+        "4yb23d40gl5px2e",
+        "lhh2mvly9py41i9"
+      ],
+      "updated": "2025-03-24 16:38:54.165Z"
+    }
+  ]
+}
