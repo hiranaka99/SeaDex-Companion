@@ -139,10 +139,7 @@ function feedItems(document: unknown): unknown[] | undefined {
  * configured origin with no redirect, its status, a capped read, the XML, an error document, which is never
  * an empty answer whatever status it arrives with, and the feed items.
  */
-export async function searchNewznab(
-  request: NewznabSearchRequest,
-  fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<NewznabSearch> {
+export async function searchNewznab(request: NewznabSearchRequest, fetchImpl: typeof fetch): Promise<NewznabSearch> {
   const failed = (failure: NewznabFailure): NewznabSearch => ({ kind: 'failed', failure })
   let response: Response
   try {

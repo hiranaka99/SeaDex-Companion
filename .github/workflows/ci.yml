@@ -45,3 +45,8 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Browser smoke test
+        env:
+          BROWSER_PATH: /usr/bin/google-chrome
+        run: npm run test:browser
