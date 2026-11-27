@@ -398,7 +398,7 @@ async function performScan(
       source_errors: sourceErrors,
     })
     // Release changes, history and notifications all read this one comparison with the previous results.
-    const comparison = compareScans(previousResults, finalResults, { baseline: settingsChanged })
+    const comparison = compareScans(previousResults, finalResults, { settingsChanged })
     stage = 'saving scan results'
     dependencies.recordReleaseChanges(comparison)
     // A scan of single titles leaves the other results as they were judged, so the saved signatures stay.

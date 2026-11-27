@@ -225,6 +225,7 @@ test('scan cancellation interrupts catalog backoff and preserves previous result
   const service = createScanService({
     seadexBest: () => seadexBest({ loadPage }),
     localItems: async () => assert.fail('Cancelled catalog must not start library loading'),
+    recordReleaseChanges: () => {},
     saveLastResults: () => {
       saved = true
     },
@@ -262,6 +263,7 @@ test('exhausted catalog retries preserve previous scan results and record useful
   const service = createScanService({
     seadexBest: () => seadexBest({ loadPage: client.loadPage }),
     localItems: async () => assert.fail('Failed catalog must not start library loading'),
+    recordReleaseChanges: () => {},
     saveLastResults: () => {
       saved = true
     },

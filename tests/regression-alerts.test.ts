@@ -147,7 +147,10 @@ test('scan history tells a regression apart from a new upgrade', () => {
   ])
 
   // After a change of preferences, a status move says nothing about the library.
-  const baseline = buildScanHistoryEntry(compareScans(before, [replaced()], { baseline: true }), '2026-11-25 10:00:00')
+  const baseline = buildScanHistoryEntry(
+    compareScans(before, [replaced()], { settingsChanged: true }),
+    '2026-11-25 10:00:00',
+  )
   assert.equal(baseline.changes.find(change => change.title === 'Show')?.type, 'upgrade')
 
   // Presentation: named first in the summary, with what changed underneath.
@@ -178,7 +181,9 @@ test('a regression becomes an unseen change, unless the results are a new baseli
     )
     // A baseline scan adds nothing and keeps what was already waiting for review.
     recordReleaseChanges(
-      compareScans([replaced()], [season({ status: 'upgrade', have: ['Third'], local_size: 5 })], { baseline: true }),
+      compareScans([replaced()], [season({ status: 'upgrade', have: ['Third'], local_size: 5 })], {
+        settingsChanged: true,
+      }),
       file,
       '2026-11-26T10:00:00.000Z',
     )
@@ -198,7 +203,7 @@ test('a regression becomes an unseen change, unless the results are a new baseli
             releases: [release('Newer', { info_hashes: [hash('b')] })],
           }),
         ],
-        { baseline: true },
+        { settingsChanged: true },
       ),
       file,
       '2026-11-27T10:00:00.000Z',
@@ -232,7 +237,7 @@ test('the notification for a regression says what happened instead of announcing
 
   const sent: JsonObject[] = []
   /** A scan that ended with these results, compared with the previous ones. */
-  const notify = (previous: ResultItem[], current: ResultItem[], options: { baseline?: boolean } = {}) =>
+  const notify = (previous: ResultItem[], current: ResultItem[], options: { settingsChanged?: boolean } = {}) =>
     autoNotifyNew(
       { ...DEFAULT_CONFIG, webhook: 'https://discord.test/hook' },
       current,
@@ -250,10 +255,10 @@ test('the notification for a regression says what happened instead of announcing
   assert.equal(sent[0].regression, 'Your files changed: Best → Weekly')
   assert.equal(sent[0].change_details, undefined, 'The regression replaces the change details')
   // A baseline scan sends no regression text, but still says what changed.
-  await notify([season()], [replaced()], { baseline: true })
+  await notify([season()], [replaced()], { settingsChanged: true })
   assert.equal(sent[1].regression, undefined)
   const newer = season({ status: 'upgrade', best_group: 'Newer', releases: [release('Newer')] })
-  await notify([season()], [newer], { baseline: true })
+  await notify([season()], [newer], { settingsChanged: true })
   assert.deepEqual(sent[2].change_details?.[0], 'Best release changed: Best → Newer')
   // A first scan has nothing to compare with.
   await notify([], [newer])

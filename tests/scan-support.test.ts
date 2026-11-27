@@ -271,6 +271,7 @@ describe('manual rules and scan history', () => {
       },
       loadCache: () => ({}),
       loadUserRules: () => ({ mappings: { 'Sonarr:item10': 999 }, exclusions: [] }),
+      recordReleaseChanges: () => {},
       saveLastResults: () => undefined,
       autoNotifyNew: async () => 0,
     }).run({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr/api/v3' })

@@ -257,6 +257,7 @@ function scanFixture(overrides: ScanDependencies) {
     seadexBest: async () => new Map(),
     loadCache: () => ({}),
     loadUserRules: () => ({ mappings: {}, exclusions: [] }),
+    recordReleaseChanges: () => {},
     saveLastResults: () => {},
     autoNotifyNew: async () => 0,
     recordScanHistory: (comparison, at, _file, trigger, metadata) =>
@@ -528,6 +529,7 @@ test('a failed metadata batch preserves the previous scan results and failure ou
         id,
         options,
       ),
+    recordReleaseChanges: () => {},
     saveLastResults: () => {
       saved = true
     },
@@ -586,6 +588,7 @@ test('scan history records torrent replacements once and ignores private-tracker
           },
         ],
       ]),
+    recordReleaseChanges: () => {},
     saveLastResults: results => {
       saved = JSON.parse(JSON.stringify(results))
     },

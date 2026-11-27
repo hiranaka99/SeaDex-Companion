@@ -699,7 +699,8 @@ test('a change in the trackers Prowlarr covers makes the next scan a baseline, a
       return indexers
     },
     recordReleaseChanges: comparison => {
-      baseline = comparison.baseline
+      // A baseline because the settings changed; a first scan is one anyway.
+      baseline = comparison.baseline && !comparison.firstScan
     },
     saveLastResults: (results, lastRun, options) => {
       saves.push({ baseline, assessment: options?.settings?.assessment })

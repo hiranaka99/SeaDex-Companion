@@ -292,6 +292,7 @@ test('a full continuous-series scan resolves all seasons and publishes the corre
           options,
         ),
       anilistSeason: (ids, cache) => anilistSeason(ids, cache, { media: client.media, persist: () => {} }),
+      recordReleaseChanges: () => {},
       saveLastResults: () => {},
       autoNotifyNew: async () => 0,
       recordScanHistory: (comparison, at) => buildScanHistoryEntry(comparison, at),

@@ -611,6 +611,7 @@ test('incremental unmatched results retain other library titles throughout the s
       return []
     },
     loadCache: () => ({}),
+    recordReleaseChanges: () => {},
     saveLastResults: () => {},
     autoNotifyNew: async () => 0,
   }).run(DEFAULT_CONFIG, 'sonarr', { sonarrIds: [2, 3] })
@@ -635,6 +636,7 @@ test('notification failure preserves the completed scan instead of restoring sta
     seadexBest: async () => new Map(),
     localItems: async () => [],
     loadCache: () => ({}),
+    recordReleaseChanges: () => {},
     saveLastResults: results => {
       saved = results
     },

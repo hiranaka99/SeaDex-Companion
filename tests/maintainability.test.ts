@@ -326,6 +326,7 @@ test('scan service rejects overlapping runs and storage overrides retain history
       return new Map()
     },
     localItems: async () => [],
+    recordReleaseChanges: () => {},
     saveLastResults: () => {},
     recordScanHistory: (comparison, runAt) => {
       history += 1

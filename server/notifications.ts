@@ -233,7 +233,7 @@ export async function autoNotifyNew(
   )
   if (!fresh.length) return skip('INFO', 'Discord notifications: no new upgrades to send')
   const payload: NotifiedResult[] = fresh.map(result => {
-    const season = comparison.of(result)
+    const season = comparison.seasonOf(result)
     if (season?.regression) return { ...result, regression: season.regression.description }
     if (comparison.firstScan) return result
     const details = describeResultChange(season?.previous ?? null, result)

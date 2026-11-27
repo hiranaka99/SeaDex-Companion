@@ -20,16 +20,19 @@ export interface SeasonComparison {
  * scan history and notifications all read it, so they agree on which earlier season each season is.
  */
 export interface ScanComparison {
-  /** The scan is a baseline scan: its results were judged under other assessment settings. */
+  /**
+   * The scan is a baseline scan (see the glossary): the first one, one after the results were cleared, or one
+   * whose results were judged under other assessment settings. It records no release changes or regressions.
+   */
   baseline: boolean
-  /** There were no previous results to compare with. */
+  /** There were no previous results to compare with: the first scan, or the first after clearing them. */
   firstScan: boolean
   /** One entry per current season, in the order of the current results. */
   seasons: SeasonComparison[]
-  /** Previous seasons that no current season matched. */
+  /** Previous seasons that no current season matched, in the order of the previous results. */
   removed: ResultItem[]
   /** The entry of a current season, also when given a copy of it, such as one with user rules applied again. */
-  of(current: ResultItem): SeasonComparison | undefined
+  seasonOf(current: ResultItem): SeasonComparison | undefined
 }
 
 /** The season's identity in scan history: its library item, or its source and title, and its season number. */
@@ -45,28 +48,33 @@ function titleIdentity(result: ResultItem): string {
 /**
  * Compares each season of a scan with the previous results. A season is the previous season with the same
  * identity, or else the previous season with the same source, title and season number whose own item is gone,
- * which is a title re-added to Sonarr or Radarr under a new item ID. Each previous season is matched once.
+ * which is a title re-added to Sonarr or Radarr under a new item ID. Each previous season is matched once, and
+ * seasons that share an identity are matched in order.
  *
- * A baseline scan still lists release changes, which readers may describe, but finds no regressions: results
- * judged under other settings say nothing about the library.
+ * `settingsChanged` says the results were judged under other assessment settings than the previous ones. Such
+ * a baseline scan still lists each season's release changes, which history shows next to the status moves, but
+ * finds no regressions: results judged under other settings say nothing about the library.
  */
 export function compareScans(
   previous: ResultItem[],
   current: ResultItem[],
-  options: { baseline?: boolean } = {},
+  options: { settingsChanged?: boolean } = {},
 ): ScanComparison {
-  const baseline = options.baseline === true
-  const byKey = new Map(previous.map(result => [resultIdentity(result), result]))
+  const firstScan = previous.length === 0
+  const baseline = firstScan || options.settingsChanged === true
+  const byKey = new Map<string, ResultItem[]>()
+  for (const result of previous)
+    byKey.set(resultIdentity(result), [...(byKey.get(resultIdentity(result)) || []), result])
   const currentKeys = new Set(current.map(resultIdentity))
-  const byTitle = new Map<string, ResultItem>()
-  for (const [key, result] of byKey) if (!currentKeys.has(key)) byTitle.set(titleIdentity(result), result)
+  const byTitle = new Map<string, ResultItem[]>()
+  for (const [key, results] of byKey) {
+    if (currentKeys.has(key)) continue
+    for (const result of results)
+      byTitle.set(titleIdentity(result), [...(byTitle.get(titleIdentity(result)) || []), result])
+  }
   const matched = new Set<ResultItem>()
   const seasons = current.map((result): SeasonComparison => {
-    let old = byKey.get(resultIdentity(result)) || null
-    if (!old) {
-      old = byTitle.get(titleIdentity(result)) || null
-      byTitle.delete(titleIdentity(result))
-    }
+    const old = byKey.get(resultIdentity(result))?.shift() || byTitle.get(titleIdentity(result))?.shift()
     if (!old) return { current: result, previous: null, releaseChanges: [], regression: null }
     matched.add(old)
     return {
@@ -79,10 +87,10 @@ export function compareScans(
   const byCurrent = new Map(seasons.map(season => [resultIdentity(season.current), season]))
   return {
     baseline,
-    firstScan: previous.length === 0,
+    firstScan,
     seasons,
-    removed: [...byKey.values()].filter(result => !matched.has(result)),
-    of: result => byCurrent.get(resultIdentity(result)),
+    removed: previous.filter(result => !matched.has(result)),
+    seasonOf: result => byCurrent.get(resultIdentity(result)),
   }
 }
 

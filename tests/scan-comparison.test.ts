@@ -133,23 +133,24 @@ test('a season compares its releases with the previous season', () => {
     regression: null,
   })
   assert.equal(added.firstScan, true, 'Without previous results the scan is the first one')
+  assert.equal(added.baseline, true, 'A first scan is a baseline scan')
 })
 
 test('a baseline scan keeps its release changes but reports no regressions', () => {
-  const comparison = compareScans([season()], [replaced()], { baseline: true })
+  const comparison = compareScans([season()], [replaced()], { settingsChanged: true })
   assert.equal(comparison.baseline, true)
   assert.equal(comparison.seasons[0].previous?.status, 'best')
   assert.equal(comparison.seasons[0].regression, null)
   const changed = compareScans([season()], [season({ best_group: 'Newer', releases: [release('Newer')] })], {
-    baseline: true,
+    settingsChanged: true,
   })
   assert.notDeepEqual(changed.seasons[0].releaseChanges, [])
 })
 
 test('a season is found again by the result readers hold, which may be a copy', () => {
   const comparison = compareScans([season()], [replaced()])
-  assert.equal(comparison.of({ ...replaced(), excluded: true })?.regression?.kind, 'regression')
-  assert.equal(comparison.of(season({ library_key: 'Sonarr:item77', title: 'Other' })), undefined)
+  assert.equal(comparison.seasonOf({ ...replaced(), excluded: true })?.regression?.kind, 'regression')
+  assert.equal(comparison.seasonOf(season({ library_key: 'Sonarr:item77', title: 'Other' })), undefined)
 })
 
 test('a large library is compared in one pass', () => {
@@ -165,7 +166,7 @@ test('a large library is compared in one pass', () => {
   const started = performance.now()
   const comparison = compareScans(results, results)
   assert.equal(comparison.seasons.filter(entry => entry.previous === entry.current).length, results.length)
-  assert.equal(comparison.of(resultItem({ arr: 'Radarr', title: 'Unknown', season: 0 })), undefined)
+  assert.equal(comparison.seasonOf(resultItem({ arr: 'Radarr', title: 'Unknown', season: 0 })), undefined)
   // Rebuilding the index for each result took seconds at this size.
   assert.ok(performance.now() - started < 1000, 'Matching a large library must not be quadratic')
 })
@@ -206,4 +207,17 @@ test('a scan hands one comparison to release changes, history and notifications'
   } finally {
     resetRuntimeForTests()
   }
+})
+
+test('seasons that share an identity are each matched to one previous season, in order', () => {
+  const first = season({ key: 'first', best_group: 'One' })
+  const second = season({ key: 'second', best_group: 'Two' })
+  const comparison = compareScans([first, second], [first, second])
+  assert.deepEqual(
+    comparison.seasons.map(entry => entry.previous),
+    [first, second],
+    'The previous results compared with themselves change nothing',
+  )
+  assert.deepEqual(comparison.removed, [])
+  assert.deepEqual(compareScans([first, second], [first]).removed, [second])
 })
