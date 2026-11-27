@@ -10,6 +10,20 @@ import type {
   PlannedUnit,
 } from '../shared/download-contracts.js'
 
+export const CLIENT_FOR_PROTOCOL: Record<DownloadProtocol, DownloadClient> = {
+  torrent: 'qbittorrent',
+  usenet: 'sabnzbd',
+}
+
+/** Free space where a download client stores new downloads, read on the client's own host. */
+export interface DownloadSpaceLocation {
+  client: DownloadClient
+  /** The folder, or a description when the client does not name one. */
+  label: string
+  free_bytes: number | null
+  reason?: string
+}
+
 /** A control was refused because of who owns the download or the state it is in. */
 export class OwnershipError extends HttpError {
   constructor(message: string, status = 409) {
@@ -105,6 +119,8 @@ export interface DownloadClientAdapter {
   control(nativeId: string, action: 'pause' | 'resume'): Promise<void>
   remove(nativeId: string, removeFiles: boolean, job: LiveJob | undefined): Promise<void>
   diskChecks(units: SubmissionUnit[]): Promise<DiskSpaceCheck[]>
+  /** Free space for the configured destinations of this client; empty when unconfigured, failures reported as entries. */
+  freeSpace(categories: string[]): Promise<DownloadSpaceLocation[]>
   /** Categories the client does not know, or null when its list could not be read. */
   unknownCategories?(categories: string[]): Promise<string[] | null>
   /** Confirms submissions whose acceptance was never acknowledged; true when a record changed. */
@@ -112,6 +128,8 @@ export interface DownloadClientAdapter {
   /** A record without a confirmed job stopped being tracked. */
   forgotten?(recordId: string): void
 }
+
+export type DownloadClients = Record<DownloadProtocol, DownloadClientAdapter>
 
 /**
  * Estimated sizes (Usenet provider totals, torrent estimates) cannot be confirmed exactly.

@@ -19,8 +19,12 @@ import {
   setDownloadNative,
   type LibraryTarget,
 } from './download-store.js'
-import { CLIENT_FOR_PROTOCOL, downloadClients } from './download-clients.js'
-import type { DownloadClientAdapter, SubmissionUnit } from './download-client-types.js'
+import {
+  CLIENT_FOR_PROTOCOL,
+  type DownloadClientAdapter,
+  type DownloadClients,
+  type SubmissionUnit,
+} from './download-client-types.js'
 import { HttpError } from './http-error.js'
 import { errorMessage } from '../shared/errors.js'
 import { rowKey } from '../shared/ids.js'
@@ -101,6 +105,7 @@ export async function acceptDownloadPlan(
   plan: StoredPlan,
   acknowledge: AcknowledgeFlags | undefined,
   results: ResultItem[],
+  clients: DownloadClients,
 ): Promise<{ job: DownloadJob; completion: Promise<BulkSubmissionResult> }> {
   if (plan.config_generation !== currentGeneration()) {
     throw new PlanRejected(409, 'Settings changed after this review. Re-run the review before submitting.')
@@ -114,11 +119,13 @@ export async function acceptDownloadPlan(
 
   // A plan the live state no longer supports is rejected the same way as any other stale review. Accepting
   // reads stored Prowlarr results only, also for a single release: it never costs a search or an NZB fetch.
-  const { review, units } = await planDownloads(config, plan.selections, { results, intent: 'acceptance' }).catch(
-    error => {
-      throw error instanceof HttpError ? new PlanRejected(error.status, error.message) : error
-    },
-  )
+  const { review, units } = await planDownloads(config, plan.selections, {
+    results,
+    clients,
+    intent: 'acceptance',
+  }).catch(error => {
+    throw error instanceof HttpError ? new PlanRejected(error.status, error.message) : error
+  })
   if (plan.config_generation !== currentGeneration()) {
     throw new PlanRejected(409, 'Settings changed during acceptance. Re-run the review before submitting.')
   }
@@ -185,7 +192,6 @@ export async function acceptDownloadPlan(
     { existing, failures },
   )
 
-  const clients = downloadClients(config)
   const resultsByKey = new Map(results.map(result => [result.key, result]))
   const completion = serialized(async () => {
     try {

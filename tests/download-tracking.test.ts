@@ -25,6 +25,7 @@ const {
 } = await import('../server/download-store.js')
 const { findAcquisitionRecord, findSabnzbdRecord, findTorrentRecord } = await import('./support/ledger.js')
 const { DEFAULT_CONFIG } = await import('../server/config.js')
+const { downloadClients } = await import('../server/download-clients.js')
 const { cancelRecords, collectDownloadProgress, controlRecord, listCancelable } =
   await import('../server/download-progress.js')
 const { qbEndpointId, sabEndpoint } = await import('../server/client-identity.js')
@@ -499,7 +500,7 @@ test('progress publishes every saved association and scope for an acquisition af
       scope: ['Cour 2/01.mkv'],
     })
     resetOwnedRuntime()
-    const progress = await collectDownloadProgress(config)
+    const progress = await collectDownloadProgress(config, downloadClients(config))
     const view = progress.downloads[original.id]
     assert.equal(view.record_id, original.id)
     assert.equal(view.source_hash, h1)
@@ -511,7 +512,7 @@ test('progress publishes every saved association and scope for an acquisition af
     assert.equal('key' in view, false)
     assert.equal('release' in view, false)
     assert.equal(progress.downloads[replacement.id].source_hash, h2)
-    await controlRecord(config, original.id, 'pause', false)
+    await controlRecord(config, original.id, 'pause', false, downloadClients(config))
     assert.equal(
       new URLSearchParams(state.controls.at(-1)!.body).get('hashes'),
       h1,
@@ -550,9 +551,12 @@ test('fresh confirmed absence exposes ledger-only single and bulk removal withou
       source_hash: h2,
       category: 'anime',
     })
-    assert.equal((await collectDownloadProgress(config)).downloads[torrent.id].phase, 'downloading')
+    assert.equal(
+      (await collectDownloadProgress(config, downloadClients(config))).downloads[torrent.id].phase,
+      'downloading',
+    )
     state.torrents = []
-    const missing = await collectDownloadProgress(config)
+    const missing = await collectDownloadProgress(config, downloadClients(config))
     for (const id of [torrent.id, usenet.id]) {
       assert.equal(missing.downloads[id].phase, 'missing')
       assert.deepEqual(missing.downloads[id].capabilities, {
@@ -563,11 +567,11 @@ test('fresh confirmed absence exposes ledger-only single and bulk removal withou
       })
     }
     assert.deepEqual(
-      (await listCancelable(config)).items.map(item => item.record_id).sort(),
+      (await listCancelable(config, downloadClients(config))).items.map(item => item.record_id).sort(),
       [torrent.id, usenet.id].sort(),
     )
-    await controlRecord(config, torrent.id, 'remove', true)
-    const result = await cancelRecords(config, [usenet.id], true)
+    await controlRecord(config, torrent.id, 'remove', true, downloadClients(config))
+    const result = await cancelRecords(config, [usenet.id], true, downloadClients(config))
     assert.deepEqual(result.removed, [{ record_id: usenet.id, client: 'sabnzbd' }])
     assert.deepEqual(state.controls, [], 'Confirmed absence never sends a client deletion request')
     assert.equal(readFileSync(preservedFile, 'utf8'), 'keep me')
@@ -616,7 +620,7 @@ test('a torrent no read ever confirmed is dropped from tracking after a grace pe
       source_hash: h2,
       category: 'anime',
     })
-    const fresh = await collectDownloadProgress(config)
+    const fresh = await collectDownloadProgress(config, downloadClients(config))
     assert.equal(
       fresh.downloads[legacy.id].phase,
       'missing',
@@ -624,13 +628,13 @@ test('a torrent no read ever confirmed is dropped from tracking after a grace pe
     )
     Date.now = () => realNow() + 11 * 60_000
     state.torrents = [{ hash: h1, state: 'downloading', progress: 0.6, size: 1000 }]
-    const later = await collectDownloadProgress(config)
+    const later = await collectDownloadProgress(config, downloadClients(config))
     assert.equal(later.downloads[legacy.id], undefined, 'A never-seen torrent past the grace period is not reported')
     assert.ok(findDownloadRecord(legacy.id)?.removed_at, 'Only the tracking entry is retired')
     assert.equal(later.downloads[seen.id].phase, 'downloading')
     state.torrents = []
     assert.equal(
-      (await collectDownloadProgress(config)).downloads[seen.id].phase,
+      (await collectDownloadProgress(config, downloadClients(config))).downloads[seen.id].phase,
       'missing',
       'A torrent that was seen and then removed still warns',
     )
@@ -681,12 +685,12 @@ test('a finished download that Sonarr or Radarr removed from the client is not s
       source_hash: h3,
       category: 'anime',
     })
-    await collectDownloadProgress(config)
+    await collectDownloadProgress(config, downloadClients(config))
     assert.equal(findDownloadRecord(awaitingImport.id)?.import?.state, 'pending')
     updateDownloadImport(imported.id, { state: 'imported' })
 
     state.torrents = []
-    const after = await collectDownloadProgress(config)
+    const after = await collectDownloadProgress(config, downloadClients(config))
     const view = after.downloads[awaitingImport.id]
     assert.equal(view.phase, 'complete', 'A finished download that left the client is not a warning')
     assert.equal(view.error, undefined)
@@ -697,7 +701,7 @@ test('a finished download that Sonarr or Radarr removed from the client is not s
       assert.ok(findDownloadRecord(record.id)?.removed_at)
     }
 
-    await controlRecord(config, awaitingImport.id, 'remove', true)
+    await controlRecord(config, awaitingImport.id, 'remove', true, downloadClients(config))
     assert.ok(findDownloadRecord(awaitingImport.id)?.removed_at)
     assert.deepEqual(state.controls, [], 'The client is never touched')
   } finally {
@@ -754,7 +758,7 @@ test('failed, incomplete, unbound, and unknown-acceptance reads never permit led
       category: 'anime',
     })
     setDownloadPhase(torrent.id, 'missing')
-    const unavailable = await collectDownloadProgress(config)
+    const unavailable = await collectDownloadProgress(config, downloadClients(config))
     assert.equal(
       unavailable.downloads[torrent.id].phase,
       'missing',
@@ -762,7 +766,7 @@ test('failed, incomplete, unbound, and unknown-acceptance reads never permit led
     )
     for (const record of [torrent, usenet, unbound]) {
       assert.equal(unavailable.downloads[record.id].capabilities.remove, false)
-      await assert.rejects(controlRecord(config, record.id, 'remove', true))
+      await assert.rejects(controlRecord(config, record.id, 'remove', true, downloadClients(config)))
     }
     for (const record of [unknownTorrent, unknownUsenet]) {
       assert.deepEqual(
@@ -770,34 +774,42 @@ test('failed, incomplete, unbound, and unknown-acceptance reads never permit led
         { pause: false, resume: false, remove: true, remove_files: false },
         'An unconfirmed send can only be untracked',
       )
-      await assert.rejects(controlRecord(config, record.id, 'pause', false))
+      await assert.rejects(controlRecord(config, record.id, 'pause', false, downloadClients(config)))
     }
     state.qbReadError = false
     state.sabHistoryError = false
     state.malformedTorrents = true
-    assert.equal((await collectDownloadProgress(config)).downloads[torrent.id].capabilities.remove, false)
-    await assert.rejects(controlRecord(config, torrent.id, 'remove', false))
+    assert.equal(
+      (await collectDownloadProgress(config, downloadClients(config))).downloads[torrent.id].capabilities.remove,
+      false,
+    )
+    await assert.rejects(controlRecord(config, torrent.id, 'remove', false, downloadClients(config)))
     state.malformedTorrents = false
     for (const section of ['malformedQueue', 'malformedHistory'] as const) {
       state[section] = true
-      const malformed = await collectDownloadProgress(config)
+      const malformed = await collectDownloadProgress(config, downloadClients(config))
       assert.equal(malformed.downloads[usenet.id].capabilities.remove, false)
-      await assert.rejects(controlRecord(config, usenet.id, 'remove', false))
+      await assert.rejects(controlRecord(config, usenet.id, 'remove', false, downloadClients(config)))
       state[section] = false
     }
-    const complete = await collectDownloadProgress(config)
+    const complete = await collectDownloadProgress(config, downloadClients(config))
     assert.equal(complete.downloads[unknownTorrent.id].phase, 'acceptance_unknown')
     assert.equal(complete.downloads[unknownUsenet.id].phase, 'acceptance_unknown')
     assert.equal(complete.downloads[unknownTorrent.id].capabilities.remove_files, false)
     assert.equal(complete.downloads[unknownUsenet.id].capabilities.remove_files, false)
-    const cancelled = await cancelRecords(config, [unknownTorrent.id, unknownUsenet.id, unbound.id], true)
+    const cancelled = await cancelRecords(
+      config,
+      [unknownTorrent.id, unknownUsenet.id, unbound.id],
+      true,
+      downloadClients(config),
+    )
     assert.equal(cancelled.removed.length, 0, 'Bulk cancellation never silently untracks unconfirmed sends')
     assert.equal(cancelled.failures.length, 3)
     assert.deepEqual(state.controls, [])
     assert.equal(findAcquisitionRecord(h3)?.state, 'acceptance_unknown')
     assert.equal(findAcquisitionRecord(h4)?.state, 'acceptance_unknown')
     assert.equal(downloadRecords().length, 5)
-    await controlRecord(config, unknownUsenet.id, 'remove', true)
+    await controlRecord(config, unknownUsenet.id, 'remove', true, downloadClients(config))
     assert.deepEqual(
       state.controls,
       [],
@@ -841,7 +853,7 @@ test('SABnzbd unknown-size percentages and mixed-case statuses match their capab
       source_hash: h2,
       category: 'anime',
     })
-    const progress = await collectDownloadProgress(config)
+    const progress = await collectDownloadProgress(config, downloadClients(config))
     assert.equal(progress.downloads[queued.id].total_size, 0)
     assert.equal(progress.downloads[queued.id].progress, 0.5)
     assert.equal(progress.downloads[queued.id].phase, 'paused')
@@ -855,7 +867,7 @@ test('SABnzbd unknown-size percentages and mixed-case statuses match their capab
     assert.equal(progress.downloads[failed.id].error, 'Repair failed')
     assert.equal(progress.downloads[failed.id].capabilities.remove_files, true)
     state.queue![0].status = 'dOwNlOaDiNg'
-    const downloading = await collectDownloadProgress(config)
+    const downloading = await collectDownloadProgress(config, downloadClients(config))
     assert.equal(downloading.downloads[queued.id].capabilities.pause, true)
     assert.equal(downloading.downloads[queued.id].capabilities.resume, false)
   } finally {
@@ -883,12 +895,15 @@ test('unfinished forced, queued, and metadata torrent states expose pause', asyn
       ['metaDL', 'queued'],
     ] as const) {
       state.torrents = [{ hash: h1, state: nativeState, progress: 0.2 }]
-      const view = (await collectDownloadProgress(config)).downloads[record.id]
+      const view = (await collectDownloadProgress(config, downloadClients(config))).downloads[record.id]
       assert.equal(view.phase, phase)
       assert.deepEqual(view.capabilities, { pause: true, resume: false, remove: true, remove_files: true })
     }
     state.torrents = [{ hash: h1, state: 'forcedDL', progress: 1 }]
-    assert.equal((await collectDownloadProgress(config)).downloads[record.id].capabilities.pause, false)
+    assert.equal(
+      (await collectDownloadProgress(config, downloadClients(config))).downloads[record.id].capabilities.pause,
+      false,
+    )
   } finally {
     restore()
   }

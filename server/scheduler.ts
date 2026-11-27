@@ -9,6 +9,7 @@ import { getState, autocheckState } from './scan-state.js'
 import { runScan } from './scan.js'
 import { log } from './logging.js'
 import { followImports, importsToFollow, readArrQueue } from './import-follow.js'
+import { downloadClients } from './download-clients.js'
 import { collectDownloadProgress } from './download-progress.js'
 import { sendImportProblem } from './notifications.js'
 import type { ArrInstance } from './arr-instances.js'
@@ -123,7 +124,7 @@ export async function processImportFollow(config: Config, now = Date.now()): Pro
   followingImports = true
   try {
     await followImports(config, {
-      readProgress: collectDownloadProgress,
+      readProgress: currentConfig => collectDownloadProgress(currentConfig, downloadClients(currentConfig)),
       readQueue: readArrQueue,
       notify: sendImportProblem,
       requestScan: (instance, itemId) => queueImportScan(instance, itemId, now / 1000),

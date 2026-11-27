@@ -1,5 +1,6 @@
 import { loadConfig } from './config.js'
 import { currentGeneration } from './config-generation.js'
+import { downloadClients } from './download-clients.js'
 import { downloadJobs } from './download-jobs.js'
 import { downloadSpace } from './download-space.js'
 import { consumePlan, type StoredPlan } from './download-plans.js'
@@ -88,8 +89,10 @@ function sendJob(id: string | undefined): Route['handle'] {
 export const downloadRoutes: Route[] = [
   route('POST', '/api/download_bulk/preflight', async ({ request, response }) => {
     const body = await readJson(request)
-    const { review } = await buildDownloadPlan(loadConfig(), parseSelections(body.selections), {
+    const config = loadConfig()
+    const { review } = await buildDownloadPlan(config, parseSelections(body.selections), {
       results: currentResults(),
+      clients: downloadClients(config),
       refresh: body.refresh === true,
     })
     sendJson(response, 200, review)
@@ -124,7 +127,14 @@ export const downloadRoutes: Route[] = [
       throw new HttpError(400, 'Use the download job endpoint for multi-release reviews', { ok: false })
     const release = claimOperation(busy)
     try {
-      const { job, completion } = await acceptDownloadPlan(loadConfig(), plan, acknowledgeFlags(body), currentResults())
+      const config = loadConfig()
+      const { job, completion } = await acceptDownloadPlan(
+        config,
+        plan,
+        acknowledgeFlags(body),
+        currentResults(),
+        downloadClients(config),
+      )
       await completion
       const settled = downloadJobs.get(job.id)
       const receipt = settled
@@ -145,7 +155,14 @@ export const downloadRoutes: Route[] = [
     const plan = readPlan(body)
     const release = claimOperation(busy)
     try {
-      const { job, completion } = await acceptDownloadPlan(loadConfig(), plan, acknowledgeFlags(body), currentResults())
+      const config = loadConfig()
+      const { job, completion } = await acceptDownloadPlan(
+        config,
+        plan,
+        acknowledgeFlags(body),
+        currentResults(),
+        downloadClients(config),
+      )
       // The job holds the operation slot until every unit has settled.
       void completion
         .then(
@@ -186,23 +203,29 @@ export const downloadRoutes: Route[] = [
   route('GET', '/api/download-jobs', sendJob(undefined)),
   route('GET', '/api/download-jobs/latest', sendJob(undefined)),
   route('GET', /^\/api\/download-jobs\/([^/]+)$/, context => sendJob(context.params[0])(context)),
-  route('GET', '/api/downloads', async ({ response }) =>
-    sendJson(response, 200, await throughClient(() => collectDownloadProgress(loadConfig()))),
-  ),
-  route('GET', '/api/download-space', async ({ response }) =>
-    sendJson(response, 200, { ok: true, locations: await downloadSpace(loadConfig()) }),
-  ),
-  route('GET', '/api/downloads/cancelable', async ({ response }) =>
-    sendJson(response, 200, await throughClient(() => listCancelable(loadConfig()))),
-  ),
+  route('GET', '/api/downloads', async ({ response }) => {
+    const config = loadConfig()
+    sendJson(response, 200, await throughClient(() => collectDownloadProgress(config, downloadClients(config))))
+  }),
+  route('GET', '/api/download-space', async ({ response }) => {
+    const config = loadConfig()
+    sendJson(response, 200, { ok: true, locations: await downloadSpace(config, downloadClients(config)) })
+  }),
+  route('GET', '/api/downloads/cancelable', async ({ response }) => {
+    const config = loadConfig()
+    sendJson(response, 200, await throughClient(() => listCancelable(config, downloadClients(config))))
+  }),
   route('POST', '/api/downloads/cancel', async ({ request, response }) => {
     const body = await readJson(request)
     const release = claimOperation('A bulk operation is running; wait for it to finish before cancelling')
     try {
+      const config = loadConfig()
       sendJson(
         response,
         200,
-        await throughClient(() => cancelRecords(loadConfig(), body.record_ids, body.remove_files === true)),
+        await throughClient(() =>
+          cancelRecords(config, body.record_ids, body.remove_files === true, downloadClients(config)),
+        ),
       )
     } finally {
       release()
@@ -213,7 +236,14 @@ export const downloadRoutes: Route[] = [
     const recordId = typeof body.record_id === 'string' ? body.record_id.trim() : ''
     if (!recordId) throw new HttpError(400, 'A download record id is required', { ok: false })
     try {
-      await controlRecord(loadConfig(), recordId, String(body.action || ''), body.delete_files === true)
+      const config = loadConfig()
+      await controlRecord(
+        config,
+        recordId,
+        String(body.action || ''),
+        body.delete_files === true,
+        downloadClients(config),
+      )
     } catch (error) {
       if (error instanceof HttpError) throw error
       log('ERROR', `Download control failed: ${errorMessage(error)}`)

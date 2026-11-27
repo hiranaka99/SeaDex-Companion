@@ -10,14 +10,15 @@ import {
 } from '../shared/download-plan.js'
 import { rowKey, seasonTag } from '../shared/ids.js'
 import { isRecord } from '../shared/guards.js'
-import type {
-  DiskSpaceCheck,
-  DownloadMode,
-  DownloadPreflight,
-  DownloadProtocol,
-  DownloadSelection,
-  DownloadSelectionRef,
-  PreflightBlocked,
+import {
+  modeAllowsProtocol,
+  type DiskSpaceCheck,
+  type DownloadMode,
+  type DownloadPreflight,
+  type DownloadProtocol,
+  type DownloadSelection,
+  type DownloadSelectionRef,
+  type PreflightBlocked,
 } from '../shared/download-contracts.js'
 import type { UsenetHashAvailability, UsenetUnitState } from '../shared/usenet-contracts.js'
 import type { Config, PrivateSource, Release, ResultItem } from './types.js'
@@ -25,8 +26,7 @@ import { downloadCategory } from './config.js'
 import { currentGeneration } from './config-generation.js'
 import { putPlan, type StoredPlan, type StoredPlanSelection } from './download-plans.js'
 import { downloadRecords, type OwnedDownloadRecord } from './download-store.js'
-import { downloadClients } from './download-clients.js'
-import type { ClientPresence, DownloadClientAdapter, SubmissionUnit } from './download-client-types.js'
+import type { ClientPresence, DownloadClientAdapter, DownloadClients, SubmissionUnit } from './download-client-types.js'
 import { HttpError } from './http-error.js'
 import { sabnzbdConfigured, usenetConfigured } from './usenet.js'
 import { resolveUsenetCopies, usenetSourceIds, type CopyIntent, type UsenetCopies } from './usenet-copies.js'
@@ -170,7 +170,7 @@ interface Ownership {
 
 interface PlanContext {
   config: Config
-  clients: Record<DownloadProtocol, DownloadClientAdapter>
+  clients: DownloadClients
   presence: Record<DownloadProtocol, ClientPresence>
   blocks: BlockedRows
   units: PlannedUnits
@@ -219,7 +219,7 @@ function resolveProtocol(
   requested: DownloadProtocol | undefined,
 ): DownloadProtocol | 'mode_conflict' | 'protocol_required' {
   if (mode === 'choose') return requested ?? 'protocol_required'
-  const only = mode === 'torrent_only' ? 'torrent' : 'usenet'
+  const only = modeAllowsProtocol(mode, 'torrent') ? 'torrent' : 'usenet'
   return requested && requested !== only ? 'mode_conflict' : only
 }
 
@@ -348,7 +348,7 @@ function planTorrentUnits(context: PlanContext, rows: ResolvedRow[]): void {
       units.add({
         unit_id: `torrent:${entry.hash}:${entry.category}`,
         protocol: 'torrent',
-        client: 'qbittorrent',
+        client: clients.torrent.client,
         source_hash: entry.hash,
         category: entry.category,
         status: owned || presence.torrent.ids.has(entry.hash) ? 'existing' : 'new',
@@ -502,7 +502,7 @@ async function planUsenetUnits(context: PlanContext, rows: ResolvedRow[], refres
     const unitFor = (hash: string) => ({
       unit_id: `usenet:${hash}:${row.category}`,
       protocol: 'usenet' as const,
-      client: 'sabnzbd' as const,
+      client: clients.usenet.client,
       source_hash: hash,
       category: row.category,
       labels: [row.label],
@@ -579,10 +579,7 @@ function blockContestedSources(units: PlannedUnits, blocks: BlockedRows): void {
   }
 }
 
-async function collectDiskChecks(
-  clients: Record<DownloadProtocol, DownloadClientAdapter>,
-  newUnits: SubmissionUnit[],
-): Promise<DiskSpaceCheck[]> {
+async function collectDiskChecks(clients: DownloadClients, newUnits: SubmissionUnit[]): Promise<DiskSpaceCheck[]> {
   const checks: DiskSpaceCheck[] = []
   for (const client of Object.values(clients)) {
     const units = newUnits.filter(unit => unit.protocol === client.protocol)
@@ -603,7 +600,7 @@ async function collectDiskChecks(
 export async function planDownloads(
   config: Config,
   selections: DownloadSelection[],
-  options: { results: ResultItem[]; refresh?: boolean; intent?: PlanIntent },
+  options: { results: ResultItem[]; clients: DownloadClients; refresh?: boolean; intent?: PlanIntent },
 ): Promise<PlannedDownloads> {
   const blocks = new BlockedRows()
   const rows = resolveRows(config, selections, options.results, blocks)
@@ -623,7 +620,7 @@ export async function planDownloads(
   const sendable = (protocol: DownloadProtocol) => rows.filter(row => row.protocol === protocol && !blocks.has(row))
   const torrentRows = sendable('torrent')
 
-  const clients = downloadClients(config)
+  const { clients } = options
   const presence: Record<DownloadProtocol, ClientPresence> = {
     torrent:
       torrentRows.length || records.some(record => record.protocol === 'torrent')
@@ -718,7 +715,7 @@ export async function planDownloads(
 export async function buildDownloadPlan(
   config: Config,
   selections: DownloadSelection[],
-  options: { results: ResultItem[]; refresh?: boolean },
+  options: { results: ResultItem[]; clients: DownloadClients; refresh?: boolean },
 ): Promise<{ review: DownloadPreflight; plan: StoredPlan }> {
   const intent: PlanIntent = selections.length === 1 ? 'single_review' : 'bulk_review'
   const planned = await planDownloads(config, selections, { ...options, intent })

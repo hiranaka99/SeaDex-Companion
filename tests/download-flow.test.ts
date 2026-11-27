@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 // static imports continue below
 import { test } from 'node:test'
 import { bumpGeneration, currentGeneration } from '../server/config-generation.js'
+import { downloadClients } from '../server/download-clients.js'
 import { buildDownloadPlan } from '../server/download-preflight.js'
 import { HttpError } from '../server/http-error.js'
 import { matchRoute } from '../server/router.js'
@@ -39,11 +40,11 @@ test('torrent_only mode refuses usenet selections and choose mode requires an ex
   const cleanup = installRouter({ calls: [] })
   try {
     const results = [resultFixture([releaseFixture()])] as unknown as ResultItem[]
-    const refused = await buildDownloadPlan(
-      baseConfig({ download_mode: 'torrent_only' }),
-      [{ key: 'show-1', release: 0, protocol: 'usenet' }],
-      { results },
-    )
+    const torrentOnly = baseConfig({ download_mode: 'torrent_only' })
+    const refused = await buildDownloadPlan(torrentOnly, [{ key: 'show-1', release: 0, protocol: 'usenet' }], {
+      results,
+      clients: downloadClients(torrentOnly),
+    })
     assert.ok('review' in refused)
     assert.deepEqual(
       refused.review.blocked.map(row => row.code),
@@ -51,7 +52,11 @@ test('torrent_only mode refuses usenet selections and choose mode requires an ex
     )
     assert.equal(refused.review.units.length, 0)
 
-    const missing = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0 }], { results })
+    const chooseConfig = baseConfig()
+    const missing = await buildDownloadPlan(chooseConfig, [{ key: 'show-1', release: 0 }], {
+      results,
+      clients: downloadClients(chooseConfig),
+    })
     assert.ok('review' in missing)
     assert.deepEqual(
       missing.review.blocked.map(row => row.code),
@@ -66,20 +71,22 @@ test('usenet rows are blocked while SABnzbd is missing and identities are enforc
   const cleanup = installRouter({ calls: [], animetosho: animetoshoMatch })
   try {
     const results = [resultFixture([releaseFixture()])] as unknown as ResultItem[]
-    const noSab = await buildDownloadPlan(
-      baseConfig({ sabnzbd_key: '' }),
-      [{ key: 'show-1', release: 0, protocol: 'usenet' }],
-      { results },
-    )
+    const noSabConfig = baseConfig({ sabnzbd_key: '' })
+    const noSab = await buildDownloadPlan(noSabConfig, [{ key: 'show-1', release: 0, protocol: 'usenet' }], {
+      results,
+      clients: downloadClients(noSabConfig),
+    })
     assert.ok('review' in noSab)
     assert.deepEqual(
       noSab.review.blocked.map(row => row.code),
       ['usenet_unconfigured'],
     )
 
+    const config = baseConfig()
     await assert.rejects(
-      buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'usenet', identity: 'stale-identity' }], {
+      buildDownloadPlan(config, [{ key: 'show-1', release: 0, protocol: 'usenet', identity: 'stale-identity' }], {
         results,
+        clients: downloadClients(config),
       }),
       (error: unknown) => error instanceof HttpError && error.status === 409,
     )
@@ -91,17 +98,18 @@ test('usenet rows are blocked while SABnzbd is missing and identities are enforc
 test('two cours sharing one hash produce one deduplicated torrent unit carrying both selections', async () => {
   const cleanup = installRouter({ calls: [] })
   try {
+    const config = baseConfig()
     const results = [
       resultFixture([releaseFixture({ part: 'Cour 1' })]),
       resultFixture([releaseFixture({ part: 'Cour 2' })], { key: 'show-2' }),
     ] as unknown as ResultItem[]
     const built = await buildDownloadPlan(
-      baseConfig(),
+      config,
       [
         { key: 'show-1', release: 0, protocol: 'torrent' },
         { key: 'show-2', release: 0, protocol: 'torrent' },
       ],
-      { results },
+      { results, clients: downloadClients(config) },
     )
     assert.ok('review' in built)
     assert.equal(built.review.units.length, 1)
@@ -119,9 +127,11 @@ test('a hash already present in qBittorrent is an existing unit, never a new sub
     qbTorrents: [{ hash: HASH, state: 'uploading', progress: 0.5, size: 1000 }],
   })
   try {
+    const config = baseConfig()
     const results = [resultFixture([releaseFixture()])] as unknown as ResultItem[]
-    const built = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'torrent' }], {
+    const built = await buildDownloadPlan(config, [{ key: 'show-1', release: 0, protocol: 'torrent' }], {
       results,
+      clients: downloadClients(config),
     })
     assert.ok('review' in built)
     assert.equal(built.review.units[0].status, 'existing')
@@ -135,17 +145,18 @@ test('a hash already present in qBittorrent is an existing unit, never a new sub
 test('the same source requested through both protocols is blocked as a conflict', async () => {
   const cleanup = installRouter({ calls: [], animetosho: animetoshoMatch })
   try {
+    const config = baseConfig()
     const results = [
       resultFixture([releaseFixture({ part: 'Cour 1' })]),
       resultFixture([releaseFixture({ part: 'Cour 2' })], { key: 'show-2' }),
     ] as unknown as ResultItem[]
     const built = await buildDownloadPlan(
-      baseConfig(),
+      config,
       [
         { key: 'show-1', release: 0, protocol: 'torrent' },
         { key: 'show-2', release: 0, protocol: 'usenet' },
       ],
-      { results },
+      { results, clients: downloadClients(config) },
     )
     assert.ok('review' in built)
     assert.equal(built.review.units.length, 0)
@@ -158,9 +169,11 @@ test('the same source requested through both protocols is blocked as a conflict'
 test('usenet whole-source scope is surfaced with known extra files and forces the acknowledgement', async () => {
   const cleanup = installRouter({ calls: [], animetosho: animetoshoMatch })
   try {
+    const config = baseConfig()
     const results = [resultFixture([releaseFixture({ selected_files: ['Show - 01.mkv'] })])] as unknown as ResultItem[]
-    const built = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'usenet' }], {
+    const built = await buildDownloadPlan(config, [{ key: 'show-1', release: 0, protocol: 'usenet' }], {
       results,
+      clients: downloadClients(config),
     })
     assert.ok('review' in built)
     const unit = built.review.units[0]
@@ -181,22 +194,34 @@ test('plans are single-use and stale generations or missing acknowledgements are
   try {
     const results = [resultFixture([releaseFixture({ selected_files: ['Show - 01.mkv'] })])] as unknown as ResultItem[]
     const config = baseConfig()
-    const built = await buildDownloadPlan(config, [{ key: 'show-1', release: 0, protocol: 'usenet' }], { results })
+    const built = await buildDownloadPlan(config, [{ key: 'show-1', release: 0, protocol: 'usenet' }], {
+      results,
+      clients: downloadClients(config),
+    })
     assert.ok('review' in built)
     const planId = built.review.plan_id
     assert.ok(built.review.requires_whole_ack)
 
     await assert.rejects(
-      acceptDownloadPlan(config, consumePlan(planId)!, undefined, results),
+      acceptDownloadPlan(config, consumePlan(planId)!, undefined, results, downloadClients(config)),
       (error: PlanRejected) => error.status === 409 && /whole Usenet sources/.test(error.message),
     )
     assert.equal(consumePlan(planId), null, 'a consumed plan can never be replayed')
 
-    const fresh = await buildDownloadPlan(config, [{ key: 'show-1', release: 0, protocol: 'usenet' }], { results })
+    const fresh = await buildDownloadPlan(config, [{ key: 'show-1', release: 0, protocol: 'usenet' }], {
+      results,
+      clients: downloadClients(config),
+    })
     assert.ok('review' in fresh)
     bumpGeneration()
     await assert.rejects(
-      acceptDownloadPlan(config, consumePlan(fresh.review.plan_id)!, { whole_source: true }, results),
+      acceptDownloadPlan(
+        config,
+        consumePlan(fresh.review.plan_id)!,
+        { whole_source: true },
+        results,
+        downloadClients(config),
+      ),
       (error: PlanRejected) => error.status === 409 && /Settings changed/.test(error.message),
     )
   } finally {
@@ -211,9 +236,11 @@ test('torrent acceptance writes the intent before the client call and finalizes 
   const cleanup = installRouter(state)
   const originalAdd = globalThis.fetch
   try {
+    const config = baseConfig()
     const results = [resultFixture([releaseFixture()])] as unknown as ResultItem[]
-    const built = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'torrent' }], {
+    const built = await buildDownloadPlan(config, [{ key: 'show-1', release: 0, protocol: 'torrent' }], {
       results,
+      clients: downloadClients(config),
     })
     assert.ok('review' in built)
     const plan = consumePlan(built.review.plan_id)!
@@ -226,7 +253,7 @@ test('torrent acceptance writes the intent before the client call and finalizes 
       }
       return originalAdd(input, init)
     }
-    const { job, completion } = await acceptDownloadPlan(baseConfig(), plan, undefined, results)
+    const { job, completion } = await acceptDownloadPlan(config, plan, undefined, results, downloadClients(config))
     const result = await completion
     assert.equal(intentVisibleDuringAdd, true, 'the intent record must exist while the client call runs')
     assert.equal(intentStateDuringAdd, 'acceptance_unknown')
@@ -252,16 +279,19 @@ test('torrent acceptance writes the intent before the client call and finalizes 
 test('a clean client rejection tombstones the intent and reports the row as failed', async () => {
   const cleanup = installRouter({ calls: [], qbAddStatus: 409 })
   try {
+    const config = baseConfig()
     const results = [resultFixture([releaseFixture()])] as unknown as ResultItem[]
-    const built = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'torrent' }], {
+    const built = await buildDownloadPlan(config, [{ key: 'show-1', release: 0, protocol: 'torrent' }], {
       results,
+      clients: downloadClients(config),
     })
     assert.ok('review' in built)
     const { completion } = await acceptDownloadPlan(
-      baseConfig(),
+      config,
       consumePlan(built.review.plan_id)!,
       undefined,
       results,
+      downloadClients(config),
     )
     const result = await completion
     assert.equal(result.count, 0)
@@ -285,16 +315,19 @@ test('an ambiguous SABnzbd outcome keeps the record, never retries the add, and 
   }
   const cleanup = installRouter(state)
   try {
+    const config = baseConfig()
     const results = [resultFixture([releaseFixture()])] as unknown as ResultItem[]
-    const built = await buildDownloadPlan(baseConfig(), [{ key: 'show-1', release: 0, protocol: 'usenet' }], {
+    const built = await buildDownloadPlan(config, [{ key: 'show-1', release: 0, protocol: 'usenet' }], {
       results,
+      clients: downloadClients(config),
     })
     assert.ok('review' in built)
     const { completion } = await acceptDownloadPlan(
-      baseConfig(),
+      config,
       consumePlan(built.review.plan_id)!,
       { whole_source: true, disk_space: true },
       results,
+      downloadClients(config),
     )
     const result = await completion
     assert.equal(addCalls, 1, 'an ambiguous submission must never be retried automatically')
@@ -398,7 +431,7 @@ test('progress maps both clients to labeled phases and refuses endpoint-mismatch
       rows: [],
     })
 
-    const progress = await collectDownloadProgress(config)
+    const progress = await collectDownloadProgress(config, downloadClients(config))
     assert.equal(progress.downloads[qbRecord.id].phase, 'downloading')
     assert.deepEqual(progress.downloads[qbRecord.id].associations, [{ key: 'show-1', release: 0 }])
     assert.equal(progress.downloads[queueRecord.id].phase, 'downloading')
@@ -410,8 +443,11 @@ test('progress maps both clients to labeled phases and refuses endpoint-mismatch
     assert.equal(progress.downloads[foreignRecord.id].capabilities.remove, false)
     assert.equal(progress.downloads[unknownRecord.id].phase, 'acceptance_unknown')
 
-    await assert.rejects(controlRecord(config, foreignRecord.id, 'pause', false), OwnershipError)
-    const cancel = await cancelRecords(config, [foreignRecord.id], false)
+    await assert.rejects(
+      controlRecord(config, foreignRecord.id, 'pause', false, downloadClients(config)),
+      OwnershipError,
+    )
+    const cancel = await cancelRecords(config, [foreignRecord.id], false, downloadClients(config))
     assert.equal(cancel.removed.length, 0)
     assert.equal(cancel.failures.length, 1)
   } finally {
@@ -437,7 +473,7 @@ test('unreachable clients keep the persisted last phase instead of inventing mis
       labels: [],
       rows: [],
     })
-    const first = await collectDownloadProgress(config)
+    const first = await collectDownloadProgress(config, downloadClients(config))
     assert.equal(first.downloads[record.id].phase, 'downloading')
     assert.equal(findDownloadRecord(record.id)!.last_phase, 'downloading')
 
@@ -445,7 +481,7 @@ test('unreachable clients keep the persisted last phase instead of inventing mis
       throw new TypeError('offline')
     }
     resetQbRuntime()
-    const second = await collectDownloadProgress(config)
+    const second = await collectDownloadProgress(config, downloadClients(config))
     assert.equal(second.downloads[record.id].phase, 'downloading')
     assert.ok(second.unavailable_clients?.includes('qbittorrent'))
   } finally {
@@ -472,7 +508,7 @@ test('cancellation only ever touches app-owned records and audits removal', asyn
       labels: [],
       rows: [{ key: 'show-1', release: 0 }],
     })
-    const cancel = await cancelRecords(config, undefined, false)
+    const cancel = await cancelRecords(config, undefined, false, downloadClients(config))
     assert.deepEqual(cancel.removed, [{ record_id: record.id, client: 'qbittorrent' }])
     assert.ok(state.calls.some(call => call.includes('/torrents/delete')))
     assert.equal(downloadRecords().length, 0)
@@ -515,7 +551,14 @@ test('a rejected plan row still lets the other rows submit', async () => {
       requires_whole_ack: false,
       requires_space_ack: false,
     })
-    const { completion } = await acceptDownloadPlan(baseConfig(), consumePlan(plan.id)!, undefined, results)
+    const config = baseConfig()
+    const { completion } = await acceptDownloadPlan(
+      config,
+      consumePlan(plan.id)!,
+      undefined,
+      results,
+      downloadClients(config),
+    )
     const result = await completion
     assert.deepEqual(
       result.rows.map(row => row.status),
@@ -562,17 +605,18 @@ test('an intent write failure finalizes every pending unit without submitting to
   const cleanup = installRouter(state)
   const write = fs.writeFileSync
   try {
+    const config = baseConfig()
     const results = [
       resultFixture([releaseFixture()]),
       resultFixture([releaseFixture({ info_hashes: ['b'.repeat(40)] })], { key: 'show-2' }),
     ] as unknown as ResultItem[]
     const built = await buildDownloadPlan(
-      baseConfig(),
+      config,
       [
         { key: 'show-1', release: 0, protocol: 'torrent' },
         { key: 'show-2', release: 0, protocol: 'torrent' },
       ],
-      { results },
+      { results, clients: downloadClients(config) },
     )
     assert.ok('review' in built)
     fs.writeFileSync = ((path: fs.PathOrFileDescriptor, ...args: unknown[]) => {
@@ -581,10 +625,11 @@ test('an intent write failure finalizes every pending unit without submitting to
     }) as typeof fs.writeFileSync
     syncBuiltinESMExports()
     const { job, completion } = await acceptDownloadPlan(
-      baseConfig(),
+      config,
       consumePlan(built.review.plan_id)!,
       { disk_space: true },
       results,
+      downloadClients(config),
     )
     await assert.rejects(completion, /ledger disk full/)
     const finished = downloadJobs.get(job.id)!

@@ -21,6 +21,7 @@ import {
   type FollowDependencies,
   type ImportProblem,
 } from '../server/import-follow.js'
+import { downloadClients } from '../server/download-clients.js'
 import { collectDownloadProgress } from '../server/download-progress.js'
 import { applyConfigUpdate, DEFAULT_CONFIG } from '../server/config.js'
 import { qbEndpointId } from '../server/client-identity.js'
@@ -408,12 +409,12 @@ test('download progress reports the import state with the name of the instance',
       source_hash: 'c'.repeat(40),
       library: [{ key: 'Sonarr@uhd4k:item7', season: 1, part: '', group: 'Best' }],
     })
-    assert.deepEqual((await collectDownloadProgress(config)).downloads[download.id].import, {
+    assert.deepEqual((await collectDownloadProgress(config, downloadClients(config))).downloads[download.id].import, {
       state: 'waiting',
       app: 'Sonarr 4K',
     })
     torrentState = { ...torrentState, state: 'stalledUP', progress: 1 }
-    const finished = (await collectDownloadProgress(config)).downloads[download.id]
+    const finished = (await collectDownloadProgress(config, downloadClients(config))).downloads[download.id]
     assert.equal(finished.phase, 'seeding')
     assert.equal(
       finished.import?.state,
@@ -422,7 +423,7 @@ test('download progress reports the import state with the name of the instance',
     )
     assert.equal(finished.import?.app, 'Sonarr 4K')
     updateDownloadImport(download.id, { state: 'blocked', message: 'Unable to parse file' })
-    assert.deepEqual((await collectDownloadProgress(config)).downloads[download.id].import, {
+    assert.deepEqual((await collectDownloadProgress(config, downloadClients(config))).downloads[download.id].import, {
       state: 'blocked',
       app: 'Sonarr 4K',
       message: 'Unable to parse file',
