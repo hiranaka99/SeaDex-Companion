@@ -29,7 +29,8 @@ import { matchRoute } from '../server/router.js'
 import { autocheckState, setState } from '../server/scan-state.js'
 import { filesSourceId, type SourceFile } from '../server/source-files.js'
 import type { Config, PrivateSource, ResultItem } from '../server/types.js'
-import { resolveUsenetHash, usenetAvailability, usenetScheduler } from '../server/usenet.js'
+import { resolveUsenetHash, usenetScheduler } from '../server/usenet.js'
+import { resolveUsenetCopies, usenetAvailability, type CopyIntent } from '../server/usenet-copies.js'
 import {
   chosenSearchCandidate,
   prowlarrIndexerUsage,
@@ -429,6 +430,43 @@ test('a proven match survives a restart, and a bulk review then plans and sends 
 })
 
 // --- Phase 5: proof levels ----------------------------------------------------------
+
+test('each intent spends on a private-tracker source only what the resolver budgets for it', async t => {
+  const fake = setup(t)
+  const budget: [CopyIntent, number, number][] = [
+    // intent, searches, NZB fetches
+    ['look', 0, 0],
+    ['search', 1, 3],
+    ['check', 1, 1],
+    ['single_review', 1, 3],
+    ['bulk_review', 0, 0],
+    ['acceptance', 0, 0],
+    ['sweep', 0, 0],
+  ]
+  for (const [intent, searched, fetched] of budget) {
+    // Four strong candidates of another release: no fetch proves one, so a walk goes on to its limit.
+    const tag = intent.replace(/_(.)/, (_, letter: string) => letter.toUpperCase()).replace(/^./, c => c.toUpperCase())
+    fake.posts[tag] = [1, 2, 3, 4].map(index => ({
+      title: `[Vault] ${tag} (BD 1080p) v${index}`,
+      link: `${tag}-${index}`,
+      size: 1.08,
+    }))
+    for (const post of fake.posts[tag]) fake.bodies[post.link] = OTHER_NZB
+    const result = privateRow(tag)
+    const request = { release: result.releases[0], result }
+    fake.calls.length = 0
+    let [copies] = await resolveUsenetCopies(config(), [{ ...request, intent }])
+    // Work a row starts reports through later snapshots.
+    const deadline = Date.now() + 10_000
+    while (copies.hashes.some(copy => copy.refreshing)) {
+      assert.ok(Date.now() < deadline, `${intent} never settled`)
+      await nextTurn()
+      ;[copies] = await resolveUsenetCopies(config(), [{ ...request, intent: 'look' }])
+    }
+    assert.equal(copies.by, 'file_list')
+    assert.deepEqual([searches(fake).length, downloads(fake).length], [searched, fetched], intent)
+  }
+})
 
 test('a near-exact NZB is planned without a confirmation and labelled on the unit and in the ledger', async t => {
   const fake = setup(t)
