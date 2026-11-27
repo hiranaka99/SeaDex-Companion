@@ -692,8 +692,8 @@ function downloadStatusFailure(response: Response, fromIndexer: boolean): Prowla
  * the redirect is followed to http(s) addresses only, and the Prowlarr API key is never sent beyond Prowlarr
  * itself.
  *
- * A failure says who caused it. An indexer that is rate limited, failing or refusing its key fails with
- * indexer scope, also when it says so with HTTP 200 and a Newznab error document instead of the file.
+ * A failure says who caused it. An indexer that is rate limited, failing or refusing its key by its HTTP
+ * status fails with indexer scope; what the body says is `read`'s to judge.
  */
 async function download<T>(
   settings: ProwlarrSettings,
@@ -744,7 +744,10 @@ async function download<T>(
   }
 }
 
-/** Downloads a result's file, such as a private tracker's .torrent, and returns it as it was sent. */
+/**
+ * Downloads a result's file, such as a private tracker's .torrent, and returns it as it was sent. A Newznab
+ * error document sent instead of the file fails with indexer scope, also with HTTP 200.
+ */
 export async function prowlarrDownload(
   settings: ProwlarrSettings,
   release: Pick<ProwlarrRelease, 'download_path'>,
@@ -763,9 +766,11 @@ export async function prowlarrDownload(
 
 /**
  * Grabs a Usenet result's NZB and returns it decompressed and validated, through the same NZB step as the
- * hash indexers. Anything but an NZB is a failure of the indexer.
+ * hash indexers. A body that is not a usable NZB fails with indexer scope, whether Prowlarr passed it on or
+ * the indexer sent it after a redirect: an error document as its code says, anything else, too large
+ * included, as `invalid_response`.
  */
-export async function prowlarrNzbDownload(
+export async function prowlarrGrabNzb(
   settings: ProwlarrSettings,
   release: Pick<ProwlarrRelease, 'download_path'>,
   fetchImpl: typeof fetch = globalThis.fetch,
@@ -776,8 +781,8 @@ export async function prowlarrNzbDownload(
       case 'nzb':
         return nzb.bytes
       case 'too_large':
-        // Reported like any other download over its cap.
-        throw new ResponseTooLargeError()
+        // As sent or only once decompressed, the file is the indexer's, also when Prowlarr passed it on.
+        throw new ProwlarrError('invalid_response', 'The indexer sent an NZB over the size limit', undefined, 'indexer')
       case 'error_document':
         throw newznabFailure(nzb.code, 'The indexer')
       case 'invalid':

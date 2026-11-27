@@ -13,7 +13,7 @@ import {
   downloadRef,
   privateSearchSettings,
   prowlarrDownload,
-  prowlarrNzbDownload,
+  prowlarrGrabNzb,
   prowlarrIndexers,
   resetProwlarrRuntime,
   searchIndexer,
@@ -583,34 +583,32 @@ test('A file is returned as it was sent, whether Prowlarr proxied it or redirect
 test("A grab yields the NZB step's result, and anything but an NZB fails as the indexer's", async () => {
   const nzb = new TextEncoder().encode(NZB)
   for (const { fetchImpl } of [redirectedDownload(() => new Response(nzb)), recorder(() => new Response(nzb))])
-    assert.deepEqual(await prowlarrNzbDownload(SETTINGS, RELEASE, fetchImpl), nzb)
+    assert.deepEqual(await prowlarrGrabNzb(SETTINGS, RELEASE, fetchImpl), nzb)
   // The finder receives the NZB decompressed; the step itself is tested with the hash indexers.
   const compressed = recorder(() => new Response(gzipSync(nzb)))
-  assert.deepEqual(await prowlarrNzbDownload(SETTINGS, RELEASE, compressed.fetchImpl), nzb)
+  assert.deepEqual(await prowlarrGrabNzb(SETTINGS, RELEASE, compressed.fetchImpl), nzb)
 
   const limited = await failureOf(
-    prowlarrNzbDownload(SETTINGS, RELEASE, redirectedDownload(() => xmlResponse(errorXml(501, 'limit'))).fetchImpl),
+    prowlarrGrabNzb(SETTINGS, RELEASE, redirectedDownload(() => xmlResponse(errorXml(501, 'limit'))).fetchImpl),
   )
   assert.deepEqual([limited.code, limited.scope], ['rate_limited', 'indexer'])
   const page = await failureOf(
-    prowlarrNzbDownload(SETTINGS, RELEASE, recorder(() => new Response('<html><body>login</body></html>')).fetchImpl),
+    prowlarrGrabNzb(SETTINGS, RELEASE, recorder(() => new Response('<html><body>login</body></html>')).fetchImpl),
   )
   assert.deepEqual(
     [page.code, page.scope, page.message],
     ['invalid_response', 'indexer', 'The indexer did not send a valid NZB'],
   )
-  const large = await failureOf(
-    prowlarrNzbDownload(
-      SETTINGS,
-      RELEASE,
-      redirectedDownload(() => new Response(nzb, { headers: { 'content-length': String(NZB_MAX_BYTES + 1) } }))
-        .fetchImpl,
-    ),
-  )
-  assert.deepEqual(
-    [large.code, large.scope, large.message],
-    ['invalid_response', 'indexer', 'Indexer download was too large'],
-  )
+  // Over the cap as sent or only once decompressed, the file is the indexer's, also when Prowlarr passed it on.
+  const oversize = () => new Response(nzb, { headers: { 'content-length': String(NZB_MAX_BYTES + 1) } })
+  const bomb = () => new Response(gzipSync(new Uint8Array(NZB_MAX_BYTES + 1)))
+  for (const { fetchImpl } of [redirectedDownload(oversize), recorder(oversize), recorder(bomb)]) {
+    const large = await failureOf(prowlarrGrabNzb(SETTINGS, RELEASE, fetchImpl))
+    assert.deepEqual(
+      [large.code, large.scope, large.message],
+      ['invalid_response', 'indexer', 'The indexer sent an NZB over the size limit'],
+    )
+  }
 })
 
 // --- Download references ------------------------------------------------------------
