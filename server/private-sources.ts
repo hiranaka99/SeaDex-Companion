@@ -112,7 +112,7 @@ async function searchAll(
   enough: (results: ProwlarrRelease[]) => boolean,
 ): Promise<ProwlarrRelease[]> {
   const seen = new Map<string, ProwlarrRelease>()
-  for (const query of [...new Set(queries.filter(Boolean))]) {
+  for (const query of new Set(queries.filter(Boolean))) {
     for (const release of await searchProwlarr(settings, query, indexerIds))
       seen.set(`${release.indexer_id}\u0000${release.guid}`, release)
     if (enough([...seen.values()])) break

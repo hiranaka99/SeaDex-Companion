@@ -581,9 +581,7 @@ test('a failed fetch or a silent indexer is a failed lookup until its retry time
 
 test('an absence stays fresh for 1, 3, 7 and then 30 days as it repeats', () => {
   const fresh = (negative_streak: number | undefined) =>
-    (searchRecordState(searched([], { ...(negative_streak ? { negative_streak } : {}) }), AT, [GEEK]).fresh_until -
-      AT) /
-    DAY
+    (searchRecordState(searched([], negative_streak ? { negative_streak } : {}), AT, [GEEK]).fresh_until - AT) / DAY
   assert.deepEqual([undefined, 1, 2, 3, 4, 5, 40].map(fresh), [1, 1, 3, 7, 30, 30, 30])
   const absent = searchRecordState(searched([], { negative_streak: 2 }), AT + 3 * DAY, [GEEK])
   assert.deepEqual(absent, { state: 'no_match', fresh_until: AT + 3 * DAY, stale: true, ask: [2] })

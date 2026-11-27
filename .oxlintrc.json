@@ -1,0 +1,51 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import", "node", "promise"],
+  "categories": {
+    "correctness": "error"
+  },
+  "env": {
+    "builtin": true,
+    "es2024": true
+  },
+  "ignorePatterns": ["dist/**", "static/**", "frontend/dist/**", "frontend/public/**"],
+  "rules": {
+    // Copying a Set or Map before looping over it is deliberate where the loop body can change it.
+    "unicorn/no-useless-spread": "off"
+  },
+  "overrides": [
+    {
+      "files": ["server/**", "shared/**", "tests/**", "scripts/**"],
+      "env": { "node": true }
+    },
+    {
+      "files": ["frontend/src/**"],
+      "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "react", "jsx-a11y"],
+      "env": { "browser": true },
+      "rules": {
+        // The React compiler is not used, so its purity and memoization rules do not apply.
+        "react/immutability": "off",
+        "react/purity": "off",
+        "react/refs": "off",
+        "react/set-state-in-effect": "off",
+        "react/use-memo": "off",
+        // Effects and memos key on derived values (scope strings, signatures) rather than every closure they read.
+        "react-hooks/exhaustive-deps": "off",
+        // ARIA roles on existing elements are kept where native elements would change layout or behavior.
+        "jsx-a11y/prefer-tag-over-role": "off",
+        // Labels wrap their input and visible text, which this rule does not recognize.
+        "jsx-a11y/label-has-associated-control": "off",
+        // Scrollable regions take focus so they can be scrolled from the keyboard.
+        "jsx-a11y/no-noninteractive-tabindex": "off",
+        // Keyboard handling is delegated from containers, dialogs and roving-focus tab lists.
+        "jsx-a11y/interactive-supports-focus": "off",
+        "jsx-a11y/no-noninteractive-element-interactions": "off",
+        "jsx-a11y/no-static-element-interactions": "off",
+        // The sign-in form focuses its first field on purpose.
+        "jsx-a11y/no-autofocus": "off",
+        // aria-description is part of ARIA 1.3 and is supported on buttons.
+        "jsx-a11y/role-supports-aria-props": "off"
+      }
+    }
+  ]
+}

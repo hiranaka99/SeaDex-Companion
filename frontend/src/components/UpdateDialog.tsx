@@ -111,7 +111,6 @@ export default function UpdateDialog({ open, info, onClose }: Props) {
     if (!busy) setPhase({ step: 'idle' })
     closeRef.current?.focus()
     // Resetting only on open; a running install must survive re-renders.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   // While the server restarts, wait for the new version, then reload into its frontend.

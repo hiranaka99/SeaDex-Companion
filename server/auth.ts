@@ -130,6 +130,7 @@ async function verifyPassword(record: StoredAuthRecord, password: string): Promi
 function validateCredentials(usernameValue: unknown, passwordValue: unknown): { username: string; password: string } {
   const username = String(usernameValue ?? '').trim()
   const password = String(passwordValue ?? '')
+  // oxlint-disable-next-line no-control-regex -- usernames must not contain control characters
   if (username.length < 3 || username.length > 64 || /[\u0000-\u001f\u007f]/.test(username)) {
     throw new AuthError(400, 'Username must be between 3 and 64 characters')
   }
