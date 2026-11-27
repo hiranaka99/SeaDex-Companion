@@ -28,8 +28,9 @@ import {
   type DownloadClientAdapter,
   type DownloadSpaceLocation,
   type LiveJob,
-  type SubmissionUnit,
+  type UsenetUnit,
 } from './download-client-types.js'
+import { planUsenetUnits } from './usenet-units.js'
 
 export function queuePhase(status: string): DownloadPhase {
   const normalized = status.trim().toLowerCase()
@@ -95,12 +96,13 @@ const UNCONFIRMED_RETRY_MS = 60_000
 /** When each unconfirmed submission was last looked up by name, so progress polls do not repeat the search. */
 const unconfirmedAttempts = new Map<string, number>()
 
-export function sabnzbdAdapter(config: Config): DownloadClientAdapter {
+export function sabnzbdAdapter(config: Config): DownloadClientAdapter<UsenetUnit> {
   const { endpointId } = sabEndpoint(config)
+  const identity = { protocol: 'usenet', client: 'sabnzbd', endpointId } as const
   const settings = sabSettings(config)
 
   /** SABnzbd reports one figure per folder, not per category, so every category shares both checks. */
-  async function diskChecks(units: SubmissionUnit[]): Promise<DiskSpaceCheck[]> {
+  async function diskChecks(units: UsenetUnit[]): Promise<DiskSpaceCheck[]> {
     const categories = [...new Set(units.map(unit => unit.category))]
     const { required, uncertain, unsized } = unitSizing(units)
     let free: { incomplete_free_bytes: number | null; complete_free_bytes: number | null } = {
@@ -226,12 +228,15 @@ export function sabnzbdAdapter(config: Config): DownloadClientAdapter {
         complete: queue.read_complete && history.read_complete,
       }
     },
+    planUnits: async (rows, review) => planUsenetUnits(config, identity, rows, review),
+    recordFields: unit => (unit.send.entryId ? { entry_id: unit.send.entryId } : {}),
     async submit(unit, ownership) {
       try {
         if (!settings) throw new Error('SABnzbd is no longer configured.')
-        if (!unit.provider || !unit.entryId)
+        const { entryId, sourceFiles } = unit.send
+        if (!unit.provider || !entryId)
           throw new Error('The Usenet source reference is no longer available. Re-run the review.')
-        const nzb = await fetchUsenetNzb(config, unit.provider, unit.entryId, unit.source_hash, unit.sourceFiles)
+        const nzb = await fetchUsenetNzb(config, unit.provider, entryId, unit.source_hash, sourceFiles)
         const nzoIds = await sabAddNzb(settings, nzb, sabSubmissionName(unit.nzb_name, unit.source_hash), unit.category)
         ownership.accepted(nzoIds)
         return nzoIds[0]
