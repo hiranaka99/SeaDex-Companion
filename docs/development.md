@@ -57,6 +57,8 @@ Rules that conflict with deliberate patterns in this codebase are switched off i
 - `npm run test:browser` builds the frontend and checks browser workflows with isolated local fixtures. It defaults to Microsoft Edge on Windows; set `BROWSER_PATH` to a Chromium executable on other systems.
 - `npm run test:docker` builds a fresh image and checks startup, health, assets, authentication, persistence, download recovery, and shutdown in an isolated container.
 
+Tests that look up hashes, search Prowlarr or sweep build their own Usenet runtime with `testUsenetRuntime` from `tests/support/usenet-runtime.ts`, and hand it their fake hash indexers and Prowlarr as its `fetch`. The global `fetch` fakes only the download clients and other services. `restart()` simulates a new process on the same data paths, and `fresh()` one on empty data paths.
+
 See [maintainability notes](maintainability.md) for runtime ownership, persistence, and compatibility details.
 
 ## Publishing a release

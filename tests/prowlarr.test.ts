@@ -1,40 +1,40 @@
 // Private-tracker releases through Prowlarr: file-list identity, .torrent and NZB checks, and the review,
-// availability and submission paths that use them. Runs in the shared temp DATA_DIR (tests/run-tests.mjs).
+// availability and submission paths that use them. Prowlarr and its indexers are a fake behind the Usenet
+// runtime's `fetch`, the download clients one behind the global `fetch`. Runs in the shared temp DATA_DIR
+// (tests/run-tests.mjs); each test's runtime keeps its stores on its own temp paths.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { rmSync } from 'node:fs'
 import { test } from 'node:test'
 import { setImmediate as nextTurn } from 'node:timers/promises'
 import { seadexBest } from '../server/catalog.js'
-import { NZB_STORE_DIR, USENET_SEARCH_FILE } from '../server/paths.js'
 import { normalizeResults } from '../server/result-model.js'
 import { parseTorrentFile } from '../server/torrent-file.js'
 import { filesSourceId, nzbFileMatches, nzbFiles, nzbHasFiles, sameFiles } from '../server/source-files.js'
 import {
   prowlarrCoverage,
   prowlarrIndexers,
-  resetProwlarrRuntime,
   searchProwlarr,
   testProwlarr,
   trackerIndexers,
 } from '../server/prowlarr.js'
-import { invalidatePrivateSources, trackerTorrentId } from '../server/private-sources.js'
-import { paceUsenetSearch, resetUsenetSearch, resolveSource } from '../server/usenet-search.js'
+import { trackerTorrentId } from '../server/private-sources.js'
+import { resolveSource } from '../server/usenet-search.js'
 import { cleanSearchTitle, searchTitles } from '../server/search-titles.js'
 import { downloadClients } from '../server/download-clients.js'
 import { buildDownloadPlan } from '../server/download-preflight.js'
 import { consumePlan } from '../server/download-plans.js'
 import { acceptDownloadPlan } from '../server/download-submit.js'
 import { addDownloadRecord, downloadRecords, resetOwnedRuntime } from '../server/download-store.js'
-import { resetUsenetLookups, resolveUsenetHash } from '../server/usenet.js'
+import { resolveUsenetHash } from '../server/usenet.js'
 import { usenetAvailability } from '../server/usenet-copies.js'
 import { applyConfigUpdate, publicConfig } from '../server/config.js'
 import { resetQbRuntime } from '../server/qbittorrent.js'
 import type { Config, ResultItem } from '../server/types.js'
 import { currentDownloadAssociations } from '../frontend/src/download-store.js'
-import { findsPrivateTorrent } from '../frontend/src/utils.js'
+import { findsPrivateTorrent } from '../frontend/src/download-routes.js'
 import type { DownloadProgress } from '../shared/download-contracts.js'
 import { baseConfig, purgeTestDataDir, resultFixture, releaseFixture, QB, SAB } from './support/download-fixtures.js'
+import { testUsenetRuntime, type TestUsenetRuntime } from './support/usenet-runtime.js'
 
 const PROWLARR = 'http://prowlarr.test:9696'
 const KEY = 'prowlarr-key'
@@ -133,6 +133,8 @@ interface FakeState {
   qbAdded?: { torrent: Buffer; fields: Record<string, string> }
   qbTorrents?: { hash: string; state: string }[]
   sabAdded?: { nzb: string; name: string; category: string }
+  /** AnimeTosho's answer; it is not asked unless this is set. */
+  animetosho?: () => Response
 }
 
 const INDEXERS = [
@@ -175,26 +177,20 @@ function newznabFeed(results: unknown[], indexerId: number): Response {
   )
 }
 
-/** Forgets every Usenet search result, in memory and on disk. */
-function forgetUsenetSearches(): void {
-  resetUsenetSearch()
-  rmSync(USENET_SEARCH_FILE, { force: true })
-  rmSync(NZB_STORE_DIR, { recursive: true, force: true })
+interface Installed {
+  /** Puts the default runtime and the global `fetch` back. */
+  (): void
+  usenet: TestUsenetRuntime
+  /** The fake Prowlarr, for calls that are not made through the runtime. */
+  prowlarr: typeof fetch
 }
 
-function install(state: FakeState): () => void {
-  const original = globalThis.fetch
-  resetQbRuntime()
-  resetOwnedRuntime()
-  resetProwlarrRuntime()
-  invalidatePrivateSources()
-  forgetUsenetSearches()
-  purgeTestDataDir()
-  // Requests to the fake indexers need no spacing.
-  paceUsenetSearch({ minIntervalMs: 0 })
-  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+/** A fake Prowlarr and its indexers; AnimeTosho too when `state` gives it an answer. */
+function fakeProwlarr(state: FakeState): typeof fetch {
+  return async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     state.calls.push(`${init?.method || 'GET'} ${url.href}`)
+    if (state.animetosho && url.href.includes('animetosho')) return state.animetosho()
     if (url.origin === PROWLARR) {
       const headers = new Headers(init?.headers)
       if (headers.get('x-api-key') !== KEY) return new Response('unauthorized', { status: 401 })
@@ -224,6 +220,24 @@ function install(state: FakeState): () => void {
         status: state.nzbs?.[url.searchParams.get('id') || ''] ? 200 : 404,
       })
     }
+    throw new Error(`unexpected request: ${url.href}`)
+  }
+}
+
+/**
+ * A fresh ledger, client state and Usenet runtime: the runtime asks the fake Prowlarr, and the global `fetch`
+ * reaches fake download clients.
+ */
+function install(state: FakeState): Installed {
+  const original = globalThis.fetch
+  resetQbRuntime()
+  resetOwnedRuntime()
+  purgeTestDataDir()
+  const prowlarr = fakeProwlarr(state)
+  const usenet = testUsenetRuntime(undefined, { fetch: prowlarr })
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input))
+    state.calls.push(`${init?.method || 'GET'} ${url.href}`)
     if (url.origin === QB) {
       if (url.pathname.endsWith('/auth/login')) return new Response('Ok.')
       if (url.pathname.endsWith('/torrents/add')) {
@@ -284,16 +298,14 @@ function install(state: FakeState): () => void {
     }
     throw new Error(`unexpected request: ${url.href}`)
   }
-  return () => {
+  const restore = () => {
     globalThis.fetch = original
-    paceUsenetSearch()
+    usenet.close()
     resetQbRuntime()
     resetOwnedRuntime()
-    resetProwlarrRuntime()
-    invalidatePrivateSources()
-    forgetUsenetSearches()
     purgeTestDataDir()
   }
+  return Object.assign(restore, { usenet, prowlarr })
 }
 
 /** Prowlarr searches and downloads (grabs); reading the indexer list is neither. */
@@ -414,12 +426,20 @@ test('Prowlarr search re-roots download links on the configured origin and recog
   const restore = install(state)
   try {
     const settings = { baseUrl: `${PROWLARR}/`, apiKey: KEY }
-    assert.match(await testProwlarr(settings), /Prowlarr 1\.30\.2 · 1 Usenet indexer, 1 private torrent indexer/)
-    const [found, other] = await searchProwlarr(settings, 'Show', [1])
+    assert.match(
+      await testProwlarr(settings, restore.prowlarr),
+      /Prowlarr 1\.30\.2 · 1 Usenet indexer, 1 private torrent indexer/,
+    )
+    const [found, other] = await searchProwlarr(settings, 'Show', [1], restore.prowlarr)
     assert.equal(found.download_path, `/1/download?apikey=${KEY}&link=real&file=Show`)
     assert.equal(other.download_path, '/other')
     // Under a URL base, links outside it are dropped rather than followed.
-    const prefixed = await searchProwlarr({ baseUrl: `${PROWLARR}/prowlarr`, apiKey: KEY }, 'Show', [1])
+    const prefixed = await searchProwlarr(
+      { baseUrl: `${PROWLARR}/prowlarr`, apiKey: KEY },
+      'Show',
+      [1],
+      restore.prowlarr,
+    )
     assert.equal(prefixed.length, 0)
     const indexers = await prowlarrIndexers(settings)
     assert.deepEqual(
@@ -433,7 +453,7 @@ test('Prowlarr search re-roots download links on the configured origin and recog
     )
     assert.deepEqual(trackerIndexers(indexers, 'Nyaa'), [], 'public trackers are never private-tracker indexers')
     assert.equal(trackerTorrentId(source.page), '951508')
-    await assert.rejects(testProwlarr({ baseUrl: PROWLARR, apiKey: 'wrong' }), /API key/)
+    await assert.rejects(testProwlarr({ baseUrl: PROWLARR, apiKey: 'wrong' }, restore.prowlarr), /API key/)
   } finally {
     restore()
   }
@@ -800,7 +820,7 @@ test('Prowlarr download redirects are followed to the indexer, and candidates th
     assert.ok(state.calls.some(call => call.startsWith('GET https://geek.test/getnzb?id=proven')))
 
     state.nzbs = {}
-    forgetUsenetSearches()
+    restore.usenet.fresh()
     const missing = await resolveSource(config, source, terms, { limit: 3 })
     assert.equal(missing.availability.state, 'no_match')
     const [row] = await usenetAvailability(config, [{ key: 'show-1', release: 0 }], privateResults())
@@ -825,23 +845,18 @@ test('Prowlarr download redirects are followed to the indexer, and candidates th
   }
 })
 
-test('a public release with no NZB names the hash indexers that were asked, never Prowlarr', async () => {
-  const original = globalThis.fetch
+test('a public release with no NZB names the hash indexers that were asked, never Prowlarr', async t => {
   const asked: string[] = []
-  resetUsenetLookups()
-  globalThis.fetch = async (input: RequestInfo | URL) => {
-    asked.push(String(input))
-    return new Response('not found', { status: 404 })
-  }
-  try {
-    const state = await resolveUsenetHash(prowlarrConfig({ download_mode: 'usenet_only' }), 'c'.repeat(40))
-    assert.equal(state.state, 'no_match')
-    assert.deepEqual(state.providers_checked, ['animetosho'])
-    assert.ok(asked.every(url => !url.startsWith(PROWLARR)))
-  } finally {
-    globalThis.fetch = original
-    resetUsenetLookups()
-  }
+  testUsenetRuntime(t, {
+    fetch: async (input: RequestInfo | URL) => {
+      asked.push(String(input))
+      return new Response('not found', { status: 404 })
+    },
+  })
+  const state = await resolveUsenetHash(prowlarrConfig({ download_mode: 'usenet_only' }), 'c'.repeat(40))
+  assert.equal(state.state, 'no_match')
+  assert.deepEqual(state.providers_checked, ['animetosho'])
+  assert.ok(asked.every(url => !url.startsWith(PROWLARR)))
 })
 
 test('a public release the hash indexers lack can be searched on Prowlarr and sent under its torrent hash', async () => {
@@ -860,11 +875,9 @@ test('a public release the hash indexers lack can be searched on Prowlarr and se
       }),
     ],
   }
-  const restore = install(state)
-  const routed = globalThis.fetch
   // AnimeTosho has no entry for the hash.
-  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) =>
-    String(input).includes('animetosho') ? new Response('missing', { status: 404 }) : routed(input, init)
+  state.animetosho = () => new Response('missing', { status: 404 })
+  const restore = install(state)
   try {
     // Public releases are searchable even in public-tracker mode.
     const config = prowlarrConfig({ download_mode: 'usenet_only', tracker_mode: 'public' })
@@ -917,7 +930,6 @@ test('a public release the hash indexers lack can be searched on Prowlarr and se
     assert.equal(record.source_hash, HASH)
     assert.equal(record.provider, 'prowlarr')
   } finally {
-    globalThis.fetch = routed
     restore()
   }
 })
@@ -943,7 +955,6 @@ test('search titles follow Sonarr: cleaned scene titles, then AniList titles, wi
 })
 
 test('Usenet searches ask each Usenet indexer by title and by release group, and never name a category', async () => {
-  const queries: URLSearchParams[] = []
   // The candidate states no size, so it does not end the search and every query is sent.
   const state: FakeState = {
     calls: [],
@@ -959,12 +970,11 @@ test('Usenet searches ask each Usenet indexer by title and by release group, and
     ],
   }
   const restore = install(state)
-  const routed = globalThis.fetch
-  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = new URL(String(input))
-    if (url.pathname === '/2/api') queries.push(url.searchParams)
-    return routed(input, init)
-  }
+  const queries = () =>
+    state.calls
+      .map(call => new URL(call.slice(call.indexOf(' ') + 1)))
+      .filter(url => url.pathname === '/2/api')
+      .map(url => url.searchParams)
   try {
     const config = prowlarrConfig({ download_mode: 'usenet_only' })
     const results = privateResults({ releaseGroup: '-ZR-' })
@@ -973,8 +983,9 @@ test('Usenet searches ask each Usenet indexer by title and by release group, and
     const selections = [{ key: 'show-1', release: 0 }]
     await usenetAvailability(config, selections, results, { search: selections })
     await settledAvailability(config, selections, results)
+    const asked = queries()
     assert.deepEqual(
-      queries.map(query => query.get('q')),
+      asked.map(query => query.get('q')),
       [
         // The file names do not carry the group, so the title alone is asked first, within the size of a post.
         'Banished From the Heros Party',
@@ -983,18 +994,17 @@ test('Usenet searches ask each Usenet indexer by title and by release group, and
       ],
     )
     assert.deepEqual(
-      [queries[0].get('minsize'), queries[0].get('maxsize')],
+      [asked[0].get('minsize'), asked[0].get('maxsize')],
       [String(Math.floor(TOTAL * 0.97)), String(Math.ceil(TOTAL * 1.35))],
     )
-    for (const query of queries) {
+    for (const query of asked) {
       assert.equal(query.has('cat'), false)
       assert.equal(query.has('categories'), false)
     }
     // Each Usenet indexer is asked on its own; the torrent indexers and the disabled one are not asked at all.
-    assert.equal(state.calls.filter(call => /\/\d+\/api\?/.test(call)).length, queries.length)
+    assert.equal(state.calls.filter(call => /\/\d+\/api\?/.test(call)).length, asked.length)
     assert.equal(state.calls.filter(call => call.includes('/api/v1/search')).length, 0)
   } finally {
-    globalThis.fetch = routed
     restore()
   }
 })
@@ -1004,7 +1014,10 @@ test('private-tracker downloads are offered only for trackers Prowlarr has an in
   const restore = install(state)
   try {
     const settings = { baseUrl: PROWLARR, apiKey: KEY }
-    assert.deepEqual(await prowlarrCoverage(settings, ['AB', 'BeyondHD', 'Nyaa']), { trackers: ['AB'], usenet: true })
+    assert.deepEqual(await prowlarrCoverage(settings, ['AB', 'BeyondHD', 'Nyaa'], restore.prowlarr), {
+      trackers: ['AB'],
+      usenet: true,
+    })
     const config = {
       ...publicConfig(prowlarrConfig()),
     }
@@ -1018,8 +1031,7 @@ test('private-tracker downloads are offered only for trackers Prowlarr has an in
 
     // Without a Usenet indexer, no Prowlarr search is offered for the release.
     state.indexers = INDEXERS.filter(indexer => indexer.protocol !== 'usenet')
-    resetProwlarrRuntime()
-    await prowlarrIndexers(settings)
+    await prowlarrIndexers(settings, undefined, true)
     const results = privateResults()
     const selections = [{ key: 'show-1', release: 0 }]
     const [row] = await usenetAvailability(prowlarrConfig({ download_mode: 'usenet_only' }), selections, results, {

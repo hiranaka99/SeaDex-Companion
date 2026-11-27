@@ -1,37 +1,31 @@
 // The Prowlarr file-list search: the query ladder and candidate ranking, the search stage, the verify stage, and
 // what availability, review and submission read from the store. Prowlarr and its indexers are a fake `fetch`
-// that records every request; records and NZBs live in the shared temp DATA_DIR (tests/run-tests.mjs).
+// that records every request; each test's runtime keeps records and NZBs on its own temp paths.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import { test, type TestContext } from 'node:test'
 import { setImmediate as nextTurn } from 'node:timers/promises'
 import { DEFAULT_CONFIG } from '../server/config.js'
-import { NZB_STORE_DIR, USENET_SEARCH_FILE } from '../server/paths.js'
-import { prowlarrFingerprint, resetProwlarrRuntime } from '../server/prowlarr.js'
+import { prowlarrFingerprint, prowlarrIndexers } from '../server/prowlarr.js'
 import { filesSourceId, type SourceFile } from '../server/source-files.js'
-import type { Config, PrivateSource } from '../server/types.js'
-import { paceUsenetLookups, resetUsenetLookups, resolveUsenetHash } from '../server/usenet.js'
+import type { Config, PrivateSource, ResultItem } from '../server/types.js'
+import { resolveUsenetHash } from '../server/usenet.js'
+import type { UsenetRuntimeOptions } from '../server/usenet-runtime.js'
 import { LookupScheduler, ProviderPausedError, type LookupPacing } from '../server/usenet-scheduler.js'
 import { searchRecordState } from '../server/usenet-search-state.js'
 import type { SearchRecord, StoredCandidate, StoredCheck } from '../server/usenet-search-store.js'
 import { runJob } from './support/lookup-jobs.js'
+import { testUsenetRuntime, type TestUsenetRuntime } from './support/usenet-runtime.js'
 import {
   cancelSourceCheck,
   chosenSearchCandidate,
-  flushUsenetSearch,
-  invalidateUsenetSearch,
-  paceUsenetSearch,
   prowlarrIndexerUsage,
   rejectSearchCandidate,
-  resetUsenetSearch,
   resolveSource,
-  retainSearchSources,
   searchNzbBytes,
-  searchScheduler,
   searchSnapshot,
   searchSource,
-  searchStore,
   usenetSearchPauses,
   verifySource,
 } from '../server/usenet-search.js'
@@ -194,20 +188,19 @@ interface Fake {
   elsewhere: (url: URL) => Response | Promise<Response>
 }
 
+/** The runtime of the running test. */
+let usenet: TestUsenetRuntime
+
 /**
- * Resets the finder, its store files, both schedulers' pacing and the Prowlarr client, and routes `fetch` to a
- * fake Prowlarr. Everything is put back when the test ends.
+ * A fresh runtime on its own store paths, unpaced unless `pacing` says otherwise, that sends every request to a
+ * fake Prowlarr. The default runtime is put back when the test ends.
  */
-function setup(t: TestContext, overrides: Partial<Fake> = {}, pacing: Partial<LookupPacing> = {}): Fake {
-  const original = globalThis.fetch
-  const clean = () => {
-    resetUsenetSearch()
-    resetProwlarrRuntime()
-    fs.rmSync(USENET_SEARCH_FILE, { force: true })
-    fs.rmSync(NZB_STORE_DIR, { recursive: true, force: true })
-  }
-  clean()
-  paceUsenetSearch({ minIntervalMs: 0, ...pacing })
+function setup(
+  t: TestContext,
+  overrides: Partial<Fake> = {},
+  pacing: Partial<LookupPacing> = {},
+  options: UsenetRuntimeOptions = {},
+): Fake {
   const fake: Fake = {
     calls: [],
     indexers: [GEEK],
@@ -216,7 +209,7 @@ function setup(t: TestContext, overrides: Partial<Fake> = {}, pacing: Partial<Lo
     elsewhere: () => new Response('not found', { status: 404 }),
     ...overrides,
   }
-  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const send = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     const headers = new Headers(init?.headers)
     fake.calls.push({ url, headers })
@@ -229,12 +222,13 @@ function setup(t: TestContext, overrides: Partial<Fake> = {}, pacing: Partial<Lo
     if (download) return await fake.download(Number(download[1]), url.searchParams.get('link') ?? '')
     throw new Error(`unexpected request: ${url.pathname}`)
   }
-  t.after(() => {
-    globalThis.fetch = original
-    paceUsenetSearch()
-    clean()
-  })
+  usenet = testUsenetRuntime(t, { ...options, fetch: send, pacing: { search: pacing } })
   return fake
+}
+
+/** Prowlarr's indexer list is read again, as it is once the one read last expires. */
+async function relist(): Promise<void> {
+  await prowlarrIndexers({ baseUrl: PROWLARR, apiKey: KEY }, undefined, true)
 }
 
 /** Search requests so far, optionally of one indexer. */
@@ -246,7 +240,7 @@ const searches = (fake: Fake, indexerId?: number) =>
 const downloads = (fake: Fake) =>
   fake.calls.filter(call => /^\/\d+\/download$/.test(call.url.pathname)).map(call => call.url.searchParams.get('link'))
 
-const record = (source = SOURCE) => searchStore.get(FINGERPRINT, source.id)
+const record = (source = SOURCE) => usenet.runtime.searchStore.get(FINGERPRINT, source.id)
 const entryOf = (link: string, indexerId = 2) =>
   candidateEntryId(indexerId, `https://indexer${indexerId}.test/details/${link}`)
 
@@ -846,7 +840,7 @@ test('a paused indexer fails a waiting search fast and makes a background search
     { pauseBaseMs: 300 },
   )
   await searchSource(config(), release('First'), terms('First'))
-  const until = searchScheduler.pausedUntil('prowlarr:2')
+  const until = usenet.runtime.searchScheduler.pausedUntil('prowlarr:2')
   assert.ok(until > Date.now(), 'rate limiting paused the indexer')
   assert.equal(searches(fake).length, 1)
 
@@ -875,11 +869,15 @@ test('an indexer Prowlarr disabled is not searched, and its channel is paused un
     usenetSearchPauses().map(pause => [pause.label, pause.until, pause.reason]),
     [['Geek', Date.parse(disabledTill), 'server']],
   )
-  assert.equal(searchScheduler.interval('prowlarr:2'), 0, 'a pause Prowlarr reports does not widen the spacing')
+  assert.equal(
+    usenet.runtime.searchScheduler.interval('prowlarr:2'),
+    0,
+    'a pause Prowlarr reports does not widen the spacing',
+  )
 
   // Prowlarr asks the indexer again sooner than it said: the pause ends with the next indexer list.
   fake.indexers = [GEEK, SLUG]
-  resetProwlarrRuntime()
+  await relist()
   const again = await searchSource(config(), SOURCE, TERMS, { refresh: true })
   assert.deepEqual(usenetSearchPauses(), [])
   assert.equal(searches(fake, 2).length, 2)
@@ -895,7 +893,7 @@ test('a newly added indexer makes a record stale, and only that indexer is asked
   assert.deepEqual(searchRecordState(record(), Date.now(), [GEEK, SLUG]).ask, [5])
 
   fake.indexers = [GEEK, SLUG]
-  resetProwlarrRuntime()
+  await relist()
   fake.calls.length = 0
   const merged = await searchSource(config(), SOURCE, TERMS)
   assert.deepEqual([searches(fake, 2).length, searches(fake, 5).length], [0, 1])
@@ -928,11 +926,15 @@ test('the background search limit holds background searches back and never a sea
 
   const waited = await searchSource(limited, second, terms('Second'))
   assert.deepEqual([waited.availability.state, waited.deferred, searches(fake).length], ['unverified', false, 2])
-  assert.equal(searchStore.usage(FINGERPRINT, 2).searches, 1, 'a search someone waits for is not counted')
+  assert.equal(
+    usenet.runtime.searchStore.usage(FINGERPRINT, 2).searches,
+    1,
+    'a search someone waits for is not counted',
+  )
 
   // Prowlarr's own query limit leaves half to everything else that uses the indexer.
   fake.indexers = [{ ...GEEK, fields: [{ name: 'baseSettings.queryLimit', value: 2 }] }]
-  resetProwlarrRuntime()
+  await relist()
   const third = await searchSource(config({ prowlarr_search_limit: 0 }), release('Third'), terms('Third'), {
     background: true,
   })
@@ -940,7 +942,7 @@ test('the background search limit holds background searches back and never a sea
   assert.equal(searches(fake).length, 2)
   // No limit at all: 0 from Companion, none in Prowlarr.
   fake.indexers = [GEEK]
-  resetProwlarrRuntime()
+  await relist()
   await searchSource(config({ prowlarr_search_limit: 0 }), release('Third'), terms('Third'), { background: true })
   assert.equal(searches(fake).length, 3)
 })
@@ -979,12 +981,6 @@ test('a hash lookup still gets a slot while every indexer search hangs', async t
       await hang.opened
       return feed(indexerId)
     },
-  })
-  resetUsenetLookups()
-  paceUsenetLookups({ minIntervalMs: 0 })
-  t.after(() => {
-    paceUsenetLookups()
-    resetUsenetLookups()
   })
   const pending = ['One', 'Two', 'Three', 'Four'].map(tag => searchSource(config(), release(tag), terms(tag)))
   await until(() => searches(fake).length === 3)
@@ -1030,7 +1026,7 @@ test('two callers at once share one search and one check', async t => {
   assert.equal(searches(fake).length, 1)
   assert.deepEqual(downloads(fake), ['post'])
   assert.equal(searchSnapshot(config(), SOURCE.id).running, false)
-  assert.equal(searchStore.usage(FINGERPRINT, 2).fetches, 1)
+  assert.equal(usenet.runtime.searchStore.usage(FINGERPRINT, 2).fetches, 1)
 })
 
 test('a caller that starts waiting promotes a background search of the same source', async t => {
@@ -1056,7 +1052,7 @@ test('a caller that starts waiting promotes a background search of the same sour
   )
   assert.deepEqual((await background).availability, waited.availability)
   // The promoted search is one someone waits for: it is paced, not counted.
-  assert.equal(searchStore.usage(FINGERPRINT, 2).searches, 2)
+  assert.equal(usenet.runtime.searchStore.usage(FINGERPRINT, 2).searches, 2)
   hang.open()
   await Promise.all(queued)
   assert.equal(searches(fake).length, 3, 'one set of requests for the shared source')
@@ -1111,7 +1107,7 @@ for (const [name, refusal, retryAfter] of refusals)
       ],
     )
     assert.equal(chosenSearchCandidate(config(), SOURCE.id, first.entry_id), undefined)
-    assert.ok(searchScheduler.isPaused('prowlarr:2'), 'the indexer is paused for everyone')
+    assert.ok(usenet.runtime.searchScheduler.isPaused('prowlarr:2'), 'the indexer is paused for everyone')
     const [usage] = prowlarrIndexerUsage(config())
     assert.deepEqual([usage.indexer, usage.fetches_left], ['Geek', 19])
     assert.ok(usage.paused_seconds! > 0 && usage.paused_seconds! <= Math.max(30, retryAfter / 1000))
@@ -1137,7 +1133,7 @@ test('a body that is no NZB marks its candidate only, and the next candidate is 
   assert.equal(outcome.fetched, 2)
   assert.deepEqual(downloads(fake), ['first', 'second'])
   assert.equal(record()?.candidates[0].check?.unavailable?.code, 'invalid_response')
-  assert.equal(searchScheduler.isPaused('prowlarr:2'), false)
+  assert.equal(usenet.runtime.searchScheduler.isPaused('prowlarr:2'), false)
 
   // Alone, such a candidate is a checked one that proves nothing: no match, and it cannot be chosen.
   fake.search = indexerId => feed(indexerId, TWO_POSTS.slice(0, 1))
@@ -1312,7 +1308,7 @@ test('a rejected candidate is skipped by the next check and never reported as av
   assert.equal(rejectSearchCandidate(config(), SOURCE.id, entryOf('first')), true)
 
   // Written at once: the rejection survives a restart.
-  resetUsenetSearch(true)
+  usenet.restart()
   const rejected = searchSnapshot(config(), SOURCE.id).availability
   assert.equal(rejected.state, 'no_match')
   assert.deepEqual(
@@ -1432,7 +1428,7 @@ test('a cancelled check is dropped while it waits, finishes once it fetches, and
     ['Vault Alpha', 'Vault Beta', 'Vault Gamma', 'Vault Epsilon'],
     'a search nobody else waited for was never sent',
   )
-  assert.equal(searchStore.usage(FINGERPRINT, 2).fetches, 2)
+  assert.equal(usenet.runtime.searchStore.usage(FINGERPRINT, 2).fetches, 2)
   for (const source of sources) assert.equal(searchSnapshot(config(), source.id).running, false)
 
   // A cancelled check is no verdict: asking again checks the candidate.
@@ -1457,7 +1453,7 @@ test('an indexer that left Prowlarr is not fetched from, and the next search dro
     ['Slug', 'Geek'],
   )
   fake.indexers = [GEEK]
-  resetProwlarrRuntime()
+  await relist()
   const checked = await verifySource(config(), SOURCE, { limit: 3 })
   assert.deepEqual(
     fake.calls.filter(call => call.url.pathname.endsWith('/download')).map(call => call.url.pathname),
@@ -1505,8 +1501,7 @@ test('a proven match survives a restart and is reported and sent without a reque
   assert.equal(found.availability.state, 'available')
 
   // The process is killed here: the check was written when it was made, nothing is flushed by hand.
-  resetUsenetSearch(true)
-  resetProwlarrRuntime()
+  usenet.restart()
   fake.calls.length = 0
   const snapshot = searchSnapshot(config(), SOURCE.id)
   assert.deepEqual(snapshot.availability, found.availability)
@@ -1543,13 +1538,13 @@ test('an evicted NZB is fetched again for a submission and sent only when it is 
   })
   await resolveSource(config(), SOURCE, TERMS, { limit: 3 })
   const entry = entryOf('first')
-  const evict = () => fs.rmSync(NZB_STORE_DIR, { recursive: true, force: true })
+  const evict = () => fs.rmSync(usenet.paths.nzbs, { recursive: true, force: true })
 
   // The same bytes pass, cost one fetch, and are kept again.
   evict()
   assert.deepEqual(await searchNzbBytes(config(), SOURCE.id, entry), EXACT_NZB)
   assert.deepEqual(downloads(fake), ['first', 'first'])
-  assert.equal(searchStore.usage(FINGERPRINT, 2).fetches, 2)
+  assert.equal(usenet.runtime.searchStore.usage(FINGERPRINT, 2).fetches, 2)
   assert.deepEqual(await searchNzbBytes(config(), SOURCE.id, entry), EXACT_NZB)
   assert.equal(downloads(fake).length, 2)
 
@@ -1582,14 +1577,14 @@ test('an evicted NZB is fetched again for a submission and sent only when it is 
   const commented = new TextEncoder().encode(`${new TextDecoder().decode(otherNzb)}<!-- changed -->`)
   body = otherNzb
   assert.equal((await resolveSource(config(), other, terms('Other'), { limit: 3 })).availability.proof, 'exact')
-  resetUsenetSearch(true)
+  usenet.restart()
   evict()
   body = commented
   await assert.rejects(searchNzbBytes(config(), other.id, entry), /The NZB changed since it was checked/)
   assert.equal(searchSnapshot(config(), other.id).availability.state, 'unverified')
   // Given the file list, the same case is graded on the spot.
   assert.equal((await resolveSource(config(), other, terms('Other'), { limit: 3 })).availability.proof, 'exact')
-  resetUsenetSearch(true)
+  usenet.restart()
   evict()
   body = otherNzb
   assert.deepEqual(await searchNzbBytes(config(), other.id, entry, other.files), otherNzb)
@@ -1603,11 +1598,11 @@ test('the stored file holds neither the Prowlarr key nor a download address', as
   })
   await resolveSource(config(), SOURCE, TERMS, { limit: 3 })
   await searchSource(config(), release('Other'), terms('Other'), { background: true })
-  assert.equal(flushUsenetSearch(), true)
-  const text = fs.readFileSync(USENET_SEARCH_FILE, 'utf8')
+  assert.equal(usenet.runtime.flush(), true)
+  const text = fs.readFileSync(usenet.paths.search, 'utf8')
   assert.ok(text.includes('"link":"first"'), 'the reference is stored without its address')
   for (const secret of [KEY, 'apikey', '/download', 'localhost', PROWLARR]) assert.ok(!text.includes(secret), secret)
-  if (process.platform !== 'win32') assert.equal(fs.statSync(USENET_SEARCH_FILE).mode & 0o777, 0o600)
+  if (process.platform !== 'win32') assert.equal(fs.statSync(usenet.paths.search).mode & 0o777, 0o600)
 })
 
 test('a changed Prowlarr connection leaves no record, no stored NZB and no running work behind', async t => {
@@ -1621,7 +1616,7 @@ test('a changed Prowlarr connection leaves no record, no stored NZB and no runni
     download: () => new Response(EXACT_NZB),
   })
   await resolveSource(config(), SOURCE, TERMS, { limit: 3 })
-  assert.equal(fs.readdirSync(NZB_STORE_DIR).length, 1)
+  assert.equal(fs.readdirSync(usenet.paths.nzbs).length, 1)
 
   // A search of the old connection is still running when the key changes.
   hanging = true
@@ -1629,7 +1624,7 @@ test('a changed Prowlarr connection leaves no record, no stored NZB and no runni
   const running = searchSource(config(), other, terms('Other'))
   await until(() => searches(fake).length === 2)
   const changed = config({ prowlarr_key: 'another-key' })
-  invalidateUsenetSearch(changed)
+  usenet.runtime.configChanged(config(), changed)
   const discarded = await running
   assert.equal(discarded.cancelled, true)
   assert.equal(discarded.availability.state, 'lookup_failed')
@@ -1637,22 +1632,32 @@ test('a changed Prowlarr connection leaves no record, no stored NZB and no runni
 
   assert.equal(record(), undefined)
   assert.equal(record(other), undefined)
-  assert.deepEqual(fs.readdirSync(NZB_STORE_DIR), [])
-  assert.equal(searchStore.usage(FINGERPRINT, 2).fetches, 0)
+  assert.deepEqual(fs.readdirSync(usenet.paths.nzbs), [])
+  assert.equal(usenet.runtime.searchStore.usage(FINGERPRINT, 2).fetches, 0)
   assert.equal(searchSnapshot(changed, SOURCE.id).availability.state, 'not_checked')
   await assert.rejects(searchNzbBytes(changed, SOURCE.id, entryOf('first')), /no longer known/)
 })
 
 test('records of sources that left the results are pruned with their NZBs', async t => {
-  setup(t, { search: indexerId => feed(indexerId, TWO_POSTS), download: () => new Response(EXACT_NZB) })
+  setup(
+    t,
+    { search: indexerId => feed(indexerId, TWO_POSTS), download: () => new Response(EXACT_NZB) },
+    {},
+    { sweep: true },
+  )
   const other = release('Other')
   await resolveSource(config(), SOURCE, TERMS, { limit: 3 })
   await searchSource(config(), other, terms('Other'))
-  assert.equal(retainSearchSources(new Set([SOURCE.id, other.id])), 0)
-  assert.equal(retainSearchSources(new Set([other.id])), 1)
+  const naming = (...sources: PrivateSource[]) =>
+    [
+      { key: 'search-show', releases: [{ kind: 'best', info_hashes: [], private_sources: sources }] },
+    ] as unknown as ResultItem[]
+  usenet.runtime.resultsChanged(config(), naming(SOURCE, other), [], 'test')
+  assert.notEqual(record(), undefined)
+  usenet.runtime.resultsChanged(config(), naming(other), [], 'test')
   assert.equal(record(), undefined)
   assert.notEqual(record(other), undefined)
-  assert.deepEqual(fs.readdirSync(NZB_STORE_DIR), [])
+  assert.deepEqual(fs.readdirSync(usenet.paths.nzbs), [])
 })
 
 // --- Scheduler ----------------------------------------------------------------------

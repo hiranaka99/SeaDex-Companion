@@ -1,71 +1,25 @@
 import { errorMessage } from '../../shared/errors.js'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import {
-  currentDownloadAssociations,
-  getDownloadSnapshot,
-  subscribeDownloads,
-  reloadDownloads,
-  controlDownload,
-} from './download-store'
+import { currentDownloadAssociations, getDownloadSnapshot, subscribeDownloads, controlDownload } from './download-store'
 import * as api from './api'
 import { releaseIdentity } from '../../shared/releases'
-import type { Release, ResultItem, GroupedCard } from './types'
+import type { ResultItem, GroupedCard } from './types'
 
-import type { DownloadEntry } from './components/DownloadsPanel'
-import { toDownloadEntry, clientName, importUnsettled } from './components/DownloadsPanel'
-import { formatBytes, seasonLabel } from './utils'
-import type { DiskSpaceCheck, DownloadProtocol, UsenetAvailabilityResult } from './api'
+import { toDownloadEntry, clientName, importUnsettled, type DownloadEntry } from './download-entry'
+import type { UsenetAvailabilityResult } from './api'
 import { availabilityKey, observeUsenetAvailability, type AvailabilitySnapshot } from './usenet-observation'
+import type { Notify } from './release-actions'
 
 export interface DetailsDownloadState {
   transfers: DownloadEntry[]
 }
 export const IDLE_DOWNLOAD: DetailsDownloadState = { transfers: [] }
 
-type Notify = (message: string, tone: 'success' | 'error' | 'info') => void
-
-/**
- * A one-click send that stopped before submission because the fit on disk is not established: a client reported
- * too little free space (`low`), or did not report free space at all (`unknown`).
- */
-export interface LowSpaceHold {
-  key: string
-  release: number
-  protocol: DownloadProtocol
-  /** An unproven NZB the user chose, sent again by "Send anyway". */
-  nzb?: string
-  reason: 'low' | 'unknown'
-  checks: DiskSpaceCheck[]
-}
-
-/** "412 GB free" when every destination reported its free space and they all agree on one figure. */
-function freeSpaceNote(checks: DiskSpaceCheck[]): string {
-  const free = [...new Set(checks.map(check => check.free_bytes))]
-  return free.length === 1 && free[0] !== null ? ` · ${formatBytes(free[0]) || '0 B'} free` : ''
-}
-
-/** Identifies one release of one season in per-release download state. */
-export const sendKey = (key: string, release: number) => `${key}\u0000${release}`
-
-/** Record controls and one-click sending for a canonical release intent. */
-export function useCardDownloads(group: GroupedCard, notify: Notify, detailsShown: () => boolean) {
+/** The card's owned downloads by season and release, and the pause, resume and remove controls for them. */
+export function useCardDownloads(group: GroupedCard, notify: Notify) {
   const snapshot = useSyncExternalStore(subscribeDownloads, getDownloadSnapshot)
   const [busyDownload, setBusyDownload] = useState<string | null>(null)
   const controlling = useRef(false)
-  const sending = useRef(false)
-  /** The release whose one-click send is running, so its button can show progress and others stay locked. */
-  const [sendingRelease, setSendingRelease] = useState<{ key: string; release: number } | null>(null)
-  const [lowSpace, setLowSpace] = useState<LowSpaceHold | null>(null)
-  /** The last failed send per release, shown in that release's row until it is retried or dismissed. */
-  const [sendErrors, setSendErrors] = useState<Record<string, string>>({})
-  const aborter = useRef<AbortController | null>(null)
-
-  useEffect(
-    () => () => {
-      aborter.current?.abort()
-    },
-    [],
-  )
 
   const dlBySeason: Record<string, Record<number, DetailsDownloadState>> = {}
   const activeDownloads: DownloadEntry[] = []
@@ -80,103 +34,6 @@ export function useCardDownloads(group: GroupedCard, notify: Notify, detailsShow
     // A finished download stays on the card until Sonarr or Radarr imported it or the person dealt with it.
     if (progress.phase !== 'complete' || !associations.length || importUnsettled(entry)) activeDownloads.push(entry)
   }
-
-  const setSendError = (key: string, index: number, message: string | null) =>
-    setSendErrors(current => {
-      const id = sendKey(key, index)
-      if (message === null) {
-        if (!(id in current)) return current
-        const { [id]: _, ...rest } = current
-        return rest
-      }
-      return { ...current, [id]: message }
-    })
-
-  /**
-   * Sends one release with one click. It pauses only when free space is not established: a client reports less free
-   * space than the release needs, or reports no free space at all. The release row then asks before sending. An
-   * estimated size with known free space, and whole Usenet sources, send without asking.
-   */
-  const handleDownload = async (
-    key: string,
-    index: number,
-    protocol: DownloadProtocol,
-    sendAnyway = false,
-    /** An unproven NZB the user chose for a private-tracker release; always sent over Usenet. */
-    nzb?: string,
-  ) => {
-    if (sending.current) return
-    const season = group.seasons.find(item => item.key === key)
-    const release: Release | undefined = season?.releases[index]
-    if (!season || !release) return
-    const identity = releaseIdentity(release)
-    const label = `${seasonLabel(season)} · ${release.releaseGroup || season.title}`
-    const controller = new AbortController()
-    aborter.current = controller
-    sending.current = true
-    setSendingRelease({ key, release: index })
-    setSendError(key, index, null)
-    setLowSpace(current => (current?.key === key && current.release === index ? null : current))
-    // A failure belongs to the release row while Details is open; a closed modal falls back to a notification.
-    const report = (message: string) => {
-      setSendError(key, index, message)
-      if (!detailsShown()) notify(`Could not send ${label}: ${message}`, 'error')
-    }
-    try {
-      const preflight = await api.preflightDownload(
-        [{ key, release: index, identity, protocol, ...(nzb ? { nzb } : {}) }],
-        true,
-        controller.signal,
-      )
-      if (controller.signal.aborted) return
-      const blocked = preflight.blocked.find(row => row.key === key && row.release === index)
-      if (blocked) throw new Error(blocked.reason)
-      if (!preflight.units.length) throw new Error('This release is already queued in the download client')
-      const low = preflight.disk_space.some(check => check.sufficient === false)
-      const unknown = preflight.disk_space.some(check => check.free_bytes === null)
-      if (!sendAnyway && (low || unknown)) {
-        setLowSpace({
-          key,
-          release: index,
-          protocol,
-          ...(nzb ? { nzb } : {}),
-          reason: low ? 'low' : 'unknown',
-          checks: preflight.disk_space,
-        })
-        return
-      }
-      const receipt = await api.submitDownload(preflight.plan_id, { whole_source: true, disk_space: true })
-      const where = clientName(receipt.client)
-      if (receipt.acceptance_unknown || receipt.failures?.some(failure => failure.code === 'acceptance_unknown')) {
-        report(`${where} was asked to start this download but did not confirm it. Check ${where} before retrying.`)
-      } else if (!receipt.ok) throw new Error(receipt.error || 'The download client rejected the submission')
-      else notify(`Sent ${label} to ${where}${freeSpaceNote(preflight.disk_space)}`, 'success')
-    } catch (error) {
-      if (controller.signal.aborted) return
-      if (
-        error instanceof api.SubmissionError &&
-        (error.detail?.acceptance_unknown ||
-          (Array.isArray(error.detail?.failures) &&
-            error.detail.failures.some(failure => failure?.code === 'acceptance_unknown')))
-      ) {
-        const where = clientName(
-          error.detail?.client === 'sabnzbd' || error.detail?.client === 'qbittorrent'
-            ? error.detail.client
-            : protocol === 'usenet'
-              ? 'sabnzbd'
-              : 'qbittorrent',
-        )
-        report(`${error.message} Check ${where} before retrying.`)
-      } else report(errorMessage(error))
-    } finally {
-      sending.current = false
-      setSendingRelease(null)
-      await reloadDownloads()
-    }
-  }
-
-  const cancelLowSpace = () => setLowSpace(null)
-  const dismissSendError = (key: string, index: number) => setSendError(key, index, null)
 
   const handleDownloadAction = async (
     entry: DownloadEntry,
@@ -205,18 +62,7 @@ export function useCardDownloads(group: GroupedCard, notify: Notify, detailsShow
     }
   }
 
-  return {
-    dlBySeason,
-    activeDownloads,
-    busyDownload,
-    sendingRelease,
-    lowSpace,
-    sendErrors,
-    handleDownload,
-    cancelLowSpace,
-    dismissSendError,
-    handleDownloadAction,
-  }
+  return { dlBySeason, activeDownloads, busyDownload, handleDownloadAction }
 }
 
 /** Last-known availability stays visible while an open season observes refresh work. */

@@ -13,10 +13,10 @@ import {
   saveConfig,
   subscribeUsenetAvailability,
   preflightDownload,
-  SubmissionError,
-  submitDownload,
+  sendDownload,
   usenetAvailability,
 } from '../frontend/src/api.js'
+import type { DownloadProtocol } from '../frontend/src/api.js'
 
 test('progress probes share a request but cannot reuse a stale request after results change', async () => {
   const original = globalThis.fetch
@@ -180,26 +180,89 @@ test('provider-backed reviews have no aggregate timeout and honor explicit cance
   }
 })
 
-test('submission failures preserve structured acceptance uncertainty and the HTTP status', async () => {
+/** Answers every request with one JSON body and status, and records what the single send posted. */
+async function sendAnswered(body: unknown, status = 200, protocol: DownloadProtocol = 'usenet') {
   const originalFetch = globalThis.fetch
-  const body = {
-    error: 'SABnzbd did not confirm acceptance',
-    client: 'sabnzbd',
-    acceptance_unknown: true,
-    record_id: 'owned-unknown',
+  const posted: unknown[] = []
+  globalThis.fetch = async (_input, init) => {
+    posted.push(JSON.parse(String(init?.body)))
+    return Response.json(body, { status })
   }
-  globalThis.fetch = async () => Response.json(body, { status: 502 })
   try {
-    await assert.rejects(submitDownload('one-shot-plan'), error => {
-      assert.ok(error instanceof SubmissionError)
-      assert.equal(error.status, 502)
-      assert.deepEqual(error.detail, body)
-      assert.equal(error.message, body.error)
-      return true
-    })
+    const outcome = await sendDownload('one-shot-plan', protocol, { whole_source: true, disk_space: true })
+    return { outcome, posted }
   } finally {
     globalThis.fetch = originalFetch
   }
+}
+
+const receipt = {
+  ok: true,
+  record_id: 'owned-1',
+  native_id: 'SABnzbd_nzo_1',
+  protocol: 'usenet',
+  client: 'sabnzbd',
+  source_hash: 'a'.repeat(40),
+  category: 'anime',
+}
+
+test('a confirmed single send is reported as sent to the client that took it', async () => {
+  const { outcome, posted } = await sendAnswered(receipt)
+  assert.deepEqual(outcome, { kind: 'sent', client: 'sabnzbd' })
+  assert.deepEqual(posted, [{ plan_id: 'one-shot-plan', acknowledge: { whole_source: true, disk_space: true } }])
+})
+
+test('a refused single send is reported as rejected with the server reason', async () => {
+  const expired = {
+    ok: false,
+    error: 'This review has expired or was already used. Re-run the review before submitting.',
+  }
+  assert.deepEqual((await sendAnswered(expired, 410)).outcome, { kind: 'rejected', reason: expired.error })
+  const failed = {
+    ...receipt,
+    ok: false,
+    error: '1 source(s) failed: Show S1: disk full',
+    failures: [{ protocol: 'usenet', label: 'Show S1', code: 'client', error: 'disk full' }],
+  }
+  assert.deepEqual((await sendAnswered(failed, 502)).outcome, { kind: 'rejected', reason: failed.error })
+  assert.deepEqual((await sendAnswered({ ...receipt, ok: false })).outcome, {
+    kind: 'rejected',
+    reason: 'The download client rejected the submission',
+  })
+})
+
+test('a single send the client never confirmed is reported as acceptance unknown, naming that client', async () => {
+  const unconfirmed = { ...receipt, ok: false, error: 'SABnzbd did not confirm acceptance', acceptance_unknown: true }
+  assert.deepEqual((await sendAnswered(unconfirmed, 502)).outcome, {
+    kind: 'acceptance_unknown',
+    client: 'sabnzbd',
+    reason: 'SABnzbd did not confirm acceptance',
+  })
+  const unsettled = {
+    ...receipt,
+    ok: false,
+    client: 'qbittorrent',
+    protocol: 'torrent',
+    error: '1 source(s) failed: Show S1: not settled',
+    failures: [{ protocol: 'torrent', label: 'Show S1', code: 'acceptance_unknown', error: 'not settled' }],
+  }
+  assert.deepEqual((await sendAnswered(unsettled, 502)).outcome, {
+    kind: 'acceptance_unknown',
+    client: 'qbittorrent',
+    reason: unsettled.error,
+  })
+  // A confirmed answer that still flags an ambiguous client reply carries no reason of its own.
+  assert.deepEqual((await sendAnswered({ ...receipt, acceptance_unknown: true })).outcome, {
+    kind: 'acceptance_unknown',
+    client: 'sabnzbd',
+  })
+  // Without a named client, the client is the one serving the protocol that was sent.
+  const anonymous = { ok: false, error: 'Not confirmed', acceptance_unknown: true }
+  assert.deepEqual((await sendAnswered(anonymous, 502, 'torrent')).outcome, {
+    kind: 'acceptance_unknown',
+    client: 'qbittorrent',
+    reason: 'Not confirmed',
+  })
 })
 
 test('bulk cancellation sends the exact reviewed records even when all were checked', async () => {

@@ -26,7 +26,8 @@ import type { UsenetFailureCode, UsenetProof } from '../shared/usenet-contracts.
 import { log } from './logging.js'
 import { NZB_STORE_DIR, USENET_SEARCH_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
-import { NZB_MAX_BYTES, safeText } from './usenet-provider-types.js'
+import { safeText } from './indexer-http.js'
+import { NZB_MAX_BYTES } from './usenet-provider-types.js'
 
 /** One Usenet indexer a source was searched on. */
 export interface SearchedIndexer {
@@ -94,6 +95,8 @@ export interface UsenetSearchStoreOptions {
   nzbBudgetBytes?: number
   /** Size on disk the NZB store never stays above, whatever was checked recently. */
   nzbHardLimitBytes?: number
+  /** The clock usage counters and stored NZBs are dated by. */
+  now?: () => number
 }
 
 export const NZB_STORE_BUDGET_BYTES = 256 * 1024 * 1024
@@ -401,6 +404,7 @@ export class UsenetSearchStore {
   private timer?: NodeJS.Timeout
   private readonly budget: number
   private readonly hardLimit: number
+  private readonly now: () => number
 
   constructor(
     private readonly file = USENET_SEARCH_FILE,
@@ -409,6 +413,7 @@ export class UsenetSearchStore {
   ) {
     this.budget = options.nzbBudgetBytes ?? NZB_STORE_BUDGET_BYTES
     this.hardLimit = Math.max(this.budget, options.nzbHardLimitBytes ?? NZB_STORE_HARD_LIMIT_BYTES)
+    this.now = options.now ?? (() => Date.now())
   }
 
   private load(): void {
@@ -431,7 +436,7 @@ export class UsenetSearchStore {
       if (record) this.stored.set(recordKey(record.fingerprint, record.source_id), record)
       else dropped.records++
     }
-    const now = Date.now()
+    const now = this.now()
     for (const value of Array.isArray(stored.usage) ? stored.usage : []) {
       if (
         !isRecord(value) ||
@@ -621,7 +626,7 @@ export class UsenetSearchStore {
       chmodSync(temporary, 0o600)
       renameSync(temporary, path)
       sizes.set(sha256, packed.length)
-      this.pending.set(sha256, Date.now())
+      this.pending.set(sha256, this.now())
     } catch (error) {
       log('ERROR', `Usenet NZB store could not save a file: ${errorMessage(error)}`)
       try {
@@ -668,7 +673,7 @@ export class UsenetSearchStore {
    * touched: an evicted candidate keeps its `check`. Runs by itself when `put` changes which NZBs a record
    * names and after both `retain` calls.
    */
-  pruneNzbs(now = Date.now()): number {
+  pruneNzbs(now = this.now()): number {
     this.load()
     const sizes = this.index()
     if (!sizes.size) return 0
@@ -732,18 +737,18 @@ export class UsenetSearchStore {
   }
 
   /** Counts one background search on an indexer. Written with the next batched write. */
-  countSearch(fingerprint: string, indexerId: number, now = Date.now()): void {
+  countSearch(fingerprint: string, indexerId: number, now = this.now()): void {
     this.count('search', fingerprint, indexerId, now)
   }
 
   /** Counts one NZB fetch on an indexer, and writes it before returning. Call it before the fetch. */
-  countFetch(fingerprint: string, indexerId: number, now = Date.now()): void {
+  countFetch(fingerprint: string, indexerId: number, now = this.now()): void {
     this.count('fetch', fingerprint, indexerId, now)
     this.flush()
   }
 
   /** Searches and fetches counted on an indexer in the last 24 hours. */
-  usage(fingerprint: string, indexerId: number, now = Date.now()): IndexerUsage {
+  usage(fingerprint: string, indexerId: number, now = this.now()): IndexerUsage {
     this.load()
     const total: IndexerUsage = { searches: 0, fetches: 0 }
     for (const [hour, bucket] of this.counters.get(usageKey(fingerprint, indexerId))?.hours ?? []) {
@@ -758,7 +763,7 @@ export class UsenetSearchStore {
    * The time at which the indexer's usage of one kind is below `limit` again: `now` when it already is,
    * otherwise the moment enough of the oldest hours have left the window. A limit of 0 means no limit.
    */
-  nextAvailableAt(fingerprint: string, indexerId: number, kind: UsageKind, limit: number, now = Date.now()): number {
+  nextAvailableAt(fingerprint: string, indexerId: number, kind: UsageKind, limit: number, now = this.now()): number {
     if (!(limit > 0)) return now
     this.load()
     const field = usageField(kind)
@@ -835,7 +840,7 @@ export class UsenetSearchStore {
     this.timer = undefined
     if (!this.dirty) return true
     try {
-      writeJsonAtomic(this.file, this.snapshot(Date.now()), false, 0o600)
+      writeJsonAtomic(this.file, this.snapshot(this.now()), false, 0o600)
       this.dirty = false
       return true
     } catch (error) {

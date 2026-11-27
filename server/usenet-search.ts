@@ -32,15 +32,10 @@ import {
 } from './prowlarr.js'
 import { gradeNzb, nzbFiles, type NzbFile, type NzbGrade, type SourceFile } from './source-files.js'
 import type { Config, PrivateSource } from './types.js'
-import { safeText } from './usenet-provider-types.js'
-import {
-  LookupGuardTimeout,
-  LookupScheduler,
-  ProviderPausedError,
-  type ChannelPause,
-  type LookupHandle,
-  type LookupPacing,
-} from './usenet-scheduler.js'
+import { safeText } from './indexer-http.js'
+import { FlightTable, LookupEpoch, LookupGuardTimeout, WarningThrottle, type Running } from './lookup-flights.js'
+import { LookupScheduler, ProviderPausedError, type ChannelPause, type LookupPacing } from './usenet-scheduler.js'
+import { usenetParts } from './usenet-runtime.js'
 import {
   RETRY_MIN_MS,
   failedAvailability,
@@ -88,27 +83,107 @@ const NZB_UNKNOWN = 'The NZB found through Prowlarr is no longer known. Re-run t
 const NZB_CHANGED = 'The NZB changed since it was checked. Re-run the review before submitting.'
 
 /**
- * Paces and prioritizes every request to a Usenet indexer in Prowlarr, one channel `prowlarr:<indexer id>`
- * per indexer. It is apart from the scheduler of the hash indexers, so a slow search never takes a slot
- * from hash lookups.
+ * What the Prowlarr finder runs on: its scheduler, store, clock and fetch, and the searches and checks under
+ * way. A Usenet runtime (`usenet-runtime.ts`) builds it, owns it and drives its lifecycle.
  */
-export let searchScheduler = prowlarrScheduler()
+export class SearchParts {
+  /**
+   * Paces and prioritizes every request to a Usenet indexer in Prowlarr, one channel `prowlarr:<indexer id>`
+   * per indexer. It is apart from the scheduler of the hash indexers, so a slow search never takes a slot
+   * from hash lookups.
+   */
+  readonly scheduler: LookupScheduler
+  /** Search records, fetched NZBs, usage counters and the sweep summary. */
+  readonly store: UsenetSearchStore
+  readonly now: () => number
+  readonly fetch: typeof fetch
+  /** Invalidated when the Prowlarr connection changes; results of older work are discarded. */
+  readonly epoch = new LookupEpoch()
+  /** The running search stage and verify stage of each source, by `sourceKey`. */
+  readonly searches = new FlightTable<SearchResult, SearchExtras>(this.epoch)
+  readonly verifies = new FlightTable<VerifyResult, VerifyExtras>(this.epoch)
+  /** Calls of `resolveSource` under way per source: between its search and its check no flight exists. */
+  readonly resolving = new Map<string, Set<ResolveCall>>()
+  readonly failures = new Map<string, LookupFailure>()
+  /** Why an indexer did not answer its latest search. A record keeps only that it did not. */
+  readonly indexerFailures = new Map<string, { code: UsenetFailureCode; message: string }>()
+  /** File lists of the sources seen by this runtime, to grade an NZB that is fetched again for a submission. */
+  readonly sourceFiles = new Map<string, SourceFile[]>()
+  /** Warnings repeat at most once a minute per subject; a sweep must not fill the log. */
+  readonly warnings = new WarningThrottle({ now: () => this.now() })
+  /** Channels paused because Prowlarr reported their indexer disabled, with the time it named. */
+  readonly disabledUntil = new Map<string, number>()
+  /** Usenet indexers as last read from Prowlarr; snapshots judge staleness by them without a request. */
+  known: { fingerprint: string; indexers: ProwlarrIndexer[] } | undefined
 
-function prowlarrScheduler(pacing: Partial<LookupPacing> = {}): LookupScheduler {
-  return new LookupScheduler({ concurrency: 3, foregroundReserved: 1, minIntervalMs: 2_000, ...pacing })
+  /** The parts with this clock, fetch, store paths and pacing over the defaults. */
+  constructor(options: {
+    now: () => number
+    fetch: typeof fetch
+    searchFile?: string
+    nzbDir?: string
+    pacing?: Partial<LookupPacing>
+  }) {
+    this.now = options.now
+    this.fetch = options.fetch
+    this.scheduler = new LookupScheduler(
+      { concurrency: 3, foregroundReserved: 1, minIntervalMs: 2_000, ...options.pacing },
+      this.now,
+    )
+    this.store = new UsenetSearchStore(options.searchFile, options.nzbDir, { now: this.now })
+  }
+
+  /**
+   * For a changed Prowlarr URL or key: running searches and checks are cancelled and what they learn is
+   * discarded, the indexers' pacing is forgotten, and the records, counters and stored NZBs of every other
+   * connection are dropped.
+   */
+  invalidate(config: Config): void {
+    this.cancelWork()
+    const removed = this.store.retainFingerprint(connectionFingerprint(config))
+    if (removed) log('INFO', `Usenet search store dropped ${removed} record(s) of another Prowlarr connection`)
+  }
+
+  /** Writes pending search records now. False when the write failed. */
+  flush(): boolean {
+    return this.store.flush()
+  }
+
+  /**
+   * Drops the records, with their stored NZBs, of sources that are not in `keep`. Pass every source the
+   * current results reference and every source an active download record names.
+   */
+  retain(keep: ReadonlySet<string>): number {
+    for (const sourceId of this.sourceFiles.keys()) if (!keep.has(sourceId)) this.sourceFiles.delete(sourceId)
+    return this.store.retainSources(keep)
+  }
+
+  /**
+   * Replaced by another runtime: running searches and checks are cancelled and what they learn is discarded,
+   * and the store writes nothing it had pending, as a process that exits.
+   */
+  discard(): void {
+    this.cancelWork()
+    this.store.reset()
+  }
+
+  private cancelWork(): void {
+    // A fetch waits for its slot on a controller of its own.
+    const queued = this.verifies.flights().map(check => check.queued)
+    this.epoch.invalidate()
+    this.failures.clear()
+    this.indexerFailures.clear()
+    this.warnings.clear()
+    this.disabledUntil.clear()
+    this.known = undefined
+    for (const wait of queued) wait?.abort()
+    // Channels are named by indexer ID, and another Prowlarr numbers other indexers the same way.
+    this.scheduler.reset()
+  }
 }
 
-/**
- * Tests: requests to Prowlarr's indexers from now on run on a fresh scheduler with this pacing over the
- * defaults, which forgets every channel's health and name. Work already queued finishes on the scheduler it
- * was given to; the next read of the indexer list names the channels again.
- */
-export function paceUsenetSearch(pacing: Partial<LookupPacing> = {}): void {
-  searchScheduler = prowlarrScheduler(pacing)
-}
-
-/** Search records, fetched NZBs, usage counters and the sweep summary, on the default paths. */
-export const searchStore = new UsenetSearchStore()
+/** The finder's parts of the runtime in use. */
+const parts = (): SearchParts => usenetParts().search
 
 /** What a search is built from; a `PrivateSearchContext` fits. */
 export type UsenetSearchContext = SearchTerms
@@ -165,19 +240,13 @@ interface VerifyResult {
   unconfigured?: string
 }
 
-interface SearchFlight {
-  promise: Promise<SearchResult>
-  controller: AbortController
-  /** Requests waiting for or holding a slot, so a caller that starts waiting can promote them. */
-  jobs: Set<LookupHandle<unknown>>
-  background: boolean
+interface SearchExtras {
   /** Only callers whose check may be cancelled wait for this search, so cancelling them cancels it. */
   loose: boolean
 }
+type SearchFlight = Running<SearchResult, SearchExtras>
 
-interface VerifyFlight {
-  promise: Promise<VerifyResult>
-  controller: AbortController
+interface VerifyExtras {
   limit: number
   /** Only callers whose check may be cancelled wait for this walk. */
   loose: boolean
@@ -186,6 +255,7 @@ interface VerifyFlight {
   /** The check was cancelled: the fetch under way is finished and stored, and none follows. */
   withdrawn?: true
 }
+type VerifyFlight = Running<VerifyResult, VerifyExtras>
 
 /** One call of `resolveSource`. */
 interface ResolveCall {
@@ -225,23 +295,6 @@ const ANSWERED = { kind: 'answered' }
 /** A background search the daily limit refused once it had its slot: nothing was asked. */
 const REFUSED: unique symbol = Symbol('refused')
 
-const searches = new Map<string, SearchFlight>()
-const verifies = new Map<string, VerifyFlight>()
-/** Calls of `resolveSource` under way per source: between its search and its check no flight exists. */
-const resolving = new Map<string, Set<ResolveCall>>()
-const failures = new Map<string, LookupFailure>()
-/** Why an indexer did not answer its latest search. A record keeps only that it did not. */
-const indexerFailures = new Map<string, { code: UsenetFailureCode; message: string }>()
-/** File lists of the sources seen by this process, to grade an NZB that is fetched again for a submission. */
-const sourceFiles = new Map<string, SourceFile[]>()
-const lastLogged = new Map<string, number>()
-/** Channels paused because Prowlarr reported their indexer disabled, with the time it named. */
-const disabledUntil = new Map<string, number>()
-/** Usenet indexers as last read from Prowlarr; snapshots judge staleness by them without a request. */
-let known: { fingerprint: string; indexers: ProwlarrIndexer[] } | undefined
-/** Bumped when the Prowlarr connection changes; results of older work are discarded. */
-let epoch = 0
-
 const sourceKey = (fingerprint: string, sourceId: string) => `${fingerprint}\u0000${sourceId}`
 const indexerKey = (fingerprint: string, indexerId: number) => `${fingerprint}\u0000${indexerId}`
 const channelOf = (indexerId: number) => `prowlarr:${indexerId}`
@@ -280,27 +333,19 @@ const failedOutcome = (failure: ProwlarrError) => ({
 
 /** When an indexer that just failed may be asked again: after its pause and its `Retry-After`, at least a minute on. */
 function retryTime(channel: string, failure: ProwlarrError, now: number): number {
-  const asked = Math.max(now + RETRY_MIN_MS, now + (failure.retryAfterMs ?? 0), searchScheduler.pausedUntil(channel))
+  const asked = Math.max(now + RETRY_MIN_MS, now + (failure.retryAfterMs ?? 0), parts().scheduler.pausedUntil(channel))
   // A stored time is a whole number of milliseconds.
   return Math.ceil(asked)
 }
 
-/** Warnings repeat at most once a minute per subject; a sweep must not fill the log. */
-function warnOnce(subject: string, message: string): void {
-  const now = Date.now()
-  if (now - (lastLogged.get(subject) ?? 0) < MINUTE) return
-  lastLogged.set(subject, now)
-  log('WARNING', message)
-}
-
 function rememberFailure(key: string, failure: ProwlarrError): void {
-  const now = Date.now()
-  failures.set(key, {
+  const now = parts().now()
+  parts().failures.set(key, {
     code: failure.code,
     message: failure.message,
     retryAt: now + Math.max(RETRY_MIN_MS, failure.retryAfterMs ?? 0),
   })
-  warnOnce('prowlarr', `Prowlarr NZB lookup failed: ${failure.message}`)
+  parts().warnings.warn('prowlarr', `Prowlarr NZB lookup failed: ${failure.message}`)
 }
 
 /**
@@ -309,18 +354,19 @@ function rememberFailure(key: string, failure: ProwlarrError): void {
  * own requests have extended it since.
  */
 function noteIndexers(fingerprint: string, indexers: ProwlarrIndexer[]): void {
-  known = { fingerprint, indexers }
-  const now = Date.now()
+  parts().known = { fingerprint, indexers }
+  const now = parts().now()
   for (const indexer of indexers) {
     const channel = channelOf(indexer.id)
-    searchScheduler.describe(channel, { label: indexerName(indexer) })
+    parts().scheduler.describe(channel, { label: indexerName(indexer) })
     const until = indexer.disabledTill ?? 0
     if (until > now) {
-      searchScheduler.pause(channel, until, 'server')
-      disabledUntil.set(channel, until)
-    } else if (disabledUntil.has(channel)) {
-      if (searchScheduler.pausedUntil(channel) === disabledUntil.get(channel)) searchScheduler.resume(channel)
-      disabledUntil.delete(channel)
+      parts().scheduler.pause(channel, until, 'server')
+      parts().disabledUntil.set(channel, until)
+    } else if (parts().disabledUntil.has(channel)) {
+      if (parts().scheduler.pausedUntil(channel) === parts().disabledUntil.get(channel))
+        parts().scheduler.resume(channel)
+      parts().disabledUntil.delete(channel)
     }
   }
 }
@@ -329,10 +375,10 @@ function noteIndexers(fingerprint: string, indexers: ProwlarrIndexer[]): void {
 async function usenetIndexers(
   settings: ProwlarrSettings,
   fingerprint: string,
-  started: number,
+  current: () => boolean,
 ): Promise<ProwlarrIndexer[]> {
   const indexers = (await prowlarrIndexers(settings)).filter(indexer => indexer.protocol === 'usenet')
-  if (started === epoch) noteIndexers(fingerprint, indexers)
+  if (current()) noteIndexers(fingerprint, indexers)
   return indexers
 }
 
@@ -352,11 +398,11 @@ function fetchBlock(
   now: number,
 ): string | undefined {
   const channel = channelOf(indexerId)
-  if (searchScheduler.isPaused(channel, now))
-    return searchScheduler.pausedFailure(channel, searchScheduler.pausedUntil(channel)).message
+  if (parts().scheduler.isPaused(channel, now))
+    return parts().scheduler.pausedFailure(channel, parts().scheduler.pausedUntil(channel)).message
   const limit = config.prowlarr_fetch_limit
-  if (!(limit > 0) || searchStore.usage(fingerprint, indexerId, now).fetches < limit) return undefined
-  const next = new Date(searchStore.nextAvailableAt(fingerprint, indexerId, 'fetch', limit, now))
+  if (!(limit > 0) || parts().store.usage(fingerprint, indexerId, now).fetches < limit) return undefined
+  const next = new Date(parts().store.nextAvailableAt(fingerprint, indexerId, 'fetch', limit, now))
   return `Daily NZB check limit reached for ${name}. Next check at ${formatDateTime(next, config.datetime_format)}.`
 }
 
@@ -372,12 +418,18 @@ function verifyBlock(config: Config, fingerprint: string, record: SearchRecord, 
   return reason
 }
 
+/** The Usenet indexers last read from this connection, if any. */
+function knownIndexers(fingerprint: string): ProwlarrIndexer[] | undefined {
+  const known = parts().known
+  return known?.fingerprint === fingerprint ? known.indexers : undefined
+}
+
 function snapshotOf(config: Config, fingerprint: string, sourceId: string, now: number): UsenetSearchSnapshot {
   const key = sourceKey(fingerprint, sourceId)
-  const record = searchStore.get(fingerprint, sourceId)
-  const derived = searchRecordState(record, now, known?.fingerprint === fingerprint ? known.indexers : undefined)
-  const failure = failures.get(key)
-  const running = resolving.has(key) || searches.has(key) || verifies.has(key)
+  const record = parts().store.get(fingerprint, sourceId)
+  const derived = searchRecordState(record, now, knownIndexers(fingerprint))
+  const failure = parts().failures.get(key)
+  const running = parts().resolving.has(key) || parts().searches.has(key) || parts().verifies.has(key)
   if (!record || derived.state === 'not_checked') {
     // Prowlarr itself could not be asked: that is all that is known about the source.
     if (failure)
@@ -391,7 +443,7 @@ function snapshotOf(config: Config, fingerprint: string, sourceId: string, now: 
     return { availability, checkedAt: 0, stale: true, running }
   }
   const waiting = derived.state === 'unverified' ? verifyBlock(config, fingerprint, record, now) : undefined
-  const silent = derived.failed && indexerFailures.get(indexerKey(fingerprint, derived.failed.indexer_id))
+  const silent = derived.failed && parts().indexerFailures.get(indexerKey(fingerprint, derived.failed.indexer_id))
   const availability = recordAvailability(record, derived, now, {
     ...(waiting ? { waiting } : {}),
     ...(silent ? { silent } : {}),
@@ -439,8 +491,8 @@ function outcomeOf(
   const key = sourceKey(fingerprint, sourceId)
   // The caller's own `resolveSource` is still counted, and is no reason to poll.
   return {
-    ...snapshotOf(config, fingerprint, sourceId, Date.now()),
-    running: searches.has(key) || verifies.has(key),
+    ...snapshotOf(config, fingerprint, sourceId, parts().now()),
+    running: parts().searches.has(key) || parts().verifies.has(key),
     ...done,
   }
 }
@@ -472,8 +524,8 @@ function storeSearch(
   runs: IndexerRun[],
   found: Map<string, StoredCandidate>,
 ): void {
-  const at = Date.now()
-  const current = searchStore.get(fingerprint, sourceId)
+  const at = parts().now()
+  const current = parts().store.get(fingerprint, sourceId)
   const enabled = new Set(indexers.map(indexer => indexer.id))
   const merged = new Map<string, StoredCandidate>()
   // An indexer that left Prowlarr can no longer be fetched from; what was learned from it stays.
@@ -518,7 +570,7 @@ function storeSearch(
   const full = runs.length === indexers.length
   const absent = !candidates.length && listed.length === indexers.length && listed.every(entry => entry.answered)
   const streak = current && !current.candidates.length ? (current.negative_streak ?? 0) : 0
-  searchStore.put({
+  parts().store.put({
     source_id: sourceId,
     fingerprint,
     // Only a search of every indexer renews the result; a retry of one indexer adds to it.
@@ -534,12 +586,11 @@ function storeSearch(
 async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<SearchResult> {
   const { config, settings, fingerprint, source, terms, refresh } = request
   const key = sourceKey(fingerprint, source.id)
-  const started = epoch
-  const { signal } = flight.controller
-  const cancelled = () => started !== epoch || signal.aborted
+  const { signal } = flight
+  const cancelled = () => !flight.current
   let indexers: ProwlarrIndexer[]
   try {
-    indexers = await usenetIndexers(settings, fingerprint, started)
+    indexers = await usenetIndexers(settings, fingerprint, parts().epoch.stamp())
   } catch (error) {
     if (cancelled()) return SEARCH_CANCELLED
     rememberFailure(key, requestFailure(error, 'search', 'prowlarr'))
@@ -548,8 +599,8 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
   if (cancelled()) return SEARCH_CANCELLED
   if (!indexers.length) return { ...NOTHING, complete: true, unconfigured: NO_USENET_INDEXER }
 
-  const startedAt = Date.now()
-  const before = searchStore.get(fingerprint, source.id)
+  const startedAt = parts().now()
+  const before = parts().store.get(fingerprint, source.id)
   const due =
     refresh || !before ? indexers.map(indexer => indexer.id) : searchRecordState(before, startedAt, indexers).ask
   const runs = indexers
@@ -576,22 +627,22 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
     run.active = false
     run.answered = false
     run.retryAt = Math.max(run.retryAt, retryAt)
-    indexerFailures.set(indexerKey(fingerprint, run.indexer.id), { code, message })
+    parts().indexerFailures.set(indexerKey(fingerprint, run.indexer.id), { code, message })
   }
   /** Whether the daily limit keeps a background search from this indexer; the indexer is then left out. */
   const refused = (run: IndexerRun): boolean => {
     const limit = searchLimit(config, run.indexer)
-    if (!limit || searchStore.usage(fingerprint, run.indexer.id).searches < limit) return false
+    if (!limit || parts().store.usage(fingerprint, run.indexer.id).searches < limit) return false
     run.active = false
     run.answered = false
     run.deferred = true
-    const next = searchStore.nextAvailableAt(fingerprint, run.indexer.id, 'search', limit)
+    const next = parts().store.nextAvailableAt(fingerprint, run.indexer.id, 'search', limit)
     deferredUntil = deferredUntil ? Math.min(deferredUntil, next) : next
     return true
   }
   const ask = async (run: IndexerRun, query: SearchQuery): Promise<void> => {
     if (flight.background && refused(run)) return
-    const job = searchScheduler.schedule({
+    const job = parts().scheduler.schedule({
       channel: run.channel,
       background: flight.background,
       signal,
@@ -601,10 +652,10 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
         // same budget. A search someone waits for is paced only, also when it started in the background.
         if (flight.background) {
           if (refused(run)) return REFUSED
-          searchStore.countSearch(fingerprint, run.indexer.id)
+          parts().store.countSearch(fingerprint, run.indexer.id)
         }
         run.queries++
-        return searchIndexer({ ...settings, signal }, run.indexer, query)
+        return searchIndexer({ ...settings, signal }, run.indexer, query, parts().fetch)
       },
       outcome: settled => {
         if (settled.ok) return settled.value === REFUSED ? undefined : ANSWERED
@@ -613,13 +664,12 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
         return failure.scope === 'prowlarr' ? undefined : failedOutcome(failure)
       },
     })
-    flight.jobs.add(job)
     let results: ProwlarrSearchResult[] | typeof REFUSED
     try {
-      results = await job.result
+      results = await flight.wait(job)
     } catch (error) {
       if (error instanceof ProviderPausedError) {
-        const rateLimited = searchScheduler.pausedFailure(run.channel, error.until).code === 'rate_limited'
+        const rateLimited = parts().scheduler.pausedFailure(run.channel, error.until).code === 'rate_limited'
         fail(
           run,
           error.until,
@@ -635,12 +685,10 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
       // Prowlarr refusing its key fails everything; anything else is this indexer's failure only.
       if (failure.scope === 'prowlarr') fatal ??= failure
       else {
-        fail(run, retryTime(run.channel, failure, Date.now()), failure.code, failure.message)
-        warnOnce(run.channel, `Prowlarr search of ${run.name} failed: ${failure.message}`)
+        fail(run, retryTime(run.channel, failure, parts().now()), failure.code, failure.message)
+        parts().warnings.warn(run.channel, `Prowlarr search of ${run.name} failed: ${failure.message}`)
       }
       return
-    } finally {
-      flight.jobs.delete(job)
     }
     if (results === REFUSED) return
     for (const result of results) {
@@ -674,11 +722,11 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
     rememberFailure(key, fatal)
     return { complete: true, deferred: false, queries }
   }
-  for (const run of runs) if (run.answered) indexerFailures.delete(indexerKey(fingerprint, run.indexer.id))
+  for (const run of runs) if (run.answered) parts().indexerFailures.delete(indexerKey(fingerprint, run.indexer.id))
   const deferred = runs.some(run => run.deferred)
   // Indexers the limit left out are neither listed as answered nor as failed: the record stays stale for them.
   if (runs.some(run => !run.deferred)) storeSearch(fingerprint, source.id, facts, indexers, runs, found)
-  failures.delete(key)
+  parts().failures.delete(key)
   return {
     complete: runs.length === indexers.length && !deferred,
     deferred,
@@ -693,38 +741,23 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
  */
 function sharedSearch(request: SearchRequest, background: boolean, loose: boolean): Promise<SearchResult> {
   const key = sourceKey(request.fingerprint, request.source.id)
-  const running = searches.get(key)
+  const running = parts().searches.join(key, background)
   if (running) {
     if (!loose) running.loose = false
-    if (!background && running.background) {
-      running.background = false
-      for (const job of running.jobs) job.promote()
-    }
     // "Search again" asks every indexer; a running search that asked only some is followed by one that does.
     return request.refresh
       ? running.promise.then(result => (result.complete ? result : sharedSearch(request, background, loose)))
       : running.promise
   }
   // Prowlarr itself failed a moment ago: it is not asked again before its retry time unless told to.
-  const failure = failures.get(key)
-  if (!request.refresh && failure && Date.now() < failure.retryAt) return Promise.resolve(NOTHING)
-  const flight: SearchFlight = {
-    controller: new AbortController(),
-    jobs: new Set(),
-    background,
-    loose,
-    promise: Promise.resolve()
-      .then(() => runSearch(flight, request))
-      .catch((error): SearchResult => {
-        rememberFailure(key, requestFailure(error, 'search', 'prowlarr'))
-        return { ...NOTHING, complete: true }
-      })
-      .finally(() => {
-        if (searches.get(key) === flight) searches.delete(key)
-      }),
-  }
-  searches.set(key, flight)
-  return flight.promise
+  const failure = parts().failures.get(key)
+  if (!request.refresh && failure && parts().now() < failure.retryAt) return Promise.resolve(NOTHING)
+  return parts().searches.start(key, { background, loose }, flight =>
+    runSearch(flight, request).catch((error): SearchResult => {
+      rememberFailure(key, requestFailure(error, 'search', 'prowlarr'))
+      return { ...NOTHING, complete: true }
+    }),
+  ).promise
 }
 
 /**
@@ -753,7 +786,7 @@ export async function searchSource(
   const settings = connectionFor(config, source.id)
   if (!settings) return outcomeOf(config, '', source.id, { unconfigured: NOT_SET_UP })
   const fingerprint = prowlarrFingerprint(settings)
-  sourceFiles.set(source.id, source.files)
+  parts().sourceFiles.set(source.id, source.files)
   const request: SearchRequest = { config, settings, fingerprint, source, terms: context, refresh }
   return outcomeOf(config, fingerprint, source.id, await sharedSearch(request, background, cancellable))
 }
@@ -773,12 +806,12 @@ function checkOf(grade: NzbGrade, at: number, sha256: string): StoredCheck {
 
 /** Writes a candidate's check before anything else happens, so a fetch is never spent twice after a crash. */
 function saveCheck(fingerprint: string, sourceId: string, entryId: string, check: StoredCheck | undefined): void {
-  const record = searchStore.get(fingerprint, sourceId)
+  const record = parts().store.get(fingerprint, sourceId)
   const candidate = record?.candidates.find(entry => entry.entry_id === entryId)
   if (!record || !candidate) return
   if (check) candidate.check = check
   else delete candidate.check
-  searchStore.put(record, { durable: true })
+  parts().store.put(record, { durable: true })
 }
 
 /** Calibration: the ratios of exact matches say what a correct post looks like on this installation's indexers. */
@@ -794,7 +827,7 @@ type FetchResult =
 /**
  * One NZB through Prowlarr, on the indexer's channel and counted against the daily limit before it is asked
  * for. Aborting `queued` gives up the wait for the slot (`withdrawn`); once the request is sent only
- * `controller` stops it.
+ * `signal` stops it.
  */
 async function fetchNzb(
   config: Config,
@@ -802,30 +835,29 @@ async function fetchNzb(
   fingerprint: string,
   candidate: StoredCandidate,
   indexer: string,
-  controller: AbortController,
-  queued: AbortController = controller,
+  signal: AbortSignal,
+  queued: AbortSignal = signal,
 ): Promise<FetchResult | { kind: 'failed'; failure: ProwlarrError } | { kind: 'cancelled' }> {
   const channel = channelOf(candidate.indexer_id)
-  const { signal } = controller
   /** The fetch had its slot: from then on aborting `queued` no longer withdraws it. */
   let started = false
   try {
-    return await searchScheduler.schedule<FetchResult>({
+    return await parts().scheduler.schedule<FetchResult>({
       channel,
       signal,
-      waitSignal: queued.signal,
+      waitSignal: queued,
       guardMs: FETCH_GUARD_MS,
       work: async () => {
         started = true
         // Given up between getting the slot and using it: nothing was asked for yet.
-        if (queued.signal.aborted) return { kind: 'withdrawn' }
+        if (queued.aborted) return { kind: 'withdrawn' }
         // Read with the slot in hand: checks of other sources spend the same daily limit.
-        const block = fetchBlock(config, fingerprint, candidate.indexer_id, indexer, Date.now())
+        const block = fetchBlock(config, fingerprint, candidate.indexer_id, indexer, parts().now())
         if (block) return { kind: 'blocked', reason: block }
-        searchStore.countFetch(fingerprint, candidate.indexer_id)
+        parts().store.countFetch(fingerprint, candidate.indexer_id)
         const path = downloadPathFromRef(settings, { indexer_id: candidate.indexer_id, ...candidate.download })
         // Arrives decompressed and validated: anything but an NZB already failed as the indexer's.
-        const nzb = await prowlarrGrabNzb({ ...settings, signal }, { download_path: path })
+        const nzb = await prowlarrGrabNzb({ ...settings, signal }, { download_path: path }, parts().fetch)
         return { kind: 'fetched', nzb, files: nzbFiles(nzb) }
       },
       outcome: settled => {
@@ -838,9 +870,9 @@ async function fetchNzb(
   } catch (error) {
     if (signal.aborted) return { kind: 'cancelled' }
     if (started) return { kind: 'failed', failure: requestFailure(error, 'NZB download') }
-    if (queued.signal.aborted) return { kind: 'withdrawn' }
-    const until = error instanceof ProviderPausedError ? error.until : searchScheduler.pausedUntil(channel)
-    return { kind: 'blocked', reason: searchScheduler.pausedFailure(channel, until).message }
+    if (queued.aborted) return { kind: 'withdrawn' }
+    const until = error instanceof ProviderPausedError ? error.until : parts().scheduler.pausedUntil(channel)
+    return { kind: 'blocked', reason: parts().scheduler.pausedFailure(channel, until).message }
   }
 }
 
@@ -852,11 +884,10 @@ async function runVerify(
   source: PrivateSource,
 ): Promise<VerifyResult> {
   const key = sourceKey(fingerprint, source.id)
-  const started = epoch
-  const cancelled = () => started !== epoch || flight.controller.signal.aborted
+  const cancelled = () => !flight.current
   let indexers: ProwlarrIndexer[]
   try {
-    indexers = await usenetIndexers(settings, fingerprint, started)
+    indexers = await usenetIndexers(settings, fingerprint, parts().epoch.stamp())
   } catch (error) {
     if (cancelled()) return VERIFY_CANCELLED
     rememberFailure(key, requestFailure(error, 'NZB check', 'prowlarr'))
@@ -872,8 +903,8 @@ async function runVerify(
   let fetched = 0
   let reason: string | undefined
   while (fetched < flight.limit && !flight.withdrawn) {
-    const now = Date.now()
-    const record = searchStore.get(fingerprint, source.id)
+    const now = parts().now()
+    const record = parts().store.get(fingerprint, source.id)
     if (!record || searchRecordState(record, now).state === 'available') break
     // The record is ranked best first. A candidate of an indexer that left Prowlarr cannot be fetched.
     const candidate = record.candidates.find(
@@ -889,7 +920,7 @@ async function runVerify(
     const block = fetchBlock(config, fingerprint, candidate.indexer_id, indexer, now)
     flight.queued = block ? undefined : new AbortController()
     const step = flight.queued
-      ? await fetchNzb(config, settings, fingerprint, candidate, indexer, flight.controller, flight.queued)
+      ? await fetchNzb(config, settings, fingerprint, candidate, indexer, flight.signal, flight.queued.signal)
       : ({ kind: 'blocked', reason: block! } as const)
     flight.queued = undefined
     if (step.kind === 'cancelled' || cancelled()) return VERIFY_CANCELLED
@@ -902,13 +933,13 @@ async function runVerify(
       continue
     }
     fetched++
-    const at = Date.now()
+    const at = parts().now()
     if (step.kind === 'fetched') {
       const grade = gradeNzb(step.files, source.files)
-      const sha256 = searchStore.storeNzb(step.nzb)
+      const sha256 = parts().store.storeNzb(step.nzb)
       saveCheck(fingerprint, source.id, candidate.entry_id, checkOf(grade, at, sha256))
       logGrade(indexer, grade)
-      failures.delete(key)
+      parts().failures.delete(key)
       continue
     }
     const { failure } = step
@@ -933,7 +964,10 @@ async function runVerify(
     if (unreadable) continue
     // The indexer refused or could not answer: nothing more is fetched from it, and nothing is concluded.
     stopped.add(candidate.indexer_id)
-    warnOnce(`fetch:${candidate.indexer_id}`, `Prowlarr NZB fetch from ${indexer} failed: ${failure.message}`)
+    parts().warnings.warn(
+      `fetch:${candidate.indexer_id}`,
+      `Prowlarr NZB fetch from ${indexer} failed: ${failure.message}`,
+    )
   }
   return { fetched, ...(!fetched && reason ? { reason } : {}) }
 }
@@ -952,7 +986,7 @@ function sharedVerify(
   loose: boolean,
 ): Promise<VerifyResult> {
   const key = sourceKey(fingerprint, source.id)
-  const running = verifies.get(key)
+  const running = parts().verifies.get(key)
   if (running) {
     if (!loose) running.loose = false
     // A cancelled walk ends after the fetch it is in, so whoever comes now may have to go on after it.
@@ -963,22 +997,13 @@ function sharedVerify(
       return { ...rest, fetched: first.fetched + rest.fetched }
     })
   }
-  const flight: VerifyFlight = {
-    controller: new AbortController(),
-    limit,
-    loose,
-    promise: Promise.resolve()
-      .then(() => runVerify(flight, config, settings, fingerprint, source))
-      .catch((error): VerifyResult => {
-        rememberFailure(key, requestFailure(error, 'NZB check', 'prowlarr'))
-        return { fetched: 0 }
-      })
-      .finally(() => {
-        if (verifies.get(key) === flight) verifies.delete(key)
-      }),
-  }
-  verifies.set(key, flight)
-  return flight.promise
+  // Fetches are made for someone waiting, so a check is never background work.
+  return parts().verifies.start(key, { background: false, limit, loose }, flight =>
+    runVerify(flight, config, settings, fingerprint, source).catch((error): VerifyResult => {
+      rememberFailure(key, requestFailure(error, 'NZB check', 'prowlarr'))
+      return { fetched: 0 }
+    }),
+  ).promise
 }
 
 /**
@@ -1004,7 +1029,7 @@ export async function verifySource(
   const settings = connectionFor(config, source.id)
   if (!settings) return outcomeOf(config, '', source.id, { unconfigured: NOT_SET_UP })
   const fingerprint = prowlarrFingerprint(settings)
-  sourceFiles.set(source.id, source.files)
+  parts().sourceFiles.set(source.id, source.files)
   if (!(limit > 0)) return outcomeOf(config, fingerprint, source.id, {})
   const verified = await sharedVerify(config, settings, fingerprint, source, limit, cancellable)
   return outcomeOf(config, fingerprint, source.id, verified)
@@ -1037,14 +1062,14 @@ export async function resolveSource(
   if (!settings) return outcomeOf(config, '', source.id, { unconfigured: NOT_SET_UP })
   const key = sourceKey(prowlarrFingerprint(settings), source.id)
   const call: ResolveCall = { cancellable, withdrawn: false }
-  const calls = resolving.get(key) ?? new Set<ResolveCall>()
-  resolving.set(key, calls.add(call))
+  const calls = parts().resolving.get(key) ?? new Set<ResolveCall>()
+  parts().resolving.set(key, calls.add(call))
   try {
     const searched = await searchSource(config, source, context, { background, refresh, cancellable })
     const { state } = searched.availability
     const unproven = state === 'unverified' || (refresh && (state === 'no_match' || state === 'lookup_failed'))
     // Prowlarr failing a moment ago would fail the fetch as well.
-    const failing = Date.now() < (failures.get(key)?.retryAt ?? 0)
+    const failing = parts().now() < (parts().failures.get(key)?.retryAt ?? 0)
     const done = background || !(limit > 0) || searched.cancelled || call.withdrawn || !unproven || failing
     if (done) return searched
     const verified = await verifySource(config, source, { limit, cancellable })
@@ -1056,7 +1081,7 @@ export async function resolveSource(
     }
   } finally {
     calls.delete(call)
-    if (!calls.size) resolving.delete(key)
+    if (!calls.size) parts().resolving.delete(key)
   }
 }
 
@@ -1074,14 +1099,10 @@ export function cancelSourceCheck(config: Config, sourceId: string): void {
   const settings = connectionFor(config, sourceId)
   if (!settings) return
   const key = sourceKey(prowlarrFingerprint(settings), sourceId)
-  for (const call of resolving.get(key) ?? []) if (call.cancellable) call.withdrawn = true
-  const search = searches.get(key)
-  if (search?.loose) {
-    // Whoever asks next starts a search of their own.
-    searches.delete(key)
-    search.controller.abort()
-  }
-  const check = verifies.get(key)
+  for (const call of parts().resolving.get(key) ?? []) if (call.cancellable) call.withdrawn = true
+  // Whoever asks next starts a search of their own.
+  if (parts().searches.get(key)?.loose) parts().searches.cancel(key)
+  const check = parts().verifies.get(key)
   if (check?.loose) {
     check.withdrawn = true
     check.queued?.abort()
@@ -1096,12 +1117,12 @@ export function searchSnapshot(config: Config, sourceId: string): UsenetSearchSn
   const settings = connectionFor(config, sourceId)
   if (!settings)
     return { availability: notConfigured(sourceId, NOT_SET_UP), checkedAt: 0, stale: false, running: false }
-  return snapshotOf(config, prowlarrFingerprint(settings), sourceId, Date.now())
+  return snapshotOf(config, prowlarrFingerprint(settings), sourceId, parts().now())
 }
 
 /** A stored candidate an NZB may be sent for: fetched, graded and not rejected. */
 function sendable(fingerprint: string, sourceId: string, entryId: string): StoredCandidate | undefined {
-  const candidates = searchStore.get(fingerprint, sourceId)?.candidates
+  const candidates = parts().store.get(fingerprint, sourceId)?.candidates
   const candidate = candidates?.find(entry => entry.entry_id === entryId)
   return candidate && !candidate.rejected && candidate.check && !candidate.check.unavailable ? candidate : undefined
 }
@@ -1132,7 +1153,7 @@ export async function searchNzbBytes(
   config: Config,
   sourceId: string,
   entryId: string,
-  files: SourceFile[] | undefined = sourceFiles.get(sourceId),
+  files: SourceFile[] | undefined = parts().sourceFiles.get(sourceId),
 ): Promise<Uint8Array> {
   const settings = prowlarrSettings(config)
   if (!settings) throw new Error('Prowlarr is no longer configured.')
@@ -1140,24 +1161,24 @@ export async function searchNzbBytes(
   const candidate = sendable(fingerprint, sourceId, entryId)
   const check = candidate?.check
   if (!candidate || !check) throw new Error(NZB_UNKNOWN)
-  const stored = check.nzb_sha256 ? searchStore.readNzb(check.nzb_sha256) : null
+  const stored = check.nzb_sha256 ? parts().store.readNzb(check.nzb_sha256) : null
   if (stored) return stored
 
-  const started = epoch
-  const step = await fetchNzb(config, settings, fingerprint, candidate, candidate.indexer, new AbortController())
+  const current = parts().epoch.stamp()
+  const step = await fetchNzb(config, settings, fingerprint, candidate, candidate.indexer, new AbortController().signal)
   if (step.kind === 'blocked') throw new Error(`The checked NZB has to be fetched again first. ${step.reason}`)
   if (step.kind === 'failed')
     throw new Error(`The checked NZB could not be fetched again (${step.failure.message}). Re-run the review.`)
-  if (step.kind !== 'fetched' || started !== epoch) throw new Error(NZB_UNKNOWN)
+  if (step.kind !== 'fetched' || !current()) throw new Error(NZB_UNKNOWN)
   const sha256 = createHash('sha256').update(step.nzb).digest('hex')
   if (sha256 === check.nzb_sha256) {
-    searchStore.storeNzb(step.nzb)
+    parts().store.storeNzb(step.nzb)
     return step.nzb
   }
   // Another file under the same entry: it is sent only when it proves as much as the one that was checked.
   const grade = files?.length ? gradeNzb(step.files, files) : undefined
   if (grade) {
-    saveCheck(fingerprint, sourceId, entryId, checkOf(grade, Date.now(), searchStore.storeNzb(step.nzb)))
+    saveCheck(fingerprint, sourceId, entryId, checkOf(grade, parts().now(), parts().store.storeNzb(step.nzb)))
     logGrade(candidate.indexer, grade)
     if (grade.proof === check.proof) return step.nzb
   } else saveCheck(fingerprint, sourceId, entryId, undefined)
@@ -1171,12 +1192,12 @@ export async function searchNzbBytes(
  */
 export function rejectSearchCandidate(config: Config, sourceId: string, entryId: string): boolean {
   const fingerprint = connectionFingerprint(config)
-  const record = fingerprint ? searchStore.get(fingerprint, sourceId) : undefined
+  const record = fingerprint ? parts().store.get(fingerprint, sourceId) : undefined
   const candidate = record?.candidates.find(entry => entry.entry_id === entryId)
   if (!record || !candidate) return false
   if (!candidate.rejected) {
-    candidate.rejected = { at: Date.now(), reason: 'import_mismatch' }
-    searchStore.put(record, { durable: true })
+    candidate.rejected = { at: parts().now(), reason: 'import_mismatch' }
+    parts().store.put(record, { durable: true })
   }
   return true
 }
@@ -1191,18 +1212,18 @@ export function prowlarrIndexerUsage(config: Config): ProwlarrIndexerUsage[] {
   const fingerprint = prowlarrFingerprint(settings)
   const listed = knownProwlarrIndexers(settings)?.filter(indexer => indexer.protocol === 'usenet')
   if (listed) noteIndexers(fingerprint, listed)
-  const now = Date.now()
+  const now = parts().now()
   const limit = config.prowlarr_fetch_limit
-  return (listed ?? (known?.fingerprint === fingerprint ? known.indexers : [])).map(indexer => {
-    const left = limit > 0 ? Math.max(0, limit - searchStore.usage(fingerprint, indexer.id, now).fetches) : null
-    const paused = searchScheduler.pausedUntil(channelOf(indexer.id)) - now
+  return (listed ?? knownIndexers(fingerprint) ?? []).map(indexer => {
+    const left = limit > 0 ? Math.max(0, limit - parts().store.usage(fingerprint, indexer.id, now).fetches) : null
+    const paused = parts().scheduler.pausedUntil(channelOf(indexer.id)) - now
     return {
       indexer: indexerName(indexer),
       fetches_left: left,
       ...(left === 0
         ? {
             next_fetch_seconds: seconds(
-              searchStore.nextAvailableAt(fingerprint, indexer.id, 'fetch', limit, now) - now,
+              parts().store.nextAvailableAt(fingerprint, indexer.id, 'fetch', limit, now) - now,
             ),
           }
         : {}),
@@ -1219,68 +1240,18 @@ export function backgroundSearchesSpent(
   config: Config,
   sourceId: string,
   indexers: ProwlarrIndexer[],
-  now = Date.now(),
+  now = parts().now(),
 ): boolean {
   const settings = connectionFor(config, sourceId)
   if (!settings || !indexers.length) return false
   const fingerprint = prowlarrFingerprint(settings)
   return indexers.every(indexer => {
     const limit = searchLimit(config, indexer)
-    return limit > 0 && searchStore.usage(fingerprint, indexer.id, now).searches >= limit
+    return limit > 0 && parts().store.usage(fingerprint, indexer.id, now).searches >= limit
   })
 }
 
 /** Active pauses of Usenet indexers in Prowlarr, for status reporting. */
 export function usenetSearchPauses(): ChannelPause[] {
-  return searchScheduler.pauses()
-}
-
-function cancelWork(): void {
-  epoch++
-  const checks = [...verifies.values()]
-  const cancelled = [...searches.values(), ...checks]
-  searches.clear()
-  verifies.clear()
-  failures.clear()
-  indexerFailures.clear()
-  lastLogged.clear()
-  disabledUntil.clear()
-  known = undefined
-  for (const flight of cancelled) flight.controller.abort()
-  // A fetch waits for its slot on a controller of its own.
-  for (const check of checks) check.queued?.abort()
-  // Channels are named by indexer ID, and another Prowlarr numbers other indexers the same way.
-  searchScheduler.reset()
-}
-
-/**
- * For a changed Prowlarr URL or key: running searches and checks are cancelled and what they learn is
- * discarded, the indexers' pacing is forgotten, and the records, counters and stored NZBs of every other
- * connection are dropped. The client's indexer list is reset by the caller (`resetProwlarrRuntime`).
- */
-export function invalidateUsenetSearch(config: Config): void {
-  cancelWork()
-  const removed = searchStore.retainFingerprint(connectionFingerprint(config))
-  if (removed) log('INFO', `Usenet search store dropped ${removed} record(s) of another Prowlarr connection`)
-}
-
-/** Writes pending search records now, for a graceful shutdown. False when the write failed. */
-export function flushUsenetSearch(): boolean {
-  return searchStore.flush()
-}
-
-/**
- * Drops the records, with their stored NZBs, of sources that are not in `keep`. Pass every source the
- * current results reference and every source an active download record names.
- */
-export function retainSearchSources(keep: ReadonlySet<string>): number {
-  for (const sourceId of sourceFiles.keys()) if (!keep.has(sourceId)) sourceFiles.delete(sourceId)
-  return searchStore.retainSources(keep)
-}
-
-/** Tests: cancels work and clears memory without touching the files; `restoreFromDisk` simulates a restart. */
-export function resetUsenetSearch(restoreFromDisk = false): void {
-  cancelWork()
-  sourceFiles.clear()
-  searchStore.reset(restoreFromDisk)
+  return parts().scheduler.pauses()
 }

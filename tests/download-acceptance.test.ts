@@ -14,7 +14,6 @@ import { downloadJobs } from '../server/download-jobs.js'
 import { addDownloadRecord, downloadRecords, findDownloadRecord, resetOwnedRuntime } from '../server/download-store.js'
 import { findTorrentRecord } from './support/ledger.js'
 import { collectDownloadProgress } from '../server/download-progress.js'
-import { resetUsenetLookups } from '../server/usenet.js'
 import { ResultItem } from '../server/types.js'
 import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
@@ -107,7 +106,7 @@ test('live disk and whole-source acknowledgements are checked before any intent 
     assert.ok('review' in scoped)
     assert.equal(scoped.plan.requires_whole_ack, false)
     state.animetosho = animetoshoMatch
-    resetUsenetLookups()
+    cleanup.usenet.fresh()
     await assert.rejects(
       acceptDownloadPlan(
         config,
@@ -674,19 +673,14 @@ test('an incomplete presence read blocks an accepted source instead of proving i
 })
 
 test('invalid provider NZB bytes never reach SABnzbd even after a matched review', async () => {
-  const state: RouterState = { calls: [], animetosho: animetoshoMatch }
+  const state: RouterState = {
+    calls: [],
+    animetosho: animetoshoMatch,
+    animetoshoNzb: () =>
+      new Response('<html><body>Provider login required</body></html>', { headers: { 'content-type': 'text/html' } }),
+  }
   const cleanup = installRouter(state)
-  const router = globalThis.fetch
   try {
-    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).includes('animetosho.net/nzb/')) {
-        state.calls.push(`GET ${String(input)}`)
-        return new Response('<html><body>Provider login required</body></html>', {
-          headers: { 'content-type': 'text/html' },
-        })
-      }
-      return router(input, init)
-    }
     const config = baseConfig()
     const results = [resultFixture([releaseFixture()])] as unknown as ResultItem[]
     const built = await buildDownloadPlan(config, [{ key: 'show-1', release: 0, protocol: 'usenet' }], {
@@ -714,7 +708,6 @@ test('invalid provider NZB bytes never reach SABnzbd even after a matched review
       false,
     )
   } finally {
-    globalThis.fetch = router
     cleanup()
   }
 })

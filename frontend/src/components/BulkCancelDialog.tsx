@@ -4,7 +4,7 @@ import { formatBytes } from '../utils'
 import { cx } from '../styles'
 import Icon from './Icons'
 import { getCancelableDownloads, type CancelableDownload } from '../api'
-import { clientName, phaseLabel } from './DownloadsPanel'
+import { clientName, phaseLabel } from '../download-entry'
 import Modal from './Modal'
 import { bulkDialog } from './bulk-dialog-styles'
 
