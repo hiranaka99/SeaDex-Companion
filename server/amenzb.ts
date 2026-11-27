@@ -6,8 +6,7 @@ import { INFO_HASH_PATTERN } from '../shared/ids.js'
 import { isRecord } from '../shared/guards.js'
 import type { UsenetProvider } from '../shared/usenet-contracts.js'
 import { elementText, newznabAttributes, safeByteSize, text } from './newznab-xml.js'
-import { LOOKUP_MAX_BYTES, LOOKUP_TIMEOUT_MS, failedLookup } from './provider-http.js'
-import { fetchProviderNzb, searchNewznab } from './usenet-provider-types.js'
+import { failedLookup, fetchProviderNzb, searchNewznab } from './usenet-provider-types.js'
 import type { ProviderLookup, ProviderSettings, UsenetMatch } from './usenet-provider-types.js'
 
 /** AmeNZB (Newznab) guid / t=get ids. */
@@ -69,8 +68,6 @@ async function search(settings: ProviderSettings, requested: string, fetchImpl: 
       indexer: 'AmeNZB',
       baseUrl: settings.baseUrl,
       path: `/api?t=search&apikey=${encodeURIComponent(settings.apiKey)}&info_hash=${requested}`,
-      timeoutMs: LOOKUP_TIMEOUT_MS,
-      maxBytes: LOOKUP_MAX_BYTES,
       signal: settings.signal,
     },
     fetchImpl,

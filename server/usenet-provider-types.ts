@@ -1,23 +1,26 @@
 // The two steps every Usenet indexer request goes through, a Newznab search and an NZB read, with the
-// failure vocabulary they share, and the contract types of the hash indexers. Each client keeps only how it
-// builds its request URLs and reads its items. Nothing here logs or returns credentials.
+// failure vocabulary they share, and the contract types of the hash indexers. Both steps answer with what
+// they read or a `NewznabFailure`, so each client keeps only how it builds its request URLs, reads its items
+// and turns a failure into its own error. Nothing here logs or returns credentials.
 
 import { isRecord } from '../shared/guards.js'
 import type { UsenetFailureCode, UsenetProvider } from '../shared/usenet-contracts.js'
-import { detectXmlError, findNewznabError, listOf, parseProviderXml, validateNzbBytes } from './newznab-xml.js'
+import { detectXmlError, findNewznabError, listOf, parseNewznabXml, validateNzbBytes } from './newznab-xml.js'
 import {
-  ProviderConfigError,
+  LOOKUP_MAX_BYTES,
+  LOOKUP_TIMEOUT_MS,
   ResponseTooLargeError,
-  classifyFailure,
   decodeText,
   httpStatusFailure,
-  providerEndpoint,
-  providerRequest,
+  originRequest,
   readResponseCapped,
   readStreamCapped,
-  retryAfterMs,
   safeText,
-} from './provider-http.js'
+  statusFailure,
+  statusFailureCode,
+  transportFailure,
+} from './indexer-http.js'
+import type { TransportWords } from './indexer-http.js'
 
 const NZB_TIMEOUT_MS = 30_000
 export const NZB_MAX_BYTES = 16 * 1024 * 1024
@@ -58,6 +61,11 @@ export interface ProviderSettings {
   baseUrl: string
   apiKey?: string
   signal?: AbortSignal
+}
+
+/** A failed hash-indexer lookup, its text made safe. */
+export function failedLookup(code: UsenetFailureCode, message: string, retryAfter?: number): ProviderLookup {
+  return { kind: 'failed', code, message: safeText(message), ...(retryAfter ? { retry_after_ms: retryAfter } : {}) }
 }
 
 /**
@@ -108,8 +116,9 @@ export interface NewznabSearchRequest extends NewznabSource {
   path: string
   /** Extra request headers, such as Prowlarr's key. */
   headers?: Record<string, string>
-  timeoutMs: number
-  maxBytes: number
+  /** The bounds of a hash-indexer lookup unless given; a search through Prowlarr names its own. */
+  timeoutMs?: number
+  maxBytes?: number
   signal?: AbortSignal
 }
 
@@ -134,122 +143,97 @@ export async function searchNewznab(
   request: NewznabSearchRequest,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<NewznabSearch> {
-  const signals: AbortSignal[] = [AbortSignal.timeout(request.timeoutMs)]
-  if (request.signal) signals.push(request.signal)
+  const failed = (failure: NewznabFailure): NewznabSearch => ({ kind: 'failed', failure })
   let response: Response
   try {
-    response = await fetchImpl(providerEndpoint(request.baseUrl, request.path), {
-      method: 'GET',
-      headers: { accept: 'application/rss+xml, application/xml', ...request.headers },
-      signal: AbortSignal.any(signals),
-      redirect: 'error',
-    })
+    response = await originRequest(
+      {
+        baseUrl: request.baseUrl,
+        path: request.path,
+        accept: 'application/rss+xml, application/xml',
+        headers: request.headers,
+        timeoutMs: request.timeoutMs ?? LOOKUP_TIMEOUT_MS,
+        signal: request.signal,
+      },
+      fetchImpl,
+    )
   } catch (error) {
-    return { kind: 'failed', failure: searchTransportFailure(error, request) }
+    return failed(searchTransportFailure(error, request))
   }
   const refused = refusingStatus(response, request)
   if (refused) {
     await response.body?.cancel().catch(() => undefined)
-    return { kind: 'failed', failure: refused }
+    return failed(refused)
   }
   let body: string
   try {
-    body = decodeText(await readResponseCapped(response, request.maxBytes))
+    body = decodeText(await readResponseCapped(response, request.maxBytes ?? LOOKUP_MAX_BYTES))
   } catch (error) {
-    return { kind: 'failed', failure: searchTransportFailure(error, request) }
+    return failed(searchTransportFailure(error, request))
   }
   let document: unknown
   try {
-    document = parseProviderXml(body)
+    document = parseNewznabXml(body)
   } catch {
     document = undefined
   }
   const reported = findNewznabError(document)
-  if (reported) return { kind: 'failed', failure: newznabErrorFailure(reported.code, request) }
+  if (reported) return failed(newznabErrorFailure(reported.code, request))
   if (!response.ok) {
+    // What is left is a server failure or a status that is no answer.
     const answerer = request.viaProwlarr ? 'Prowlarr' : request.indexer
     const detail = `${answerer} returned HTTP ${response.status} for the search of ${request.indexer}`
-    const retryAfter = retryAfterMs(response)
-    if (response.status >= 500)
-      return {
-        kind: 'failed',
-        failure: {
-          code: 'server',
-          message: detail,
-          ...(retryAfter ? { retryAfterMs: retryAfter } : {}),
-          scope: 'indexer',
-        },
-      }
-    return { kind: 'failed', failure: { code: 'invalid_response', message: detail, scope: 'indexer' } }
+    return failed({ ...statusFailure(response, detail), scope: 'indexer' })
   }
   const items = feedItems(document)
   if (!items)
-    return {
-      kind: 'failed',
-      failure: {
-        code: 'invalid_response',
-        message: request.viaProwlarr
-          ? `Prowlarr did not answer the search of ${request.indexer} with Newznab RSS. Check the Prowlarr URL.`
-          : `${request.indexer} did not answer the search with Newznab RSS`,
-        scope: 'indexer',
-      },
-    }
+    return failed({
+      code: 'invalid_response',
+      message: request.viaProwlarr
+        ? `Prowlarr did not answer the search of ${request.indexer} with Newznab RSS. Check the Prowlarr URL.`
+        : `${request.indexer} did not answer the search with Newznab RSS`,
+      scope: 'indexer',
+    })
   return { kind: 'items', items }
 }
 
 /** A search that never got a usable answer. Only an unusable configured address is Prowlarr's own fault. */
 function searchTransportFailure(error: unknown, request: NewznabSearchRequest): NewznabFailure {
   const { indexer } = request
-  const failure = (code: UsenetFailureCode, message: string): NewznabFailure => ({ code, message, scope: 'indexer' })
-  if (error instanceof ProviderConfigError)
-    return {
-      code: 'invalid_config',
-      message: safeText(error.message),
-      scope: request.viaProwlarr ? 'prowlarr' : 'indexer',
-    }
-  if (error instanceof ResponseTooLargeError)
-    return failure('invalid_response', `The answer to the search of ${indexer} exceeded the byte limit`)
-  const name = isRecord(error) && typeof error.name === 'string' ? error.name : ''
-  if (name === 'TimeoutError') return failure('timeout', `The search of ${indexer} timed out`)
-  if (name === 'AbortError' || request.signal?.aborted)
-    return failure('network', `The search of ${indexer} was cancelled`)
-  return failure(
-    'network',
-    request.viaProwlarr
-      ? `Could not reach Prowlarr for the search of ${indexer}`
-      : `Could not reach ${indexer} for the search`,
+  const failure = transportFailure(
+    error,
+    {
+      tooLarge: `The answer to the search of ${indexer} exceeded the byte limit`,
+      timedOut: `The search of ${indexer} timed out`,
+      cancelled: `The search of ${indexer} was cancelled`,
+      unreachable: request.viaProwlarr
+        ? `Could not reach Prowlarr for the search of ${indexer}`
+        : `Could not reach ${indexer} for the search`,
+    },
+    request.signal,
   )
+  return { ...failure, scope: failure.code === 'invalid_config' && request.viaProwlarr ? 'prowlarr' : 'indexer' }
 }
 
-/** A status that answers the search by itself, before any body is read. */
+/**
+ * A status that answers the search by itself, before any body is read: a refused key, a rate limit, or an
+ * indexer turned off in Prowlarr.
+ */
 function refusingStatus(response: Response, source: NewznabSource): NewznabFailure | null {
-  const retryAfter = retryAfterMs(response)
-  if (response.status === 401 || response.status === 403)
-    return source.viaProwlarr
-      ? {
-          code: 'unauthorized',
-          message: `Prowlarr returned HTTP ${response.status}. Check the Prowlarr API key.`,
-          scope: 'prowlarr',
-        }
-      : {
-          code: 'unauthorized',
-          message: `${source.indexer} returned HTTP ${response.status} — check the API key and pinned API IP`,
-          scope: 'indexer',
-        }
+  if (response.ok) return null
   if (response.status === 410 && source.viaProwlarr)
     return { code: 'invalid_config', message: `${source.indexer} is turned off in Prowlarr`, scope: 'indexer' }
-  if (response.status === 429)
-    return {
-      code: 'rate_limited',
-      // Prowlarr answers 429 itself, without asking the indexer, while the indexer is at the query limit set
-      // in Prowlarr or disabled after failures. `Retry-After` says when it will ask again.
-      message: source.viaProwlarr
-        ? `Prowlarr is not searching ${source.indexer} for now: it is at its query limit or disabled after failures`
-        : `${source.indexer} rate limited the request`,
-      ...(retryAfter ? { retryAfterMs: retryAfter } : {}),
-      scope: 'indexer',
-    }
-  return null
+  const code = statusFailureCode(response.status)
+  if (code !== 'unauthorized' && code !== 'rate_limited') return null
+  if (!source.viaProwlarr) return { ...httpStatusFailure(response, source.indexer)!, scope: 'indexer' }
+  const failure = statusFailure(response, `Prowlarr returned HTTP ${response.status}`, {
+    unauthorized: `Prowlarr returned HTTP ${response.status}. Check the Prowlarr API key.`,
+    // Prowlarr answers 429 itself, without asking the indexer, while the indexer is at the query limit set
+    // in Prowlarr or disabled after failures. `Retry-After` says when it will ask again.
+    rate_limited: `Prowlarr is not searching ${source.indexer} for now: it is at its query limit or disabled after failures`,
+  })
+  // A refused key is Prowlarr's own; a limit is the indexer's.
+  return { ...failure, scope: code === 'unauthorized' ? 'prowlarr' : 'indexer' }
 }
 
 /** Newznab's "download limit reached", next to the request limit, code 500. */
@@ -259,7 +243,7 @@ const NEWZNAB_DOWNLOAD_LIMIT = 501
  * A Newznab error code of the named indexer as a failure of that indexer. Only the code is read: the
  * description can echo the request address, key included.
  */
-export function newznabErrorFailure(code: number, source: NewznabSource): NewznabFailure {
+function newznabErrorFailure(code: number, source: NewznabSource): NewznabFailure {
   const failure = (failed: UsenetFailureCode, message: string): NewznabFailure => ({
     code: failed,
     message,
@@ -290,45 +274,60 @@ export function newznabErrorFailure(code: number, source: NewznabSource): Newzna
   }
 }
 
+/**
+ * A Newznab error document sent in place of a file, an NZB or a .torrent, as a failure of `source`. Null for
+ * anything else. Only the code is read.
+ */
+export function errorDocumentFailure(bytes: Uint8Array, source: NewznabSource): NewznabFailure | null {
+  const reported = detectXmlError(bytes)
+  return reported ? newznabErrorFailure(reported.code, source) : null
+}
+
 /** What reading an NZB response gave: the validated, decompressed NZB, or why it is not one. */
-export type NzbRead =
-  | { kind: 'nzb'; bytes: Uint8Array }
-  /** The body crossed `NZB_MAX_BYTES`, as sent or once decompressed. */
-  | { kind: 'too_large' }
-  /** The indexer answered with a Newznab error document instead of the file, whatever its status. */
-  | { kind: 'error_document'; code: number }
-  /** Not an NZB: undecompressable, malformed, or the wrong document. `message` is safe text. */
-  | { kind: 'invalid'; message: string }
+export type NzbRead = { kind: 'nzb'; bytes: Uint8Array } | { kind: 'failed'; failure: NewznabFailure }
 
 /**
  * The one step every NZB fetch goes through, for the hash indexers and Prowlarr grabs alike: the body is
- * read under the byte cap, a file-compressed NZB is inflated once, a Newznab error document is recognised
- * and what is left must be a valid NZB. A transport failure while reading is thrown, for the caller to
- * classify the way its other transport failures are.
+ * read under the byte cap, a file-compressed NZB is inflated once, a Newznab error document is read by its
+ * code and what is left must be a valid NZB. Every failure is the indexer's. A transport failure while
+ * reading is thrown, for the caller to classify the way its other transport failures are.
  */
-export async function readNzb(response: Response): Promise<NzbRead> {
+export async function readNzb(response: Response, source: NewznabSource): Promise<NzbRead> {
+  const failed = (message: string): NzbRead => ({
+    kind: 'failed',
+    failure: { code: 'invalid_response', message: safeText(message), scope: 'indexer' },
+  })
+  const tooLarge = () => failed(`${source.indexer} sent an NZB over the size limit`)
+  const invalid = (detail: string) => failed(`${source.indexer} did not send a valid NZB: ${detail}`)
   let bytes: Uint8Array
   try {
     bytes = await readResponseCapped(response, NZB_MAX_BYTES)
   } catch (error) {
-    if (error instanceof ResponseTooLargeError) return { kind: 'too_large' }
+    if (error instanceof ResponseTooLargeError) return tooLarge()
     throw error
   }
   try {
     bytes = await gunzipOnce(bytes, NZB_MAX_BYTES)
   } catch (error) {
-    if (error instanceof ResponseTooLargeError) return { kind: 'too_large' }
-    return { kind: 'invalid', message: 'compressed NZB response could not be decompressed' }
+    if (error instanceof ResponseTooLargeError) return tooLarge()
+    return invalid('compressed NZB response could not be decompressed')
   }
   // Checked once decompressed, so a compressed error document is recognised too.
-  const reported = detectXmlError(bytes)
-  if (reported) return { kind: 'error_document', code: reported.code }
+  const reported = errorDocumentFailure(bytes, source)
+  if (reported) return { kind: 'failed', failure: reported }
   try {
     validateNzbBytes(bytes)
   } catch (error) {
-    return { kind: 'invalid', message: safeText(error instanceof Error ? error.message : 'NZB response was not valid') }
+    return invalid(error instanceof Error ? error.message : 'NZB response was not valid')
   }
   return { kind: 'nzb', bytes }
+}
+
+/** How a hash indexer's NZB fetch that never got an answer is described. */
+const NZB_FETCH: TransportWords = {
+  timedOut: 'NZB fetch timed out',
+  cancelled: 'NZB fetch cancelled',
+  unreachable: 'provider NZB fetch failed',
 }
 
 /**
@@ -343,26 +342,27 @@ export async function fetchProviderNzb(
 ): Promise<Uint8Array> {
   let response: Response
   try {
-    response = await providerRequest(settings, path, 'application/octet-stream', NZB_TIMEOUT_MS, fetchImpl)
+    response = await originRequest(
+      {
+        baseUrl: settings.baseUrl,
+        path,
+        accept: 'application/octet-stream',
+        timeoutMs: NZB_TIMEOUT_MS,
+        signal: settings.signal,
+      },
+      fetchImpl,
+    )
   } catch (error) {
-    throw new Error(classifyFailure(error, settings, 'NZB fetch').message)
+    throw new Error(transportFailure(error, NZB_FETCH, settings.signal).message)
   }
   const status = httpStatusFailure(response, provider)
   if (status) throw new Error(status.message)
   let read: NzbRead
   try {
-    read = await readNzb(response)
+    read = await readNzb(response, { indexer: provider })
   } catch (error) {
-    throw new Error(classifyFailure(error, settings, 'NZB fetch').message)
+    throw new Error(transportFailure(error, NZB_FETCH, settings.signal).message)
   }
-  switch (read.kind) {
-    case 'nzb':
-      return read.bytes
-    case 'too_large':
-      throw new Error(new ResponseTooLargeError().message)
-    case 'error_document':
-      throw new Error(newznabErrorFailure(read.code, { indexer: provider }).message)
-    case 'invalid':
-      throw new Error(read.message)
-  }
+  if (read.kind === 'failed') throw new Error(read.failure.message)
+  return read.bytes
 }

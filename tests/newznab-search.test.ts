@@ -7,14 +7,14 @@ import { searchNewznab } from '../server/usenet-provider-types.js'
 import type { NewznabSearchRequest } from '../server/usenet-provider-types.js'
 
 const KEY = 'search-step-key-5d1e'
-const DIRECT: NewznabSearchRequest = {
+const DIRECT = {
   indexer: 'AmeNZB',
   baseUrl: 'https://amenzb.example',
   path: `/api?t=search&apikey=${KEY}&q=show`,
   timeoutMs: 15_000,
   maxBytes: 64 * 1024,
-}
-const VIA_PROWLARR: NewznabSearchRequest = {
+} satisfies NewznabSearchRequest
+const VIA_PROWLARR = {
   indexer: 'Geek',
   viaProwlarr: true,
   baseUrl: 'http://prowlarr.test:9696',
@@ -22,7 +22,7 @@ const VIA_PROWLARR: NewznabSearchRequest = {
   headers: { 'X-Api-Key': KEY },
   timeoutMs: 45_000,
   maxBytes: 64 * 1024,
-}
+} satisfies NewznabSearchRequest
 
 interface Call {
   url: string

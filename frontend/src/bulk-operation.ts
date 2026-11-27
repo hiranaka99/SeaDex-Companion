@@ -26,12 +26,18 @@ const DISMISSED_JOB_KEY = 'seadex-dismissed-download-job'
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`
 
-/** Units of a download job that reached an outcome: sent, already queued, or failed. */
-export const settledCount = (job: DownloadJobStatus) => job.added.length + job.existing.length + job.failures.length
+/**
+ * How far a download job got: its units that reached an outcome (sent, already queued, or failed) out of all
+ * its units. The banner and the review show the same count.
+ */
+export function jobProgress(job: DownloadJobStatus): { settled: number; total: number } {
+  const settled = job.added.length + job.existing.length + job.failures.length
+  return { settled, total: settled + job.pending.length }
+}
 
 /** The banner for a download job; the same whether the job is followed live or restored after a reload. */
 export function jobOperation(job: DownloadJobStatus): BulkOperationState {
-  const settled = settledCount(job)
+  const { settled, total } = jobProgress(job)
   const parts = [`${job.added.length} sent`]
   if (job.existing.length) parts.push(`${job.existing.length} already queued`)
   if (job.pending.length) parts.push(`${job.pending.length} pending`)
@@ -40,7 +46,7 @@ export function jobOperation(job: DownloadJobStatus): BulkOperationState {
     action: 'start',
     phase: job.finished ? (job.failures.length ? 'warning' : 'success') : 'running',
     settled,
-    total: settled + job.pending.length,
+    total,
     added: job.added.length,
     failed: job.failures.length,
     failures: job.failures.map(({ label, error }) => ({ label, error })),

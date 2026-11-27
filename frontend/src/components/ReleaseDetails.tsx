@@ -6,7 +6,7 @@ import type { DownloadRoutes } from '../download-routes'
 import { buttonBase, cx, downloadTextTone } from '../styles'
 import Icon from './Icons'
 import { DownloadActions, ImportStatusLine } from './DownloadsPanel'
-import { clientName, phaseLabel, type DownloadEntry } from '../download-entry'
+import { clientName, phaseLabel, protocolClientName, type DownloadEntry } from '../download-entry'
 import type { DownloadPhase, DownloadProtocol } from '../api'
 import type { UsenetCandidate } from '../../../shared/usenet-contracts'
 import { DiskLine } from './PlanReview'
@@ -275,7 +275,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
           : 'border-line-strong bg-panel text-ink enabled:hover:bg-panel-raised'
   const statusCopy = complete ? `Download completed in ${clientName(transfers[0].client)}` : ''
   const usenetCategory = r.arr === 'Sonarr' ? config?.sabnzbd_sonarr_category : config?.sabnzbd_radarr_category
-  const destination = chosen === 'usenet' ? 'SABnzbd' : 'qBittorrent'
+  const destination = protocolClientName(chosen)
   const sendFacts = verdict.facts
   const usenetBytes = currentAvailability?.hashes[0]?.total_bytes || 0
   /** The two figures a send is decided on: what it downloads, and how the library grows if it replaces your files. */
@@ -733,9 +733,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
                 ) : (
                   <Icon name="download" size={17} />
                 )}
-                <span className="min-w-0 wrap-anywhere">
-                  {sending ? `Sending to ${chosen === 'usenet' ? 'SABnzbd' : 'qBittorrent'}…` : buttonLabel}
-                </span>
+                <span className="min-w-0 wrap-anywhere">{sending ? `Sending to ${destination}…` : buttonLabel}</span>
               </button>
             )}
       </div>

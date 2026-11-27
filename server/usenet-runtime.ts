@@ -11,6 +11,7 @@ import { PrivateTorrentCache } from './private-sources.js'
 import { ProwlarrIndexerList } from './prowlarr.js'
 import { loadLastResults } from './results.js'
 import { torrentHashes } from '../shared/download-plan.js'
+import { PROWLARR_CONNECTION_KEYS } from '../shared/usenet-contracts.js'
 import type { Config, ResultItem } from './types.js'
 import { HashLookupParts } from './usenet.js'
 import { SweepParts } from './usenet-prefetch.js'
@@ -21,11 +22,6 @@ import type { UsenetSearchStore } from './usenet-search-store.js'
 
 /** Settings that change which hash indexer answers lookups. */
 const HASH_INDEXER_KEYS = Object.values(USENET_PROVIDERS).flatMap(provider => provider.configKeys)
-/**
- * Settings that change which Prowlarr answers searches. The two daily limits are not among them: a changed
- * limit applies to the next search or fetch and invalidates nothing.
- */
-const PROWLARR_KEYS = ['prowlarr_enabled', 'prowlarr_url', 'prowlarr_key'] as const
 /**
  * Settings that only decide whether the background sweep runs and what its search stage looks for. A changed
  * search limit restarts the sweep so it applies at once; it invalidates nothing.
@@ -176,7 +172,7 @@ class Runtime implements UsenetRuntime {
     const changed = (keys: readonly (keyof Config)[]) => !previous || keys.some(key => previous[key] !== config[key])
     const hashIndexers = changed(HASH_INDEXER_KEYS)
     if (hashIndexers) this.parts.hash.invalidate(config)
-    const prowlarr = changed(PROWLARR_KEYS)
+    const prowlarr = changed(PROWLARR_CONNECTION_KEYS)
     if (prowlarr) {
       this.parts.privateSources.invalidate()
       // Search results, usage counters and stored NZBs are kept for the configured connection only.
