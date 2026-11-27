@@ -7,25 +7,18 @@ import type { Config } from './types.js'
 import type { UsenetFailureCode } from '../shared/usenet-contracts.js'
 import type { ProwlarrCoverage } from '../shared/contracts.js'
 import { isRecord } from '../shared/guards.js'
+import { detectXmlError, elementText, listOf, newznabAttributeValues, safeByteSize, text } from './newznab-xml.js'
 import {
   ProviderConfigError,
   ResponseTooLargeError,
-  classifyNewznabError,
   decodeText,
-  detectXmlError,
-  elementText,
-  findNewznabError,
-  listOf,
-  newznabAttributeValues,
-  parseProviderXml,
   providerEndpoint,
-  readNzb,
   readResponseCapped,
   retryAfterMs,
-  safeByteSize,
   safeText,
-  text,
-} from './usenet-provider-types.js'
+} from './provider-http.js'
+import { newznabErrorFailure, readNzb, searchNewznab } from './usenet-provider-types.js'
+import type { NewznabFailureScope } from './usenet-provider-types.js'
 
 export interface ProwlarrSettings {
   baseUrl: string
@@ -97,11 +90,8 @@ export interface ProwlarrDownloadRef {
   file: string
 }
 
-/**
- * Who a failure is attributed to. `indexer`: one indexer refused, is limited or could not answer, so only
- * that indexer is affected. `prowlarr`: Prowlarr itself did, so nothing can be asked through it.
- */
-export type ProwlarrFailureScope = 'prowlarr' | 'indexer'
+/** Who a Prowlarr failure is attributed to, in the vocabulary of the Newznab search step. */
+export type ProwlarrFailureScope = NewznabFailureScope
 
 /** A Prowlarr call that failed, with a code the availability states understand. */
 export class ProwlarrError extends Error {
@@ -183,12 +173,11 @@ async function request(
   timeoutMs: number,
   fetchImpl: typeof fetch,
   redirect: RequestRedirect = 'error',
-  accept = 'application/json',
 ): Promise<Response> {
   const signals = [AbortSignal.timeout(timeoutMs), ...(settings.signal ? [settings.signal] : [])]
   return await fetchImpl(providerEndpoint(settings.baseUrl, path), {
     method: 'GET',
-    headers: { accept, 'X-Api-Key': settings.apiKey },
+    headers: { accept: 'application/json', 'X-Api-Key': settings.apiKey },
     signal: AbortSignal.any(signals),
     redirect,
   })
@@ -472,59 +461,18 @@ export async function searchProwlarr(
   return body.map(item => parseRelease(settings, item)).filter((item): item is ProwlarrRelease => item !== null)
 }
 
-/** Newznab's "download limit reached". The shared classifier knows only the request limit, code 500. */
-const NEWZNAB_DOWNLOAD_LIMIT = 501
-
 /**
- * An indexer's Newznab error document as a failure of that indexer. Only the code is read: the
- * description can echo the request address, key included.
+ * An indexer's Newznab error document, sent instead of a downloaded file, as a failure of that indexer.
+ * Prowlarr may have passed it on or the indexer sent it after a redirect, so its name is not known here.
  */
-function newznabFailure(code: number, indexer: string): ProwlarrError {
-  if (code === NEWZNAB_DOWNLOAD_LIMIT)
-    return new ProwlarrError(
-      'rate_limited',
-      `${indexer} reported that its download limit is reached (code ${code})`,
-      undefined,
-      'indexer',
-    )
-  const failure = classifyNewznabError(code, indexer)
-  // The shared text for a refused key does not say whose key it is. Here it is the indexer's own, kept in Prowlarr.
-  const message =
-    failure.code === 'unauthorized'
-      ? `${indexer} refused its API key (code ${code}). Check the indexer in Prowlarr.`
-      : failure.message
-  return new ProwlarrError(failure.code, message, failure.retryAfterMs, 'indexer')
+function downloadErrorDocument(code: number): ProwlarrError {
+  const failure = newznabErrorFailure(code, { indexer: 'The indexer', viaProwlarr: true })
+  return new ProwlarrError(failure.code, failure.message, failure.retryAfterMs, failure.scope)
 }
 
 /** The indexer's name for a message: cleaned, short and never empty. */
 function indexerLabel(indexer: { id: number; name: string }): string {
   return safeText(indexer.name, INDEXER_NAME_LIMIT) || `Indexer ${indexer.id}`
-}
-
-/** What the status of a per-indexer search means, when the status alone decides it. */
-function searchStatusFailure(response: Response, indexer: string): ProwlarrError | null {
-  // Prowlarr answers 429 itself, without asking the indexer, while the indexer is at the query limit set
-  // in Prowlarr or disabled after failures. `Retry-After` says when it will ask again.
-  if (response.status === 429)
-    return new ProwlarrError(
-      'rate_limited',
-      `Prowlarr is not searching ${indexer} for now: it is at its query limit or disabled after failures`,
-      retryAfterMs(response),
-      'indexer',
-    )
-  if (response.status === 410)
-    return new ProwlarrError('invalid_config', `${indexer} is turned off in Prowlarr`, undefined, 'indexer')
-  if (response.status === 401 || response.status === 403) return failureFromStatus(response)
-  return null
-}
-
-/** `<item>` elements of a Newznab answer. Undefined when the document is not Newznab RSS. */
-function feedItems(document: unknown): unknown[] | undefined {
-  if (!isRecord(document) || !isRecord(document.rss) || !('channel' in document.rss)) return undefined
-  const channel = document.rss.channel
-  // A channel without children parses to an empty string: the indexer answered and has nothing.
-  if (channel === '') return []
-  return isRecord(channel) ? listOf(channel.item) : undefined
 }
 
 /** A size bound in whole bytes. Undefined when missing or not positive, which Prowlarr reads as no bound. */
@@ -610,47 +558,26 @@ export async function searchIndexer(
   const maxSize = byteBound(params.maxSize, Math.ceil)
   if (minSize) query.set('minsize', String(minSize))
   if (maxSize) query.set('maxsize', String(maxSize))
-  try {
-    const response = await request(
-      settings,
-      `/${indexer.id}/api?${query}`,
-      INDEXER_SEARCH_TIMEOUT_MS,
-      fetchImpl,
-      'error',
-      'application/rss+xml, application/xml',
-    )
-    const refused = searchStatusFailure(response, name)
-    if (refused) {
-      await response.body?.cancel()
-      throw refused
-    }
-    const body = decodeText(await readResponseCapped(response, API_MAX_BYTES))
-    let document: unknown
-    try {
-      document = parseProviderXml(body)
-    } catch {
-      document = undefined
-    }
-    // An error document is never an empty answer, whatever status it arrives with.
-    const reported = findNewznabError(document)
-    if (reported) throw newznabFailure(reported.code, name)
-    const detail = `Prowlarr returned HTTP ${response.status} for the search of ${name}`
-    if (response.status >= 500) throw new ProwlarrError('server', detail, retryAfterMs(response), 'indexer')
-    if (!response.ok) throw new ProwlarrError('invalid_response', detail, undefined, 'indexer')
-    const items = feedItems(document)
-    if (!items)
-      throw new ProwlarrError(
-        'invalid_response',
-        `Prowlarr did not answer the search of ${name} with Newznab RSS. Check the Prowlarr URL.`,
-        undefined,
-        'indexer',
-      )
-    return items
-      .map(item => parseSearchItem(settings, indexer, item))
-      .filter((item): item is ProwlarrSearchResult => item !== null)
-  } catch (error) {
-    throw transportFailure(error, 'search', 'indexer')
+  const answer = await searchNewznab(
+    {
+      indexer: name,
+      viaProwlarr: true,
+      baseUrl: settings.baseUrl,
+      path: `/${indexer.id}/api?${query}`,
+      headers: { 'X-Api-Key': settings.apiKey },
+      timeoutMs: INDEXER_SEARCH_TIMEOUT_MS,
+      maxBytes: API_MAX_BYTES,
+      signal: settings.signal,
+    },
+    fetchImpl,
+  )
+  if (answer.kind === 'failed') {
+    const { failure } = answer
+    throw new ProwlarrError(failure.code, failure.message, failure.retryAfterMs, failure.scope)
   }
+  return answer.items
+    .map(item => parseSearchItem(settings, indexer, item))
+    .filter((item): item is ProwlarrSearchResult => item !== null)
 }
 
 /** Prowlarr's download link for a result: `/{indexer id}/download?apikey=…&link=…&file=…`. */
@@ -786,7 +713,7 @@ export async function prowlarrDownload(
     // An indexer at its limit answers with HTTP 200 and a Newznab error document instead of the file,
     // whether Prowlarr fetched the body itself or redirected to the indexer.
     const reported = detectXmlError(bytes)
-    if (reported) throw newznabFailure(reported.code, 'The indexer')
+    if (reported) throw downloadErrorDocument(reported.code)
     return bytes
   })
 }
@@ -811,7 +738,7 @@ export async function prowlarrGrabNzb(
         // As sent or only once decompressed, the file is the indexer's, also when Prowlarr passed it on.
         throw new ProwlarrError('invalid_response', 'The indexer sent an NZB over the size limit', undefined, 'indexer')
       case 'error_document':
-        throw newznabFailure(nzb.code, 'The indexer')
+        throw downloadErrorDocument(nzb.code)
       case 'invalid':
         throw new ProwlarrError('invalid_response', 'The indexer did not send a valid NZB', undefined, 'indexer')
     }

@@ -1,11 +1,26 @@
-// Shared plumbing for the Usenet provider clients: contract types, byte-bounded
-// streaming reads, gzip-once NZB handling and NZB/Newznab XML validation.
-// Protocol specifics stay in each provider module. Nothing here logs or returns
-// credentials.
+// The two steps every Usenet indexer request goes through, a Newznab search and an NZB read, with the
+// failure vocabulary they share, and the contract types of the hash indexers. Each client keeps only how it
+// builds its request URLs and reads its items. Nothing here logs or returns credentials.
 
 import { isRecord } from '../shared/guards.js'
-import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import type { UsenetFailureCode, UsenetProvider } from '../shared/usenet-contracts.js'
+import { detectXmlError, findNewznabError, listOf, parseProviderXml, validateNzbBytes } from './newznab-xml.js'
+import {
+  ProviderConfigError,
+  ResponseTooLargeError,
+  classifyFailure,
+  decodeText,
+  httpStatusFailure,
+  providerEndpoint,
+  providerRequest,
+  readResponseCapped,
+  readStreamCapped,
+  retryAfterMs,
+  safeText,
+} from './provider-http.js'
+
+const NZB_TIMEOUT_MS = 30_000
+export const NZB_MAX_BYTES = 16 * 1024 * 1024
 
 export interface UsenetSourceFile {
   name: string
@@ -45,258 +60,6 @@ export interface ProviderSettings {
   signal?: AbortSignal
 }
 
-export const LOOKUP_TIMEOUT_MS = 15_000
-export const NZB_TIMEOUT_MS = 30_000
-export const LOOKUP_MAX_BYTES = 512 * 1024
-/**
- * AnimeTosho hash lookups carry per-file hashes and media info (observed up to
- * ~45 KB per file), so complete batches routinely exceed the generic cap.
- */
-export const ANIMETOSHO_LOOKUP_MAX_BYTES = 16 * 1024 * 1024
-export const NZB_MAX_BYTES = 16 * 1024 * 1024
-
-/** AnimeTosho entry ids are numeric and never interpolated raw into a URL. */
-export const ANIMETOSHO_ENTRY_PATTERN = /^[0-9]+$/
-/** AmeNZB (Newznab) guid / t=get ids. */
-export const AMENZB_ENTRY_PATTERN = /^[0-9A-Za-z_-]+$/
-
-const SAFE_MESSAGE_LIMIT = 200
-/** Provider XML rejects declarations; NZBs allow only the public standard DTD. */
-const DECLARATION_PATTERN = /<!DOCTYPE|<!ENTITY/i
-const STANDARD_NZB_DOCTYPE =
-  /<!DOCTYPE\s+nzb\s+PUBLIC\s+(["'])-\/\/newzBin\/\/DTD NZB 1\.1\/\/EN\1\s+(["'])https?:\/\/www\.newzbin\.com\/DTD\/nzb\/nzb-1\.1\.dtd\2\s*>/
-/** Newznab XML is only ever inspected through the parser, never with regexes. */
-const XML_PARSER_OPTIONS = { ignoreAttributes: false, attributeNamePrefix: '@_', parseTagValue: false }
-const xmlParser = new XMLParser(XML_PARSER_OPTIONS)
-const decoder = new TextDecoder('utf-8')
-
-/** Base URL is unusable: report invalid_config rather than touching the network. */
-export class ProviderConfigError extends Error {}
-/** A response body crossed its byte cap while being read. */
-export class ResponseTooLargeError extends Error {
-  constructor() {
-    super('provider response exceeded the byte limit')
-  }
-}
-/** Body was not XML the provider could have meant (malformed, empty, DTD). */
-export class ProviderProtocolError extends Error {}
-
-export interface NewznabError {
-  code: number
-}
-/** Classified transport/HTTP failure: typed code plus safe text, no lookup kind. */
-export interface ProviderFailure {
-  code: UsenetFailureCode
-  message: string
-  retryAfterMs?: number
-}
-
-/** Upper bound for a provider-requested pause; a hostile or broken header cannot park lookups for days. */
-const RETRY_AFTER_LIMIT_MS = 60 * 60_000
-
-/** `Retry-After` as delta-seconds or an HTTP date, bounded; undefined when absent or unusable. */
-export function retryAfterMs(response: Response, now = Date.now()): number | undefined {
-  const value = response.headers.get('retry-after')?.trim()
-  if (!value) return undefined
-  const delay = /^\d+$/.test(value) ? Number(value) * 1000 : Date.parse(value) - now
-  if (!Number.isFinite(delay) || delay <= 0) return undefined
-  return Math.min(delay, RETRY_AFTER_LIMIT_MS)
-}
-
-export function listOf(value: unknown): unknown[] {
-  if (Array.isArray(value)) return value
-  return value === undefined || value === null ? [] : [value]
-}
-
-/** Trimmed non-empty provider string, or undefined when the field is absent/blank. */
-export function text(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined
-}
-
-/** Provider-reported byte count only when it is a safe non-negative integer. */
-export function safeByteSize(value: unknown): number | undefined {
-  const size = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN
-  return Number.isSafeInteger(size) && size >= 0 ? size : undefined
-}
-
-/** Element body, also when attributes pushed the value under `#text`. */
-export function elementText(value: unknown): string | undefined {
-  return isRecord(value) ? text(value['#text']) : text(value)
-}
-
-/**
- * Every value of each `newznab:attr` of a feed item, by lower-case name and in document order. An item
- * repeats an attribute to list several values, as it does for `category`.
- */
-export function newznabAttributeValues(item: Record<string, unknown>): Map<string, string[]> {
-  const attributes = new Map<string, string[]>()
-  for (const raw of listOf(item['newznab:attr'])) {
-    if (!isRecord(raw)) continue
-    const name = text(raw['@_name'])?.toLowerCase()
-    const value = text(raw['@_value'])
-    if (!name || value === undefined) continue
-    const values = attributes.get(name)
-    if (values) values.push(value)
-    else attributes.set(name, [value])
-  }
-  return attributes
-}
-
-/** The first value of each `newznab:attr` of a feed item, by lower-case name. */
-export function newznabAttributes(item: Record<string, unknown>): Map<string, string> {
-  const attributes = new Map<string, string>()
-  for (const [name, values] of newznabAttributeValues(item)) attributes.set(name, values[0])
-  return attributes
-}
-
-/** Collapse markup/control characters and bound the length of any failure text. */
-export function safeText(value: string, limit = SAFE_MESSAGE_LIMIT): string {
-  const collapsed = value
-    // oxlint-disable-next-line no-control-regex -- control characters are what this strips
-    .replace(/[\u0000-\u001f\u007f<>]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  if (collapsed.length <= limit) return collapsed
-  return `${collapsed.slice(0, limit - 1)}…`
-}
-
-export function failedLookup(code: UsenetFailureCode, message: string, retryAfter?: number): ProviderLookup {
-  return { kind: 'failed', code, message: safeText(message), ...(retryAfter ? { retry_after_ms: retryAfter } : {}) }
-}
-
-export function decodeText(bytes: Uint8Array): string {
-  return decoder.decode(bytes)
-}
-
-/** Build a request URL that is guaranteed to stay on the configured provider origin. */
-export function providerEndpoint(baseUrl: string, path: string): string {
-  const trimmed = baseUrl.replace(/\/+$/, '')
-  let base: URL
-  try {
-    base = new URL(`${trimmed}/`)
-  } catch {
-    throw new ProviderConfigError('provider base URL is not a valid URL')
-  }
-  if (base.protocol !== 'https:' && base.protocol !== 'http:')
-    throw new ProviderConfigError('provider base URL must use http or https')
-  // Our own path segments are appended to the configured endpoint, so a base URL
-  // served from a subdirectory still works and no segment can escape the origin.
-  let url: URL
-  try {
-    url = new URL(`${trimmed}${path}`)
-  } catch {
-    throw new ProviderConfigError('provider request URL is not valid')
-  }
-  if (url.origin !== base.origin) throw new ProviderConfigError('provider request would leave the configured origin')
-  return url.toString()
-}
-
-/**
- * Bounded GET against the configured provider origin. Redirects are refused so an
- * API key can never follow a cross-origin hop, and a caller-supplied signal is
- * combined with the read timeout.
- */
-export async function providerRequest(
-  settings: ProviderSettings,
-  path: string,
-  accept: string,
-  timeoutMs: number,
-  fetchImpl: typeof fetch,
-): Promise<Response> {
-  const url = providerEndpoint(settings.baseUrl, path)
-  const signals: AbortSignal[] = [AbortSignal.timeout(timeoutMs)]
-  if (settings.signal) signals.push(settings.signal)
-  return await fetchImpl(url, {
-    method: 'GET',
-    headers: { accept },
-    signal: AbortSignal.any(signals),
-    redirect: 'error',
-  })
-}
-
-/** Map a transport/limit failure onto a typed code plus safe text. */
-export function classifyFailure(
-  error: unknown,
-  settings: ProviderSettings,
-  operation: 'lookup' | 'NZB fetch',
-): ProviderFailure {
-  if (error instanceof ProviderConfigError) return { code: 'invalid_config', message: safeText(error.message) }
-  if (error instanceof ResponseTooLargeError) return { code: 'invalid_response', message: safeText(error.message) }
-  const name = isRecord(error) && typeof error.name === 'string' ? error.name : ''
-  if (name === 'TimeoutError') return { code: 'timeout', message: `${operation} timed out` }
-  if (name === 'AbortError' || settings.signal?.aborted) {
-    return { code: 'network', message: operation === 'lookup' ? 'lookup cancelled' : `${operation} cancelled` }
-  }
-  return { code: 'network', message: `provider ${operation} failed` }
-}
-
-export function failedFrom(
-  error: unknown,
-  settings: ProviderSettings,
-  operation: 'lookup' | 'NZB fetch',
-): ProviderLookup {
-  const failure = classifyFailure(error, settings, operation)
-  return failedLookup(failure.code, failure.message)
-}
-
-/** Classify an unsuccessful HTTP status. Never reports a transport failure as absence. */
-export function httpStatusFailure(response: Response, provider: string): ProviderFailure | null {
-  if (response.ok) return null
-  const detail = `${provider} returned HTTP ${response.status}`
-  if (response.status === 401 || response.status === 403)
-    return { code: 'unauthorized', message: `${detail} — check the API key and pinned API IP` }
-  const retryAfter = retryAfterMs(response)
-  if (response.status === 429)
-    return {
-      code: 'rate_limited',
-      message: `${provider} rate limited the request`,
-      ...(retryAfter ? { retryAfterMs: retryAfter } : {}),
-    }
-  if (response.status >= 500)
-    return { code: 'server', message: detail, ...(retryAfter ? { retryAfterMs: retryAfter } : {}) }
-  return { code: 'invalid_response', message: detail }
-}
-
-async function readStreamCapped(stream: ReadableStream<Uint8Array>, maxBytes: number): Promise<Uint8Array> {
-  const reader = stream.getReader()
-  const chunks: Uint8Array[] = []
-  let total = 0
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (!value) continue
-      total += value.byteLength
-      // Enforced while reading so a response without Content-Length cannot buffer first.
-      if (total > maxBytes) throw new ResponseTooLargeError()
-      chunks.push(value)
-    }
-  } catch (error) {
-    await reader.cancel(error instanceof Error ? error : undefined).catch(() => undefined)
-    throw error
-  } finally {
-    try {
-      reader.releaseLock()
-    } catch {
-      /* the cancel above already released it */
-    }
-  }
-  const bytes = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return bytes
-}
-
-export async function readResponseCapped(response: Response, maxBytes: number): Promise<Uint8Array> {
-  const declared = Number(response.headers.get('content-length'))
-  if (Number.isSafeInteger(declared) && declared > maxBytes) throw new ResponseTooLargeError()
-  if (!response.body) return new Uint8Array(0)
-  return await readStreamCapped(response.body, maxBytes)
-}
-
 /**
  * Transparently inflate a file-compressed NZB exactly once. `fetch` has already
  * applied Content-Encoding, so gzip magic in the body means the file itself is
@@ -315,131 +78,215 @@ async function gunzipOnce(bytes: Uint8Array, maxBytes: number): Promise<Uint8Arr
   return await readStreamCapped(source.pipeThrough(gzip), maxBytes)
 }
 
+/** Who answers a Newznab request, for the failure messages and their scope. */
+export interface NewznabSource {
+  /** The indexer's name in a message: safe and short. */
+  indexer: string
+  /** The indexer is asked through Prowlarr's Newznab endpoint, so Prowlarr answers for it first. */
+  viaProwlarr?: boolean
+}
+
 /**
- * `XMLParser` repairs unclosed and mismatched elements, so malformed markup is
- * checked with the same dependency's validator before it is trusted.
+ * Who a failure is attributed to. `indexer`: one indexer refused, is limited or could not answer, so only
+ * that indexer is affected. `prowlarr`: Prowlarr itself did, so nothing can be asked through it.
  */
-function assertWellFormedXml(value: string): void {
-  if (XMLValidator.validate(value) !== true) throw new ProviderProtocolError('provider response was not valid XML')
+export type NewznabFailureScope = 'indexer' | 'prowlarr'
+
+/** A failed Newznab request: a typed code, safe text that never quotes the indexer, and who is at fault. */
+export interface NewznabFailure {
+  code: UsenetFailureCode
+  message: string
+  retryAfterMs?: number
+  scope: NewznabFailureScope
 }
 
-export function parseProviderXml(text: string): unknown {
-  if (!text.trim()) throw new ProviderProtocolError('provider response was empty')
-  if (DECLARATION_PATTERN.test(text)) throw new ProviderProtocolError('provider response declared a DTD or entity')
-  assertWellFormedXml(text)
+/** One Newznab search: where it goes and how much it may cost. The client builds the path and query. */
+export interface NewznabSearchRequest extends NewznabSource {
+  /** The configured origin. The path is appended to it and can never leave it. */
+  baseUrl: string
+  /** Path and query under the base URL. */
+  path: string
+  /** Extra request headers, such as Prowlarr's key. */
+  headers?: Record<string, string>
+  timeoutMs: number
+  maxBytes: number
+  signal?: AbortSignal
+}
+
+/** What a search gave: the `<item>` elements of the feed, for the client to read, or why there are none. */
+export type NewznabSearch = { kind: 'items'; items: unknown[] } | { kind: 'failed'; failure: NewznabFailure }
+
+/** `<item>` elements of a Newznab answer. Undefined when the document is not Newznab RSS. */
+function feedItems(document: unknown): unknown[] | undefined {
+  if (!isRecord(document) || !isRecord(document.rss) || !('channel' in document.rss)) return undefined
+  const channel = document.rss.channel
+  // A channel without children parses to an empty string: the indexer answered and has nothing.
+  if (channel === '') return []
+  return isRecord(channel) ? listOf(channel.item) : undefined
+}
+
+/**
+ * The one step every Newznab search goes through, for AmeNZB and Prowlarr's indexers alike: one GET on the
+ * configured origin with no redirect, its status, a capped read, the XML, an error document, which is never
+ * an empty answer whatever status it arrives with, and the feed items.
+ */
+export async function searchNewznab(
+  request: NewznabSearchRequest,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<NewznabSearch> {
+  const signals: AbortSignal[] = [AbortSignal.timeout(request.timeoutMs)]
+  if (request.signal) signals.push(request.signal)
+  let response: Response
   try {
-    return xmlParser.parse(text)
+    response = await fetchImpl(providerEndpoint(request.baseUrl, request.path), {
+      method: 'GET',
+      headers: { accept: 'application/rss+xml, application/xml', ...request.headers },
+      signal: AbortSignal.any(signals),
+      redirect: 'error',
+    })
+  } catch (error) {
+    return { kind: 'failed', failure: searchTransportFailure(error, request) }
+  }
+  const refused = refusingStatus(response, request)
+  if (refused) {
+    await response.body?.cancel().catch(() => undefined)
+    return { kind: 'failed', failure: refused }
+  }
+  let body: string
+  try {
+    body = decodeText(await readResponseCapped(response, request.maxBytes))
+  } catch (error) {
+    return { kind: 'failed', failure: searchTransportFailure(error, request) }
+  }
+  let document: unknown
+  try {
+    document = parseProviderXml(body)
   } catch {
-    throw new ProviderProtocolError('provider response was not valid XML')
+    document = undefined
   }
-}
-
-function newznabErrorFrom(value: unknown): NewznabError | null {
-  if (!isRecord(value)) return null
-  const code = Number(value['@_code'])
-  if (!Number.isSafeInteger(code) || code <= 0) return null
-  return { code }
-}
-
-function scanForError(node: unknown, depth: number): NewznabError | null {
-  if (depth > 8) return null
-  if (Array.isArray(node)) {
-    for (const entry of node) {
-      const found = scanForError(entry, depth + 1)
-      if (found) return found
+  const reported = findNewznabError(document)
+  if (reported) return { kind: 'failed', failure: newznabErrorFailure(reported.code, request) }
+  if (!response.ok) {
+    const answerer = request.viaProwlarr ? 'Prowlarr' : request.indexer
+    const detail = `${answerer} returned HTTP ${response.status} for the search of ${request.indexer}`
+    const retryAfter = retryAfterMs(response)
+    if (response.status >= 500)
+      return {
+        kind: 'failed',
+        failure: {
+          code: 'server',
+          message: detail,
+          ...(retryAfter ? { retryAfterMs: retryAfter } : {}),
+          scope: 'indexer',
+        },
+      }
+    return { kind: 'failed', failure: { code: 'invalid_response', message: detail, scope: 'indexer' } }
+  }
+  const items = feedItems(document)
+  if (!items)
+    return {
+      kind: 'failed',
+      failure: {
+        code: 'invalid_response',
+        message: request.viaProwlarr
+          ? `Prowlarr did not answer the search of ${request.indexer} with Newznab RSS. Check the Prowlarr URL.`
+          : `${request.indexer} did not answer the search with Newznab RSS`,
+        scope: 'indexer',
+      },
     }
-    return null
-  }
-  if (!isRecord(node)) return null
-  const direct = newznabErrorFrom(node.error)
-  if (direct) return direct
-  for (const key of Object.keys(node)) {
-    if (key === 'error') continue
-    const found = scanForError(node[key], depth + 1)
-    if (found) return found
-  }
+  return { kind: 'items', items }
+}
+
+/** A search that never got a usable answer. Only an unusable configured address is Prowlarr's own fault. */
+function searchTransportFailure(error: unknown, request: NewznabSearchRequest): NewznabFailure {
+  const { indexer } = request
+  const failure = (code: UsenetFailureCode, message: string): NewznabFailure => ({ code, message, scope: 'indexer' })
+  if (error instanceof ProviderConfigError)
+    return {
+      code: 'invalid_config',
+      message: safeText(error.message),
+      scope: request.viaProwlarr ? 'prowlarr' : 'indexer',
+    }
+  if (error instanceof ResponseTooLargeError)
+    return failure('invalid_response', `The answer to the search of ${indexer} exceeded the byte limit`)
+  const name = isRecord(error) && typeof error.name === 'string' ? error.name : ''
+  if (name === 'TimeoutError') return failure('timeout', `The search of ${indexer} timed out`)
+  if (name === 'AbortError' || request.signal?.aborted)
+    return failure('network', `The search of ${indexer} was cancelled`)
+  return failure(
+    'network',
+    request.viaProwlarr
+      ? `Could not reach Prowlarr for the search of ${indexer}`
+      : `Could not reach ${indexer} for the search`,
+  )
+}
+
+/** A status that answers the search by itself, before any body is read. */
+function refusingStatus(response: Response, source: NewznabSource): NewznabFailure | null {
+  const retryAfter = retryAfterMs(response)
+  if (response.status === 401 || response.status === 403)
+    return source.viaProwlarr
+      ? {
+          code: 'unauthorized',
+          message: `Prowlarr returned HTTP ${response.status}. Check the Prowlarr API key.`,
+          scope: 'prowlarr',
+        }
+      : {
+          code: 'unauthorized',
+          message: `${source.indexer} returned HTTP ${response.status} — check the API key and pinned API IP`,
+          scope: 'indexer',
+        }
+  if (response.status === 410 && source.viaProwlarr)
+    return { code: 'invalid_config', message: `${source.indexer} is turned off in Prowlarr`, scope: 'indexer' }
+  if (response.status === 429)
+    return {
+      code: 'rate_limited',
+      // Prowlarr answers 429 itself, without asking the indexer, while the indexer is at the query limit set
+      // in Prowlarr or disabled after failures. `Retry-After` says when it will ask again.
+      message: source.viaProwlarr
+        ? `Prowlarr is not searching ${source.indexer} for now: it is at its query limit or disabled after failures`
+        : `${source.indexer} rate limited the request`,
+      ...(retryAfter ? { retryAfterMs: retryAfter } : {}),
+      scope: 'indexer',
+    }
   return null
 }
 
-/** Newznab sends `<error code description="...">` with HTTP 200; it is never "no match". */
-export function findNewznabError(document: unknown): NewznabError | null {
-  return scanForError(document, 0)
-}
-
-/** Cheap guard for NZB bodies that are really a Newznab error document. */
-export function detectXmlError(bytes: Uint8Array): NewznabError | null {
-  if (bytes.length === 0 || bytes.length > LOOKUP_MAX_BYTES || bytes[0] !== 0x3c) return null
-  let document: unknown
-  try {
-    document = parseProviderXml(decodeText(bytes))
-  } catch {
-    return null
-  }
-  return findNewznabError(document)
-}
+/** Newznab's "download limit reached", next to the request limit, code 500. */
+const NEWZNAB_DOWNLOAD_LIMIT = 501
 
 /**
- * Classify a Newznab error code of the named provider. Provider-supplied descriptions are never copied
- * into the message: an indexer can echo the full request URL, key included.
+ * A Newznab error code of the named indexer as a failure of that indexer. Only the code is read: the
+ * description can echo the request address, key included.
  */
-export function classifyNewznabError(code: number, provider: string): ProviderFailure {
+export function newznabErrorFailure(code: number, source: NewznabSource): NewznabFailure {
+  const failure = (failed: UsenetFailureCode, message: string): NewznabFailure => ({
+    code: failed,
+    message,
+    scope: 'indexer',
+  })
+  const { indexer } = source
   switch (code) {
     case 100:
-      return { code: 'unauthorized', message: 'Invalid API key or IP mismatch — check the key and pinned API IP' }
+      // Through Prowlarr it is the indexer's own key, kept in Prowlarr.
+      return source.viaProwlarr
+        ? failure('unauthorized', `${indexer} refused its API key (code 100). Check the indexer in Prowlarr.`)
+        : failure('unauthorized', 'Invalid API key or IP mismatch — check the key and pinned API IP')
     case 500:
-      return {
-        code: 'rate_limited',
-        message: `${provider} API limit reached (code 500) — retry later or check the account allowance`,
-      }
+      return failure(
+        'rate_limited',
+        `${indexer} API limit reached (code 500) — retry later or check the account allowance`,
+      )
+    case NEWZNAB_DOWNLOAD_LIMIT:
+      return failure('rate_limited', `${indexer} reported that its download limit is reached (code ${code})`)
     case 200:
     case 201:
     case 202:
-      return { code: 'invalid_response', message: `${provider} rejected the request parameters (code ${code})` }
+      return failure('invalid_response', `${indexer} rejected the request parameters (code ${code})`)
     case 300:
-      return { code: 'server', message: `${provider} refused the resource (code 300)` }
+      return failure('server', `${indexer} refused the resource (code 300)`)
     default:
-      return { code: 'server', message: `${provider} reported an error (code ${code})` }
-  }
-}
-
-/** Accept the standard public DTD without passing it to the XML parser. */
-export function validateNzbBytes(bytes: Uint8Array): void {
-  const value = decodeText(bytes)
-  if (!value.trim()) throw new Error('NZB response was empty')
-  const declaration = value.match(STANDARD_NZB_DOCTYPE)
-  if (declaration && !/^(?:\s|<\?xml\s[^?]*\?>|<!--[\s\S]*?-->)*$/.test(value.slice(0, declaration.index))) {
-    throw new Error('NZB response was not valid XML')
-  }
-  const xml = value.replace(STANDARD_NZB_DOCTYPE, '')
-  if (DECLARATION_PATTERN.test(xml)) throw new Error('NZB response declared an unsupported DTD or entity')
-  assertWellFormedXml(xml)
-  let document: unknown
-  try {
-    document = xmlParser.parse(xml)
-  } catch {
-    throw new Error('NZB response was not valid XML')
-  }
-  const roots = isRecord(document) ? Object.keys(document).filter(key => !key.startsWith('?')) : []
-  const nzb = isRecord(document) ? document.nzb : undefined
-  if (roots.length !== 1 || roots[0] !== 'nzb' || !isRecord(nzb))
-    throw new Error('NZB response had the wrong root element')
-  const files = listOf(nzb.file)
-  if (!files.length) throw new Error('NZB response contained no segments')
-  for (const file of files) {
-    const container = isRecord(file) && isRecord(file.segments) ? file.segments : undefined
-    const segments = listOf(container?.segment)
-    if (!segments.length) throw new Error('NZB response contained no segments')
-    for (const segment of segments) {
-      if (
-        !isRecord(segment) ||
-        !text(segment['#text']) ||
-        safeByteSize(segment['@_bytes']) === undefined ||
-        !Number.isSafeInteger(Number(segment['@_number'])) ||
-        Number(segment['@_number']) <= 0
-      ) {
-        throw new Error('NZB response contained an invalid segment')
-      }
-    }
+      return failure('server', `${indexer} reported an error (code ${code})`)
   }
 }
 
@@ -514,7 +361,7 @@ export async function fetchProviderNzb(
     case 'too_large':
       throw new Error(new ResponseTooLargeError().message)
     case 'error_document':
-      throw new Error(classifyNewznabError(read.code, provider).message)
+      throw new Error(newznabErrorFailure(read.code, { indexer: provider }).message)
     case 'invalid':
       throw new Error(read.message)
   }

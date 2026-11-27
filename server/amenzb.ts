@@ -5,30 +5,13 @@
 import { INFO_HASH_PATTERN } from '../shared/ids.js'
 import { isRecord } from '../shared/guards.js'
 import type { UsenetProvider } from '../shared/usenet-contracts.js'
-import {
-  AMENZB_ENTRY_PATTERN,
-  LOOKUP_MAX_BYTES,
-  LOOKUP_TIMEOUT_MS,
-  ProviderProtocolError,
-  ResponseTooLargeError,
-  classifyNewznabError,
-  decodeText,
-  elementText,
-  failedFrom,
-  failedLookup,
-  fetchProviderNzb,
-  findNewznabError,
-  httpStatusFailure,
-  listOf,
-  newznabAttributes,
-  parseProviderXml,
-  providerRequest,
-  readResponseCapped,
-  safeByteSize,
-  safeText,
-  text,
-} from './usenet-provider-types.js'
+import { elementText, newznabAttributes, safeByteSize, text } from './newznab-xml.js'
+import { LOOKUP_MAX_BYTES, LOOKUP_TIMEOUT_MS, failedLookup } from './provider-http.js'
+import { fetchProviderNzb, searchNewznab } from './usenet-provider-types.js'
 import type { ProviderLookup, ProviderSettings, UsenetMatch } from './usenet-provider-types.js'
+
+/** AmeNZB (Newznab) guid / t=get ids. */
+export const AMENZB_ENTRY_PATTERN = /^[0-9A-Za-z_-]+$/
 
 const PROVIDER: UsenetProvider = 'amenzb'
 /** Cannot exist, so it validates the key/IP without depending on catalogue contents. */
@@ -75,47 +58,28 @@ function parseItem(value: unknown): AmeNZBItem | undefined {
   }
 }
 
-function searchItems(document: unknown): unknown[] | undefined {
-  if (!isRecord(document) || !isRecord(document.rss) || !isRecord(document.rss.channel)) return undefined
-  return listOf(document.rss.channel.item)
-}
-
 /**
- * Run one hash search and classify everything the provider can answer with,
- * including `<error>` documents that arrive with HTTP 200.
+ * Run one hash search through the shared Newznab search step, which classifies everything the indexer
+ * can answer with, including `<error>` documents that arrive with HTTP 200.
  */
 async function search(settings: ProviderSettings, requested: string, fetchImpl: typeof fetch): Promise<ProviderLookup> {
   if (!settings.apiKey) return failedLookup('invalid_config', 'AmeNZB API key is not configured')
-  const path = `/api?t=search&apikey=${encodeURIComponent(settings.apiKey)}&info_hash=${requested}`
-
-  let response: Response
-  try {
-    response = await providerRequest(settings, path, 'application/xml', LOOKUP_TIMEOUT_MS, fetchImpl)
-  } catch (error) {
-    return failedFrom(error, settings, 'lookup')
+  const answer = await searchNewznab(
+    {
+      indexer: 'AmeNZB',
+      baseUrl: settings.baseUrl,
+      path: `/api?t=search&apikey=${encodeURIComponent(settings.apiKey)}&info_hash=${requested}`,
+      timeoutMs: LOOKUP_TIMEOUT_MS,
+      maxBytes: LOOKUP_MAX_BYTES,
+      signal: settings.signal,
+    },
+    fetchImpl,
+  )
+  if (answer.kind === 'failed') {
+    const { failure } = answer
+    return failedLookup(failure.code, failure.message, failure.retryAfterMs)
   }
-
-  const status = httpStatusFailure(response, 'AmeNZB')
-  if (status) return failedLookup(status.code, status.message, status.retryAfterMs)
-
-  let document: unknown
-  try {
-    document = parseProviderXml(decodeText(await readResponseCapped(response, LOOKUP_MAX_BYTES)))
-  } catch (error) {
-    if (error instanceof ResponseTooLargeError) return failedLookup('invalid_response', safeText(error.message))
-    if (error instanceof ProviderProtocolError) return failedLookup('invalid_response', safeText(error.message))
-    return failedFrom(error, settings, 'lookup')
-  }
-
-  // An error document is never an empty result set.
-  const reported = findNewznabError(document)
-  if (reported) {
-    const failure = classifyNewznabError(reported.code, 'AmeNZB')
-    return failedLookup(failure.code, failure.message)
-  }
-
-  const rawItems = searchItems(document)
-  if (!rawItems) return failedLookup('invalid_response', 'AmeNZB search response was not Newznab RSS')
+  const rawItems = answer.items
   if (rawItems.length === 0) return { kind: 'no_match' }
 
   const items: AmeNZBItem[] = []
