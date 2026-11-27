@@ -81,15 +81,59 @@ const NO_USENET_INDEXER = 'Prowlarr has no Usenet indexer.'
 const NZB_UNKNOWN = 'The NZB found through Prowlarr is no longer known. Re-run the review before submitting.'
 const NZB_CHANGED = 'The NZB changed since it was checked. Re-run the review before submitting.'
 
+/** What the Prowlarr finder runs on. A Usenet runtime (`usenet-runtime.ts`) builds it and puts it in place. */
+export interface SearchParts {
+  scheduler: LookupScheduler
+  store: UsenetSearchStore
+  now: () => number
+  fetch: typeof fetch
+}
+
+/** The finder's parts with this clock, fetch, store paths and pacing over the defaults. */
+export function searchParts(
+  options: {
+    now?: () => number
+    fetch?: typeof fetch
+    searchFile?: string
+    nzbDir?: string
+    pacing?: Partial<LookupPacing>
+  } = {},
+): SearchParts {
+  const now = options.now ?? (() => Date.now())
+  return {
+    scheduler: prowlarrScheduler(options.pacing, now),
+    store: new UsenetSearchStore(options.searchFile, options.nzbDir, { now }),
+    now,
+    fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
+  }
+}
+
+function prowlarrScheduler(pacing: Partial<LookupPacing> = {}, now?: () => number): LookupScheduler {
+  return new LookupScheduler({ concurrency: 3, foregroundReserved: 1, minIntervalMs: 2_000, ...pacing }, now)
+}
+
+let parts = searchParts()
+
 /**
  * Paces and prioritizes every request to a Usenet indexer in Prowlarr, one channel `prowlarr:<indexer id>`
  * per indexer. It is apart from the scheduler of the hash indexers, so a slow search never takes a slot
  * from hash lookups.
  */
-export let searchScheduler = prowlarrScheduler()
+export let searchScheduler = parts.scheduler
 
-function prowlarrScheduler(pacing: Partial<LookupPacing> = {}): LookupScheduler {
-  return new LookupScheduler({ concurrency: 3, foregroundReserved: 1, minIntervalMs: 2_000, ...pacing })
+/** Search records, fetched NZBs, usage counters and the sweep summary of the runtime in use. */
+export let searchStore = parts.store
+
+/**
+ * Usenet runtime only: the finder from now on runs on `next`. Running searches and checks are cancelled and
+ * what they learn is discarded.
+ */
+export function useSearchParts(next: SearchParts): void {
+  cancelWork()
+  sourceFiles.clear()
+  parts = next
+  searchScheduler = next.scheduler
+  searchStore = next.store
 }
 
 /**
@@ -98,11 +142,9 @@ function prowlarrScheduler(pacing: Partial<LookupPacing> = {}): LookupScheduler 
  * was given to; the next read of the indexer list names the channels again.
  */
 export function paceUsenetSearch(pacing: Partial<LookupPacing> = {}): void {
-  searchScheduler = prowlarrScheduler(pacing)
+  parts.scheduler = prowlarrScheduler(pacing, parts.now)
+  searchScheduler = parts.scheduler
 }
-
-/** Search records, fetched NZBs, usage counters and the sweep summary, on the default paths. */
-export const searchStore = new UsenetSearchStore()
 
 /** What a search is built from; a `PrivateSearchContext` fits. */
 export type UsenetSearchContext = SearchTerms
@@ -227,7 +269,7 @@ const indexerFailures = new Map<string, { code: UsenetFailureCode; message: stri
 /** File lists of the sources seen by this process, to grade an NZB that is fetched again for a submission. */
 const sourceFiles = new Map<string, SourceFile[]>()
 /** Warnings repeat at most once a minute per subject; a sweep must not fill the log. */
-const warnings = new WarningThrottle()
+const warnings = new WarningThrottle({ now: () => parts.now() })
 /** Channels paused because Prowlarr reported their indexer disabled, with the time it named. */
 const disabledUntil = new Map<string, number>()
 /** Usenet indexers as last read from Prowlarr; snapshots judge staleness by them without a request. */
@@ -277,7 +319,7 @@ function retryTime(channel: string, failure: ProwlarrError, now: number): number
 }
 
 function rememberFailure(key: string, failure: ProwlarrError): void {
-  const now = Date.now()
+  const now = parts.now()
   failures.set(key, {
     code: failure.code,
     message: failure.message,
@@ -293,7 +335,7 @@ function rememberFailure(key: string, failure: ProwlarrError): void {
  */
 function noteIndexers(fingerprint: string, indexers: ProwlarrIndexer[]): void {
   known = { fingerprint, indexers }
-  const now = Date.now()
+  const now = parts.now()
   for (const indexer of indexers) {
     const channel = channelOf(indexer.id)
     searchScheduler.describe(channel, { label: indexerName(indexer) })
@@ -422,7 +464,7 @@ function outcomeOf(
   const key = sourceKey(fingerprint, sourceId)
   // The caller's own `resolveSource` is still counted, and is no reason to poll.
   return {
-    ...snapshotOf(config, fingerprint, sourceId, Date.now()),
+    ...snapshotOf(config, fingerprint, sourceId, parts.now()),
     running: searches.has(key) || verifies.has(key),
     ...done,
   }
@@ -455,7 +497,7 @@ function storeSearch(
   runs: IndexerRun[],
   found: Map<string, StoredCandidate>,
 ): void {
-  const at = Date.now()
+  const at = parts.now()
   const current = searchStore.get(fingerprint, sourceId)
   const enabled = new Set(indexers.map(indexer => indexer.id))
   const merged = new Map<string, StoredCandidate>()
@@ -530,7 +572,7 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
   if (cancelled()) return SEARCH_CANCELLED
   if (!indexers.length) return { ...NOTHING, complete: true, unconfigured: NO_USENET_INDEXER }
 
-  const startedAt = Date.now()
+  const startedAt = parts.now()
   const before = searchStore.get(fingerprint, source.id)
   const due =
     refresh || !before ? indexers.map(indexer => indexer.id) : searchRecordState(before, startedAt, indexers).ask
@@ -586,7 +628,7 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
           searchStore.countSearch(fingerprint, run.indexer.id)
         }
         run.queries++
-        return searchIndexer({ ...settings, signal }, run.indexer, query)
+        return searchIndexer({ ...settings, signal }, run.indexer, query, parts.fetch)
       },
       outcome: settled => {
         if (settled.ok) return settled.value === REFUSED ? undefined : ANSWERED
@@ -616,7 +658,7 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
       // Prowlarr refusing its key fails everything; anything else is this indexer's failure only.
       if (failure.scope === 'prowlarr') fatal ??= failure
       else {
-        fail(run, retryTime(run.channel, failure, Date.now()), failure.code, failure.message)
+        fail(run, retryTime(run.channel, failure, parts.now()), failure.code, failure.message)
         warnings.warn(run.channel, `Prowlarr search of ${run.name} failed: ${failure.message}`)
       }
       return
@@ -682,7 +724,7 @@ function sharedSearch(request: SearchRequest, background: boolean, loose: boolea
   }
   // Prowlarr itself failed a moment ago: it is not asked again before its retry time unless told to.
   const failure = failures.get(key)
-  if (!request.refresh && failure && Date.now() < failure.retryAt) return Promise.resolve(NOTHING)
+  if (!request.refresh && failure && parts.now() < failure.retryAt) return Promise.resolve(NOTHING)
   return searches.start(key, { background, loose }, flight =>
     runSearch(flight, request).catch((error): SearchResult => {
       rememberFailure(key, requestFailure(error, 'search', 'prowlarr'))
@@ -783,12 +825,12 @@ async function fetchNzb(
         // Given up between getting the slot and using it: nothing was asked for yet.
         if (queued.aborted) return { kind: 'withdrawn' }
         // Read with the slot in hand: checks of other sources spend the same daily limit.
-        const block = fetchBlock(config, fingerprint, candidate.indexer_id, indexer, Date.now())
+        const block = fetchBlock(config, fingerprint, candidate.indexer_id, indexer, parts.now())
         if (block) return { kind: 'blocked', reason: block }
         searchStore.countFetch(fingerprint, candidate.indexer_id)
         const path = downloadPathFromRef(settings, { indexer_id: candidate.indexer_id, ...candidate.download })
         // Arrives decompressed and validated: anything but an NZB already failed as the indexer's.
-        const nzb = await prowlarrGrabNzb({ ...settings, signal }, { download_path: path })
+        const nzb = await prowlarrGrabNzb({ ...settings, signal }, { download_path: path }, parts.fetch)
         return { kind: 'fetched', nzb, files: nzbFiles(nzb) }
       },
       outcome: settled => {
@@ -834,7 +876,7 @@ async function runVerify(
   let fetched = 0
   let reason: string | undefined
   while (fetched < flight.limit && !flight.withdrawn) {
-    const now = Date.now()
+    const now = parts.now()
     const record = searchStore.get(fingerprint, source.id)
     if (!record || searchRecordState(record, now).state === 'available') break
     // The record is ranked best first. A candidate of an indexer that left Prowlarr cannot be fetched.
@@ -864,7 +906,7 @@ async function runVerify(
       continue
     }
     fetched++
-    const at = Date.now()
+    const at = parts.now()
     if (step.kind === 'fetched') {
       const grade = gradeNzb(step.files, source.files)
       const sha256 = searchStore.storeNzb(step.nzb)
@@ -997,7 +1039,7 @@ export async function resolveSource(
     const { state } = searched.availability
     const unproven = state === 'unverified' || (refresh && (state === 'no_match' || state === 'lookup_failed'))
     // Prowlarr failing a moment ago would fail the fetch as well.
-    const failing = Date.now() < (failures.get(key)?.retryAt ?? 0)
+    const failing = parts.now() < (failures.get(key)?.retryAt ?? 0)
     const done = background || !(limit > 0) || searched.cancelled || call.withdrawn || !unproven || failing
     if (done) return searched
     const verified = await verifySource(config, source, { limit, cancellable })
@@ -1045,7 +1087,7 @@ export function searchSnapshot(config: Config, sourceId: string): UsenetSearchSn
   const settings = connectionFor(config, sourceId)
   if (!settings)
     return { availability: notConfigured(sourceId, NOT_SET_UP), checkedAt: 0, stale: false, running: false }
-  return snapshotOf(config, prowlarrFingerprint(settings), sourceId, Date.now())
+  return snapshotOf(config, prowlarrFingerprint(settings), sourceId, parts.now())
 }
 
 /** A stored candidate an NZB may be sent for: fetched, graded and not rejected. */
@@ -1106,7 +1148,7 @@ export async function searchNzbBytes(
   // Another file under the same entry: it is sent only when it proves as much as the one that was checked.
   const grade = files?.length ? gradeNzb(step.files, files) : undefined
   if (grade) {
-    saveCheck(fingerprint, sourceId, entryId, checkOf(grade, Date.now(), searchStore.storeNzb(step.nzb)))
+    saveCheck(fingerprint, sourceId, entryId, checkOf(grade, parts.now(), searchStore.storeNzb(step.nzb)))
     logGrade(candidate.indexer, grade)
     if (grade.proof === check.proof) return step.nzb
   } else saveCheck(fingerprint, sourceId, entryId, undefined)
@@ -1124,7 +1166,7 @@ export function rejectSearchCandidate(config: Config, sourceId: string, entryId:
   const candidate = record?.candidates.find(entry => entry.entry_id === entryId)
   if (!record || !candidate) return false
   if (!candidate.rejected) {
-    candidate.rejected = { at: Date.now(), reason: 'import_mismatch' }
+    candidate.rejected = { at: parts.now(), reason: 'import_mismatch' }
     searchStore.put(record, { durable: true })
   }
   return true
@@ -1140,7 +1182,7 @@ export function prowlarrIndexerUsage(config: Config): ProwlarrIndexerUsage[] {
   const fingerprint = prowlarrFingerprint(settings)
   const listed = knownProwlarrIndexers(settings)?.filter(indexer => indexer.protocol === 'usenet')
   if (listed) noteIndexers(fingerprint, listed)
-  const now = Date.now()
+  const now = parts.now()
   const limit = config.prowlarr_fetch_limit
   return (listed ?? (known?.fingerprint === fingerprint ? known.indexers : [])).map(indexer => {
     const left = limit > 0 ? Math.max(0, limit - searchStore.usage(fingerprint, indexer.id, now).fetches) : null
@@ -1168,7 +1210,7 @@ export function backgroundSearchesSpent(
   config: Config,
   sourceId: string,
   indexers: ProwlarrIndexer[],
-  now = Date.now(),
+  now = parts.now(),
 ): boolean {
   const settings = connectionFor(config, sourceId)
   if (!settings || !indexers.length) return false
@@ -1201,7 +1243,7 @@ function cancelWork(): void {
 /**
  * For a changed Prowlarr URL or key: running searches and checks are cancelled and what they learn is
  * discarded, the indexers' pacing is forgotten, and the records, counters and stored NZBs of every other
- * connection are dropped. The client's indexer list is reset by the caller (`resetProwlarrRuntime`).
+ * connection are dropped. The Usenet runtime resets the client's indexer list after it (`resetProwlarrRuntime`).
  */
 export function invalidateUsenetSearch(config: Config): void {
   cancelWork()

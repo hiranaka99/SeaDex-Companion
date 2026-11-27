@@ -164,7 +164,11 @@ export class LookupScheduler {
   private active = 0
   private timer?: NodeJS.Timeout
 
-  constructor(pacing: Partial<LookupPacing> = {}) {
+  /** `now` is the clock pacing and pauses are measured on. */
+  constructor(
+    pacing: Partial<LookupPacing> = {},
+    private readonly now: () => number = () => Date.now(),
+  ) {
     this.pacing = { ...DEFAULT_PACING, ...pacing }
   }
 
@@ -209,7 +213,7 @@ export class LookupScheduler {
     return Math.max(state.minIntervalMs ?? this.pacing.minIntervalMs, state.widenedMs)
   }
 
-  isPaused(channel: string, now = Date.now()): boolean {
+  isPaused(channel: string, now = this.now()): boolean {
     return now < this.channel(channel).pausedUntil
   }
 
@@ -219,7 +223,7 @@ export class LookupScheduler {
 
   /** Active channel pauses, for status reporting. */
   pauses(): ChannelPause[] {
-    const now = Date.now()
+    const now = this.now()
     return [...this.channels]
       .filter(([, state]) => now < state.pausedUntil)
       .map(([channel, state]) => ({
@@ -237,7 +241,7 @@ export class LookupScheduler {
    */
   pause(channel: string, until: number, reason: UsenetFailureCode): void {
     const state = this.channel(channel)
-    if (until <= Date.now() || until <= state.pausedUntil) return
+    if (until <= this.now() || until <= state.pausedUntil) return
     state.pausedUntil = until
     state.reason = reason
     this.pump()
@@ -254,7 +258,7 @@ export class LookupScheduler {
   /** The failure a lookup reports when its channel is paused until `until`. */
   pausedFailure(channel: string, until: number): Extract<ProviderLookup, { kind: 'failed' }> {
     const { label, reason } = this.channel(channel)
-    const remaining = Math.max(0, until - Date.now())
+    const remaining = Math.max(0, until - this.now())
     const cause = reason === 'rate_limited' ? 'is rate limiting lookups' : 'lookups are failing'
     return {
       kind: 'failed',
@@ -284,7 +288,7 @@ export class LookupScheduler {
     if (!outcome.code || !TRANSIENT_CODES.has(outcome.code)) return
     health.failures++
     if (outcome.code !== 'rate_limited' && health.failures < this.pacing.transientFailuresBeforePause) return
-    const now = Date.now()
+    const now = this.now()
     const requested = outcome.retry_after_ms || 0
     // Concurrent requests that fail together escalate the pause, and widen the spacing, only once.
     if (this.isPaused(channel, now)) {
@@ -356,14 +360,14 @@ export class LookupScheduler {
     const { concurrency, foregroundReserved } = this.pacing
     clearTimeout(this.timer)
     this.timer = undefined
-    const startedAt = Date.now()
+    const startedAt = this.now()
     for (const waiter of [...this.waiting]) {
       if (waiter.background || !this.isPaused(waiter.channel, startedAt)) continue
       this.dequeue(waiter)
       waiter.paused(this.pausedUntil(waiter.channel))
     }
     while (this.active < concurrency && this.waiting.length) {
-      const now = Date.now()
+      const now = this.now()
       const ready = ({ channel }: Waiter) => now >= this.readyAt(channel)
       const next =
         this.waiting.find(waiter => !waiter.background && ready(waiter)) ??
@@ -387,7 +391,7 @@ export class LookupScheduler {
         this.timer = undefined
         this.pump()
       },
-      Math.max(0, soonest - Date.now()),
+      Math.max(0, soonest - this.now()),
     )
   }
 

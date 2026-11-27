@@ -70,15 +70,39 @@ interface Entry {
   value: PrivateTorrentLookup
 }
 
-const torrents = new Map<string, Entry>()
+/**
+ * The private torrents found or missed recently, with the clock that dates them and the fetch Prowlarr is asked
+ * with. A Usenet runtime (`usenet-runtime.ts`) builds it and puts it in place.
+ */
+export interface PrivateTorrentCache {
+  torrents: Map<string, Entry>
+  now: () => number
+  fetch: typeof fetch
+}
+
+export function privateTorrentCache(options: { now?: () => number; fetch?: typeof fetch } = {}): PrivateTorrentCache {
+  return {
+    torrents: new Map(),
+    now: options.now ?? (() => Date.now()),
+    fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
+  }
+}
+
+let cache = privateTorrentCache()
 const inFlight = new Map<string, Promise<PrivateTorrentLookup>>()
 let epoch = 0
 
 /** Forget every observation, for a changed Prowlarr connection. Running work is discarded when it settles. */
 export function invalidatePrivateSources(): void {
   epoch++
-  torrents.clear()
+  cache.torrents.clear()
   inFlight.clear()
+}
+
+/** Usenet runtime only: lookups from now on use `next`. Running lookups are discarded when they settle. */
+export function usePrivateTorrentCache(next: PrivateTorrentCache): void {
+  invalidatePrivateSources()
+  cache = next
 }
 
 let running = 0
@@ -110,10 +134,11 @@ async function searchAll(
   queries: string[],
   indexerIds: number[],
   enough: (results: ProwlarrRelease[]) => boolean,
+  fetchImpl: typeof fetch,
 ): Promise<ProwlarrRelease[]> {
   const seen = new Map<string, ProwlarrRelease>()
   for (const query of new Set(queries.filter(Boolean))) {
-    for (const release of await searchProwlarr(settings, query, indexerIds))
+    for (const release of await searchProwlarr(settings, query, indexerIds, fetchImpl))
       seen.set(`${release.indexer_id}\u0000${release.guid}`, release)
     if (enough([...seen.values()])) break
   }
@@ -135,6 +160,7 @@ async function findTorrent(
   settings: ProwlarrSettings,
   source: PrivateSource,
   context: PrivateSearchContext,
+  fetchImpl: typeof fetch,
 ): Promise<PrivateTorrentLookup> {
   const tracker = context.tracker || 'the tracker'
   const indexers = trackerIndexers(await prowlarrIndexers(settings), context.tracker)
@@ -152,6 +178,7 @@ async function findTorrent(
     context.titles.slice(0, TITLE_LIMIT),
     indexers.map(indexer => indexer.id),
     found => Boolean(id) && found.some(release => namesTorrent(release, id)),
+    fetchImpl,
   )
   // The tracker's own torrent ID is checked first; a torrent of the same size is the fallback.
   const candidates = results
@@ -162,7 +189,7 @@ async function findTorrent(
     let bytes: Uint8Array
     let parsed: ReturnType<typeof parseTorrentFile>
     try {
-      bytes = await prowlarrDownload(settings, candidate, TORRENT_FILE_MAX_BYTES)
+      bytes = await prowlarrDownload(settings, candidate, TORRENT_FILE_MAX_BYTES, fetchImpl)
       parsed = parseTorrentFile(bytes)
     } catch (error) {
       // An unreadable file is one failed candidate; an unreachable Prowlarr fails the lookup.
@@ -196,20 +223,21 @@ export async function resolvePrivateTorrent(
   const settings = privateSearchSettings(config)
   if (!settings) return { kind: 'unconfigured', reason: 'Prowlarr is not set up.' }
   const key = sourceKey(settings, source.id)
+  const current = cache
   if (!refresh) {
-    const hit = torrents.get(key)
-    if (hit && Date.now() - hit.at < hit.ttl) return hit.value
+    const hit = current.torrents.get(key)
+    if (hit && current.now() - hit.at < hit.ttl) return hit.value
   }
   // One lookup runs once, however many callers ask at the same time.
   const shared = inFlight.get(key)
   if (shared) return shared
   const started = epoch
-  const promise = limited(() => findTorrent(settings, source, context))
+  const promise = limited(() => findTorrent(settings, source, context, current.fetch))
     .catch((error): PrivateTorrentLookup => failed(error))
     .then(value => {
       if (started === epoch) {
         if (value.kind === 'failed') log('WARNING', `Prowlarr torrent lookup failed: ${value.message}`)
-        torrents.set(key, { at: Date.now(), ttl: TTL[value.kind], value })
+        current.torrents.set(key, { at: current.now(), ttl: TTL[value.kind], value })
       }
       return value
     })
