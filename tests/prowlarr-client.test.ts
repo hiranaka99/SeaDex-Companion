@@ -15,12 +15,12 @@ import {
   prowlarrDownload,
   prowlarrGrabNzb,
   prowlarrIndexers,
-  resetProwlarrRuntime,
   searchIndexer,
 } from '../server/prowlarr.js'
 import type { ProwlarrSettings } from '../server/prowlarr.js'
 import type { Config } from '../server/types.js'
 import { NZB_MAX_BYTES } from '../server/usenet-provider-types.js'
+import { testUsenetRuntime } from './support/usenet-runtime.js'
 
 const PROWLARR = 'http://prowlarr-client.test:9696'
 const KEY = 'prowlarr-key-0f3a'
@@ -576,7 +576,7 @@ function indexerResource(id: number, overrides: Record<string, unknown> = {}, li
   }
 }
 
-test('The indexer list carries search parameters, the disabled time and the limits per day', async () => {
+test('The indexer list carries search parameters, the disabled time and the limits per day', async t => {
   const body = [
     indexerResource(
       1,
@@ -590,34 +590,30 @@ test('The indexer list carries search parameters, the disabled time and the limi
     indexerResource(6, { protocol: 'torrent', capabilities: undefined, fields: undefined }),
   ]
   const { fetchImpl } = recorder(() => Response.json(body))
-  resetProwlarrRuntime()
-  try {
-    const [daily, hourly, mixed, unlimited, unknownUnit, bare] = await prowlarrIndexers(SETTINGS, fetchImpl, true)
+  testUsenetRuntime(t)
+  const [daily, hourly, mixed, unlimited, unknownUnit, bare] = await prowlarrIndexers(SETTINGS, fetchImpl, true)
 
-    assert.deepEqual(daily.tvSearchParams, ['q', 'season', 'ep', 'tvdbid', 'imdbid'])
-    assert.deepEqual(daily.movieSearchParams, ['q', 'imdbid', 'tmdbid'])
-    assert.equal(daily.disabledTill, Date.UTC(2026, 10, 26, 12, 30))
-    assert.equal(daily.queryLimitPerDay, 100)
-    assert.equal(daily.grabLimitPerDay, 10)
+  assert.deepEqual(daily.tvSearchParams, ['q', 'season', 'ep', 'tvdbid', 'imdbid'])
+  assert.deepEqual(daily.movieSearchParams, ['q', 'imdbid', 'tmdbid'])
+  assert.equal(daily.disabledTill, Date.UTC(2026, 10, 26, 12, 30))
+  assert.equal(daily.queryLimitPerDay, 100)
+  assert.equal(daily.grabLimitPerDay, 10)
 
-    // An hourly limit is 24 times as much in a day.
-    assert.equal(hourly.queryLimitPerDay, 120)
-    assert.equal(hourly.grabLimitPerDay, 48)
-    assert.equal('disabledTill' in hourly, false)
+  // An hourly limit is 24 times as much in a day.
+  assert.equal(hourly.queryLimitPerDay, 120)
+  assert.equal(hourly.grabLimitPerDay, 48)
+  assert.equal('disabledTill' in hourly, false)
 
-    assert.equal(mixed.queryLimitPerDay, 96)
-    assert.equal('grabLimitPerDay' in mixed, false, 'zero is no limit')
-    assert.equal('disabledTill' in mixed, false, 'an unreadable date is no date')
+  assert.equal(mixed.queryLimitPerDay, 96)
+  assert.equal('grabLimitPerDay' in mixed, false, 'zero is no limit')
+  assert.equal('disabledTill' in mixed, false, 'an unreadable date is no date')
 
-    assert.equal('queryLimitPerDay' in unlimited || 'grabLimitPerDay' in unlimited, false)
-    assert.equal(unknownUnit.queryLimitPerDay, 50, 'an unknown unit counts as per day')
-    assert.equal('grabLimitPerDay' in unknownUnit, false)
+  assert.equal('queryLimitPerDay' in unlimited || 'grabLimitPerDay' in unlimited, false)
+  assert.equal(unknownUnit.queryLimitPerDay, 50, 'an unknown unit counts as per day')
+  assert.equal('grabLimitPerDay' in unknownUnit, false)
 
-    assert.deepEqual([bare.tvSearchParams, bare.movieSearchParams], [[], []])
-    assert.equal('queryLimitPerDay' in bare || 'grabLimitPerDay' in bare || 'disabledTill' in bare, false)
-  } finally {
-    resetProwlarrRuntime()
-  }
+  assert.deepEqual([bare.tvSearchParams, bare.movieSearchParams], [[], []])
+  assert.equal('queryLimitPerDay' in bare || 'grabLimitPerDay' in bare || 'disabledTill' in bare, false)
 })
 
 // --- Tracker modes ------------------------------------------------------------------

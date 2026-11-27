@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, beforeEach, test, type TestContext } from 'node:test'
-import { DATA_DIR, NZB_STORE_DIR, USENET_SEARCH_FILE } from '../server/paths.js'
+import { DATA_DIR } from '../server/paths.js'
 import {
   addDownloadRecord,
   findDownloadRecord,
@@ -27,17 +27,10 @@ import { applyConfigUpdate, DEFAULT_CONFIG } from '../server/config.js'
 import { qbEndpointId } from '../server/client-identity.js'
 import { resetQbRuntime } from '../server/qbittorrent.js'
 import { sendImportProblem } from '../server/notifications.js'
-import { resetProwlarrRuntime } from '../server/prowlarr.js'
 import { filesSourceId } from '../server/source-files.js'
-import {
-  rejectSearchCandidate,
-  resetUsenetSearch,
-  resolveSource,
-  paceUsenetSearch,
-  searchSnapshot,
-  verifySource,
-} from '../server/usenet-search.js'
+import { rejectSearchCandidate, resolveSource, searchSnapshot, verifySource } from '../server/usenet-search.js'
 import { candidateEntryId } from '../server/usenet-search-terms.js'
+import { testUsenetRuntime } from './support/usenet-runtime.js'
 import type { ArrInstance } from '../server/arr-instances.js'
 import type { Config, PrivateSource, ResultItem } from '../server/types.js'
 
@@ -491,20 +484,10 @@ function feed(): Response {
   )
 }
 
-function forgetSearches(): void {
-  resetUsenetSearch()
-  resetProwlarrRuntime()
-  rmSync(USENET_SEARCH_FILE, { force: true })
-  rmSync(NZB_STORE_DIR, { recursive: true, force: true })
-}
-
-/** A fake Prowlarr behind `fetch`, and a fresh finder; both are put back when the test ends. */
+/** A fresh Usenet runtime that asks a fake Prowlarr; the default runtime is put back when the test ends. */
 function finder(t: TestContext): { fetched: string[] } {
-  const original = globalThis.fetch
-  forgetSearches()
-  paceUsenetSearch({ minIntervalMs: 0 })
   const fetched: string[] = []
-  globalThis.fetch = async (input: RequestInfo | URL) => {
+  const send = async (input: RequestInfo | URL) => {
     const url = new URL(String(input))
     if (url.origin !== PROWLARR) return new Response('not found', { status: 404 })
     if (url.pathname === '/api/v1/indexer')
@@ -517,11 +500,7 @@ function finder(t: TestContext): { fetched: string[] } {
     }
     throw new Error(`unexpected request: ${url.pathname}`)
   }
-  t.after(() => {
-    globalThis.fetch = original
-    paceUsenetSearch()
-    forgetSearches()
-  })
+  testUsenetRuntime(t, { fetch: send })
   return { fetched }
 }
 

@@ -78,11 +78,13 @@ export let usenetScheduler = parts.scheduler
 
 /**
  * Usenet runtime only: lookups from now on run on `next`. Running lookups are cancelled and what they learn is
- * discarded.
+ * discarded; observations the replaced cache had not written yet are lost.
  */
 export function useHashLookupParts(next: HashLookupParts): void {
   cancelUsenetWork()
   warnings.clear()
+  // The replaced cache writes nothing it had pending, as a process that exits.
+  parts.cache.reset()
   parts = next
   usenetScheduler = next.scheduler
 }
