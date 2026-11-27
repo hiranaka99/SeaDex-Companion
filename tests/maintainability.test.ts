@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { planTorrents, upgradeParts } from '../shared/download-plan.js'
+import { planTorrents, wantedParts } from '../shared/download-plan.js'
 import { estimateDownloads } from '../shared/download-estimate.js'
 import { normalizeResults } from '../server/result-model.js'
 import { createDownloadJobStore } from '../server/download-jobs.js'
@@ -38,12 +38,12 @@ test('review and server eligibility agree for owned, excluded, and unavailable c
     ],
   }
   assert.deepEqual(
-    upgradeParts(season).map(part => part.part),
+    wantedParts(season).map(part => part.part),
     ['Cour 2'],
   )
-  assert.deepEqual(upgradeParts({ ...season, excluded_parts: ['Cour 2'] }), [])
-  assert.deepEqual(upgradeParts({ ...season, excluded: true }), [])
-  const unavailable = upgradeParts({
+  assert.deepEqual(wantedParts({ ...season, excluded_parts: ['Cour 2'] }), [])
+  assert.deepEqual(wantedParts({ ...season, excluded: true }), [])
+  const unavailable = wantedParts({
     ...season,
     releases: [{ ...release, info_hashes: [], torrent_available: false, part: 'Cour 2' }],
   })

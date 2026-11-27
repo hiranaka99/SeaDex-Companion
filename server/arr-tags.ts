@@ -4,7 +4,7 @@ import { errorMessage } from '../shared/errors.js'
 import { arrApiBase, type OutOfScopeItem } from './library.js'
 import { configuredArrInstances, instanceSourceKey, sourceKeyOf, type ArrInstance } from '../shared/arr-instances.js'
 import { libraryItemKey } from './user-rules.js'
-import { upgradeParts } from '../shared/download-plan.js'
+import { wantedParts } from '../shared/download-plan.js'
 import type { ArrTagKey } from '../shared/settings.js'
 import type { Config, JsonObject, LocalItem, ResultItem } from './types.js'
 
@@ -29,7 +29,7 @@ export function titleTagState(seasons: ResultItem[]): TagState | null {
     seasons.some(season => season.match_status === 'unmatched' || (!season.anilist_id && season.status === 'missing'))
   )
     return 'review'
-  if (seasons.some(season => upgradeParts(season).length > 0)) return 'upgrade'
+  if (seasons.some(season => wantedParts(season).length > 0)) return 'upgrade'
   const counted = seasons.filter(season => !season.excluded)
   if (counted.length && counted.every(season => season.status === 'best')) return 'best'
   if (seasons.every(season => season.status === 'missing')) return 'unlisted'

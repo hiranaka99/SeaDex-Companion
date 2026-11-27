@@ -19,7 +19,7 @@ import { DATA_DIR } from '../server/paths.js'
 import { resetRuntimeForTests } from './support/runtime.js'
 import { createScanService } from '../server/scan.js'
 import { resetWebhookScanState } from '../server/scheduler.js'
-import { upgradeParts } from '../shared/download-plan.js'
+import { wantedParts } from '../shared/download-plan.js'
 import type { JsonObject, LocalItem, ReleaseCandidate, SeaDexEntry } from '../server/types.js'
 
 function node(
@@ -573,7 +573,7 @@ describe('release selection and combined cours', () => {
     assert.equal(result.releases[0].torrent_available, true)
     assert.deepEqual(result.unavailable_parts, [{ label: 'Cour 2', reason: 'Not listed on SeaDex' }])
     assert.deepEqual(
-      upgradeParts(result).map(part => part.part),
+      wantedParts(result).map(part => part.part),
       ['Cour 1'],
     )
   })

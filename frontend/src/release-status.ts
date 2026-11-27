@@ -1,4 +1,4 @@
-import { releaseOwned, releaseSatisfies, isSeasonUpgradable } from '../../shared/download-plan.js'
+import { releaseOwned, releaseSatisfies, upgradeAvailable } from '../../shared/download-plan.js'
 import { PREFERENCE_BLOCKED_REASON, PRIVATE_ONLY_REASON } from '../../shared/settings.js'
 import type { Release, ResultItem } from './types.js'
 import { isUnconfirmedMatch } from './utils.js'
@@ -72,7 +72,7 @@ export function releaseQuality(season: ResultItem, cour?: CourReleases): Quality
   if (ownsBest && confirmedOwnership) return { kind: 'best', label: 'Best owned' }
   if (cour && !cour.items.some(({ rel }) => rel.kind === 'best' || rel.target))
     return { kind: 'partial', label: 'No release details' }
-  if (isSeasonUpgradable(season) && !ownsBest) return { kind: 'upgrade', label: 'Upgrade available' }
+  if (upgradeAvailable(season) && !ownsBest) return { kind: 'upgrade', label: 'Upgrade available' }
   return { kind: 'partial', label: 'Ownership unconfirmed' }
 }
 
@@ -96,7 +96,7 @@ export function releaseOverview(seasons: ResultItem[], arr: string) {
     (season, index) => season.status === 'partial' && statuses[index].kind === 'partial',
   ).length
   const upgrades = seasons.filter(
-    (season, index) => isSeasonUpgradable(season) && statuses[index].kind !== 'review',
+    (season, index) => upgradeAvailable(season) && statuses[index].kind !== 'review',
   ).length
   const unit = arr === 'Radarr' ? 'movie' : 'season'
   const quantity = (n: number) => `${n} ${unit}${n === 1 ? '' : 's'}`

@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { assessSeason, type AssessmentSettings } from '../server/assessment.js'
 import { verifyPart } from '../server/verification.js'
 import { normalizeResults } from '../server/result-model.js'
-import { releaseOwned, upgradeParts } from '../shared/download-plan.js'
+import { releaseOwned, wantedParts } from '../shared/download-plan.js'
 import { DEFAULT_RELEASE_PREFERENCES } from '../shared/settings.js'
 import type { ChainEntry, LocalItem, LocalSeason, ReleaseCandidate, SeaDexEntry } from '../server/types.js'
 
@@ -94,7 +94,7 @@ test('the right release group with different file sizes is an upgrade, not the b
   assert.deepEqual(result.mismatched_by_part, { '': ['Best'] })
   assert.equal(releaseOwned(result, result.releases[0]), false)
   assert.deepEqual(
-    upgradeParts(result).map(part => part.options.map(option => option.release.releaseGroup)),
+    wantedParts(result).map(part => part.options.map(option => option.release.releaseGroup)),
     [['Best']],
     'The listed release is offered although its group name is already in the library',
   )
@@ -147,7 +147,7 @@ test("a group's other upload does not stand in for its best release", () => {
   assert.equal(releaseOwned(result, webRelease), true)
   assert.equal(webRelease.files_match, true)
   assert.deepEqual(
-    upgradeParts(result).map(part => part.options.map(option => option.release.info_hashes)),
+    wantedParts(result).map(part => part.options.map(option => option.release.info_hashes)),
     [[[hash('a')]]],
     'The Blu-ray release is still offered',
   )
@@ -212,7 +212,7 @@ test('a movie lists every release of a group, and the one the library holds is m
     [false, false, true],
   )
   assert.deepEqual(
-    upgradeParts(result).map(part => part.options.map(option => option.release.size)),
+    wantedParts(result).map(part => part.options.map(option => option.release.size)),
     [[14_373_209_872, 13_456_862_370]],
   )
   const [saved] = normalizeResults(JSON.parse(JSON.stringify([result])))
@@ -221,7 +221,7 @@ test('a movie lists every release of a group, and the one the library holds is m
 
   const accepting = assessMovie(true)
   assert.equal(accepting.status, 'best', 'Accepting alternatives lets the held release settle the movie')
-  assert.deepEqual(upgradeParts(accepting), [])
+  assert.deepEqual(wantedParts(accepting), [])
 })
 
 test("a group's copies of one release on two trackers are listed once", () => {
@@ -311,7 +311,7 @@ test('each cour is verified against its own episodes', () => {
   assert.deepEqual(result.mismatched_by_part, { 'Cour 2': ['Best'] })
   assert.equal(result.status, 'upgrade')
   assert.deepEqual(
-    upgradeParts(result).map(part => part.part),
+    wantedParts(result).map(part => part.part),
     ['Cour 2'],
   )
 })

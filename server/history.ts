@@ -1,7 +1,7 @@
 import { HISTORY_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
 import { titleKey } from './anilist.js'
-import { isSeasonUpgradable } from '../shared/download-plan.js'
+import { upgradeAvailable } from '../shared/download-plan.js'
 import { isRecord } from '../shared/guards.js'
 import { describeRegression, describeReleaseChanges } from '../shared/release-changes.js'
 import { sourceKeyOf, sourceNameOf } from '../shared/arr-instances.js'
@@ -27,9 +27,9 @@ function resultFallbackIdentity(result: ResultItem): string {
   return `${sourceKeyOf(result)}:${titleKey(result.title || 'unknown')}:${result.season || 0}`
 }
 
-/** A partial season with an open upgrade counts as an upgrade for history and notifications. */
+/** A partial season with an open upgrade counts as an upgrade in history. */
 function automationStatus(result: ResultItem): string {
-  return isSeasonUpgradable(result) ? 'upgrade' : result.status || 'unknown'
+  return upgradeAvailable(result) ? 'upgrade' : result.status || 'unknown'
 }
 
 function previousResultIndex(previous: ResultItem[]): {

@@ -233,7 +233,7 @@ Set an interval, daily times, or weekdays under **Configuration → Automation**
 
 **Unhide anime with new best releases** is off by default. Enable it to bring hidden titles back when a scan finds a new best release. Alternative releases do not trigger this setting. Add a Discord webhook under **Configuration** if you want upgrade notifications.
 
-Discord notifications also report a season that loses its best release because its files changed, for example when Sonarr replaced them with another grab. **Import problems** adds a message when a finished download is not imported; turn it off under **Configuration → Notifications** if you do not want those.
+Seasons and cours you ignore for bulk downloads are not announced on Discord and get no upgrade tag in Sonarr or Radarr; the library still shows them as upgradable. Discord notifications also report a season that loses its best release because its files changed, for example when Sonarr replaced them with another grab. **Import problems** adds a message when a finished download is not imported; turn it off under **Configuration → Notifications** if you do not want those.
 
 Under **Configuration → General** you can set the **Date & time format** used for scan times, history, and detected changes. Build a pattern from the tokens `YYYY YY MM M DD D HH H mm m ss s` — for example `DD.MM.YYYY HH:mm:ss` shows `21.11.2026 18:40:29`. A live preview updates as you type, and the default is `YYYY-MM-DD HH:mm:ss`.
 

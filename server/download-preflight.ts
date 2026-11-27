@@ -1,5 +1,5 @@
 import { releaseIdentity } from '../shared/releases.js'
-import { isSeasonUpgradable, releaseOffered, releaseOwned } from '../shared/download-plan.js'
+import { partIgnored, unwantedReason, type UnwantedReason } from '../shared/download-plan.js'
 import { rowKey, seasonTag } from '../shared/ids.js'
 import { isRecord } from '../shared/guards.js'
 import {
@@ -169,6 +169,27 @@ function resolveProtocol(
   return requested && requested !== only ? 'mode_conflict' : only
 }
 
+/** Blocks a batch row that is not a wanted option, with the code and copy of its reason. */
+function blockUnwanted(blocks: BlockedRows, row: DownloadSelectionRef, release: Release, reason: UnwantedReason): void {
+  switch (reason) {
+    case 'no_upgrade':
+    case 'ignored':
+      return blocks.add(row, 'not_upgradable')
+    case 'not_offered':
+      return release.excluded_by
+        ? blocks.add(row, 'invalid', { reason: `${EXCLUDED_RELEASE_COPY} (${release.excluded_by})` })
+        : blocks.add(row, 'invalid')
+    case 'ignored_part':
+      return blocks.add(row, 'excluded')
+    case 'owned':
+      return blocks.add(row, 'owned')
+    case 'settled':
+      return blocks.add(row, 'owned', {
+        reason: 'The library already holds a release that settles this season or cour.',
+      })
+  }
+}
+
 /** Checks every selection against the current results, the user's exclusions and the saved mode. */
 function resolveRows(
   config: Config,
@@ -192,26 +213,17 @@ function resolveRows(
       throw new HttpError(409, 'A selected release changed. Reopen the review to see the latest recommendations.')
     }
     if (batch) {
-      if (!isSeasonUpgradable(result) || result.excluded) {
-        blocks.add(selection, 'not_upgradable')
-        continue
-      }
-      if (!releaseOffered(release)) {
-        if (release.excluded_by)
-          blocks.add(selection, 'invalid', { reason: `${EXCLUDED_RELEASE_COPY} (${release.excluded_by})` })
-        else blocks.add(selection, 'invalid')
+      // A batch takes only the wanted options bulk review offers; the reason picks the copy the review shows.
+      const unwanted = unwantedReason(result, selection.release)
+      if (unwanted) {
+        blockUnwanted(blocks, selection, release, unwanted)
         continue
       }
       const part = `${selection.key}\u0000${release.part || ''}`
       if (seenParts.has(part)) throw new HttpError(400, 'Choose only one best release per season or cour')
       seenParts.add(part)
-    }
-    if (result.excluded_parts?.includes(release.part || '')) {
+    } else if (partIgnored(result, release)) {
       blocks.add(selection, 'excluded')
-      continue
-    }
-    if (batch && releaseOwned(result, release)) {
-      blocks.add(selection, 'owned')
       continue
     }
     const protocol = resolveProtocol(config.download_mode, selection.protocol)

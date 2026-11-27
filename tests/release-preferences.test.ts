@@ -12,7 +12,7 @@ import { normalizeResults } from '../server/result-model.js'
 import { saveLastResults } from '../server/results.js'
 import { assessmentSignature, createScanService } from '../server/scan.js'
 import { getState } from '../server/scan-state.js'
-import { releaseOffered, releaseOwned, releaseSatisfies, upgradeParts } from '../shared/download-plan.js'
+import { releaseOffered, releaseOwned, releaseSatisfies, wantedParts } from '../shared/download-plan.js'
 import { releaseIdentity } from '../shared/releases.js'
 import {
   DEFAULT_RELEASE_PREFERENCES,
@@ -236,7 +236,7 @@ test('a size limit excludes larger releases from the target and from bulk downlo
   assert.equal(result.best_group, 'Encode')
   assert.equal(result.releases.find(release => release.releaseGroup === 'Remux')?.excluded_by, 'Over 4 GB per episode')
   assert.deepEqual(
-    upgradeParts(result).map(part => part.options.map(option => option.release.releaseGroup)),
+    wantedParts(result).map(part => part.options.map(option => option.release.releaseGroup)),
     [['Encode']],
   )
   // Owning the excluded release is still owning a best release.
@@ -300,7 +300,7 @@ test('when the preferences exclude every release the season offers nothing, but 
   )
   assert.ok(result.releases.every(release => !release.target))
   assert.deepEqual(
-    upgradeParts({ ...result, status: 'upgrade' }),
+    wantedParts({ ...result, status: 'upgrade' }),
     [],
     'Even a forced upgrade status offers no excluded release',
   )
@@ -418,7 +418,7 @@ test("reachable-tracker mode targets the public release when Prowlarr has no ind
   )
   assert.equal(releaseOffered(unreachable), false)
   assert.deepEqual(
-    upgradeParts(result).map(part => part.options.map(option => option.release.releaseGroup)),
+    wantedParts(result).map(part => part.options.map(option => option.release.releaseGroup)),
     [['Bigger']],
   )
   // The season is judged against the public pick: owning it is owning the best release.
@@ -527,7 +527,7 @@ test('a season with two cours changes only the cour whose target Prowlarr cannot
     'The cour on a covered tracker reads as it does in private-tracker mode',
   )
   assert.deepEqual(
-    upgradeParts(result).map(part => [part.part, part.options.map(option => option.release.releaseGroup)]),
+    wantedParts(result).map(part => [part.part, part.options.map(option => option.release.releaseGroup)]),
     [
       ['Cour 1', ['Mini']],
       ['Cour 2', ['Crypt']],
@@ -552,14 +552,14 @@ test('an owned release on a tracker Prowlarr cannot reach still settles its seas
   const owned = relaxed.releases.find(release => release.releaseGroup === 'Vault')!
   assert.deepEqual([owned.kind, owned.satisfies, owned.excluded_by], ['best', undefined, UNREACHABLE_AB])
   assert.equal(releaseOwned(relaxed, owned) && releaseSatisfies(owned), true)
-  assert.deepEqual(upgradeParts(relaxed), [])
+  assert.deepEqual(wantedParts(relaxed), [])
 
   const strict = assess(listing, prefs({ strict: true }), ['Vault'], 'reachable', [])
   assert.equal(strict.status, 'upgrade')
   assert.equal(strict.best_group, 'Bigger')
   assert.equal(strict.releases.find(release => release.releaseGroup === 'Vault')?.satisfies, false)
   assert.deepEqual(
-    upgradeParts(strict).map(part => part.options.map(option => option.release.releaseGroup)),
+    wantedParts(strict).map(part => part.options.map(option => option.release.releaseGroup)),
     [['Bigger']],
   )
   assert.equal(assess(listing, prefs({ strict: true }), ['Bigger'], 'reachable', []).status, 'best')
@@ -777,7 +777,7 @@ test('owning any best release settles a season unless only the target counts', (
   assert.equal(owned.satisfies, false)
   assert.equal(releaseSatisfies(owned), false)
   assert.deepEqual(
-    upgradeParts(strict).map(part => part.options.map(option => option.release.releaseGroup)),
+    wantedParts(strict).map(part => part.options.map(option => option.release.releaseGroup)),
     [['Encode']],
     'The owned release is not offered again',
   )

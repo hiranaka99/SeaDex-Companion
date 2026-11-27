@@ -634,8 +634,18 @@ test('notification failure preserves the completed scan instead of restoring sta
 test('notifications delivered before interruption remain marked as delivered', async () => {
   setState({
     results: [
-      { key: 'one', title: 'One', status: 'upgrade' },
-      { key: 'two', title: 'Two', status: 'upgrade' },
+      {
+        key: 'one',
+        title: 'One',
+        status: 'upgrade',
+        releases: [{ kind: 'best', releaseGroup: 'Best', torrent_available: true, info_hashes: [] }],
+      },
+      {
+        key: 'two',
+        title: 'Two',
+        status: 'upgrade',
+        releases: [{ kind: 'best', releaseGroup: 'Best', torrent_available: true, info_hashes: [] }],
+      },
     ],
   })
   let saved: string[] = []
