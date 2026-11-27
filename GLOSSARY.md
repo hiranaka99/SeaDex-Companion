@@ -30,7 +30,7 @@ _Avoid_: ignored release
 
 **Ignored**:
 A season or part the user has set aside: no bulk download, notification or upgrade tag is made for it, although the library still shows that a better release exists.
-_Avoid_: excluded (that is a release ruled out by preferences)
+_Avoid_: excluded (that is a release ruled out by preferences), hidden (a removed feature)
 
 **Upgrade available**:
 SeaDex lists a better release for a season than the library holds. It is a fact about the catalog and the library, whatever the user has ignored.
@@ -39,6 +39,10 @@ _Avoid_: upgradable (when wanted parts are meant)
 **Wanted part**:
 A part of a season with an upgrade available that is not ignored, not already settled by the library, and has a release that is not excluded. Wanted parts are what Bulk download fetches and what notifications and upgrade tags announce.
 _Avoid_: upgrade part, upgradable part
+
+**Baseline scan**:
+A scan whose results are not compared with the previous ones for changes: the first scan, a scan after the results were cleared, or a scan whose assessment settings differ from those the previous results were judged under. It records no release changes or regressions; scan history still shows how statuses moved.
+_Avoid_: reset scan, fresh scan
 
 ## Usenet acquisition
 
