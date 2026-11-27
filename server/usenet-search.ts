@@ -33,14 +33,8 @@ import {
 import { gradeNzb, nzbFiles, type NzbFile, type NzbGrade, type SourceFile } from './source-files.js'
 import type { Config, PrivateSource } from './types.js'
 import { safeText } from './usenet-provider-types.js'
-import {
-  LookupGuardTimeout,
-  LookupScheduler,
-  ProviderPausedError,
-  type ChannelPause,
-  type LookupHandle,
-  type LookupPacing,
-} from './usenet-scheduler.js'
+import { FlightTable, LookupEpoch, LookupGuardTimeout, WarningThrottle, type Running } from './lookup-flights.js'
+import { LookupScheduler, ProviderPausedError, type ChannelPause, type LookupPacing } from './usenet-scheduler.js'
 import {
   RETRY_MIN_MS,
   failedAvailability,
@@ -165,19 +159,13 @@ interface VerifyResult {
   unconfigured?: string
 }
 
-interface SearchFlight {
-  promise: Promise<SearchResult>
-  controller: AbortController
-  /** Requests waiting for or holding a slot, so a caller that starts waiting can promote them. */
-  jobs: Set<LookupHandle<unknown>>
-  background: boolean
+interface SearchExtras {
   /** Only callers whose check may be cancelled wait for this search, so cancelling them cancels it. */
   loose: boolean
 }
+type SearchFlight = Running<SearchResult, SearchExtras>
 
-interface VerifyFlight {
-  promise: Promise<VerifyResult>
-  controller: AbortController
+interface VerifyExtras {
   limit: number
   /** Only callers whose check may be cancelled wait for this walk. */
   loose: boolean
@@ -186,6 +174,7 @@ interface VerifyFlight {
   /** The check was cancelled: the fetch under way is finished and stored, and none follows. */
   withdrawn?: true
 }
+type VerifyFlight = Running<VerifyResult, VerifyExtras>
 
 /** One call of `resolveSource`. */
 interface ResolveCall {
@@ -225,8 +214,11 @@ const ANSWERED = { kind: 'answered' }
 /** A background search the daily limit refused once it had its slot: nothing was asked. */
 const REFUSED: unique symbol = Symbol('refused')
 
-const searches = new Map<string, SearchFlight>()
-const verifies = new Map<string, VerifyFlight>()
+/** Invalidated when the Prowlarr connection changes; results of older work are discarded. */
+const searchEpoch = new LookupEpoch()
+/** The running search stage and verify stage of each source, by `sourceKey`. */
+const searches = new FlightTable<SearchResult, SearchExtras>(searchEpoch)
+const verifies = new FlightTable<VerifyResult, VerifyExtras>(searchEpoch)
 /** Calls of `resolveSource` under way per source: between its search and its check no flight exists. */
 const resolving = new Map<string, Set<ResolveCall>>()
 const failures = new Map<string, LookupFailure>()
@@ -234,13 +226,12 @@ const failures = new Map<string, LookupFailure>()
 const indexerFailures = new Map<string, { code: UsenetFailureCode; message: string }>()
 /** File lists of the sources seen by this process, to grade an NZB that is fetched again for a submission. */
 const sourceFiles = new Map<string, SourceFile[]>()
-const lastLogged = new Map<string, number>()
+/** Warnings repeat at most once a minute per subject; a sweep must not fill the log. */
+const warnings = new WarningThrottle()
 /** Channels paused because Prowlarr reported their indexer disabled, with the time it named. */
 const disabledUntil = new Map<string, number>()
 /** Usenet indexers as last read from Prowlarr; snapshots judge staleness by them without a request. */
 let known: { fingerprint: string; indexers: ProwlarrIndexer[] } | undefined
-/** Bumped when the Prowlarr connection changes; results of older work are discarded. */
-let epoch = 0
 
 const sourceKey = (fingerprint: string, sourceId: string) => `${fingerprint}\u0000${sourceId}`
 const indexerKey = (fingerprint: string, indexerId: number) => `${fingerprint}\u0000${indexerId}`
@@ -285,14 +276,6 @@ function retryTime(channel: string, failure: ProwlarrError, now: number): number
   return Math.ceil(asked)
 }
 
-/** Warnings repeat at most once a minute per subject; a sweep must not fill the log. */
-function warnOnce(subject: string, message: string): void {
-  const now = Date.now()
-  if (now - (lastLogged.get(subject) ?? 0) < MINUTE) return
-  lastLogged.set(subject, now)
-  log('WARNING', message)
-}
-
 function rememberFailure(key: string, failure: ProwlarrError): void {
   const now = Date.now()
   failures.set(key, {
@@ -300,7 +283,7 @@ function rememberFailure(key: string, failure: ProwlarrError): void {
     message: failure.message,
     retryAt: now + Math.max(RETRY_MIN_MS, failure.retryAfterMs ?? 0),
   })
-  warnOnce('prowlarr', `Prowlarr NZB lookup failed: ${failure.message}`)
+  warnings.warn('prowlarr', `Prowlarr NZB lookup failed: ${failure.message}`)
 }
 
 /**
@@ -329,10 +312,10 @@ function noteIndexers(fingerprint: string, indexers: ProwlarrIndexer[]): void {
 async function usenetIndexers(
   settings: ProwlarrSettings,
   fingerprint: string,
-  started: number,
+  current: () => boolean,
 ): Promise<ProwlarrIndexer[]> {
   const indexers = (await prowlarrIndexers(settings)).filter(indexer => indexer.protocol === 'usenet')
-  if (started === epoch) noteIndexers(fingerprint, indexers)
+  if (current()) noteIndexers(fingerprint, indexers)
   return indexers
 }
 
@@ -534,12 +517,11 @@ function storeSearch(
 async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<SearchResult> {
   const { config, settings, fingerprint, source, terms, refresh } = request
   const key = sourceKey(fingerprint, source.id)
-  const started = epoch
-  const { signal } = flight.controller
-  const cancelled = () => started !== epoch || signal.aborted
+  const { signal } = flight
+  const cancelled = () => !flight.current
   let indexers: ProwlarrIndexer[]
   try {
-    indexers = await usenetIndexers(settings, fingerprint, started)
+    indexers = await usenetIndexers(settings, fingerprint, searchEpoch.stamp())
   } catch (error) {
     if (cancelled()) return SEARCH_CANCELLED
     rememberFailure(key, requestFailure(error, 'search', 'prowlarr'))
@@ -613,10 +595,9 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
         return failure.scope === 'prowlarr' ? undefined : failedOutcome(failure)
       },
     })
-    flight.jobs.add(job)
     let results: ProwlarrSearchResult[] | typeof REFUSED
     try {
-      results = await job.result
+      results = await flight.wait(job)
     } catch (error) {
       if (error instanceof ProviderPausedError) {
         const rateLimited = searchScheduler.pausedFailure(run.channel, error.until).code === 'rate_limited'
@@ -636,11 +617,9 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
       if (failure.scope === 'prowlarr') fatal ??= failure
       else {
         fail(run, retryTime(run.channel, failure, Date.now()), failure.code, failure.message)
-        warnOnce(run.channel, `Prowlarr search of ${run.name} failed: ${failure.message}`)
+        warnings.warn(run.channel, `Prowlarr search of ${run.name} failed: ${failure.message}`)
       }
       return
-    } finally {
-      flight.jobs.delete(job)
     }
     if (results === REFUSED) return
     for (const result of results) {
@@ -693,13 +672,9 @@ async function runSearch(flight: SearchFlight, request: SearchRequest): Promise<
  */
 function sharedSearch(request: SearchRequest, background: boolean, loose: boolean): Promise<SearchResult> {
   const key = sourceKey(request.fingerprint, request.source.id)
-  const running = searches.get(key)
+  const running = searches.join(key, background)
   if (running) {
     if (!loose) running.loose = false
-    if (!background && running.background) {
-      running.background = false
-      for (const job of running.jobs) job.promote()
-    }
     // "Search again" asks every indexer; a running search that asked only some is followed by one that does.
     return request.refresh
       ? running.promise.then(result => (result.complete ? result : sharedSearch(request, background, loose)))
@@ -708,23 +683,12 @@ function sharedSearch(request: SearchRequest, background: boolean, loose: boolea
   // Prowlarr itself failed a moment ago: it is not asked again before its retry time unless told to.
   const failure = failures.get(key)
   if (!request.refresh && failure && Date.now() < failure.retryAt) return Promise.resolve(NOTHING)
-  const flight: SearchFlight = {
-    controller: new AbortController(),
-    jobs: new Set(),
-    background,
-    loose,
-    promise: Promise.resolve()
-      .then(() => runSearch(flight, request))
-      .catch((error): SearchResult => {
-        rememberFailure(key, requestFailure(error, 'search', 'prowlarr'))
-        return { ...NOTHING, complete: true }
-      })
-      .finally(() => {
-        if (searches.get(key) === flight) searches.delete(key)
-      }),
-  }
-  searches.set(key, flight)
-  return flight.promise
+  return searches.start(key, { background, loose }, flight =>
+    runSearch(flight, request).catch((error): SearchResult => {
+      rememberFailure(key, requestFailure(error, 'search', 'prowlarr'))
+      return { ...NOTHING, complete: true }
+    }),
+  ).promise
 }
 
 /**
@@ -794,7 +758,7 @@ type FetchResult =
 /**
  * One NZB through Prowlarr, on the indexer's channel and counted against the daily limit before it is asked
  * for. Aborting `queued` gives up the wait for the slot (`withdrawn`); once the request is sent only
- * `controller` stops it.
+ * `signal` stops it.
  */
 async function fetchNzb(
   config: Config,
@@ -802,23 +766,22 @@ async function fetchNzb(
   fingerprint: string,
   candidate: StoredCandidate,
   indexer: string,
-  controller: AbortController,
-  queued: AbortController = controller,
+  signal: AbortSignal,
+  queued: AbortSignal = signal,
 ): Promise<FetchResult | { kind: 'failed'; failure: ProwlarrError } | { kind: 'cancelled' }> {
   const channel = channelOf(candidate.indexer_id)
-  const { signal } = controller
   /** The fetch had its slot: from then on aborting `queued` no longer withdraws it. */
   let started = false
   try {
     return await searchScheduler.schedule<FetchResult>({
       channel,
       signal,
-      waitSignal: queued.signal,
+      waitSignal: queued,
       guardMs: FETCH_GUARD_MS,
       work: async () => {
         started = true
         // Given up between getting the slot and using it: nothing was asked for yet.
-        if (queued.signal.aborted) return { kind: 'withdrawn' }
+        if (queued.aborted) return { kind: 'withdrawn' }
         // Read with the slot in hand: checks of other sources spend the same daily limit.
         const block = fetchBlock(config, fingerprint, candidate.indexer_id, indexer, Date.now())
         if (block) return { kind: 'blocked', reason: block }
@@ -838,7 +801,7 @@ async function fetchNzb(
   } catch (error) {
     if (signal.aborted) return { kind: 'cancelled' }
     if (started) return { kind: 'failed', failure: requestFailure(error, 'NZB download') }
-    if (queued.signal.aborted) return { kind: 'withdrawn' }
+    if (queued.aborted) return { kind: 'withdrawn' }
     const until = error instanceof ProviderPausedError ? error.until : searchScheduler.pausedUntil(channel)
     return { kind: 'blocked', reason: searchScheduler.pausedFailure(channel, until).message }
   }
@@ -852,11 +815,10 @@ async function runVerify(
   source: PrivateSource,
 ): Promise<VerifyResult> {
   const key = sourceKey(fingerprint, source.id)
-  const started = epoch
-  const cancelled = () => started !== epoch || flight.controller.signal.aborted
+  const cancelled = () => !flight.current
   let indexers: ProwlarrIndexer[]
   try {
-    indexers = await usenetIndexers(settings, fingerprint, started)
+    indexers = await usenetIndexers(settings, fingerprint, searchEpoch.stamp())
   } catch (error) {
     if (cancelled()) return VERIFY_CANCELLED
     rememberFailure(key, requestFailure(error, 'NZB check', 'prowlarr'))
@@ -889,7 +851,7 @@ async function runVerify(
     const block = fetchBlock(config, fingerprint, candidate.indexer_id, indexer, now)
     flight.queued = block ? undefined : new AbortController()
     const step = flight.queued
-      ? await fetchNzb(config, settings, fingerprint, candidate, indexer, flight.controller, flight.queued)
+      ? await fetchNzb(config, settings, fingerprint, candidate, indexer, flight.signal, flight.queued.signal)
       : ({ kind: 'blocked', reason: block! } as const)
     flight.queued = undefined
     if (step.kind === 'cancelled' || cancelled()) return VERIFY_CANCELLED
@@ -933,7 +895,7 @@ async function runVerify(
     if (unreadable) continue
     // The indexer refused or could not answer: nothing more is fetched from it, and nothing is concluded.
     stopped.add(candidate.indexer_id)
-    warnOnce(`fetch:${candidate.indexer_id}`, `Prowlarr NZB fetch from ${indexer} failed: ${failure.message}`)
+    warnings.warn(`fetch:${candidate.indexer_id}`, `Prowlarr NZB fetch from ${indexer} failed: ${failure.message}`)
   }
   return { fetched, ...(!fetched && reason ? { reason } : {}) }
 }
@@ -963,22 +925,13 @@ function sharedVerify(
       return { ...rest, fetched: first.fetched + rest.fetched }
     })
   }
-  const flight: VerifyFlight = {
-    controller: new AbortController(),
-    limit,
-    loose,
-    promise: Promise.resolve()
-      .then(() => runVerify(flight, config, settings, fingerprint, source))
-      .catch((error): VerifyResult => {
-        rememberFailure(key, requestFailure(error, 'NZB check', 'prowlarr'))
-        return { fetched: 0 }
-      })
-      .finally(() => {
-        if (verifies.get(key) === flight) verifies.delete(key)
-      }),
-  }
-  verifies.set(key, flight)
-  return flight.promise
+  // Fetches are made for someone waiting, so a check is never background work.
+  return verifies.start(key, { background: false, limit, loose }, flight =>
+    runVerify(flight, config, settings, fingerprint, source).catch((error): VerifyResult => {
+      rememberFailure(key, requestFailure(error, 'NZB check', 'prowlarr'))
+      return { fetched: 0 }
+    }),
+  ).promise
 }
 
 /**
@@ -1075,12 +1028,8 @@ export function cancelSourceCheck(config: Config, sourceId: string): void {
   if (!settings) return
   const key = sourceKey(prowlarrFingerprint(settings), sourceId)
   for (const call of resolving.get(key) ?? []) if (call.cancellable) call.withdrawn = true
-  const search = searches.get(key)
-  if (search?.loose) {
-    // Whoever asks next starts a search of their own.
-    searches.delete(key)
-    search.controller.abort()
-  }
+  // Whoever asks next starts a search of their own.
+  if (searches.get(key)?.loose) searches.cancel(key)
   const check = verifies.get(key)
   if (check?.loose) {
     check.withdrawn = true
@@ -1143,12 +1092,12 @@ export async function searchNzbBytes(
   const stored = check.nzb_sha256 ? searchStore.readNzb(check.nzb_sha256) : null
   if (stored) return stored
 
-  const started = epoch
-  const step = await fetchNzb(config, settings, fingerprint, candidate, candidate.indexer, new AbortController())
+  const current = searchEpoch.stamp()
+  const step = await fetchNzb(config, settings, fingerprint, candidate, candidate.indexer, new AbortController().signal)
   if (step.kind === 'blocked') throw new Error(`The checked NZB has to be fetched again first. ${step.reason}`)
   if (step.kind === 'failed')
     throw new Error(`The checked NZB could not be fetched again (${step.failure.message}). Re-run the review.`)
-  if (step.kind !== 'fetched' || started !== epoch) throw new Error(NZB_UNKNOWN)
+  if (step.kind !== 'fetched' || !current()) throw new Error(NZB_UNKNOWN)
   const sha256 = createHash('sha256').update(step.nzb).digest('hex')
   if (sha256 === check.nzb_sha256) {
     searchStore.storeNzb(step.nzb)
@@ -1236,19 +1185,15 @@ export function usenetSearchPauses(): ChannelPause[] {
 }
 
 function cancelWork(): void {
-  epoch++
-  const checks = [...verifies.values()]
-  const cancelled = [...searches.values(), ...checks]
-  searches.clear()
-  verifies.clear()
+  // A fetch waits for its slot on a controller of its own.
+  const queued = verifies.flights().map(check => check.queued)
+  searchEpoch.invalidate()
   failures.clear()
   indexerFailures.clear()
-  lastLogged.clear()
+  warnings.clear()
   disabledUntil.clear()
   known = undefined
-  for (const flight of cancelled) flight.controller.abort()
-  // A fetch waits for its slot on a controller of its own.
-  for (const check of checks) check.queued?.abort()
+  for (const wait of queued) wait?.abort()
   // Channels are named by indexer ID, and another Prowlarr numbers other indexers the same way.
   searchScheduler.reset()
 }
