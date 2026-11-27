@@ -32,7 +32,7 @@ import {
 } from './prowlarr.js'
 import { gradeNzb, nzbFiles, type NzbFile, type NzbGrade, type SourceFile } from './source-files.js'
 import type { Config, PrivateSource } from './types.js'
-import { safeText } from './usenet-provider-types.js'
+import { safeText } from './provider-http.js'
 import { FlightTable, LookupEpoch, LookupGuardTimeout, WarningThrottle, type Running } from './lookup-flights.js'
 import { LookupScheduler, ProviderPausedError, type ChannelPause, type LookupPacing } from './usenet-scheduler.js'
 import {

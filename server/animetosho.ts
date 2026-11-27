@@ -5,27 +5,30 @@
 import { INFO_HASH_PATTERN } from '../shared/ids.js'
 import { isRecord } from '../shared/guards.js'
 import type { UsenetProvider } from '../shared/usenet-contracts.js'
+import { ProviderProtocolError, parseProviderXml, safeByteSize, text } from './newznab-xml.js'
 import {
-  ANIMETOSHO_ENTRY_PATTERN,
-  ANIMETOSHO_LOOKUP_MAX_BYTES,
   LOOKUP_MAX_BYTES,
   LOOKUP_TIMEOUT_MS,
-  ProviderProtocolError,
   ResponseTooLargeError,
   classifyFailure,
   decodeText,
   failedFrom,
   failedLookup,
-  fetchProviderNzb,
   httpStatusFailure,
-  parseProviderXml,
   providerRequest,
   readResponseCapped,
-  safeByteSize,
   safeText,
-  text,
-} from './usenet-provider-types.js'
+} from './provider-http.js'
+import { fetchProviderNzb } from './usenet-provider-types.js'
 import type { ProviderLookup, ProviderSettings, UsenetMatch, UsenetSourceFile } from './usenet-provider-types.js'
+
+/**
+ * AnimeTosho hash lookups carry per-file hashes and media info (observed up to
+ * ~45 KB per file), so complete batches routinely exceed the generic cap.
+ */
+export const ANIMETOSHO_LOOKUP_MAX_BYTES = 16 * 1024 * 1024
+/** AnimeTosho entry ids are numeric and never interpolated raw into a URL. */
+export const ANIMETOSHO_ENTRY_PATTERN = /^[0-9]+$/
 
 const PROVIDER: UsenetProvider = 'animetosho'
 /** How long an entry without an NZB is still expected to gain one. */

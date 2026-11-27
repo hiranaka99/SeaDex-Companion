@@ -12,7 +12,7 @@ import {
 } from '../server/usenet-prefetch.js'
 import { paceUsenetLookups, resetUsenetLookups, resolveUsenetHash, usenetProviderPauses } from '../server/usenet.js'
 import { usenetAvailability } from '../server/usenet-copies.js'
-import { retryAfterMs } from '../server/usenet-provider-types.js'
+import { retryAfterMs } from '../server/provider-http.js'
 import type { Release, ResultItem } from '../server/types.js'
 import type { LookupPacing } from '../server/usenet-scheduler.js'
 
