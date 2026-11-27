@@ -21,8 +21,8 @@ export interface UsenetProviderDefinition {
   connection(config: Config): ProviderSettings
   /** Enabled and complete enough to query. */
   usable(config: Config): boolean
-  lookup(settings: ProviderSettings, hash: string): Promise<ProviderLookup>
-  fetchNzb(settings: ProviderSettings, match: UsenetMatch): Promise<Uint8Array>
+  lookup(settings: ProviderSettings, hash: string, fetchImpl?: typeof fetch): Promise<ProviderLookup>
+  fetchNzb(settings: ProviderSettings, match: UsenetMatch, fetchImpl?: typeof fetch): Promise<Uint8Array>
   test(settings: ProviderSettings): Promise<void>
 }
 
@@ -34,8 +34,8 @@ export const USENET_PROVIDERS: Record<UsenetProvider, UsenetProviderDefinition> 
     entryPattern: ANIMETOSHO_ENTRY_PATTERN,
     connection: config => ({ baseUrl: config.animetosho_url }),
     usable: config => Boolean(config.animetosho_enabled && config.animetosho_url),
-    lookup: (settings, hash) => lookupAnimeTosho(settings, hash),
-    fetchNzb: (settings, match) => fetchAnimeToshoNzb(settings, match),
+    lookup: (settings, hash, fetchImpl) => lookupAnimeTosho(settings, hash, fetchImpl),
+    fetchNzb: (settings, match, fetchImpl) => fetchAnimeToshoNzb(settings, match, fetchImpl),
     test: settings => testAnimeTosho(settings),
   },
   amenzb: {
@@ -44,8 +44,8 @@ export const USENET_PROVIDERS: Record<UsenetProvider, UsenetProviderDefinition> 
     entryPattern: AMENZB_ENTRY_PATTERN,
     connection: config => ({ baseUrl: config.amenzb_url, apiKey: config.amenzb_key }),
     usable: config => Boolean(config.amenzb_enabled && config.amenzb_url && config.amenzb_key),
-    lookup: (settings, hash) => lookupAmeNZB(settings, hash),
-    fetchNzb: (settings, match) => fetchAmeNZBNzb(settings, match),
+    lookup: (settings, hash, fetchImpl) => lookupAmeNZB(settings, hash, fetchImpl),
+    fetchNzb: (settings, match, fetchImpl) => fetchAmeNZBNzb(settings, match, fetchImpl),
     test: settings => testAmeNZB(settings),
   },
 }

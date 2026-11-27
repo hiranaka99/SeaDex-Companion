@@ -277,23 +277,48 @@ function parseIndexer(value: unknown): ProwlarrIndexer | null {
   }
 }
 
-const indexerCache = new Map<string, { at: number; indexers: ProwlarrIndexer[] }>()
-/** Connections whose indexer list is being read in the background for `knownProwlarrIndexers`. */
-const indexerRefreshes = new Set<string>()
+/**
+ * The Prowlarr indexer lists read recently, one per connection, with the clock that dates them and the fetch
+ * they are read with. A Usenet runtime (`usenet-runtime.ts`) builds it and puts it in place.
+ */
+export interface ProwlarrIndexerList {
+  lists: Map<string, { at: number; indexers: ProwlarrIndexer[] }>
+  /** Connections whose list is being read in the background for `knownProwlarrIndexers`. */
+  refreshes: Set<string>
+  now: () => number
+  fetch: typeof fetch
+}
+
+export function prowlarrIndexerList(options: { now?: () => number; fetch?: typeof fetch } = {}): ProwlarrIndexerList {
+  return {
+    lists: new Map(),
+    refreshes: new Set(),
+    now: options.now ?? (() => Date.now()),
+    fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
+  }
+}
+
+let indexerList = prowlarrIndexerList()
+
+/** Usenet runtime only: indexer lists are read into and from `next` from now on. */
+export function useProwlarrIndexerList(next: ProwlarrIndexerList): void {
+  indexerList = next
+}
 
 /** Enabled indexers, cached briefly so one review does not list them once per release. */
 export async function prowlarrIndexers(
   settings: ProwlarrSettings,
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: typeof fetch = indexerList.fetch,
   fresh = false,
 ): Promise<ProwlarrIndexer[]> {
+  const list = indexerList
   const key = prowlarrFingerprint(settings)
-  const cached = indexerCache.get(key)
-  if (!fresh && cached && Date.now() - cached.at < INDEXER_TTL_MS) return cached.indexers
+  const cached = list.lists.get(key)
+  if (!fresh && cached && list.now() - cached.at < INDEXER_TTL_MS) return cached.indexers
   const body = await getJson(settings, '/api/v1/indexer', API_TIMEOUT_MS, 'indexer list', fetchImpl)
   if (!Array.isArray(body)) throw new ProwlarrError('invalid_response', 'Prowlarr indexer list was not a list')
   const indexers = body.map(parseIndexer).filter((indexer): indexer is ProwlarrIndexer => indexer !== null)
-  indexerCache.set(key, { at: Date.now(), indexers })
+  list.lists.set(key, { at: list.now(), indexers })
   return indexers
 }
 
@@ -302,21 +327,23 @@ export async function prowlarrIndexers(
  * background and `undefined` is returned until it arrives.
  */
 export function knownProwlarrIndexers(settings: ProwlarrSettings): ProwlarrIndexer[] | undefined {
+  const list = indexerList
   const key = prowlarrFingerprint(settings)
-  const cached = indexerCache.get(key)
+  const cached = list.lists.get(key)
   // One refresh at a time: a status read or a sweep asks once per release.
-  if ((!cached || Date.now() - cached.at >= INDEXER_TTL_MS) && !indexerRefreshes.has(key)) {
-    indexerRefreshes.add(key)
-    void prowlarrIndexers(settings, globalThis.fetch, true)
+  if ((!cached || list.now() - cached.at >= INDEXER_TTL_MS) && !list.refreshes.has(key)) {
+    list.refreshes.add(key)
+    void prowlarrIndexers(settings, list.fetch, true)
       .catch(() => undefined)
-      .finally(() => indexerRefreshes.delete(key))
+      .finally(() => list.refreshes.delete(key))
   }
   return cached?.indexers
 }
 
+/** Forgets every indexer list read, for a changed Prowlarr connection. */
 export function resetProwlarrRuntime(): void {
-  indexerCache.clear()
-  indexerRefreshes.clear()
+  indexerList.lists.clear()
+  indexerList.refreshes.clear()
 }
 
 /** SeaDex's tracker names and the names Prowlarr gives the same trackers. */
