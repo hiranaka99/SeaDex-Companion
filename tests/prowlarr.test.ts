@@ -21,6 +21,7 @@ import {
 import { invalidatePrivateSources, trackerTorrentId } from '../server/private-sources.js'
 import { paceUsenetSearch, resetUsenetSearch, resolveSource } from '../server/usenet-search.js'
 import { cleanSearchTitle, searchTitles } from '../server/search-titles.js'
+import { downloadClients } from '../server/download-clients.js'
 import { buildDownloadPlan } from '../server/download-preflight.js'
 import { consumePlan } from '../server/download-plans.js'
 import { acceptDownloadPlan } from '../server/download-submit.js'
@@ -453,7 +454,10 @@ test('a private-tracker torrent is found by its tracker ID, checked file by file
   try {
     const config = prowlarrConfig({ download_mode: 'torrent_only' })
     const results = privateResults()
-    const built = await buildDownloadPlan(config, [{ key: 'show-1', release: 0 }], { results })
+    const built = await buildDownloadPlan(config, [{ key: 'show-1', release: 0 }], {
+      results,
+      clients: downloadClients(config),
+    })
     assert.deepEqual(built.review.blocked, [])
     assert.equal(built.review.units.length, 1)
     assert.equal(built.review.units[0].source_hash, real.hash)
@@ -463,7 +467,13 @@ test('a private-tracker torrent is found by its tracker ID, checked file by file
     // The tracker's own torrent ID is checked first, so the decoy is never fetched.
     assert.equal(state.calls.filter(call => call.includes('link=decoy')).length, 0)
 
-    const { completion } = await acceptDownloadPlan(config, consumePlan(built.plan.id)!, undefined, results)
+    const { completion } = await acceptDownloadPlan(
+      config,
+      consumePlan(built.plan.id)!,
+      undefined,
+      results,
+      downloadClients(config),
+    )
     const outcome = await completion
     assert.equal(outcome.ok, true)
     assert.deepEqual(outcome.failures, [])
@@ -486,13 +496,11 @@ test('a private-tracker torrent whose files differ is never sent', async () => {
   const state: FakeState = { calls: [], torrents: { real: decoy.bytes }, torrentResults: () => [result({})] }
   const restore = install(state)
   try {
-    const built = await buildDownloadPlan(
-      prowlarrConfig({ download_mode: 'torrent_only' }),
-      [{ key: 'show-1', release: 0 }],
-      {
-        results: privateResults(),
-      },
-    )
+    const config = prowlarrConfig({ download_mode: 'torrent_only' })
+    const built = await buildDownloadPlan(config, [{ key: 'show-1', release: 0 }], {
+      results: privateResults(),
+      clients: downloadClients(config),
+    })
     assert.equal(built.review.units.length, 0)
     assert.equal(built.review.blocked[0].code, 'private_no_match')
     assert.match(built.review.blocked[0].reason, /none holds exactly the files SeaDex lists/)
@@ -509,7 +517,10 @@ test('public-tracker mode and a missing Prowlarr keep private-tracker releases m
       prowlarrConfig({ download_mode: 'torrent_only', tracker_mode: 'public' }),
       prowlarrConfig({ download_mode: 'torrent_only', prowlarr_enabled: false }),
     ]) {
-      const built = await buildDownloadPlan(config, [{ key: 'show-1', release: 0 }], { results: privateResults() })
+      const built = await buildDownloadPlan(config, [{ key: 'show-1', release: 0 }], {
+        results: privateResults(),
+        clients: downloadClients(config),
+      })
       assert.equal(built.review.blocked[0].code, 'no_torrent')
       assert.match(built.review.blocked[0].reason, /Set up Prowlarr/)
     }
@@ -561,7 +572,10 @@ test('Usenet copies of private-tracker releases are searched only when asked for
     assert.equal(prowlarrCalls(state), 0)
 
     // A bulk review never searches on its own.
-    const bulk = await buildDownloadPlan(config, [...selections, { key: 'missing', release: 0 }], { results })
+    const bulk = await buildDownloadPlan(config, [...selections, { key: 'missing', release: 0 }], {
+      results,
+      clients: downloadClients(config),
+    })
     assert.equal(bulk.review.blocked.find(row => row.key === 'show-1')?.code, 'not_searched')
     assert.equal(prowlarrCalls(state), 0)
 
@@ -579,11 +593,17 @@ test('Usenet copies of private-tracker releases are searched only when asked for
     assert.equal(state.calls.filter(call => call.includes('link=other')).length, 0)
     assert.equal(state.calls.filter(call => call.includes('link=wrong')).length, 0)
 
-    const built = await buildDownloadPlan(config, selections, { results })
+    const built = await buildDownloadPlan(config, selections, { results, clients: downloadClients(config) })
     assert.deepEqual(built.review.blocked, [])
     assert.equal(built.review.units[0].provider, 'prowlarr')
     assert.equal(built.review.units[0].source_hash, source.id)
-    const { completion } = await acceptDownloadPlan(config, consumePlan(built.plan.id)!, { disk_space: true }, results)
+    const { completion } = await acceptDownloadPlan(
+      config,
+      consumePlan(built.plan.id)!,
+      { disk_space: true },
+      results,
+      downloadClients(config),
+    )
     await completion
     assert.equal(state.sabAdded?.nzb, MATCHING_NZB)
     assert.equal(state.sabAdded?.name, '[Vault] Show (BD 1080p)')
@@ -595,7 +615,7 @@ test('Usenet copies of private-tracker releases are searched only when asked for
     assert.equal(state.calls.filter(call => call.includes('link=right')).length, 1)
 
     // A second review sees the job it owns instead of sending the release again.
-    const again = await buildDownloadPlan(config, selections, { results })
+    const again = await buildDownloadPlan(config, selections, { results, clients: downloadClients(config) })
     assert.equal(again.review.units[0].status, 'existing')
   } finally {
     restore()
@@ -717,15 +737,27 @@ test('an unproven NZB is listed with its indexer page and can be downloaded when
     assert.ok(!JSON.stringify(row).includes(KEY) && !JSON.stringify(row).includes('secret'))
 
     // Without a choice the release stays unavailable; choosing the candidate sends exactly the checked NZB.
-    const plain = await buildDownloadPlan(config, [{ key: 'show-1', release: 0 }], { results })
+    const plain = await buildDownloadPlan(config, [{ key: 'show-1', release: 0 }], {
+      results,
+      clients: downloadClients(config),
+    })
     assert.equal(plain.review.blocked[0].code, 'no_match')
     const chosen = { key: 'show-1', release: 0, protocol: 'usenet' as const, nzb: candidate.entry_id }
-    const unknown = await buildDownloadPlan(config, [{ ...chosen, nzb: `2-${'0'.repeat(20)}` }], { results })
+    const unknown = await buildDownloadPlan(config, [{ ...chosen, nzb: `2-${'0'.repeat(20)}` }], {
+      results,
+      clients: downloadClients(config),
+    })
     assert.equal(unknown.review.blocked[0].code, 'not_searched')
-    const built = await buildDownloadPlan(config, [chosen], { results })
+    const built = await buildDownloadPlan(config, [chosen], { results, clients: downloadClients(config) })
     assert.deepEqual(built.review.blocked, [])
     assert.equal(built.plan.selections[0].nzb, candidate.entry_id)
-    const { completion } = await acceptDownloadPlan(config, consumePlan(built.plan.id)!, { disk_space: true }, results)
+    const { completion } = await acceptDownloadPlan(
+      config,
+      consumePlan(built.plan.id)!,
+      { disk_space: true },
+      results,
+      downloadClients(config),
+    )
     await completion
     assert.equal(state.sabAdded?.nzb, renamed)
     assert.equal(downloadRecords()[0].source_hash, source.id)
@@ -783,7 +815,10 @@ test('Prowlarr download redirects are followed to the indexer, and candidates th
     const candidates = row.hashes[0].candidates!
     assert.equal(candidates[1].info_url, 'https://geek.test/details/magnet')
     const chosen = { key: 'show-1', release: 0, protocol: 'usenet' as const, nzb: candidates[0].entry_id }
-    const built = await buildDownloadPlan(config, [chosen], { results: privateResults() })
+    const built = await buildDownloadPlan(config, [chosen], {
+      results: privateResults(),
+      clients: downloadClients(config),
+    })
     assert.equal(built.review.blocked[0].code, 'not_searched')
   } finally {
     restore()
@@ -852,7 +887,10 @@ test('a public release the hash indexers lack can be searched on Prowlarr and se
     assert.deepEqual(missing.hashes[0].providers_checked, ['animetosho'])
     assert.equal(prowlarrCalls(state), 0, 'nothing is searched until asked')
 
-    const bulk = await buildDownloadPlan(config, [...selections, { key: 'gone', release: 0 }], { results })
+    const bulk = await buildDownloadPlan(config, [...selections, { key: 'gone', release: 0 }], {
+      results,
+      clients: downloadClients(config),
+    })
     assert.equal(bulk.review.blocked.find(row => row.key === 'show-1')?.code, 'no_match')
     assert.match(bulk.review.blocked.find(row => row.key === 'show-1')!.reason, /Search Prowlarr/)
     assert.equal(prowlarrCalls(state), 0)
@@ -862,11 +900,17 @@ test('a public release the hash indexers lack can be searched on Prowlarr and se
     assert.equal(found.search, 'prowlarr')
     assert.equal(found.aggregate, 'available')
 
-    const built = await buildDownloadPlan(config, selections, { results })
+    const built = await buildDownloadPlan(config, selections, { results, clients: downloadClients(config) })
     assert.deepEqual(built.review.blocked, [])
     assert.equal(built.review.units[0].source_hash, HASH)
     assert.equal(built.review.units[0].provider, 'prowlarr')
-    const { completion } = await acceptDownloadPlan(config, consumePlan(built.plan.id)!, { disk_space: true }, results)
+    const { completion } = await acceptDownloadPlan(
+      config,
+      consumePlan(built.plan.id)!,
+      { disk_space: true },
+      results,
+      downloadClients(config),
+    )
     await completion
     assert.equal(state.sabAdded?.nzb, MATCHING_NZB)
     const [record] = downloadRecords()
