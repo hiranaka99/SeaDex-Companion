@@ -26,7 +26,7 @@ import type { UsenetFailureCode, UsenetProof } from '../shared/usenet-contracts.
 import { log } from './logging.js'
 import { NZB_STORE_DIR, USENET_SEARCH_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
-import { safeText } from './provider-http.js'
+import { safeText } from './indexer-http.js'
 import { NZB_MAX_BYTES } from './usenet-provider-types.js'
 
 /** One Usenet indexer a source was searched on. */

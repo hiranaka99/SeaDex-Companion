@@ -84,9 +84,9 @@ export class PrivateTorrentCache {
   private running = 0
   private readonly waiting: (() => void)[] = []
 
-  constructor(options: { now?: () => number; fetch?: typeof fetch } = {}) {
-    this.now = options.now ?? (() => Date.now())
-    this.fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
+  constructor(options: { now: () => number; fetch: typeof fetch }) {
+    this.now = options.now
+    this.fetch = options.fetch
   }
 
   /** Forget every observation, for a changed Prowlarr connection. Running work is discarded when it settles. */

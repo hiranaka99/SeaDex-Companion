@@ -8,15 +8,15 @@ import { reloadDownloads } from './download-store'
 import {
   createReleaseSends,
   currentAvailability,
+  sameRelease,
   sendKey,
   sendVerdict,
   type LowSpaceHold,
+  type Notify,
   type SendVerdict,
 } from './release-actions'
 import type { Config, GroupedCard, ResultItem } from './types'
 import { useCardDownloads, useSeasonAvailability } from './useCardDownloads'
-
-type Notify = (message: string, tone: 'success' | 'error' | 'info') => void
 
 /** Everything one release row shows about sending its release, and everything it can do with it. */
 export interface ReleaseActions {
@@ -125,13 +125,14 @@ export function useReleaseActions(group: GroupedCard, config: Config | null, opt
         const rowAvailability = currentAvailability(seasonAvailability?.byRelease, release, index)
         const route = routes.release(release, rowAvailability, protocols[protocolKey])
         const transfers = downloads[index]?.transfers || []
+        const ref = { key, release: index }
         return {
           transfers,
           busy: busyDownload !== null,
-          sending: sendState.sending?.key === key && sendState.sending.release === index,
+          sending: sameRelease(sendState.sending, ref),
           sendLocked: sendState.sending !== null,
-          lowSpace: sendState.lowSpace?.key === key && sendState.lowSpace.release === index ? sendState.lowSpace : null,
-          error: sendState.errors[sendKey(key, index)] ?? null,
+          lowSpace: sameRelease(sendState.lowSpace, ref) ? sendState.lowSpace : null,
+          error: sendState.errors[sendKey(ref)] ?? null,
           availability: rowAvailability,
           availabilityLoading: Boolean(seasonAvailability?.loading),
           route,

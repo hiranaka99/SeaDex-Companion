@@ -41,9 +41,9 @@ export class SweepParts {
   epoch = 0
   progress = idle()
 
-  constructor(options: { enabled?: boolean; now?: () => number } = {}) {
-    this.enabled = options.enabled ?? false
-    this.now = options.now ?? (() => Date.now())
+  constructor(options: { enabled: boolean; now: () => number }) {
+    this.enabled = options.enabled
+    this.now = options.now
   }
 
   /** Starts a sweep over `results`; any running sweep is superseded. Pruning the stores is the runtime's. */

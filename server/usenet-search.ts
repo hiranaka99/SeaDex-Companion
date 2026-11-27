@@ -32,7 +32,7 @@ import {
 } from './prowlarr.js'
 import { gradeNzb, nzbFiles, type NzbFile, type NzbGrade, type SourceFile } from './source-files.js'
 import type { Config, PrivateSource } from './types.js'
-import { safeText } from './provider-http.js'
+import { safeText } from './indexer-http.js'
 import { FlightTable, LookupEpoch, LookupGuardTimeout, WarningThrottle, type Running } from './lookup-flights.js'
 import { LookupScheduler, ProviderPausedError, type ChannelPause, type LookupPacing } from './usenet-scheduler.js'
 import { usenetParts } from './usenet-runtime.js'
@@ -117,17 +117,15 @@ export class SearchParts {
   known: { fingerprint: string; indexers: ProwlarrIndexer[] } | undefined
 
   /** The parts with this clock, fetch, store paths and pacing over the defaults. */
-  constructor(
-    options: {
-      now?: () => number
-      fetch?: typeof fetch
-      searchFile?: string
-      nzbDir?: string
-      pacing?: Partial<LookupPacing>
-    } = {},
-  ) {
-    this.now = options.now ?? (() => Date.now())
-    this.fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
+  constructor(options: {
+    now: () => number
+    fetch: typeof fetch
+    searchFile?: string
+    nzbDir?: string
+    pacing?: Partial<LookupPacing>
+  }) {
+    this.now = options.now
+    this.fetch = options.fetch
     this.scheduler = new LookupScheduler(
       { concurrency: 3, foregroundReserved: 1, minIntervalMs: 2_000, ...options.pacing },
       this.now,

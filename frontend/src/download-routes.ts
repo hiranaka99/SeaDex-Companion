@@ -3,8 +3,13 @@
 // these answers instead of the configuration flags, so they cannot disagree.
 
 import type { DownloadMode, DownloadProtocol } from '../../shared/download-contracts.js'
+import { SECRET_CONFIG_KEYS, type SecretConfigKey } from '../../shared/contracts.js'
 import { DEFAULT_TRACKER_MODE } from '../../shared/settings.js'
-import type { UsenetAvailabilityResult } from '../../shared/usenet-contracts.js'
+import {
+  HASH_INDEXER_CONFIG_KEYS,
+  PROWLARR_CONNECTION_KEYS,
+  type UsenetAvailabilityResult,
+} from '../../shared/usenet-contracts.js'
 import type { Config, Release } from './types.js'
 
 type TorrentFacts = Pick<Release, 'torrent_available' | 'private_sources' | 'tracker'>
@@ -34,25 +39,29 @@ export const findsPrivateTorrent = (release: TorrentFacts, config: Config | null
     ),
   )
 
+/** Every setting availability answers depend on, the hash indexers' and Prowlarr's as the server watches them. */
+const AVAILABILITY_SETTINGS = [
+  ...Object.values(HASH_INDEXER_CONFIG_KEYS).flat(),
+  ...PROWLARR_CONNECTION_KEYS,
+  'tracker_mode',
+  'sabnzbd_url',
+  'sabnzbd_key',
+] as const
+
+const SECRET_KEYS: ReadonlySet<string> = new Set(SECRET_CONFIG_KEYS)
+
+/** A setting as the browser sees it: a secret only as whether it is configured. */
+function publicSetting(config: Config | null | undefined, key: (typeof AVAILABILITY_SETTINGS)[number]): unknown {
+  return SECRET_KEYS.has(key) ? config?.[`${key as SecretConfigKey}_configured`] : config?.[key]
+}
+
 /**
  * The settings Usenet availability answers depend on: the indexers asked, the private trackers searched for,
  * and SABnzbd. A change makes every cached answer stale. The download mode is not part of it; the routes apply
  * the mode to whatever availability says.
  */
 export const availabilityFingerprint = (config: Config | null | undefined): string =>
-  JSON.stringify([
-    config?.animetosho_enabled,
-    config?.animetosho_url,
-    config?.amenzb_enabled,
-    config?.amenzb_url,
-    config?.amenzb_key_configured,
-    config?.prowlarr_enabled,
-    config?.prowlarr_url,
-    config?.prowlarr_key_configured,
-    config?.tracker_mode,
-    config?.sabnzbd_url,
-    config?.sabnzbd_key_configured,
-  ])
+  JSON.stringify(AVAILABILITY_SETTINGS.map(key => publicSetting(config, key)))
 
 export interface TorrentRoute {
   /** qBittorrent can be sent this release: the mode allows torrents and there is a magnet or a Prowlarr find. */

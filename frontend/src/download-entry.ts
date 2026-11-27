@@ -69,6 +69,13 @@ export const importUnsettled = (entry: Pick<DownloadEntry, 'import'>) =>
 /** The display name of a download client. */
 export const clientName = (client: DownloadClient) => (client === 'sabnzbd' ? 'SABnzbd' : 'qBittorrent')
 
+/** The client a protocol's downloads are sent to. */
+export const protocolClient = (protocol: DownloadProtocol): DownloadClient =>
+  protocol === 'usenet' ? 'sabnzbd' : 'qbittorrent'
+
+/** The name of the client a protocol's downloads are sent to. */
+export const protocolClientName = (protocol: DownloadProtocol) => clientName(protocolClient(protocol))
+
 const PHASE_LABEL: Record<DownloadPhase, string> = {
   queued: 'Queued',
   downloading: 'Downloading',

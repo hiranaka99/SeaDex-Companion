@@ -14,7 +14,7 @@ import type {
 } from '../shared/usenet-contracts.js'
 import type { SourceFile } from './source-files.js'
 import { searchNzbBytes, usenetSearchPauses } from './usenet-search.js'
-import { LOOKUP_TIMEOUT_MS } from './provider-http.js'
+import { LOOKUP_TIMEOUT_MS } from './indexer-http.js'
 import type { ProviderLookup, ProviderSettings } from './usenet-provider-types.js'
 import { PersistentUsenetCache, providerFingerprint, usenetCacheKey } from './usenet-cache.js'
 import { providerSettings, USENET_PROVIDER_IDS, USENET_PROVIDERS } from './usenet-providers.js'
@@ -65,11 +65,9 @@ export class HashLookupParts {
   readonly refreshes = new FlightTable<UsenetHashAvailability>(this.epoch)
 
   /** The parts with this clock, fetch, cache file and pacing over the defaults. */
-  constructor(
-    options: { now?: () => number; fetch?: typeof fetch; cacheFile?: string; pacing?: Partial<LookupPacing> } = {},
-  ) {
-    this.now = options.now ?? (() => Date.now())
-    this.fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
+  constructor(options: { now: () => number; fetch: typeof fetch; cacheFile?: string; pacing?: Partial<LookupPacing> }) {
+    this.now = options.now
+    this.fetch = options.fetch
     this.cache = new PersistentUsenetCache(options.cacheFile)
     this.scheduler = new LookupScheduler(
       { concurrency: 4, foregroundReserved: 1, minIntervalMs: 2_000, ...options.pacing },

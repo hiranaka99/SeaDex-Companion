@@ -8,7 +8,7 @@ import { episodeRangeLabel, releaseIdentity } from '../../shared/releases.js'
 import type { UsenetAvailabilityResult } from '../../shared/usenet-contracts.js'
 import { errorMessage } from '../../shared/errors.js'
 import type { DiskSpaceCheck, DownloadProtocol, preflightDownload, sendDownload } from './api.js'
-import { clientName, phaseLabel, type DownloadEntry } from './download-entry.js'
+import { clientName, phaseLabel, protocolClientName, type DownloadEntry } from './download-entry.js'
 import type { DownloadRoutes, ReleaseRoute } from './download-routes.js'
 import type { Config, Release, ResultItem } from './types.js'
 import { describeUsenet } from './usenet-review.js'
@@ -169,7 +169,7 @@ export function sendVerdict({
         protocol === 'usenet' ? 'Whole Usenet source' : fileScope.selected ? fileCount : 'Whole release',
         protocol === 'torrent' ? episodes : null,
         protocol === 'torrent' && route.torrent.viaProwlarr ? 'found through Prowlarr' : null,
-        `to ${protocol === 'usenet' ? 'SABnzbd' : 'qBittorrent'}`,
+        `to ${protocolClientName(protocol)}`,
         'free space checked on send',
       ]
         .filter(Boolean)
@@ -189,13 +189,24 @@ const usenetDetail = (rel: Release, routes: DownloadRoutes, availability: Usenet
         ?.detail
     : undefined
 
+/** One release of one season: the season's result key and the release's index in it. */
+export interface ReleaseRef {
+  key: string
+  release: number
+}
+
+/** Identifies one release of one season in per-release download state. */
+export const sendKey = (ref: ReleaseRef) => `${ref.key}\u0000${ref.release}`
+
+/** Whether `held` is about the release `ref` names. */
+export const sameRelease = (held: ReleaseRef | null, ref: ReleaseRef) =>
+  held !== null && held.key === ref.key && held.release === ref.release
+
 /**
  * A one-click send that stopped before submission because the fit on disk is not established: a client reported
  * too little free space (`low`), or did not report free space at all (`unknown`).
  */
-export interface LowSpaceHold {
-  key: string
-  release: number
+export interface LowSpaceHold extends ReleaseRef {
   protocol: DownloadProtocol
   /** An unproven NZB the user chose, sent again by "Send anyway". */
   nzb?: string
@@ -203,13 +214,10 @@ export interface LowSpaceHold {
   checks: DiskSpaceCheck[]
 }
 
-/** Identifies one release of one season in per-release download state. */
-export const sendKey = (key: string, release: number) => `${key}\u0000${release}`
-
 /** One-click send state of a card. */
 export interface ReleaseSendsState {
   /** The release whose send is running; every other send on the card waits for it. */
-  sending: { key: string; release: number } | null
+  sending: ReleaseRef | null
   lowSpace: LowSpaceHold | null
   /** The last failed send per release (`sendKey`), shown in that release's row until it is retried or dismissed. */
   errors: Record<string, string>
@@ -221,7 +229,8 @@ export interface SendApi {
   sendDownload: typeof sendDownload
 }
 
-type Notify = (message: string, tone: 'success' | 'error' | 'info') => void
+/** Shows a toast. */
+export type Notify = (message: string, tone: 'success' | 'error' | 'info') => void
 
 export interface ReleaseSendsOptions {
   api: SendApi
@@ -251,8 +260,8 @@ export function createReleaseSends({ api, reload, notify, detailsShown }: Releas
     state = { ...state, ...changes }
     for (const listener of [...listeners]) listener()
   }
-  const setError = (key: string, index: number, message: string | null) => {
-    const id = sendKey(key, index)
+  const setError = (ref: ReleaseRef, message: string | null) => {
+    const id = sendKey(ref)
     if (message !== null) return update({ errors: { ...state.errors, [id]: message } })
     if (!(id in state.errors)) return
     const { [id]: _, ...rest } = state.errors
@@ -264,15 +273,15 @@ export function createReleaseSends({ api, reload, notify, detailsShown }: Releas
     const release = season.releases[index]
     if (!release) return
     const key = season.key
+    const ref: ReleaseRef = { key, release: index }
     const label = `${seasonLabel(season)} · ${release.releaseGroup || season.title}`
     const controller = new AbortController()
     aborter = controller
-    const held = state.lowSpace?.key === key && state.lowSpace.release === index
-    update({ sending: { key, release: index }, ...(held ? { lowSpace: null } : {}) })
-    setError(key, index, null)
+    update({ sending: ref, ...(sameRelease(state.lowSpace, ref) ? { lowSpace: null } : {}) })
+    setError(ref, null)
     // A failure belongs to the release row while Details is open; a closed modal falls back to a notification.
     const report = (message: string) => {
-      setError(key, index, message)
+      setError(ref, message)
       if (!detailsShown()) notify(`Could not send ${label}: ${message}`, 'error')
     }
     try {
@@ -290,8 +299,7 @@ export function createReleaseSends({ api, reload, notify, detailsShown }: Releas
       if (!anyway && (low || unknown)) {
         update({
           lowSpace: {
-            key,
-            release: index,
+            ...ref,
             protocol,
             ...(nzb ? { nzb } : {}),
             reason: low ? 'low' : 'unknown',
@@ -329,10 +337,11 @@ export function createReleaseSends({ api, reload, notify, detailsShown }: Releas
     /** Repeats the send held for low free space, the chosen NZB included, without asking again. */
     sendAnyway: async (season: ResultItem, index: number) => {
       const held = state.lowSpace
-      if (held?.key === season.key && held.release === index) await run(season, index, held.protocol, true, held.nzb)
+      if (held && sameRelease(held, { key: season.key, release: index }))
+        await run(season, index, held.protocol, true, held.nzb)
     },
     cancelLowSpace: () => update({ lowSpace: null }),
-    dismissError: (key: string, index: number) => setError(key, index, null),
+    dismissError: (key: string, index: number) => setError({ key, release: index }, null),
     /** Stops a running send whose card went away; nothing is reported for it. */
     abort: () => aborter?.abort(),
   }

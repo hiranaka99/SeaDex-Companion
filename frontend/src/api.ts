@@ -52,6 +52,7 @@ export type DownloadAcknowledge = NonNullable<DownloadSubmission['acknowledge']>
 
 import { followDownloadJob, waitForDownloadJob, watchDownloadJob } from './bulk-job-store.js'
 import { availabilityFingerprint } from './download-routes.js'
+import { protocolClient } from './download-entry.js'
 export { waitForDownloadJob, watchDownloadJob }
 
 export const AUTH_REQUIRED_EVENT = 'seadex:authentication-required'
@@ -433,9 +434,6 @@ export async function sendDownload(
   if (!receipt.ok) return { kind: 'rejected', reason: receipt.error || 'The download client rejected the submission' }
   return { kind: 'sent', client: receipt.client }
 }
-
-const protocolClient = (protocol: DownloadProtocol): DownloadClient =>
-  protocol === 'usenet' ? 'sabnzbd' : 'qbittorrent'
 
 /** Background submission of a reviewed plan. */
 export const startDownloadJob = (plan_id: string, acknowledge?: DownloadAcknowledge) =>

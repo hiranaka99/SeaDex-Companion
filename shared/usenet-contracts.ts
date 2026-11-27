@@ -2,7 +2,25 @@
 // credentials or authenticated URLs; the server resolves everything from its
 // own validated configuration and owned records.
 
+import type { Config } from './contracts.js'
+
 export type UsenetProvider = 'animetosho' | 'amenzb'
+
+/** Settings whose change means a different hash indexer answers lookups, per hash indexer. */
+export const HASH_INDEXER_CONFIG_KEYS = {
+  animetosho: ['animetosho_enabled', 'animetosho_url'],
+  amenzb: ['amenzb_enabled', 'amenzb_url', 'amenzb_key'],
+} as const satisfies Record<UsenetProvider, readonly (keyof Config)[]>
+
+/**
+ * Settings whose change means a different Prowlarr answers searches. The daily limits are not among them: a
+ * changed limit applies to the next search or fetch.
+ */
+export const PROWLARR_CONNECTION_KEYS = [
+  'prowlarr_enabled',
+  'prowlarr_url',
+  'prowlarr_key',
+] as const satisfies readonly (keyof Config)[]
 /**
  * Where an NZB came from: a hash-linked provider, or a Prowlarr search whose NZB file list matched the
  * private-tracker release byte for byte.
