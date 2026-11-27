@@ -31,8 +31,8 @@ import {
   usenetPrefetchProgress,
   usenetSearchStatus,
 } from '../server/usenet-prefetch.js'
-import { resetUsenetLookups, usenetScheduler } from '../server/usenet.js'
-import { resetUsenetSearch, searchScheduler, searchSource, searchStore } from '../server/usenet-search.js'
+import { paceUsenetLookups, resetUsenetLookups } from '../server/usenet.js'
+import { paceUsenetSearch, resetUsenetSearch, searchSource, searchStore } from '../server/usenet-search.js'
 import type { ProwlarrSearchStatus } from '../shared/contracts.js'
 
 const PROWLARR = 'http://prowlarr-sweep.test:9696'
@@ -155,7 +155,6 @@ interface Fake {
  */
 function setup(t: TestContext, overrides: Partial<Fake> = {}): Fake {
   const original = globalThis.fetch
-  const pacing = { search: searchScheduler.options.minIntervalMs, hashes: usenetScheduler.options.minIntervalMs }
   const clean = () => {
     stopUsenetPrefetch()
     resetUsenetSearch()
@@ -166,8 +165,8 @@ function setup(t: TestContext, overrides: Partial<Fake> = {}): Fake {
   }
   clean()
   enableUsenetPrefetch()
-  searchScheduler.options.minIntervalMs = 0
-  usenetScheduler.options.minIntervalMs = 0
+  paceUsenetSearch({ minIntervalMs: 0 })
+  paceUsenetLookups({ minIntervalMs: 0 })
   const fake: Fake = {
     calls: [],
     indexers: [GEEK],
@@ -191,8 +190,8 @@ function setup(t: TestContext, overrides: Partial<Fake> = {}): Fake {
   }
   t.after(() => {
     globalThis.fetch = original
-    searchScheduler.options.minIntervalMs = pacing.search
-    usenetScheduler.options.minIntervalMs = pacing.hashes
+    paceUsenetSearch()
+    paceUsenetLookups()
     clean()
   })
   return fake

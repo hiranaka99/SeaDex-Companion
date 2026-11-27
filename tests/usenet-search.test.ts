@@ -11,15 +11,17 @@ import { NZB_STORE_DIR, USENET_SEARCH_FILE } from '../server/paths.js'
 import { prowlarrFingerprint, resetProwlarrRuntime } from '../server/prowlarr.js'
 import { filesSourceId, type SourceFile } from '../server/source-files.js'
 import type { Config, PrivateSource } from '../server/types.js'
-import { resetUsenetLookups, resolveUsenetHash, usenetScheduler } from '../server/usenet.js'
-import { LookupScheduler, ProviderPausedError } from '../server/usenet-scheduler.js'
+import { paceUsenetLookups, resetUsenetLookups, resolveUsenetHash } from '../server/usenet.js'
+import { LookupScheduler, ProviderPausedError, type LookupPacing } from '../server/usenet-scheduler.js'
 import { searchRecordState } from '../server/usenet-search-state.js'
 import type { SearchRecord, StoredCandidate, StoredCheck } from '../server/usenet-search-store.js'
+import { runJob } from './support/lookup-jobs.js'
 import {
   cancelSourceCheck,
   chosenSearchCandidate,
   flushUsenetSearch,
   invalidateUsenetSearch,
+  paceUsenetSearch,
   prowlarrIndexerUsage,
   rejectSearchCandidate,
   resetUsenetSearch,
@@ -196,9 +198,8 @@ interface Fake {
  * Resets the finder, its store files, both schedulers' pacing and the Prowlarr client, and routes `fetch` to a
  * fake Prowlarr. Everything is put back when the test ends.
  */
-function setup(t: TestContext, overrides: Partial<Fake> = {}): Fake {
+function setup(t: TestContext, overrides: Partial<Fake> = {}, pacing: Partial<LookupPacing> = {}): Fake {
   const original = globalThis.fetch
-  const pacing = { ...searchScheduler.options }
   const clean = () => {
     resetUsenetSearch()
     resetProwlarrRuntime()
@@ -206,7 +207,7 @@ function setup(t: TestContext, overrides: Partial<Fake> = {}): Fake {
     fs.rmSync(NZB_STORE_DIR, { recursive: true, force: true })
   }
   clean()
-  searchScheduler.options.minIntervalMs = 0
+  paceUsenetSearch({ minIntervalMs: 0, ...pacing })
   const fake: Fake = {
     calls: [],
     indexers: [GEEK],
@@ -230,7 +231,7 @@ function setup(t: TestContext, overrides: Partial<Fake> = {}): Fake {
   }
   t.after(() => {
     globalThis.fetch = original
-    Object.assign(searchScheduler.options, pacing)
+    paceUsenetSearch()
     clean()
   })
   return fake
@@ -833,14 +834,17 @@ test('a Prowlarr 429 with Retry-After: 3600 is not retried within the hour', asy
 
 test('a paused indexer fails a waiting search fast and makes a background search wait', async t => {
   let limited = true
-  const fake = setup(t, {
-    search: indexerId => {
-      if (!limited) return feed(indexerId, [{ title: '[Vault] Show', link: 'post', size: 1.08 }])
-      limited = false
-      return new Response('slow down', { status: 429 })
+  const fake = setup(
+    t,
+    {
+      search: indexerId => {
+        if (!limited) return feed(indexerId, [{ title: '[Vault] Show', link: 'post', size: 1.08 }])
+        limited = false
+        return new Response('slow down', { status: 429 })
+      },
     },
-  })
-  searchScheduler.options.pauseBaseMs = 300
+    { pauseBaseMs: 300 },
+  )
   await searchSource(config(), release('First'), terms('First'))
   const until = searchScheduler.pausedUntil('prowlarr:2')
   assert.ok(until > Date.now(), 'rate limiting paused the indexer')
@@ -976,11 +980,10 @@ test('a hash lookup still gets a slot while every indexer search hangs', async t
       return feed(indexerId)
     },
   })
-  const pacing = usenetScheduler.options.minIntervalMs
   resetUsenetLookups()
-  usenetScheduler.options.minIntervalMs = 0
+  paceUsenetLookups({ minIntervalMs: 0 })
   t.after(() => {
-    usenetScheduler.options.minIntervalMs = pacing
+    paceUsenetLookups()
     resetUsenetLookups()
   })
   const pending = ['One', 'Two', 'Three', 'Four'].map(tag => searchSource(config(), release(tag), terms(tag)))
@@ -1384,18 +1387,21 @@ test('a cancelled check is dropped while it waits, finishes once it fetches, and
   const sources = tags.map(tag => release(tag))
   const [alpha, beta, gamma, delta, epsilon] = sources
   const bodies = new Map(sources.map((source, index) => [tags[index], nzb(source.files.map(stated))]))
-  const fake = setup(t, {
-    search: (indexerId, query) => {
-      const tag = query.get('q')!.replace('Vault ', '')
-      return feed(indexerId, [{ title: `[Vault] ${tag} (BD 1080p)`, link: tag, size: 1.08 }])
+  const fake = setup(
+    t,
+    {
+      search: (indexerId, query) => {
+        const tag = query.get('q')!.replace('Vault ', '')
+        return feed(indexerId, [{ title: `[Vault] ${tag} (BD 1080p)`, link: tag, size: 1.08 }])
+      },
+      download: async (_indexerId, link) => {
+        await hang.opened
+        return new Response(bodies.get(link))
+      },
     },
-    download: async (_indexerId, link) => {
-      await hang.opened
-      return new Response(bodies.get(link))
-    },
-  })
-  // One request at a time, so everything behind the first fetch waits for its slot.
-  searchScheduler.options.concurrency = 1
+    { concurrency: 1 },
+  )
+  // One request at a time (above), so everything behind the first fetch waits for its slot.
   const state = (source: PrivateSource) => searchSnapshot(config(), source.id).availability.state
   const check = (source: PrivateSource, tag: string) =>
     resolveSource(config(), source, terms(tag), { limit: 1, cancellable: true })
@@ -1664,15 +1670,11 @@ test('a pause set from outside holds a channel back without widening its spacing
   assert.equal(scheduler.pausedUntil('prowlarr:7'), until)
   assert.equal(scheduler.pauses()[0].reason, 'server')
   assert.equal(scheduler.isPaused('prowlarr:8'), false)
-  await assert.rejects(
-    scheduler.acquire({ channel: 'prowlarr:7', background: false, controller: new AbortController() }),
-    ProviderPausedError,
-  )
+  await assert.rejects(runJob(scheduler, 'prowlarr:7', 'paused'), ProviderPausedError)
   // The pause can be ended once its cause is over.
   scheduler.resume('prowlarr:7')
   assert.deepEqual(scheduler.pauses(), [])
-  await scheduler.acquire({ channel: 'prowlarr:7', background: false, controller: new AbortController() })
-  scheduler.release()
+  assert.equal(await runJob(scheduler, 'prowlarr:7', 'resumed'), 'resumed')
   // The first real rate limit afterwards starts the backoff at its base.
   scheduler.reset()
   scheduler.pause('prowlarr:7', Date.now() + 10, 'server')
