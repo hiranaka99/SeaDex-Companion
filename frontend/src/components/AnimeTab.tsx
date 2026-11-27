@@ -281,11 +281,12 @@ export default function AnimeTab({
   useEffect(() => {
     if (!openResultKey) return
     const group = groupResults(results).find(group => group.seasons.some(season => season.key === openResultKey))
-    if (group) resetFilters()
-    else {
-      toast.show('This title is no longer in the current library', 'info')
-      onResultOpened()
+    if (group) {
+      resetFilters()
+      return
     }
+    toast.show('This title is no longer in the current library', 'info')
+    onResultOpened()
   }, [openResultKey])
 
   const allGroups = useMemo(() => groupResults(results), [results])

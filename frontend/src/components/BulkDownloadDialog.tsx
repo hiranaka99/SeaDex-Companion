@@ -176,7 +176,8 @@ export default function BulkDownloadDialog({
         }),
       ),
     )
-    setEnabled(Object.fromEntries(reviewCandidates.ready.map(group => [group.id, true])))
+    // No entry means checked, so every ready row starts in the batch.
+    setEnabled({})
     setProtocols({})
     setExpanded({})
     setView(reviewCandidates.ready.length || !reviewCandidates.blocked.length ? 'ready' : 'unavailable')
@@ -775,60 +776,56 @@ export default function BulkDownloadDialog({
                 Not downloadable right now
               </h3>
               <div className="space-y-1.5">
-                {blockedSorted.map(group => {
-                  return (
-                    <div
-                      key={group.id}
-                      className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warn/25 bg-warn/6 px-3 py-2 text-xs"
-                    >
-                      {protocols[group.id] === 'usenet' && selected[group.id] !== undefined && (
-                        <label className="touch-target inline-flex cursor-pointer items-center gap-2">
-                          <input
-                            type="checkbox"
-                            disabled={locked}
-                            className="size-4 accent-good"
-                            checked={enabled[group.id] !== false}
-                            onChange={event =>
-                              setEnabled(current => ({ ...current, [group.id]: event.target.checked }))
-                            }
-                            aria-label={`Include unavailable Usenet choice · ${group.result.title}`}
-                          />
-                          <span>
-                            {enabled[group.id] === false
-                              ? 'Excluded from batch'
-                              : 'Selected Usenet source unavailable. Uncheck to exclude.'}
-                          </span>
-                        </label>
+                {blockedSorted.map(group => (
+                  <div
+                    key={group.id}
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warn/25 bg-warn/6 px-3 py-2 text-xs"
+                  >
+                    {protocols[group.id] === 'usenet' && selected[group.id] !== undefined && (
+                      <label className="touch-target inline-flex cursor-pointer items-center gap-2">
+                        <input
+                          type="checkbox"
+                          disabled={locked}
+                          className="size-4 accent-good"
+                          checked={enabled[group.id] !== false}
+                          onChange={event => setEnabled(current => ({ ...current, [group.id]: event.target.checked }))}
+                          aria-label={`Include unavailable Usenet choice · ${group.result.title}`}
+                        />
+                        <span>
+                          {enabled[group.id] === false
+                            ? 'Excluded from batch'
+                            : 'Selected Usenet source unavailable. Uncheck to exclude.'}
+                        </span>
+                      </label>
+                    )}
+                    <span className="font-semibold text-ink">{group.result.title}</span>
+                    <span className="rounded border border-warn/25 px-1.5 py-0.5 text-xs font-extrabold text-warn">
+                      {seasonLabel(group.result)}
+                      {group.part && (
+                        <>
+                          {' '}
+                          <span className="ml-1.5 border-l border-line-strong pl-1.5">{group.part}</span>
+                        </>
                       )}
-                      <span className="font-semibold text-ink">{group.result.title}</span>
-                      <span className="rounded border border-warn/25 px-1.5 py-0.5 text-xs font-extrabold text-warn">
-                        {seasonLabel(group.result)}
-                        {group.part && (
-                          <>
-                            {' '}
-                            <span className="ml-1.5 border-l border-line-strong pl-1.5">{group.part}</span>
-                          </>
-                        )}
-                      </span>
-                      <span
-                        className="ml-auto min-w-0 truncate text-muted"
-                        title={group.options.map(({ release }) => release.releaseGroup).join(' · ')}
-                      >
-                        {group.options.length
-                          ? `Private: ${group.options.map(({ release }) => release.releaseGroup).join(' · ')}`
-                          : 'No public magnet available'}
-                      </span>
-                      {usenetEnabled &&
-                        group.options.map(option => (
-                          <UsenetStatus
-                            key={option.index}
-                            row={availabilityOf(group.result, option)}
-                            loading={Boolean(currentAvailability?.loading)}
-                          />
-                        ))}
-                    </div>
-                  )
-                })}
+                    </span>
+                    <span
+                      className="ml-auto min-w-0 truncate text-muted"
+                      title={group.options.map(({ release }) => release.releaseGroup).join(' · ')}
+                    >
+                      {group.options.length
+                        ? `Private: ${group.options.map(({ release }) => release.releaseGroup).join(' · ')}`
+                        : 'No public magnet available'}
+                    </span>
+                    {usenetEnabled &&
+                      group.options.map(option => (
+                        <UsenetStatus
+                          key={option.index}
+                          row={availabilityOf(group.result, option)}
+                          loading={Boolean(currentAvailability?.loading)}
+                        />
+                      ))}
+                  </div>
+                ))}
                 {serverBlocked.map(row => {
                   const item = results.find(entry => entry.key === row.key)
                   if (!item) return null

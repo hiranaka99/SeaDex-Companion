@@ -156,11 +156,13 @@ export default function ConfigTab({
       setGuidedSetup(!libraryConnected(config))
       if (config.radarr_url && !config.sonarr_url) setLibrarySource('radarr')
     }
-    const next: ConfigDraft = { ...config }
-    next.scan_schedule = {
-      ...config.scan_schedule,
-      times: [...config.scan_schedule.times],
-      weekdays: [...config.scan_schedule.weekdays],
+    const next: ConfigDraft = {
+      ...config,
+      scan_schedule: {
+        ...config.scan_schedule,
+        times: [...config.scan_schedule.times],
+        weekdays: [...config.scan_schedule.weekdays],
+      },
     }
     // A configuration that comes back unchanged must preserve an unsaved settings draft.
     if (savedForm.current === JSON.stringify(next)) return
