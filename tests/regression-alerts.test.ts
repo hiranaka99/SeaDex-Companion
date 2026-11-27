@@ -12,7 +12,7 @@ import { setState } from '../server/scan-state.js'
 import { describeRegression } from '../shared/release-changes.js'
 import { changeTypeLabel, historyDetails, historyStatusText, summarizeChanges } from '../frontend/src/history.js'
 import { presentReleaseChange } from '../frontend/src/release-changes.js'
-import type { Release, ResultItem, ScanHistoryChange } from '../shared/contracts.js'
+import type { Release, ResultItem } from '../shared/contracts.js'
 import type { JsonObject } from '../server/types.js'
 
 const hash = (letter: string) => letter.repeat(40)
@@ -134,11 +134,7 @@ test('scan history tells a regression apart from a new upgrade', () => {
       releases: [release('Old')],
     }),
   ]
-  const entry = buildScanHistoryEntry(
-    before as ResultItem[],
-    [replaced(), upgradeOnly] as ResultItem[],
-    '2026-11-25 10:00:00',
-  )
+  const entry = buildScanHistoryEntry(before, [replaced(), upgradeOnly] as ResultItem[], '2026-11-25 10:00:00')
   assert.deepEqual(
     entry.changes.map(change => [change.title, change.type, change.from, change.to]),
     [
@@ -152,17 +148,13 @@ test('scan history tells a regression apart from a new upgrade', () => {
   ])
 
   // After a change of preferences, a status move says nothing about the library.
-  const baseline = buildScanHistoryEntry(
-    before as ResultItem[],
-    [replaced()] as ResultItem[],
-    '2026-11-25 10:00:00',
-    'manual',
-    { settingsChanged: true },
-  )
+  const baseline = buildScanHistoryEntry(before, [replaced()] as ResultItem[], '2026-11-25 10:00:00', 'manual', {
+    settingsChanged: true,
+  })
   assert.equal(baseline.changes.find(change => change.title === 'Show')?.type, 'upgrade')
 
   // Presentation: named first in the summary, with what changed underneath.
-  const shown = entry.changes as unknown as ScanHistoryChange[]
+  const shown = entry.changes
   assert.deepEqual(summarizeChanges(shown), [
     { type: 'regression', count: 1, label: 'no longer best' },
     { type: 'upgrade', count: 1, label: 'upgrade available' },

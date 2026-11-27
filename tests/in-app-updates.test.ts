@@ -151,7 +151,7 @@ describe('installing an update from a release', () => {
     const assets = [{ name: bundleAssetName(version), browser_download_url: 'https://github.com/download/bundle' }]
     if (options.withManifest !== false)
       assets.push({ name: UPDATE_MANIFEST_ASSET, browser_download_url: 'https://github.com/download/manifest' })
-    globalThis.fetch = (async (input: string | URL | Request) => {
+    globalThis.fetch = async (input: string | URL | Request) => {
       const url = String(input instanceof Request ? input.url : input)
       const body = url.endsWith('/latest')
         ? JSON.stringify({ tag_name: `v${version}`, html_url: 'https://github.com/release', assets })
@@ -164,7 +164,7 @@ describe('installing an update from a release', () => {
       const response = new Response(body, { status: 200 })
       Object.defineProperty(response, 'url', { value: url })
       return response
-    }) as typeof fetch
+    }
   }
 
   beforeEach(() => {

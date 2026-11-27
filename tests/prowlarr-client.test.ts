@@ -112,7 +112,10 @@ const errorXml = (code: number, description: string) =>
   `<?xml version="1.0" encoding="UTF-8"?>\n<error code="${code}" description="${escapeXml(description)}" />`
 
 const xmlResponse = (body: string, init: ResponseInit = {}) =>
-  new Response(body, { ...init, headers: { 'content-type': 'application/rss+xml', ...init.headers } })
+  new Response(body, {
+    ...init,
+    headers: { 'content-type': 'application/rss+xml', ...Object.fromEntries(new Headers(init.headers)) },
+  })
 
 const timeoutError = () => new DOMException('The operation timed out', 'TimeoutError')
 
@@ -584,9 +587,9 @@ test('A download reference holds the link and file without the key, and rebuilds
   assert.deepEqual(ref, { indexer_id: 7, link, file })
   assert.ok(!JSON.stringify(ref).includes(KEY))
 
-  assert.equal(downloadPathFromRef(SETTINGS, ref!), path)
+  assert.equal(downloadPathFromRef(SETTINGS, ref), path)
   // The key is the configured one, not one remembered from the link.
-  const rotated = downloadPathFromRef({ baseUrl: PROWLARR, apiKey: 'rotated-key' }, ref!)
+  const rotated = downloadPathFromRef({ baseUrl: PROWLARR, apiKey: 'rotated-key' }, ref)
   assert.equal(new URLSearchParams(rotated.split('?')[1]).get('apikey'), 'rotated-key')
   assert.ok(!rotated.includes(KEY))
   assert.deepEqual(downloadRef({ download_path: rotated, indexer_id: 7 }), ref)

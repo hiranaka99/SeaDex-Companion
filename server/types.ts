@@ -1,3 +1,4 @@
+// oxlint-disable-next-line typescript/no-explicit-any -- Parsed JSON from external services is read loosely across the server; narrowing it to unknown is a separate migration.
 export type JsonObject = Record<string, any>
 
 export type {

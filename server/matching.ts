@@ -345,7 +345,7 @@ export function commonBestRelease(
     if (common === null) common = keys
     else {
       const intersection = new Set<string>()
-      for (const key of common as Set<string>) if (keys.has(key)) intersection.add(key)
+      for (const key of common) if (keys.has(key)) intersection.add(key)
       common = intersection
     }
     if (!common.size) return null

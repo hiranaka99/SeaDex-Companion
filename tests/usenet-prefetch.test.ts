@@ -59,7 +59,7 @@ interface Probe {
 
 function stubFetch(probe: Probe) {
   const original = globalThis.fetch
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = async (input: RequestInfo | URL) => {
     const url = String(input)
     if (url.startsWith('https://feed.animetosho.net/json')) {
       probe.fetches++
@@ -67,7 +67,7 @@ function stubFetch(probe: Probe) {
       return new Response('nope', { status: 404 })
     }
     throw new Error(`unexpected provider request: ${url}`)
-  }) as typeof fetch
+  }
   return () => {
     globalThis.fetch = original
   }
@@ -88,7 +88,7 @@ function controlledFetch() {
     active: 0,
     maximum: 0,
   }
-  globalThis.fetch = ((input: RequestInfo | URL) => {
+  globalThis.fetch = (input: RequestInfo | URL) => {
     const url = String(input)
     assert.ok(url.startsWith('https://feed.animetosho.net/json'), `unexpected provider request: ${url}`)
     const hash = new URL(url).searchParams.get('hash')!
@@ -101,7 +101,7 @@ function controlledFetch() {
       probe.pending.delete(hash)
       probe.active--
     })
-  }) as typeof fetch
+  }
   return {
     probe,
     complete(hash: string) {
@@ -146,11 +146,10 @@ test('provider requests are spaced by the configured minimum interval', async ()
   isolation(80)
   const marks: number[] = []
   const original = globalThis.fetch
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    void input
+  globalThis.fetch = async () => {
     marks.push(Date.now())
     return new Response('nope', { status: 404 })
-  }) as typeof fetch
+  }
   try {
     await Promise.all([hexHash(1), hexHash(2), hexHash(3)].map(hash => resolveUsenetHash(config(), hash)))
     assert.equal(marks.length, 3)
@@ -284,11 +283,11 @@ test('a rate-limited provider pauses: interactive lookups fail fast and backgrou
   let rateLimited = true
   const starts: string[] = []
   const original = globalThis.fetch
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = async (input: RequestInfo | URL) => {
     const hash = new URL(String(input)).searchParams.get('hash')!
     starts.push(hash)
     return rateLimited ? new Response('slow down', { status: 429 }) : new Response('nope', { status: 404 })
-  }) as typeof fetch
+  }
   try {
     const background = resolveUsenetHash(config(), hexHash(1), false, true)
     await until(() => usenetProviderPauses().length === 1)
@@ -319,8 +318,8 @@ test('a running sweep reports the provider it waits on by its label', async () =
   usenetScheduler.options.pauseBaseMs = 300
   let rateLimited = true
   const original = globalThis.fetch
-  globalThis.fetch = (async () =>
-    rateLimited ? new Response('slow down', { status: 429 }) : new Response('nope', { status: 404 })) as typeof fetch
+  globalThis.fetch = async () =>
+    rateLimited ? new Response('slow down', { status: 429 }) : new Response('nope', { status: 404 })
   try {
     prefetchUsenetAvailability(config(), [result('paused-sweep', 1)], 'test')
     await until(() => Boolean(usenetPrefetchProgress().paused))

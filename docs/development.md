@@ -42,7 +42,11 @@ Source code is formatted with [Prettier](https://prettier.io) using the reposito
 
 Source code is linted with [Oxlint](https://oxc.rs/docs/guide/usage/linter) using the repository's `.oxlintrc.json`. Run `npm run lint` to check the server, shared code, tests, scripts, and frontend, or `npm run lint:fix` to apply safe automatic fixes. Warnings and suppression comments that no longer suppress anything fail the check.
 
-The configuration enables the `correctness` category with the TypeScript, Unicorn, Oxc, import, Node.js, and promise plugins, plus the React and JSX accessibility plugins for the frontend. Rules that conflict with deliberate patterns in this codebase are switched off in the configuration with the reason next to each. Suppress a single finding with `// oxlint-disable-next-line <rule> -- <reason>` only when the code is intentional, and always give the reason.
+The configuration enables the `correctness` category with the TypeScript, Unicorn, Oxc, import, Node.js, and promise plugins, plus the React and JSX accessibility plugins for the frontend. On top of that it enables `no-empty`, `import/no-duplicates`, `typescript/no-explicit-any`, and the type-aware `no-floating-promises`, `no-misused-promises`, and `no-unnecessary-type-assertion` rules.
+
+Linting runs in type-aware mode (`--type-aware`), which uses the `oxlint-tsgolint` dev dependency and the TypeScript compiler to check rules that need type information. ESLint is not used. Pass an async function to an event handler or callback that expects a void return as `() => void handler()`, so it is clear the promise is deliberately not awaited. Floating promises, unbound methods, and sort comparators are not checked in `tests/`, where `node:test` registers tests without awaiting them and sorting only puts values in a fixed order for comparison.
+
+Rules that conflict with deliberate patterns in this codebase are switched off in the configuration with the reason next to each. Suppress a single finding with `// oxlint-disable-next-line <rule> -- <reason>` only when the code is intentional, and always give the reason.
 
 ## Validation
 

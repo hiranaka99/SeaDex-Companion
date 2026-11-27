@@ -16,8 +16,8 @@
     "test:browser": "npm --prefix frontend run build && node tests/browser-smoke.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && npm --prefix frontend run build -- --emptyOutDir=false",
     "test:docker": "docker build -t seadex-companion:test . && node tests/docker-smoke.mjs seadex-companion:test",
-    "lint": "oxlint --deny-warnings --report-unused-disable-directives",
-    "lint:fix": "oxlint --fix --deny-warnings --report-unused-disable-directives",
+    "lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives",
+    "lint:fix": "oxlint --type-aware --fix --deny-warnings --report-unused-disable-directives",
     "format": "prettier --write server shared tests frontend/src frontend/vite.config.ts",
     "format:check": "prettier --check server shared tests frontend/src frontend/vite.config.ts"
   },
@@ -28,6 +28,7 @@
     "@types/node": "26.6.10",
     "concurrently": "^10.0.7",
     "oxlint": "1.95.0",
+    "oxlint-tsgolint": "7.0.2009",
     "prettier": "3.10.1",
     "tsx": "^4.23.15",
     "typescript": "7.0.2"

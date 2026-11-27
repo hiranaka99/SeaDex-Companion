@@ -307,7 +307,7 @@ test('a full continuous-series scan resolves all seasons and publishes the corre
     assert.equal(results[15].releases[0].selected_files?.at(-1), 'Anime - 366.mkv')
     const parts = results.flatMap(result => upgradeParts(result).map(part => ({ result, part })))
     const plan = planTorrents(
-      parts.map(({ result, part }) => ({ release: result.releases[part.options[0]!.index], category: 'anime' })),
+      parts.map(({ result, part }) => ({ release: result.releases[part.options[0].index], category: 'anime' })),
     )
     assert.equal(
       plan.length,
@@ -366,7 +366,7 @@ test('a TV series disambiguated with "(TV)" outranks its same-named OVA', async 
 })
 
 test('cached lookups are rechecked once only when they resolved to a non-series format', async () => {
-  const cache: Record<string, any> = {
+  const cache: Record<string, unknown> = {
     'lookup:v3:KissXSis': { id: 5042 },
     'media:v1:5042': { media: { id: 5042, format: 'OVA' }, fetched_at: 0 },
     'lookup:v3:Dororo': { id: 101347 },
@@ -384,7 +384,7 @@ test('cached lookups are rechecked once only when they resolved to a non-series 
 })
 
 test('a failed recheck keeps the earlier cached match', async () => {
-  const cache: Record<string, any> = {
+  const cache: Record<string, unknown> = {
     'lookup:v3:Example': { id: 1 },
     'media:v1:1': { media: { id: 1, format: 'OVA' }, fetched_at: 0 },
   }

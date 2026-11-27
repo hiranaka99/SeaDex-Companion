@@ -28,6 +28,7 @@ import { resetRuntimeForTests } from './support/runtime.js'
 import { createScanService } from '../server/scan.js'
 import { mergeComplementaryCandidates, seadexBest } from '../server/catalog.js'
 import { loadLocalLibrary } from '../server/library.js'
+import type { SeaDexEntry } from '../server/types.js'
 import { scopeReleaseToPart } from '../server/matching.js'
 import {
   processAutocheck,
@@ -70,7 +71,7 @@ test('Radarr includes non-theatrical releases and reads legacy movie-file owners
     { id: 5, title: 'Unknown movie' },
     { id: 6, title: 'Statistics movie', statistics: { sizeOnDisk: 456, releaseGroups: ['Another group'] } },
   ]
-  globalThis.fetch = (async () => Response.json(movies)) as typeof fetch
+  globalThis.fetch = async () => Response.json(movies)
   try {
     const { items } = await loadLocalLibrary({
       ...DEFAULT_CONFIG,
@@ -98,7 +99,7 @@ test('Radarr includes non-theatrical releases and reads legacy movie-file owners
 
 test('empty Radarr statistics cannot hide an already-owned best movie file', async () => {
   const original = globalThis.fetch
-  globalThis.fetch = (async () =>
+  globalThis.fetch = async () =>
     Response.json([
       {
         id: 1,
@@ -107,7 +108,7 @@ test('empty Radarr statistics cannot hide an already-owned best movie file', asy
         statistics: { sizeOnDisk: 0, releaseGroups: [] },
         movieFile: { id: 10, size: 123, releaseGroup: 'Best group' },
       },
-    ])) as typeof fetch
+    ])
   try {
     const { items } = await loadLocalLibrary({
       ...DEFAULT_CONFIG,
@@ -161,7 +162,7 @@ test('empty Radarr statistics cannot hide an already-owned best movie file', asy
 
 test('multi-season catalog torrents select only the requested season files', async () => {
   const original = globalThis.fetch
-  globalThis.fetch = (async () =>
+  globalThis.fetch = async () =>
     Response.json({
       totalPages: 1,
       items: [
@@ -183,7 +184,7 @@ test('multi-season catalog torrents select only the requested season files', asy
           },
         },
       ],
-    })) as typeof fetch
+    })
   try {
     const catalog = await seadexBest()
     const candidate = catalog.get(42)!.seasons[1].candidates[0]
@@ -442,13 +443,13 @@ test('qBittorrent connection changes invalidate cached torrents and credentials'
   const original = globalThis.fetch
   const logins: string[] = []
   let hash = 'a'.repeat(40)
-  globalThis.fetch = (async (input, init) => {
+  globalThis.fetch = async (input, init) => {
     if (String(input).endsWith('/auth/login')) {
       logins.push(String(init?.body))
       return new Response('Ok.', { headers: { 'Set-Cookie': 'SID=fixture' } })
     }
     return Response.json([{ hash }])
-  }) as typeof fetch
+  }
   try {
     const config = {
       ...DEFAULT_CONFIG,
@@ -476,10 +477,10 @@ test('invalid qBittorrent lists produce an actionable error without poisoning th
   resetRuntimeForTests()
   const original = globalThis.fetch
   let list: unknown = { error: 'bad response' }
-  globalThis.fetch = (async input =>
+  globalThis.fetch = async input =>
     String(input).endsWith('/auth/login')
       ? new Response('Ok.', { headers: { 'Set-Cookie': 'SID=fixture' } })
-      : Response.json(list)) as typeof fetch
+      : Response.json(list)
   try {
     const config = {
       ...DEFAULT_CONFIG,
@@ -504,7 +505,7 @@ test('scan cancellation aborts scan requests while independent requests remain u
     started = resolve
   })
   let independentSignal: AbortSignal | undefined
-  globalThis.fetch = (async (input, init) => {
+  globalThis.fetch = async (input, init) => {
     const signal = init?.signal as AbortSignal
     if (String(input).includes('independent')) {
       independentSignal = signal
@@ -516,7 +517,7 @@ test('scan cancellation aborts scan requests while independent requests remain u
       if (signal.aborted) abort()
       else signal.addEventListener('abort', abort, { once: true })
     })
-  }) as typeof fetch
+  }
   try {
     const scan = createScanService({
       seadexBest: async () => {
@@ -548,10 +549,10 @@ test('scan cancellation interrupts AniList rate-limit backoff immediately', asyn
   const ready = new Promise<void>(resolve => {
     rateLimited = resolve
   })
-  globalThis.fetch = (async () => {
+  globalThis.fetch = async () => {
     rateLimited()
     return new Response('', { status: 429, headers: { 'Retry-After': '60' } })
-  }) as typeof fetch
+  }
   try {
     const scan = createScanService({
       seadexBest: async () => {
@@ -719,8 +720,8 @@ test('AniList chain ignores non-anime sequel relations and does not retry HTTP 4
     'Apocalypse Hotel',
     {},
     {
-      lookup: (async () => ({ id: 180675, cover: 'cover-180675', banner: 'banner-180675' })) as any,
-      media: (async (_query: string, variables: { id?: number }) => {
+      lookup: async () => ({ id: 180675, cover: 'cover-180675', banner: 'banner-180675' }),
+      media: async (_query: string, variables: { id?: number }) => {
         queriedIds.push(Number(variables.id))
         if (variables.id === 180675) {
           return {
@@ -739,8 +740,8 @@ test('AniList chain ignores non-anime sequel relations and does not retry HTTP 4
           }
         }
         return {}
-      }) as any,
-      persist: (() => undefined) as any,
+      },
+      persist: () => undefined,
     },
   )
   assert.deepEqual(queriedIds, [180675, 999999])
@@ -751,12 +752,12 @@ test('AniList chain ignores non-anime sequel relations and does not retry HTTP 4
 
   const originalFetch = globalThis.fetch
   let attempts = 0
-  globalThis.fetch = (async () => {
+  globalThis.fetch = async () => {
     attempts += 1
     return new Response(JSON.stringify({ errors: [{ message: 'Not Found.', status: 404 }], data: { Media: null } }), {
       status: 404,
     })
-  }) as typeof fetch
+  }
   try {
     const data = await alMedia('query($id:Int){Media(id:$id,type:ANIME){id}}', { id: 207065 })
     assert.deepEqual(data, {})
@@ -787,10 +788,10 @@ test('AniList title lookup strips trailing TVDB year disambiguation and prefers 
   const entry = await anilistLookup(
     'Dororo (2019)',
     {},
-    (async (_query: string, variables: { t?: string }) => {
+    async (_query: string, variables: { t?: string }) => {
       queries.push(String(variables.t))
       return variables.t === 'Dororo' ? dororoCandidates : []
-    }) as any,
+    },
     () => undefined,
   )
   assert.equal(entry?.id, 101347)
@@ -844,7 +845,7 @@ test('assessSeason aligns continuous multi-season TVDB splits and multi-cour seq
     name: `[ASC] Bleach - ${String(index + 1).padStart(3, '0')}.mkv`,
     length: 10,
   }))
-  const best = new Map<number, any>([
+  const best = new Map<number, SeaDexEntry>([
     [
       269,
       {

@@ -79,7 +79,10 @@ function grade(posted: Posted[], expected: SourceFile[]): NzbGrade {
 /** The reported ratio, to a tolerance far below every threshold. */
 function assertRatio(actual: [number, number] | undefined, low: number, high = low): void {
   assert.ok(actual, 'a ratio was measured')
-  assert.ok(Math.abs(actual[0] - low) < 1e-4 && Math.abs(actual[1] - high) < 1e-4, `${actual} is not ${low} to ${high}`)
+  assert.ok(
+    Math.abs(actual[0] - low) < 1e-4 && Math.abs(actual[1] - high) < 1e-4,
+    `${actual.join(',')} is not ${low} to ${high}`,
+  )
 }
 
 const total = (files: SourceFile[]) => files.reduce((sum, file) => sum + file.length, 0)

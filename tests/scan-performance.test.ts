@@ -682,7 +682,7 @@ test('Sonarr series are read four at a time and keep the library order', async (
   const originalFetch = globalThis.fetch
   let active = 0,
     peak = 0
-  globalThis.fetch = (async (input: string | URL | Request) => {
+  globalThis.fetch = async (input: string | URL | Request) => {
     const url = new URL(String(input))
     if (url.pathname === '/api') return Response.json({ current: 'v3' })
     if (url.pathname.endsWith('/series'))
@@ -701,7 +701,7 @@ test('Sonarr series are read four at a time and keep the library order', async (
     await new Promise(resolve => setTimeout(resolve, Number(url.searchParams.get('seriesId')) % 4 === 1 ? 20 : 2))
     active -= 1
     return Response.json([{ seasonNumber: 1, episodeNumber: 1, episodeFileId: 0, airDate: '2024-01-05T09:00:00Z' }])
-  }) as typeof fetch
+  }
   try {
     const items = await localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key' })
     assert.deepEqual(

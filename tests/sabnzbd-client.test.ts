@@ -62,12 +62,12 @@ describe('sabTestConnection', () => {
 
     assert.deepEqual(await sabTestConnection(settings, fetchImpl), { version: '5.1.3' })
     assert.equal(calls.length, 2)
-    assert.equal(calls[0]!.url.searchParams.get('mode'), 'version')
-    assert.equal(calls[0]!.url.searchParams.get('apikey'), null)
-    assert.equal(calls[0]!.url.searchParams.get('output'), 'json')
-    assert.equal(calls[1]!.url.searchParams.get('mode'), 'queue')
-    assert.equal(calls[1]!.url.searchParams.get('apikey'), settings.apiKey)
-    assert.equal(calls[1]!.url.searchParams.get('limit'), '1')
+    assert.equal(calls[0].url.searchParams.get('mode'), 'version')
+    assert.equal(calls[0].url.searchParams.get('apikey'), null)
+    assert.equal(calls[0].url.searchParams.get('output'), 'json')
+    assert.equal(calls[1].url.searchParams.get('mode'), 'queue')
+    assert.equal(calls[1].url.searchParams.get('apikey'), settings.apiKey)
+    assert.equal(calls[1].url.searchParams.get('limit'), '1')
     // The probe must never enqueue anything.
     assert.ok(calls.every(call => call.url.searchParams.get('mode') !== 'addurl' && call.init.method !== 'POST'))
   })
@@ -98,7 +98,7 @@ describe('sabAddNzb', () => {
     const ids = await sabAddNzb(settings, nzbBytes, 'Show S01 [1080p]', 'sonarr-anime', fetchImpl)
     assert.deepEqual(ids, [nzoId])
     assert.equal(calls.length, 1)
-    const { url, init } = calls[0]!
+    const { url, init } = calls[0]
     assert.equal(init.method, 'POST')
     assert.equal(url.pathname, '/api')
     assert.equal(url.searchParams.get('apikey'), settings.apiKey)
@@ -115,8 +115,8 @@ describe('sabAddNzb', () => {
     assert.equal(form.get('apikey'), null)
     const file = form.get('name')
     assert.ok(file instanceof Blob)
-    assert.equal((file as File).name, 'download.nzb')
-    assert.equal((file as File).type, 'application/x-nzb+xml')
+    assert.equal(file.name, 'download.nzb')
+    assert.equal(file.type, 'application/x-nzb+xml')
     assert.deepEqual(new Uint8Array(await file.arrayBuffer()), nzbBytes)
     // Never send an undefined signal — the request honors settings.signal.
     assert.ok(init.signal instanceof AbortSignal)
@@ -289,10 +289,10 @@ describe('sabQueueJobs', () => {
     const read = await sabQueueJobs(settings, ids, fetchImpl)
     assert.equal(read.read_complete, true)
     assert.equal(calls.length, 2)
-    assert.deepEqual(calls[0]!.url.searchParams.get('nzo_ids')?.split(','), ids.slice(0, 20))
-    assert.deepEqual(calls[1]!.url.searchParams.get('nzo_ids')?.split(','), ids.slice(20))
-    assert.equal(calls[0]!.url.searchParams.get('output'), 'json')
-    assert.equal(calls[0]!.url.searchParams.get('apikey'), settings.apiKey)
+    assert.deepEqual(calls[0].url.searchParams.get('nzo_ids')?.split(','), ids.slice(0, 20))
+    assert.deepEqual(calls[1].url.searchParams.get('nzo_ids')?.split(','), ids.slice(20))
+    assert.equal(calls[0].url.searchParams.get('output'), 'json')
+    assert.equal(calls[0].url.searchParams.get('apikey'), settings.apiKey)
     // Targeted reads only: never a broad or category-wide queue request.
     assert.ok(calls.every(call => !call.url.searchParams.has('cat') && !call.url.searchParams.has('search')))
   })
@@ -416,7 +416,7 @@ describe('controls', () => {
         : queueResponse([{ nzo_id: nzoId, filename: 'Show', status: 'Paused', mb: '1', mbleft: '1' }]),
     )
     await sabPauseJob(settings, nzoId, fetchImpl)
-    const control = calls[0]!
+    const control = calls[0]
     assert.equal(control.url.searchParams.get('mode'), 'queue')
     assert.equal(control.url.searchParams.get('name'), 'pause')
     assert.equal(control.url.searchParams.get('value'), nzoId)
@@ -471,7 +471,7 @@ describe('controls', () => {
         call => call.url.searchParams.get('nzo_ids') === nzoId || call.url.searchParams.get('value') === nzoId,
       ),
     )
-    const control = calls[0]!
+    const control = calls[0]
     assert.equal(control.url.searchParams.get('name'), 'delete')
     assert.equal(control.url.searchParams.get('value'), nzoId)
     assert.equal(control.url.searchParams.get('del_files'), '1')
@@ -489,7 +489,7 @@ describe('controls', () => {
       assert.match((error as Error).message, /still in the SABnzbd queue/)
       return true
     })
-    assert.equal(calls[0]!.url.searchParams.get('del_files'), '0')
+    assert.equal(calls[0].url.searchParams.get('del_files'), '0')
   })
 
   test('queue delete cannot claim absence when the confirmation read fails', async () => {
@@ -511,7 +511,7 @@ describe('controls', () => {
       return historyResponse([])
     })
     await sabDeleteHistoryJob(settings, nzoId, false, fetchImpl)
-    const control = calls[0]!
+    const control = calls[0]
     assert.equal(control.url.searchParams.get('mode'), 'history')
     assert.equal(control.url.searchParams.get('name'), 'delete')
     assert.equal(control.url.searchParams.get('value'), nzoId)

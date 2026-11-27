@@ -40,7 +40,7 @@ describe('qBittorrent session cookies', () => {
       sessions.add(cookie)
       return cookie
     }
-    globalThis.fetch = (async (input, init) => {
+    globalThis.fetch = async (input, init) => {
       if (String(input).endsWith('/auth/login')) {
         logins++
         return new Response('Ok.', { headers: { 'Set-Cookie': `${createSession()}; Path=/; HttpOnly` } })
@@ -53,7 +53,7 @@ describe('qBittorrent session cookies', () => {
         sessions.add(cookie)
       }
       return Response.json([{ hash }], { headers })
-    }) as typeof fetch
+    }
 
     await qbGetTorrents(config)
     sessions.delete('SID=companion-1') // Expired or evicted while SeaDex kept its cookie.
@@ -67,7 +67,7 @@ describe('qBittorrent session cookies', () => {
 
   test('preserves multiple cookies, custom session names, and values containing equals signs', async () => {
     let requests = 0
-    globalThis.fetch = (async (input, init) => {
+    globalThis.fetch = async (input, init) => {
       if (String(input).endsWith('/auth/login')) {
         const headers = new Headers()
         headers.append('Set-Cookie', 'route=backend; Path=/; Expires=Wed, 01 Jan 2031 00:00:00 GMT')
@@ -85,7 +85,7 @@ describe('qBittorrent session cookies', () => {
         headers.append('Set-Cookie', 'route=backend; Path=/')
       }
       return Response.json([{ hash }], { headers })
-    }) as typeof fetch
+    }
 
     for (let poll = 0; poll < 3; poll++) await qbGetTorrents(config, undefined, true)
     assert.equal(requests, 3)
@@ -93,12 +93,12 @@ describe('qBittorrent session cookies', () => {
 
   test('accepts a session cookie from a response after a cookie-less 204 login', async () => {
     let requests = 0
-    globalThis.fetch = (async (input, init) => {
+    globalThis.fetch = async (input, init) => {
       if (String(input).endsWith('/auth/login')) return new Response(null, { status: 204 })
       requests++
       assert.equal(requestCookie(init), requests === 1 ? null : 'SID=recovered')
       return Response.json([{ hash }], { headers: requests === 1 ? { 'Set-Cookie': 'SID=recovered; Path=/' } : {} })
-    }) as typeof fetch
+    }
 
     await qbGetTorrents(config)
     await qbGetTorrents(config, undefined, true)
@@ -108,7 +108,7 @@ describe('qBittorrent session cookies', () => {
     let expectedCookie = 'SID=login',
       requests = 0
     const paths: string[] = []
-    globalThis.fetch = (async (input, init) => {
+    globalThis.fetch = async (input, init) => {
       const url = new URL(String(input))
       if (url.pathname.endsWith('/auth/login'))
         return new Response('Ok.', { headers: { 'Set-Cookie': expectedCookie } })
@@ -121,7 +121,7 @@ describe('qBittorrent session cookies', () => {
         return Response.json([{ index: 0, name: 'episode.mkv' }], { headers })
       if (url.pathname.endsWith('/torrents/stop')) return new Response('Not Found', { status: 404, headers })
       return new Response('Ok.', { headers })
-    }) as typeof fetch
+    }
 
     await qbAddTorrent(config, `magnet:?xt=urn:btih:${hash}`, 'anime', ['episode.mkv'])
     await qbControlTorrents(config, [hash], 'pause')
@@ -143,7 +143,7 @@ describe('qBittorrent session cookies', () => {
     const ready = new Promise<void>(resolve => {
       bothForbidden = resolve
     })
-    globalThis.fetch = (async (input, init) => {
+    globalThis.fetch = async (input, init) => {
       if (String(input).endsWith('/auth/login')) {
         return new Response('Ok.', { headers: { 'Set-Cookie': `SID=login-${++logins}` } })
       }
@@ -154,7 +154,7 @@ describe('qBittorrent session cookies', () => {
       }
       assert.equal(requestCookie(init), 'SID=login-2')
       return new Response('Ok.')
-    }) as typeof fetch
+    }
 
     await Promise.all([qbControlTorrents(config, [hash], 'pause'), qbControlTorrents(config, [otherHash], 'resume')])
     assert.equal(logins, 2)
@@ -170,7 +170,7 @@ describe('qBittorrent session cookies', () => {
       entered = resolve
     })
     const cookies: (string | null)[] = []
-    globalThis.fetch = (async (input, init) => {
+    globalThis.fetch = async (input, init) => {
       if (String(input).endsWith('/auth/login')) return new Response('Ok.', { headers: { 'Set-Cookie': 'SID=old' } })
       cookies.push(requestCookie(init))
       if (String(input).endsWith('/torrents/stop')) {
@@ -180,7 +180,7 @@ describe('qBittorrent session cookies', () => {
       if (String(input).endsWith('/torrents/info'))
         return Response.json([{ hash }], { headers: { 'Set-Cookie': 'SID=new; Path=/' } })
       return new Response('Ok.')
-    }) as typeof fetch
+    }
 
     const pending = qbControlTorrents(config, [hash], 'pause')
     try {
@@ -203,7 +203,7 @@ describe('qBittorrent session cookies', () => {
       entered = resolve
     })
     let logins = 0
-    globalThis.fetch = (async (input, init) => {
+    globalThis.fetch = async (input, init) => {
       if (String(input).endsWith('/auth/login')) {
         logins++
         return new Response('Ok.', { headers: { 'Set-Cookie': 'SID=old' } })
@@ -216,7 +216,7 @@ describe('qBittorrent session cookies', () => {
         return Response.json([{ hash }], { headers: { 'Set-Cookie': 'SID=new' } })
       assert.equal(requestCookie(init), 'SID=new')
       return new Response('Ok.')
-    }) as typeof fetch
+    }
 
     const pending = qbControlTorrents(config, [hash], 'pause')
     try {
@@ -232,14 +232,14 @@ describe('qBittorrent session cookies', () => {
   test('retries forbidden requests only once and recovers after a failed login', async () => {
     let logins = 0,
       requests = 0
-    globalThis.fetch = (async input => {
+    globalThis.fetch = async input => {
       if (String(input).endsWith('/auth/login')) {
         logins++
         return new Response(logins === 1 ? 'Fails.' : 'Ok.', { headers: { 'Set-Cookie': `SID=${logins}` } })
       }
       requests++
       return new Response('Forbidden', { status: 403 })
-    }) as typeof fetch
+    }
 
     await assert.rejects(qbGetTorrents(config), /login failed/)
     await assert.rejects(qbGetTorrents(config), /HTTP 403/)
@@ -253,13 +253,13 @@ test('progress reads ask qBittorrent only for the tracked torrents', async () =>
   resetQbRuntime()
   const reads: string[] = []
   const seeding = [{ hash }, { hash: otherHash }, { hash: 'c'.repeat(40) }]
-  globalThis.fetch = (async input => {
+  globalThis.fetch = async input => {
     const url = new URL(String(input))
     if (url.pathname.endsWith('/auth/login')) return new Response('Ok.', { headers: { 'Set-Cookie': 'SID=read' } })
     const wanted = url.searchParams.get('hashes')?.split('|')
     reads.push(wanted ? wanted.join('|') : '*')
     return Response.json(wanted ? seeding.filter(torrent => wanted.includes(torrent.hash)) : seeding)
-  }) as typeof fetch
+  }
   try {
     assert.deepEqual(
       (await qbReadTorrents(config, [hash.toUpperCase(), otherHash, hash])).map(torrent => torrent.hash),

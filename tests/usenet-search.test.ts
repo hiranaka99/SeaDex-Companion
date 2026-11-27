@@ -79,7 +79,7 @@ function config(overrides: Partial<Config> = {}): Config {
     prowlarr_url: PROWLARR,
     prowlarr_key: KEY,
     ...overrides,
-  } as Config
+  }
 }
 
 // --- NZB fixtures -------------------------------------------------------------------
@@ -215,7 +215,7 @@ function setup(t: TestContext, overrides: Partial<Fake> = {}): Fake {
     elsewhere: () => new Response('not found', { status: 404 }),
     ...overrides,
   }
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
     const headers = new Headers(init?.headers)
     fake.calls.push({ url, headers })
@@ -227,7 +227,7 @@ function setup(t: TestContext, overrides: Partial<Fake> = {}): Fake {
     const download = url.pathname.match(/^\/(\d+)\/download$/)
     if (download) return await fake.download(Number(download[1]), url.searchParams.get('link') ?? '')
     throw new Error(`unexpected request: ${url.pathname}`)
-  }) as typeof fetch
+  }
   t.after(() => {
     globalThis.fetch = original
     Object.assign(searchScheduler.options, pacing)
@@ -1097,7 +1097,7 @@ for (const [name, refusal, retryAfter] of refusals)
 
     const [first, second] = record()!.candidates
     assert.equal(first.check?.unavailable?.code, 'rate_limited')
-    assert.ok(first.check!.unavailable!.retry_at >= started + retryAfter)
+    assert.ok(first.check.unavailable.retry_at >= started + retryAfter)
     assert.equal(second.check, undefined)
     assert.equal(record()?.negative_streak, undefined)
     assert.deepEqual(

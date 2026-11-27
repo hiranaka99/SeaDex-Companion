@@ -249,14 +249,14 @@ describe('manual rules and scan history', () => {
   test('passes a saved manual AniList ID into title resolution', async () => {
     let receivedOverride: number | undefined
     await createScanService({
-      seadexBest: (async () => new Map()) as any,
-      localItems: (async () => [
+      seadexBest: async () => new Map(),
+      localItems: async () => [
         { arr: 'Sonarr', id: 10, title: 'Ambiguous', seasons: { 1: { groups: ['Local'], size: 100 } } },
-      ]) as any,
-      anilistChain: (async (_title: string, _cache: JsonObject, _dependencies: unknown, overrideId?: number) => {
+      ],
+      anilistChain: async (_title: string, _cache: JsonObject, _dependencies: unknown, overrideId?: number) => {
         receivedOverride = overrideId
         return [{ season: 1, id: 999, ids: [999], parts: [{ id: 999, episodeCount: 1 }] }]
-      }) as any,
+      },
       loadCache: () => ({}),
       loadUserRules: () => ({ mappings: { 'Sonarr:item10': 999 }, exclusions: [] }),
       saveLastResults: () => undefined,
@@ -271,7 +271,7 @@ describe('manual rules and scan history', () => {
 describe('notifications and scheduling', () => {
   test('does not count Discord HTTP errors as delivered', async () => {
     const originalFetch = globalThis.fetch
-    globalThis.fetch = (async () => new Response('rejected', { status: 500 })) as typeof fetch
+    globalThis.fetch = async () => new Response('rejected', { status: 500 })
     try {
       assert.equal(await sendToDiscord('https://discord.example/webhook', [resultItem({ title: 'Example' })]), 0)
     } finally {
@@ -450,7 +450,7 @@ describe('Sonarr and Radarr URL normalization', () => {
 
   test('keeps TVDB episode numbers even when an episode has no file', async () => {
     const originalFetch = globalThis.fetch
-    globalThis.fetch = (async (input: string | URL | Request) => {
+    globalThis.fetch = async (input: string | URL | Request) => {
       const url = String(input)
       if (url.endsWith('/api')) return Response.json({ current: 'v3', deprecated: [] })
       let data: JsonObject[] = []
@@ -471,7 +471,7 @@ describe('Sonarr and Radarr URL normalization', () => {
         ]
       else if (url.includes('/episodefile?')) data = [{ id: 20, releaseGroup: 'IK', size: 100 }]
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }) as typeof fetch
+    }
 
     try {
       const items = await localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key' })
@@ -485,7 +485,7 @@ describe('Sonarr and Radarr URL normalization', () => {
 
   test('includes newly added Sonarr series and Radarr movies before files exist', async () => {
     const originalFetch = globalThis.fetch
-    globalThis.fetch = (async (input: string | URL | Request) => {
+    globalThis.fetch = async (input: string | URL | Request) => {
       const url = String(input)
       if (url.endsWith('/api')) return Response.json({ current: 'v3', deprecated: [] })
       let data: JsonObject[] = []
@@ -519,7 +519,7 @@ describe('Sonarr and Radarr URL normalization', () => {
           },
         ]
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }) as typeof fetch
+    }
     try {
       const items = await localItems({
         ...DEFAULT_CONFIG,
@@ -546,7 +546,7 @@ describe('Sonarr and Radarr URL normalization', () => {
 
   test('hides unreleased Sonarr seasons and Radarr movies', async () => {
     const originalFetch = globalThis.fetch
-    globalThis.fetch = (async (input: string | URL | Request) => {
+    globalThis.fetch = async (input: string | URL | Request) => {
       const url = String(input)
       if (url.endsWith('/api')) return Response.json({ current: 'v3', deprecated: [] })
       let data: JsonObject[] = []
@@ -598,7 +598,7 @@ describe('Sonarr and Radarr URL normalization', () => {
           },
         ]
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }) as typeof fetch
+    }
 
     try {
       const items = await localItems({
@@ -618,7 +618,7 @@ describe('Sonarr and Radarr URL normalization', () => {
 
   test('fails the scan input when a configured library API is unavailable', async () => {
     const originalFetch = globalThis.fetch
-    globalThis.fetch = (async () => new Response('unavailable', { status: 503 })) as typeof fetch
+    globalThis.fetch = async () => new Response('unavailable', { status: 503 })
     try {
       await assert.rejects(
         () => localItems({ ...DEFAULT_CONFIG, sonarr_url: 'http://sonarr', sonarr_key: 'key' }),
@@ -633,7 +633,7 @@ describe('Sonarr and Radarr URL normalization', () => {
 describe('SeaDex catalog aggregation', () => {
   test('keeps distinct torrents from the same group and tracker separate', async () => {
     const originalFetch = globalThis.fetch
-    globalThis.fetch = (async () =>
+    globalThis.fetch = async () =>
       new Response(
         JSON.stringify({
           items: [
@@ -662,7 +662,7 @@ describe('SeaDex catalog aggregation', () => {
           totalPages: 1,
         }),
         { status: 200 },
-      )) as typeof fetch
+      )
     try {
       const catalog = await seadexBest()
       const candidates = catalog.get(10)?.seasons[1].candidates as ReleaseCandidate[]
@@ -689,14 +689,14 @@ describe('SeaDex catalog aggregation', () => {
       infoHash: hashCharacter.repeat(40),
       files: [{ name: `Show.S01E${String(number).padStart(2, '0')}.mkv`, length: 100 }],
     })
-    globalThis.fetch = (async () =>
+    globalThis.fetch = async () =>
       new Response(
         JSON.stringify({
           items: [{ alID: 10, expand: { trs: [episode(1, 'a'), episode(2, 'b'), episode(3, 'c')] } }],
           totalPages: 1,
         }),
         { status: 200 },
-      )) as typeof fetch
+      )
     try {
       const catalog = await seadexBest()
       const candidates = catalog.get(10)?.seasons[1].candidates as ReleaseCandidate[]
@@ -729,14 +729,14 @@ describe('SeaDex catalog aggregation', () => {
         length: 100,
       })),
     })
-    globalThis.fetch = (async () =>
+    globalThis.fetch = async () =>
       new Response(
         JSON.stringify({
           items: [{ alID: 10, expand: { trs: [batch(1, 2, 'a'), batch(3, 4, 'b'), batch(1, 4, 'c')] } }],
           totalPages: 1,
         }),
         { status: 200 },
-      )) as typeof fetch
+      )
     try {
       const catalog = await seadexBest()
       const candidates = catalog.get(10)?.seasons[1].candidates as ReleaseCandidate[]
