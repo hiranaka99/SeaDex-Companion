@@ -1,36 +1,22 @@
 // The Usenet runtime: builds the hash-indexer lookups (their scheduler and cache), the Prowlarr finder (its
 // scheduler and search store), the Prowlarr indexer list, the private torrent cache and the background sweep,
-// and keeps them up to date. It reacts to four events only: it is created fresh, the configuration changed,
-// the results changed, and the server shuts down. Which settings invalidate what, in which order, and which
-// sources the stores keep are decided here and nowhere else.
+// owns them, and keeps them up to date. All Usenet state lives in the runtime in use; the modules that look up,
+// search and sweep read it from `usenetParts`. It reacts to four events only: it is created fresh, the
+// configuration changed, the results changed, and the server shuts down. Which settings invalidate what, in
+// which order, and which sources the stores keep are decided here and nowhere else.
 
 import { downloadRecords, type OwnedDownloadRecord } from './download-store.js'
 import { log } from './logging.js'
-import { invalidatePrivateSources, privateTorrentCache, usePrivateTorrentCache } from './private-sources.js'
-import { prowlarrIndexerList, resetProwlarrRuntime, useProwlarrIndexerList } from './prowlarr.js'
+import { PrivateTorrentCache } from './private-sources.js'
+import { ProwlarrIndexerList } from './prowlarr.js'
 import { loadLastResults } from './results.js'
 import { torrentHashes } from '../shared/download-plan.js'
 import type { Config, ResultItem } from './types.js'
-import {
-  flushUsenetCache,
-  hashLookupParts,
-  invalidateUsenetLookups,
-  retainUsenetHashes,
-  useHashLookupParts,
-  usenetScheduler,
-} from './usenet.js'
-import { startUsenetSweep, stopUsenetPrefetch, useSweepParts, usenetSweepEnabled } from './usenet-prefetch.js'
+import { HashLookupParts } from './usenet.js'
+import { SweepParts } from './usenet-prefetch.js'
 import { USENET_PROVIDERS } from './usenet-providers.js'
 import type { LookupPacing, LookupScheduler } from './usenet-scheduler.js'
-import {
-  flushUsenetSearch,
-  invalidateUsenetSearch,
-  retainSearchSources,
-  searchParts,
-  searchScheduler,
-  searchStore,
-  useSearchParts,
-} from './usenet-search.js'
+import { SearchParts } from './usenet-search.js'
 import type { UsenetSearchStore } from './usenet-search-store.js'
 
 /** Settings that change which hash indexer answers lookups. */
@@ -87,8 +73,22 @@ export interface UsenetRuntime {
     ledger: readonly OwnedDownloadRecord[] | undefined,
     reason: string,
   ): void
-  /** Stops the sweep and writes what is pending, for a graceful shutdown. False when a write failed. */
-  shutdown(): boolean
+  /**
+   * The server is shutting down: the sweep stops and no other starts. Lookups and searches still answer the
+   * requests the server finishes meanwhile.
+   */
+  shutdown(): void
+  /** Writes what the stores have pending, once the server closed. False when a write failed. */
+  flush(): boolean
+}
+
+/** What the Usenet modules run on: the parts of one runtime. */
+export interface UsenetParts {
+  readonly hash: HashLookupParts
+  readonly search: SearchParts
+  readonly indexers: ProwlarrIndexerList
+  readonly privateSources: PrivateTorrentCache
+  readonly sweep: SweepParts
 }
 
 /**
@@ -134,32 +134,54 @@ export function readLedger(): readonly OwnedDownloadRecord[] | undefined {
 }
 
 class Runtime implements UsenetRuntime {
+  readonly parts: UsenetParts
+  private shuttingDown = false
+
+  constructor(options: UsenetRuntimeOptions = {}) {
+    const now = options.now ?? (() => Date.now())
+    const send: typeof fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
+    const { paths = {}, pacing = {} } = options
+    this.parts = {
+      hash: new HashLookupParts({ now, fetch: send, cacheFile: paths.cache, pacing: pacing.hashes }),
+      search: new SearchParts({
+        now,
+        fetch: send,
+        searchFile: paths.search,
+        nzbDir: paths.nzbs,
+        pacing: pacing.search,
+      }),
+      indexers: new ProwlarrIndexerList({ now, fetch: send }),
+      privateSources: new PrivateTorrentCache({ now, fetch: send }),
+      sweep: new SweepParts({ enabled: options.sweep ?? false, now }),
+    }
+  }
+
   get hashScheduler(): LookupScheduler {
     this.assertInUse()
-    return usenetScheduler
+    return this.parts.hash.scheduler
   }
 
   get searchScheduler(): LookupScheduler {
     this.assertInUse()
-    return searchScheduler
+    return this.parts.search.scheduler
   }
 
   get searchStore(): UsenetSearchStore {
     this.assertInUse()
-    return searchStore
+    return this.parts.search.store
   }
 
   configChanged(previous: Config | undefined, config: Config): void {
     this.assertInUse()
     const changed = (keys: readonly (keyof Config)[]) => !previous || keys.some(key => previous[key] !== config[key])
     const hashIndexers = changed(HASH_INDEXER_KEYS)
-    if (hashIndexers) invalidateUsenetLookups(config)
+    if (hashIndexers) this.parts.hash.invalidate(config)
     const prowlarr = changed(PROWLARR_KEYS)
     if (prowlarr) {
-      invalidatePrivateSources()
+      this.parts.privateSources.invalidate()
       // Search results, usage counters and stored NZBs are kept for the configured connection only.
-      invalidateUsenetSearch(config)
-      resetProwlarrRuntime()
+      this.parts.search.invalidate(config)
+      this.parts.indexers.forget()
     }
     // A starting server sweeps its saved results once the first interactive lookups had the providers.
     if (!previous) return
@@ -174,32 +196,49 @@ class Runtime implements UsenetRuntime {
     reason: string,
   ): void {
     this.assertInUse()
-    stopUsenetPrefetch()
-    if (!usenetSweepEnabled()) return
+    const { sweep } = this.parts
+    sweep.stop()
+    if (!sweep.enabled || this.shuttingDown) return
     this.retain(results, ledger)
-    startUsenetSweep(config, results, reason)
+    sweep.start(config, results, reason)
   }
 
-  shutdown(): boolean {
+  shutdown(): void {
     this.assertInUse()
-    stopUsenetPrefetch()
-    const cacheSaved = flushUsenetCache()
-    const searchSaved = flushUsenetSearch()
+    this.shuttingDown = true
+    this.parts.sweep.stop()
+  }
+
+  flush(): boolean {
+    this.assertInUse()
+    const cacheSaved = this.parts.hash.flush()
+    const searchSaved = this.parts.search.flush()
     return cacheSaved && searchSaved
+  }
+
+  /**
+   * Replaced by a newer runtime: its sweep stops, its running work is cancelled and what that learns is
+   * discarded, and its stores write nothing they had pending, as a process that exits.
+   */
+  discard(): void {
+    this.parts.sweep.stop()
+    this.parts.hash.discard()
+    this.parts.search.discard()
+    this.parts.privateSources.invalidate()
   }
 
   /** Prunes both stores by the retention rule. Results that are empty prune nothing. */
   private retain(results: ResultItem[], ledger: readonly OwnedDownloadRecord[] | undefined): void {
     if (!results.length) return
     const { hashes, sources } = liveSources(results, ledger)
-    const removed = retainUsenetHashes(hashes)
+    const removed = this.parts.hash.retain(hashes)
     if (removed) log('INFO', `Usenet cache dropped ${removed} observation(s) for releases no longer in the results`)
     if (!sources) {
       // Without the ledger nothing tells which records a download still needs.
       log('WARNING', 'Usenet search records were not pruned: the download ledger could not be read')
       return
     }
-    const dropped = retainSearchSources(sources)
+    const dropped = this.parts.search.retain(sources)
     if (dropped) log('INFO', `Usenet search store dropped ${dropped} record(s) for releases no longer in the results`)
   }
 
@@ -210,10 +249,19 @@ class Runtime implements UsenetRuntime {
 
 let current: Runtime | undefined
 
-/** The runtime in use: the default one, or the one created last. */
-export function usenetRuntime(): UsenetRuntime {
+function inUse(): Runtime {
   current ??= new Runtime()
   return current
+}
+
+/** The runtime in use: the default one, or the one created last. */
+export function usenetRuntime(): UsenetRuntime {
+  return inUse()
+}
+
+/** The parts of the runtime in use, for the Usenet modules that run on them. */
+export function usenetParts(): UsenetParts {
+  return inUse().parts
 }
 
 /**
@@ -221,14 +269,7 @@ export function usenetRuntime(): UsenetRuntime {
  * replaces has its work cancelled and can no longer be used.
  */
 export function createUsenetRuntime(options: UsenetRuntimeOptions = {}): UsenetRuntime {
-  const now = options.now ?? (() => Date.now())
-  const send: typeof fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
-  const { paths = {}, pacing = {} } = options
-  useHashLookupParts(hashLookupParts({ now, fetch: send, cacheFile: paths.cache, pacing: pacing.hashes }))
-  useSearchParts(searchParts({ now, fetch: send, searchFile: paths.search, nzbDir: paths.nzbs, pacing: pacing.search }))
-  useProwlarrIndexerList(prowlarrIndexerList({ now, fetch: send }))
-  usePrivateTorrentCache(privateTorrentCache({ now, fetch: send }))
-  useSweepParts({ enabled: options.sweep ?? false, now })
-  current = new Runtime()
+  current?.discard()
+  current = new Runtime(options)
   return current
 }

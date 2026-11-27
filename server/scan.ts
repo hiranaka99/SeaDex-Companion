@@ -15,7 +15,7 @@ import { anilistChain, anilistSeason } from './anilist.js'
 
 import { autoNotifyNew } from './notifications.js'
 import { unhideNewBestReleases } from './hidden.js'
-import { prefetchAfterScan } from './usenet-prefetch.js'
+import { readLedger, usenetRuntime } from './usenet-runtime.js'
 import { syncArrTags } from './arr-tags.js'
 import { settleImports } from './import-follow.js'
 import { arrInstances, configuredArrInstances, instanceSourceKey, sourceNameOf } from './arr-instances.js'
@@ -163,7 +163,8 @@ export function createScanService(overrides: ScanDependencies = {}) {
     loadUserRules,
     recordScanHistory,
     prowlarrIndexers,
-    onScanFinished: prefetchAfterScan,
+    onScanFinished: (config: Config, results: ResultItem[]) =>
+      usenetRuntime().resultsChanged(config, results, readLedger(), 'scan finished'),
     syncArrTags,
     settleImports,
     ...overrides,
