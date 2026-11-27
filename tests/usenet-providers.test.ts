@@ -6,6 +6,7 @@ import {
   ANIMETOSHO_LOOKUP_MAX_BYTES,
   LOOKUP_MAX_BYTES,
   NZB_MAX_BYTES,
+  readNzb,
   validateNzbBytes,
 } from '../server/usenet-provider-types.js'
 import type { ProviderSettings, UsenetMatch } from '../server/usenet-provider-types.js'
@@ -414,48 +415,14 @@ test('AnimeTosho NZB retrieval refuses entry ids that are not plain ids', async 
   }
 })
 
-test('A file-compressed AnimeTosho NZB is inflated exactly once', async () => {
-  const compressed = await gzipBytes(NZB_BYTES)
-  assert.equal(compressed[0], 0x1f)
-  assert.equal(compressed[1], 0x8b)
-  const { fetchImpl } = recorder(() =>
-    bytesResponse(compressed, { headers: { 'content-encoding': 'gzip', 'content-type': 'application/x-nzb' } }),
-  )
-  assert.deepEqual(await fetchAnimeToshoNzb(ANIMETOSHO, ANIMETOSHO_MATCH, fetchImpl), NZB_BYTES)
-})
-
-test('AnimeTosho NZB retrieval rejects HTML and non-NZB XML before submission', async () => {
+test('AnimeTosho NZB retrieval goes through the NZB step, which rejects a Newznab error document', async () => {
   await assert.rejects(
     fetchAnimeToshoNzb(
       ANIMETOSHO,
       ANIMETOSHO_MATCH,
-      recorder(() => new Response('<!DOCTYPE html><html><body>gone</body></html>')).fetchImpl,
+      recorder(() => new Response('<error code="300" description="not found"/>')).fetchImpl,
     ),
-    /DTD or entity|empty/,
-  )
-  await assert.rejects(
-    fetchAnimeToshoNzb(
-      ANIMETOSHO,
-      ANIMETOSHO_MATCH,
-      recorder(() => new Response('<error code="404" description="not found"/>')).fetchImpl,
-    ),
-    /wrong root element/,
-  )
-  await assert.rejects(
-    fetchAnimeToshoNzb(
-      ANIMETOSHO,
-      ANIMETOSHO_MATCH,
-      recorder(() => new Response(NZB_XML.replace(/<segment[\s>][\s\S]*?<\/segment>/g, ''))).fetchImpl,
-    ),
-    /no segments/,
-  )
-  await assert.rejects(
-    fetchAmeNZBNzb(
-      AMENZB,
-      AMENZB_MATCH,
-      recorder(() => new Response('<nzb><file><segments><segment bytes="1" number="1">abc')).fetchImpl,
-    ),
-    /not valid XML/,
+    /AnimeTosho refused the resource \(code 300\)/,
   )
   await assert.rejects(
     fetchAnimeToshoNzb(ANIMETOSHO, ANIMETOSHO_MATCH, recorder(() => new Response('', { status: 404 })).fetchImpl),
@@ -656,15 +623,9 @@ test('AmeNZB NZB retrieval uses t=get on the configured origin and rejects error
   )
 })
 
-test('A file-compressed AmeNZB NZB is inflated exactly once', async () => {
-  const compressed = await gzipBytes(NZB_BYTES)
-  const { fetchImpl } = recorder(() => bytesResponse(compressed, { headers: { 'content-encoding': 'gzip' } }))
-  assert.deepEqual(await fetchAmeNZBNzb(AMENZB, AMENZB_MATCH, fetchImpl), NZB_BYTES)
-})
+// --- shared limits and cancellation ----------------------------------------------
 
-// --- shared limits, cancellation and NZB validation ------------------------------
-
-test('Response byte caps are enforced while streaming, for lookups and NZBs alike', async () => {
+test('Lookup byte caps are enforced while streaming', async () => {
   const lookup = await lookupAnimeTosho(
     ANIMETOSHO,
     HASH,
@@ -688,19 +649,6 @@ test('Response byte caps are enforced while streaming, for lookups and NZBs alik
   assert.ok(large.length > LOOKUP_MAX_BYTES)
   const batch = await lookupAnimeTosho(ANIMETOSHO, HASH, recorder(() => new Response(large)).fetchImpl)
   assert.ok(batch.kind === 'match' && batch.match.files_complete && batch.match.files?.length === 13)
-
-  await assert.rejects(
-    fetchAnimeToshoNzb(
-      ANIMETOSHO,
-      ANIMETOSHO_MATCH,
-      recorder(() => new Response(streamBytes(NZB_MAX_BYTES + 1))).fetchImpl,
-    ),
-    /byte limit/,
-  )
-  await assert.rejects(
-    fetchAmeNZBNzb(AMENZB, AMENZB_MATCH, recorder(() => new Response(streamBytes(NZB_MAX_BYTES + 1))).fetchImpl),
-    /byte limit/,
-  )
 })
 
 test('A caller abort cancels lookups and NZB fetches without inventing a result', async () => {
@@ -754,12 +702,90 @@ test('Credential-bearing requests never leave the configured provider origin', a
   }
 })
 
-test('A declared length over the cap is rejected before the body is read', async () => {
-  const { calls, fetchImpl } = recorder(() =>
-    bytesResponse(NZB_BYTES, { headers: { 'content-length': String(NZB_MAX_BYTES + 1) } }),
+// --- the NZB step ----------------------------------------------------------------
+
+test('The NZB step returns a valid NZB as it was sent, and inflates a file-compressed one exactly once', async () => {
+  assert.deepEqual(await readNzb(bytesResponse(NZB_BYTES)), { kind: 'nzb', bytes: NZB_BYTES })
+  const compressed = await gzipBytes(NZB_BYTES)
+  assert.deepEqual([compressed[0], compressed[1]], [0x1f, 0x8b])
+  assert.deepEqual(await readNzb(bytesResponse(compressed)), { kind: 'nzb', bytes: NZB_BYTES })
+  // Compressed twice is not an NZB once inflated: the step never decompresses a second time.
+  const twice = await readNzb(bytesResponse(await gzipBytes(compressed)))
+  assert.equal(twice.kind, 'invalid')
+})
+
+test('The NZB step enforces the byte cap as declared, while streaming and once decompressed', async () => {
+  let pulled = false
+  const declared = new Response(
+    new ReadableStream<Uint8Array>(
+      {
+        pull() {
+          pulled = true
+        },
+      },
+      // Nothing is pulled before a read asks for it.
+      { highWaterMark: 0 },
+    ),
+    { headers: { 'content-length': String(NZB_MAX_BYTES + 1) } },
   )
-  await assert.rejects(fetchAnimeToshoNzb(ANIMETOSHO, ANIMETOSHO_MATCH, fetchImpl), /byte limit/)
-  assert.equal(calls.length, 1)
+  assert.deepEqual(await readNzb(declared), { kind: 'too_large' })
+  assert.equal(pulled, false, 'a declared length over the cap is refused before the body is read')
+  assert.deepEqual(await readNzb(new Response(streamBytes(NZB_MAX_BYTES + 1))), { kind: 'too_large' })
+  const bomb = await gzipBytes(new Uint8Array(NZB_MAX_BYTES + 1))
+  assert.ok(bomb.length < NZB_MAX_BYTES)
+  assert.deepEqual(await readNzb(bytesResponse(bomb)), { kind: 'too_large' })
+})
+
+test('The NZB step recognises a Newznab error document, also a compressed one', async () => {
+  const document = newznab('', `<error code="100" description="Invalid API key ${API_KEY}"/>`)
+  assert.deepEqual(await readNzb(new Response(document)), { kind: 'error_document', code: 100 })
+  assert.deepEqual(await readNzb(new Response('<error code="500" description="Request limit reached"/>')), {
+    kind: 'error_document',
+    code: 500,
+  })
+  const compressed = await gzipBytes(new TextEncoder().encode(document))
+  assert.deepEqual(await readNzb(bytesResponse(compressed)), { kind: 'error_document', code: 100 })
+})
+
+test('The NZB step reports anything else as not an NZB, with safe text', async () => {
+  const cases: [body: BodyInit, message: RegExp][] = [
+    ['<!DOCTYPE html><html><body>gone</body></html>', /DTD or entity/],
+    ['<html><body>nzb</body></html>', /wrong root element/],
+    [NZB_XML.replace(/<segment[\s>][\s\S]*?<\/segment>/g, ''), /no segments/],
+    ['<nzb><file><segments><segment bytes="1" number="1">abc', /not valid XML/],
+    ['', /empty/],
+    [new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 0xff, 0xff]), /could not be decompressed/],
+  ]
+  for (const [body, message] of cases) {
+    const read = await readNzb(new Response(body))
+    assert.ok(read.kind === 'invalid', `expected invalid, got ${read.kind}`)
+    if (read.kind === 'invalid') {
+      assert.match(read.message, message)
+      assert.ok(!/[<>]/.test(read.message))
+    }
+  }
+})
+
+test('A transport failure while the NZB is read is thrown for the caller to classify', async () => {
+  const failing = new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError('connection reset'))
+      },
+    }),
+  )
+  await assert.rejects(readNzb(failing), /connection reset/)
+  const reset = recorder(
+    () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(new TypeError('connection reset'))
+          },
+        }),
+      ),
+  )
+  await assert.rejects(fetchAmeNZBNzb(AMENZB, AMENZB_MATCH, reset.fetchImpl), /provider NZB fetch failed/)
 })
 
 test('validateNzbBytes accepts nested standard NZBs and a public DTD without fetching it', () => {
