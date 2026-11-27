@@ -19,7 +19,8 @@
     "lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives",
     "lint:fix": "oxlint --type-aware --fix --deny-warnings --report-unused-disable-directives",
     "format": "prettier --write server shared tests frontend/src frontend/vite.config.ts",
-    "format:check": "prettier --check server shared tests frontend/src frontend/vite.config.ts"
+    "format:check": "prettier --check server shared tests frontend/src frontend/vite.config.ts",
+    "prepare": "husky"
   },
   "engines": {
     "node": ">=26"
@@ -27,6 +28,8 @@
   "devDependencies": {
     "@types/node": "26.6.10",
     "concurrently": "^10.0.7",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.2",
     "oxlint": "1.95.0",
     "oxlint-tsgolint": "7.0.2009",
     "prettier": "3.10.1",
