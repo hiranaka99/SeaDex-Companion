@@ -838,8 +838,16 @@ const browser = spawn(
     '--disable-sync',
     'about:blank',
   ],
-  { windowsHide: true, stdio: 'ignore' },
+  { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] },
 )
+let browserStderr = ''
+browser.stderr.setEncoding('utf8').on('data', chunk => {
+  browserStderr = (browserStderr + chunk).slice(-16_384)
+})
+let browserProcessError
+browser.on('error', error => {
+  browserProcessError = error
+})
 let ws
 let sequence = 0
 const pending = new Map()
@@ -922,8 +930,23 @@ const capture = async name => {
 }
 
 try {
-  for (let attempt = 0; attempt < 100 && !existsSync(join(profile, 'DevToolsActivePort')); attempt++) await pause(100)
-  const port = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0].trim()
+  const portFile = join(profile, 'DevToolsActivePort')
+  const startupTimeoutMs = 30_000
+  const startupDeadline = performance.now() + startupTimeoutMs
+  while (true) {
+    if (browserProcessError) throw new Error('Could not launch the browser', { cause: browserProcessError })
+    if (browser.exitCode !== null || browser.signalCode !== null) {
+      const status = browser.signalCode ? `signal ${browser.signalCode}` : `exit code ${browser.exitCode}`
+      throw new Error(`Browser exited before creating DevToolsActivePort (${status})`)
+    }
+    if (existsSync(portFile)) break
+    if (performance.now() >= startupDeadline)
+      throw new Error(
+        `Timed out after ${startupTimeoutMs / 1000}s waiting for the browser to create DevToolsActivePort`,
+      )
+    await pause(100)
+  }
+  const port = readFileSync(portFile, 'utf8').split('\n')[0].trim()
   const target = await (
     await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(base)}`, { method: 'PUT' })
   ).json()
@@ -4044,6 +4067,7 @@ try {
   assert.deepEqual(errors, [], 'No unhandled browser exceptions in responsive review')
 } catch (error) {
   console.error(error)
+  if (browserStderr.trim()) console.error('Browser stderr:\n' + browserStderr.trimEnd())
   if (ws?.readyState === WebSocket.OPEN)
     console.error(await evaluate(`({ text: document.body?.innerText, url: location.href })`).catch(() => null))
   console.error('Browser exceptions:', errors)
@@ -4052,10 +4076,11 @@ try {
   finishBulk?.()
   if (ws?.readyState === WebSocket.OPEN) await send('Browser.close').catch(() => {})
   ws?.close()
-  if (browser.exitCode === null) {
+  if (browser.pid !== undefined && browser.exitCode === null && browser.signalCode === null) {
     browser.kill()
     await once(browser, 'exit')
   }
+  browser.stderr.destroy()
   await new Promise(resolve => server.close(resolve))
   // The browser can briefly retain profile handles after its main process exits.
   try {
