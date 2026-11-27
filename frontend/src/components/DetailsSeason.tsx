@@ -2,21 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { releaseOwned } from '../../../shared/download-plan'
 import type { Config, ResultItem } from '../types'
 import { currentReleases, releaseCours, releaseQuality } from '../release-status'
-import type { DownloadRoutes } from '../download-routes'
 import { buttonBase, cx } from '../styles'
-import {
-  IDLE_DOWNLOAD,
-  sendKey,
-  type LowSpaceHold,
-  type SeasonAvailability,
-  type DetailsDownloadState,
-} from '../useCardDownloads'
+import type { SeasonActions } from '../useReleaseActions'
 import Icon from './Icons'
 import DetailsQuality, { QUALITY_ICONS, QUALITY_TONES } from './DetailsQuality'
-import type { DownloadEntry } from '../download-entry'
 import ReleaseDetails from './ReleaseDetails'
 
-import type { DownloadProtocol } from '../api'
 import { releaseIdentity } from '../../../shared/releases'
 import { PREFERENCE_BLOCKED_REASON } from '../../../shared/settings'
 
@@ -57,32 +48,8 @@ interface Props {
   sectionId: string
   r: ResultItem
   config: Config | null
-  dl: Record<number, DetailsDownloadState>
-  busyDownload: string | null
-  /** Index of the release being sent in this season, -1 when another season is sending, null when idle. */
-  sendingIndex: number | null
-  /** What each release can be sent through. */
-  routes: DownloadRoutes
-  availability: SeasonAvailability | undefined
-  protocolFor: (index: number) => DownloadProtocol
-  onProtocol: (index: number, protocol: DownloadProtocol) => void
-  onRefreshAvailability: () => void
-  /** Searches Prowlarr for one release of this season. */
-  onSearchProwlarr: (release: number) => void
-  /** Fetches and checks the best search result of one release of this season. */
-  onCheckProwlarr: (release: number) => void
-  onOpened: () => void
-  /** `sendAnyway` sends after a low free-space warning. */
-  /** `nzb` sends an unproven NZB the user chose for a private-tracker release. */
-  onDownload: (release: number, sendAnyway?: boolean, nzb?: string) => void
-  /** A send of a release in this season that is waiting for the low-space decision. */
-  lowSpace: LowSpaceHold | null
-  sendErrors: Record<string, string>
-  onCancelLowSpace: () => void
-  onDismissSendError: (release: number) => void
-  onPause: (entry: DownloadEntry) => void
-  onResume: (entry: DownloadEntry) => void
-  onRemove: (entry: DownloadEntry) => void
+  /** Usenet availability and each release row's download actions. */
+  actions: SeasonActions
   ruleBusy: string
   onToggleExclusion: (part: string, excluded: boolean) => void
   onCorrectMatch: () => void
@@ -98,25 +65,7 @@ export default function DetailsSeason({
   sectionId,
   r,
   config,
-  dl,
-  busyDownload,
-  sendingIndex,
-  routes,
-  availability,
-  protocolFor,
-  onProtocol,
-  onRefreshAvailability,
-  onSearchProwlarr,
-  onCheckProwlarr,
-  onOpened,
-  onDownload,
-  lowSpace,
-  sendErrors,
-  onCancelLowSpace,
-  onDismissSendError,
-  onPause,
-  onResume,
-  onRemove,
+  actions,
   ruleBusy,
   onToggleExclusion,
   onCorrectMatch,
@@ -126,6 +75,7 @@ export default function DetailsSeason({
   onJump,
 }: Props) {
   const root = useRef<HTMLElement>(null)
+  const { routes } = actions
   const { usenetAllowed } = routes
   const [initiallyOpen] = useState(defaultOpen)
   const groups = releaseCours(r)
@@ -140,13 +90,11 @@ export default function DetailsSeason({
   const sources = (r.urls?.length ? r.urls : r.url ? [{ label: 'seadex.moe', url: r.url }] : []).filter(
     source => source.label === 'seadex.moe',
   )
-  const activeReleases = Object.entries(dl)
-    .filter(([, state]) => state.transfers.some(transfer => transfer.phase !== 'complete'))
-    .map(([index]) => index)
-    .join(',')
+  const activeReleases = actions.activeReleases.join(',')
   const releaseSignature = JSON.stringify(r.releases.map(releaseIdentity))
   useEffect(() => {
-    if (usenetAllowed && root.current?.querySelector<HTMLDetailsElement>('.details-season-disclosure')?.open) onOpened()
+    if (usenetAllowed && root.current?.querySelector<HTMLDetailsElement>('.details-season-disclosure')?.open)
+      actions.opened()
   }, [releaseSignature, usenetAllowed])
 
   useEffect(() => {
@@ -206,37 +154,7 @@ export default function DetailsSeason({
     <div className="flex min-w-0 flex-col gap-3">
       {items.map(({ rel, index }) => (
         <div key={releaseIdentity(rel)} data-release-index={index}>
-          <ReleaseDetails
-            result={r}
-            release={rel}
-            config={config}
-            state={dl[index] || IDLE_DOWNLOAD}
-            busy={busyDownload !== null}
-            sending={sendingIndex === index}
-            sendLocked={sendingIndex !== null}
-            protocol={protocolFor(index)}
-            availability={
-              availability?.byRelease[index]?.identity === releaseIdentity(rel)
-                ? availability.byRelease[index]
-                : undefined
-            }
-            availabilityLoading={Boolean(availability?.loading)}
-            routes={routes}
-            onProtocol={protocol => onProtocol(index, protocol)}
-            onRefreshAvailability={onRefreshAvailability}
-            onSearchProwlarr={() => onSearchProwlarr(index)}
-            onCheckProwlarr={() => onCheckProwlarr(index)}
-            onDownload={() => onDownload(index)}
-            onDownloadNzb={nzb => onDownload(index, false, nzb)}
-            lowSpace={lowSpace?.release === index ? lowSpace : null}
-            onSendAnyway={() => onDownload(index, true)}
-            onCancelLowSpace={onCancelLowSpace}
-            sendError={sendErrors[sendKey(r.key, index)] || null}
-            onDismissSendError={() => onDismissSendError(index)}
-            onPause={onPause}
-            onResume={onResume}
-            onRemove={onRemove}
-          />
+          <ReleaseDetails result={r} release={rel} config={config} routes={routes} actions={actions.release(index)} />
         </div>
       ))}
     </div>
@@ -306,7 +224,7 @@ export default function DetailsSeason({
         className="details-season-disclosure"
         open={initiallyOpen || undefined}
         onToggle={event => {
-          if (usenetAllowed && (event.target as HTMLDetailsElement).open) onOpened()
+          if (usenetAllowed && (event.target as HTMLDetailsElement).open) actions.opened()
         }}
       >
         <summary
@@ -371,10 +289,10 @@ export default function DetailsSeason({
           <Icon name="chevron-right" size={16} className="disclosure-chevron text-muted" />
         </summary>
         <div className="details-season-content">
-          {availability?.error && (
+          {actions.availabilityError && (
             <p className="mb-3 text-xs text-warn wrap-anywhere" role="alert">
-              Usenet refresh failed: {availability.error}. Last-known results remain visible. Re-check the sources to
-              try again.
+              Usenet refresh failed: {actions.availabilityError}. Last-known results remain visible. Re-check the
+              sources to try again.
             </p>
           )}
           {quality.kind === 'review' && (

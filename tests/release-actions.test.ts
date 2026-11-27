@@ -1,0 +1,320 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import type { Release, ResultItem } from '../shared/contracts.js'
+import type { UsenetAvailabilityResult, UsenetUnitState } from '../shared/usenet-contracts.js'
+import { DEFAULT_CONFIG, publicConfig } from '../server/config.js'
+import { releaseIdentity } from '../shared/releases.js'
+import { downloadRoutes } from '../frontend/src/download-routes.js'
+import type { DiskSpaceCheck, DownloadMode, DownloadPreflight } from '../shared/download-contracts.js'
+import type { SendOutcome } from '../frontend/src/api.js'
+import { createReleaseSends, currentAvailability, sendVerdict, type SendApi } from '../frontend/src/release-actions.js'
+import type { Config } from '../frontend/src/types.js'
+
+const SAB = { sabnzbd_url: 'http://sab.test', sabnzbd_key: 'sab-key' }
+
+const config = (mode: DownloadMode, changes: Partial<typeof DEFAULT_CONFIG> = {}): Config =>
+  publicConfig({ ...DEFAULT_CONFIG, ...SAB, download_mode: mode, sonarr_category: 'anime', ...changes })
+
+const publicRelease: Release = {
+  kind: 'best',
+  releaseGroup: 'Group A',
+  tracker: 'Nyaa',
+  quality: '1080p',
+  tags: [],
+  size: 1000,
+  info_hashes: ['a'.repeat(40)],
+  torrent_available: true,
+  torrent_files: [{ hash: 'a'.repeat(40), files: [{ name: 'Show - 01.mkv', length: 1000 }] }],
+}
+const privateRelease: Release = {
+  ...publicRelease,
+  tracker: 'AB',
+  info_hashes: [],
+  torrent_files: [],
+  torrent_available: false,
+  private_sources: [{ id: 'files:' + 'b'.repeat(40), files: [{ name: 'Show - 01.mkv', length: 500 }] }],
+}
+
+const season = (releases: Release[], changes: Partial<ResultItem> = {}): ResultItem => ({
+  key: 'show',
+  group_id: 1,
+  arr: 'Sonarr',
+  title: 'Show',
+  season: 1,
+  status: 'upgrade',
+  have: [],
+  local_size: 0,
+  best_group: 'Group A',
+  best_size: 1000,
+  releases,
+  url: null,
+  notes: null,
+  image: null,
+  banner: null,
+  anilist_id: 1,
+  arr_url: null,
+  ...changes,
+})
+
+const row = (
+  aggregate: UsenetUnitState,
+  changes: Partial<UsenetAvailabilityResult> = {},
+): UsenetAvailabilityResult => ({
+  key: 'show',
+  release: 0,
+  identity: 'identity:show',
+  hashes: [{ hash: 'a'.repeat(40), state: aggregate, provider: 'animetosho', total_bytes: 2000 }],
+  aggregate,
+  checked_at: '',
+  stale: false,
+  refreshing: false,
+  ...changes,
+})
+
+/** The verdict a release row shows for the first release of `result`. */
+const verdictFor = (settings: Config, result: ResultItem, changes: Partial<Parameters<typeof sendVerdict>[0]> = {}) => {
+  const routes = downloadRoutes(settings)
+  return sendVerdict({
+    result,
+    release: result.releases[0],
+    config: settings,
+    routes,
+    route: routes.release(result.releases[0], changes.availability),
+    transfers: [],
+    ...changes,
+  })
+}
+
+test('a public torrent release sends the whole release to qBittorrent and is the recommended step', () => {
+  const verdict = verdictFor(config('torrent_only'), season([publicRelease]))
+  assert.deepEqual(verdict, {
+    protocol: 'torrent',
+    label: 'Download release',
+    enabled: true,
+    reason: 'Send this release to qBittorrent (category: anime)',
+    recommended: true,
+    facts: 'Whole release · Ep 1 · to qBittorrent · free space checked on send',
+  })
+})
+
+test('a release no route can send names why in its verdict', () => {
+  const torrentOnly = verdictFor(config('torrent_only'), season([privateRelease]))
+  assert.equal(torrentOnly.enabled, false)
+  assert.equal(torrentOnly.label, 'Unavailable')
+  assert.equal(torrentOnly.reason, 'No public magnet: AB is a private tracker')
+  assert.equal(torrentOnly.facts, '', 'Nothing is sent, so nothing is said about what a send covers')
+
+  const either = verdictFor(config('choose'), season([privateRelease]), { availability: row('no_match') })
+  assert.equal(either.reason, 'No public magnet: AB is a private tracker; No Usenet copy found')
+})
+
+test('a proven Usenet copy sends the whole source to SABnzbd', () => {
+  const settings = config('usenet_only', { sabnzbd_sonarr_category: 'anime-nzb' })
+  const verdict = verdictFor(settings, season([privateRelease]), { availability: row('available') })
+  assert.deepEqual(verdict, {
+    protocol: 'usenet',
+    label: 'Download on Usenet',
+    enabled: true,
+    reason: 'Send this release to SABnzbd (category: anime-nzb)',
+    recommended: true,
+    facts: 'Whole Usenet source · to SABnzbd · free space checked on send',
+  })
+})
+
+test('a release already in a client or already owned is not the next step', () => {
+  const transfer = {
+    record_id: 'r1',
+    protocol: 'torrent' as const,
+    client: 'qbittorrent' as const,
+    phase: 'downloading' as const,
+    capabilities: { pause: true, resume: true, remove: true, remove_files: true },
+    progress: 0.5,
+    downloaded: 500,
+    total_size: 1000,
+    speed: 10,
+    title: 'Show',
+    season: 'S1',
+    releaseGroup: 'Group A',
+    category: 'anime',
+    size: 1000,
+  }
+  const downloading = verdictFor(config('torrent_only'), season([publicRelease]), { transfers: [transfer] })
+  assert.equal(downloading.enabled, false)
+  assert.equal(downloading.label, 'Downloading')
+  assert.equal(downloading.reason, 'Downloading in qBittorrent')
+
+  const finished = verdictFor(config('torrent_only'), season([publicRelease]), {
+    transfers: [{ ...transfer, phase: 'complete' }],
+  })
+  assert.equal(finished.label, 'Download completed')
+  assert.equal(finished.reason, 'Download completed in qBittorrent')
+
+  const owned = verdictFor(config('torrent_only'), season([{ ...publicRelease, files_match: true }]))
+  assert.equal(owned.enabled, true)
+  assert.equal(owned.label, 'Re-download')
+  assert.equal(owned.recommended, false)
+})
+
+test('selected files and a preferred target shape the verdict', () => {
+  const selected = { ...publicRelease, kind: 'alt' as const, target: true, selected_files: ['Show - 01.mkv'] }
+  const verdict = verdictFor(config('torrent_only'), season([selected, publicRelease]))
+  assert.equal(verdict.label, 'Download 1 file')
+  assert.equal(verdict.facts, '1 selected file · Ep 1 · to qBittorrent · free space checked on send')
+  assert.equal(verdict.recommended, true, 'The target leads over the best release')
+  const best = verdictFor(config('torrent_only'), season([publicRelease, selected]))
+  assert.equal(best.recommended, false, 'A best release steps aside for a target')
+})
+
+const disk = (changes: Partial<DiskSpaceCheck> = {}): DiskSpaceCheck => ({
+  client: 'qbittorrent',
+  path: '/downloads',
+  categories: ['anime'],
+  required_bytes: 1000,
+  unknown_units: 0,
+  free_bytes: 5000,
+  sufficient: true,
+  ...changes,
+})
+
+const preflight = (changes: Partial<DownloadPreflight> = {}): DownloadPreflight => ({
+  ok: true,
+  plan_id: 'plan-1',
+  expires_in: 600,
+  mode: 'torrent_only',
+  selection_count: 1,
+  // A send only asks whether anything is left to send; the units themselves are the server's business.
+  units: [{ unit_id: 'torrent:a' } as unknown as DownloadPreflight['units'][number]],
+  new_torrents: 1,
+  new_nzbs: 0,
+  existing_units: 0,
+  blocked: [],
+  requires_whole_ack: false,
+  requires_space_ack: false,
+  total_new_bytes: 1000,
+  unknown_bytes: 0,
+  approximate_bytes: false,
+  disk_space: [disk()],
+  ...changes,
+})
+
+/** The api a card sends through, answering each review with `review` and each send with `outcome`. */
+function apiDouble(review: () => DownloadPreflight, outcome: () => SendOutcome) {
+  const calls = { preflight: [] as unknown[][], send: [] as unknown[][] }
+  const api: SendApi = {
+    preflightDownload: async (...args) => {
+      calls.preflight.push(args)
+      return review()
+    },
+    sendDownload: async (...args) => {
+      calls.send.push(args)
+      return outcome()
+    },
+  }
+  return { api, calls }
+}
+
+function cardSends(review: () => DownloadPreflight, outcome: () => SendOutcome, detailsShown = true) {
+  const double = apiDouble(review, outcome)
+  const notes: { message: string; tone: string }[] = []
+  let reloads = 0
+  const sends = createReleaseSends({
+    api: double.api,
+    reload: async () => {
+      reloads++
+    },
+    notify: (message, tone) => void notes.push({ message, tone }),
+    detailsShown: () => detailsShown,
+  })
+  return { sends, calls: double.calls, notes, reloads: () => reloads }
+}
+
+const show = season([publicRelease, privateRelease])
+
+test('too little free space holds a send until the person sends it anyway', async () => {
+  const { sends, calls, notes } = cardSends(
+    () => preflight({ disk_space: [disk({ free_bytes: 100, sufficient: false })] }),
+    () => ({ kind: 'sent', client: 'sabnzbd' }),
+  )
+  await sends.send(show, 1, 'usenet', 'nzb-7')
+  assert.equal(calls.send.length, 0, 'Nothing is sent while the fit on disk is not established')
+  assert.deepEqual(sends.getState().lowSpace, {
+    key: 'show',
+    release: 1,
+    protocol: 'usenet',
+    nzb: 'nzb-7',
+    reason: 'low',
+    checks: [disk({ free_bytes: 100, sufficient: false })],
+  })
+  assert.deepEqual(notes, [])
+
+  await sends.sendAnyway(show, 1)
+  assert.equal(sends.getState().lowSpace, null)
+  assert.deepEqual(
+    calls.preflight.at(-1)![0],
+    [{ key: 'show', release: 1, identity: releaseIdentity(privateRelease), protocol: 'usenet', nzb: 'nzb-7' }],
+    'Send anyway repeats the held send, chosen NZB included',
+  )
+  assert.deepEqual(calls.send, [['plan-1', 'usenet', { whole_source: true, disk_space: true }]])
+  assert.deepEqual(notes, [{ message: 'Sent S01 · Group A to SABnzbd · 100 B free', tone: 'success' }])
+})
+
+test('a client that reports no free space holds the send as unknown', async () => {
+  const { sends, calls } = cardSends(
+    () => preflight({ disk_space: [disk({ free_bytes: null, sufficient: null })] }),
+    () => ({ kind: 'sent', client: 'qbittorrent' }),
+  )
+  await sends.send(show, 0, 'torrent')
+  assert.equal(sends.getState().lowSpace?.reason, 'unknown')
+  assert.equal(calls.send.length, 0)
+  sends.cancelLowSpace()
+  assert.equal(sends.getState().lowSpace, null)
+  await sends.sendAnyway(show, 0)
+  assert.equal(calls.send.length, 0, 'A cancelled hold cannot be sent anyway')
+})
+
+test('a send the client never confirmed asks the person to check that client before retrying', async () => {
+  let outcome: SendOutcome = { kind: 'acceptance_unknown', client: 'qbittorrent' }
+  const { sends, notes, reloads } = cardSends(
+    () => preflight(),
+    () => outcome,
+  )
+  await sends.send(show, 0, 'torrent')
+  assert.deepEqual(sends.getState().errors, {
+    'show\u00000':
+      'qBittorrent was asked to start this download but did not confirm it. Check qBittorrent before retrying.',
+  })
+  assert.deepEqual(notes, [], 'Open details show the failure in the row, not as a notification')
+  assert.equal(sends.getState().sending, null)
+  assert.equal(reloads(), 1, 'Progress is refreshed after every send')
+
+  outcome = { kind: 'sent', client: 'qbittorrent' }
+  await sends.send(show, 0, 'torrent')
+  assert.deepEqual(sends.getState().errors, {}, 'A retry clears the failure')
+  assert.deepEqual(notes, [{ message: 'Sent S01 · Group A to qBittorrent · 4.9 KB free', tone: 'success' }])
+})
+
+test('a failed send with details closed is reported as a notification', async () => {
+  const { sends, notes } = cardSends(
+    () =>
+      preflight({
+        blocked: [{ key: 'show', release: 0, code: 'excluded', reason: 'Excluded by your release preferences' }],
+      }),
+    () => ({ kind: 'sent', client: 'qbittorrent' }),
+    false,
+  )
+  await sends.send(show, 0, 'torrent')
+  assert.equal(sends.getState().errors['show\u00000'], 'Excluded by your release preferences')
+  assert.deepEqual(notes, [
+    { message: 'Could not send S01 · Group A: Excluded by your release preferences', tone: 'error' },
+  ])
+  sends.dismissError('show', 0)
+  assert.deepEqual(sends.getState().errors, {})
+})
+
+test('availability answers only for the release it was asked about', () => {
+  const answer = row('available', { identity: releaseIdentity(publicRelease) })
+  assert.equal(currentAvailability({ 0: answer }, publicRelease, 0), answer)
+  // SeaDex replaced the release at this index since the answer arrived.
+  assert.equal(currentAvailability({ 0: answer }, privateRelease, 0), undefined)
+  assert.equal(currentAvailability(undefined, publicRelease, 0), undefined)
+})
