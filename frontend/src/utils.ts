@@ -2,8 +2,7 @@ import { baseGroupKey, resultGroupKey, seasonTag } from '../../shared/ids.js'
 
 import { isSeasonUpgradable, upgradeParts } from '../../shared/download-plan.js'
 import { estimateDownloads } from '../../shared/download-estimate.js'
-import { DEFAULT_TRACKER_MODE } from '../../shared/settings.js'
-import type { CardStatus, Config, GroupedCard, Release, ResultItem } from './types.js'
+import type { CardStatus, GroupedCard, ResultItem } from './types.js'
 
 /** Short explanation for a background Usenet sweep that is waiting on paused providers or Prowlarr indexers. */
 export function usenetPauseText(
@@ -71,43 +70,6 @@ export const PROVIDER_LABEL: Record<string, string> = {
   amenzb: 'AmeNZB',
   prowlarr: 'Prowlarr',
 }
-
-/**
- * Prowlarr is set up and Release preferences include private trackers, so private-tracker releases can be found.
- * Only public-tracker mode leaves them out; the other two modes both search for them.
- */
-export function prowlarrReady(config: Config | null | undefined): boolean {
-  return Boolean(
-    config &&
-    (config.tracker_mode || DEFAULT_TRACKER_MODE) !== 'public' &&
-    config.prowlarr_enabled &&
-    config.prowlarr_url &&
-    config.prowlarr_key_configured,
-  )
-}
-
-/**
- * A private-tracker release Prowlarr can look for: SeaDex lists its files but no public torrent, and Prowlarr
- * has an indexer for its tracker.
- */
-export const findsPrivateTorrent = (
-  release: Pick<Release, 'torrent_available' | 'private_sources' | 'tracker'>,
-  config: Config | null | undefined,
-) =>
-  !release.torrent_available &&
-  Boolean(release.private_sources?.length) &&
-  prowlarrReady(config) &&
-  Boolean(
-    config?.prowlarr_coverage?.trackers.some(
-      tracker => tracker.trim().toLowerCase() === release.tracker.trim().toLowerCase(),
-    ),
-  )
-
-/** Whether qBittorrent can be sent this release: a public magnet, or a private-tracker torrent found through Prowlarr. */
-export const torrentSendable = (
-  release: Pick<Release, 'torrent_available' | 'private_sources' | 'tracker'>,
-  config: Config | null | undefined,
-) => release.torrent_available || findsPrivateTorrent(release, config)
 
 /** Deduplicated display names for a list of provider ids; empty when unknown. */
 export function providerNames(providers: (string | undefined)[]): string[] {

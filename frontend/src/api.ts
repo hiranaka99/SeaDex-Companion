@@ -48,6 +48,7 @@ export type DownloadAction = (typeof DOWNLOAD_ACTIONS)[number]
 export type DownloadAcknowledge = NonNullable<DownloadSubmission['acknowledge']>
 
 import { followDownloadJob, waitForDownloadJob, watchDownloadJob } from './bulk-job-store.js'
+import { availabilityFingerprint } from './download-routes.js'
 export { waitForDownloadJob, watchDownloadJob }
 
 export const AUTH_REQUIRED_EVENT = 'seadex:authentication-required'
@@ -382,19 +383,7 @@ export const invalidateUsenetAvailability = () => {
 
 let usenetConfigScope: string | null = null
 function rememberAvailabilityConfig(config: Config, credentialsChanged = false) {
-  const scope = JSON.stringify([
-    config.animetosho_enabled,
-    config.animetosho_url,
-    config.amenzb_enabled,
-    config.amenzb_url,
-    config.amenzb_key_configured,
-    config.prowlarr_enabled,
-    config.prowlarr_url,
-    config.prowlarr_key_configured,
-    config.tracker_mode,
-    config.sabnzbd_url,
-    config.sabnzbd_key_configured,
-  ])
+  const scope = availabilityFingerprint(config)
   const changed = usenetConfigScope !== null && usenetConfigScope !== scope
   usenetConfigScope = scope
   if (changed || credentialsChanged) invalidateUsenetAvailability()

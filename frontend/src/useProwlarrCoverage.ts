@@ -2,10 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import * as api from './api'
 import type { ProwlarrSearchStatus } from '../../shared/contracts'
 import type { Config, ResultItem } from './types'
-
-/** Prowlarr is switched on and has a URL and key; whether its indexers can find anything is asked separately. */
-export const prowlarrConfigured = (config: Config | null | undefined): boolean =>
-  Boolean(config?.prowlarr_enabled && config.prowlarr_url && config.prowlarr_key_configured)
+import { prowlarrConfigured } from './download-routes'
 
 /**
  * What a background search of the current library would cost and what the latest one found, for the Prowlarr

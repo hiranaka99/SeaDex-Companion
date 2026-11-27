@@ -2,7 +2,8 @@ import { errorMessage } from '../../../shared/errors.js'
 import { useCardDownloads, useSeasonAvailability } from '../useCardDownloads'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { GroupedCard, ResultItem, Config } from '../types'
-import { seasonLabel, STATUS_LABEL, cardSizeDelta, formatBytes, isSeasonUpgradable, torrentSendable } from '../utils'
+import { seasonLabel, STATUS_LABEL, cardSizeDelta, formatBytes, isSeasonUpgradable } from '../utils'
+import { downloadRoutes } from '../download-routes'
 import { displayDateTimeMinutes } from '../datetime'
 import * as api from '../api'
 import { buttonBase, cx } from '../styles'
@@ -150,43 +151,21 @@ function Card({
     dismissSendError,
     handleDownloadAction,
   } = useCardDownloads(group, toast.show, () => detailsShown.current)
-  const usenetEnabled = Boolean(config) && config?.download_mode !== 'torrent_only'
-  const configScope = JSON.stringify([
-    config?.download_mode,
-    config?.animetosho_enabled,
-    config?.animetosho_url,
-    config?.amenzb_enabled,
-    config?.amenzb_url,
-    config?.amenzb_key_configured,
-    config?.prowlarr_enabled,
-    config?.prowlarr_url,
-    config?.prowlarr_key_configured,
-    config?.tracker_mode,
-    config?.sabnzbd_url,
-    config?.sabnzbd_key_configured,
-  ])
+  const routes = useMemo(() => downloadRoutes(config), [config])
+  const configScope = routes.availabilityFingerprint
   const {
     availability,
     load: loadAvailability,
     revision: availabilityRevision,
-  } = useSeasonAvailability(usenetEnabled, group.seasons, detailsOpen && !closing.current, configScope)
+  } = useSeasonAvailability(routes.usenetAllowed, group.seasons, detailsOpen && !closing.current, configScope)
   const [protocols, setProtocols] = useState<Record<string, DownloadProtocol>>({})
   const protocolKey = (seasonKey: string, index: number) =>
     `${availabilityRevision}\u0000${configScope}\u0000${seasonKey}\u0000${releaseIdentity(group.seasons.find(season => season.key === seasonKey)?.releases[index] || {})}`
   const protocolFor = (season: ResultItem, index: number): DownloadProtocol => {
-    const chosen = protocols[protocolKey(season.key, index)]
-    if (chosen) return chosen
-    const seasonAvailability = availability[season.key]
-    // Default to Usenet only when the torrent path is a dead end.
     const release = season.releases[index]
-    if (
-      release &&
-      !torrentSendable(release, config) &&
-      seasonAvailability?.sabnzbdConfigured &&
-      seasonAvailability.byRelease[index]?.aggregate === 'available'
-    )
-      return 'usenet'
-    return 'torrent'
+    const chosen = protocols[protocolKey(season.key, index)]
+    if (!release) return chosen || 'torrent'
+    return routes.release(release, availability[season.key]?.byRelease[index], chosen).protocol
   }
 
   const seasonCount = group.seasons.length
@@ -787,7 +766,7 @@ function Card({
                               ? sendingRelease.release
                               : -1
                         }
-                        usenetEnabled={usenetEnabled}
+                        routes={routes}
                         availability={availability[season.key]}
                         protocolFor={index => protocolFor(season, index)}
                         onProtocol={(index, protocol) =>
@@ -807,7 +786,7 @@ function Card({
                           void handleDownload(
                             season.key,
                             release,
-                            nzb || config?.download_mode === 'usenet_only' ? 'usenet' : protocolFor(season, release),
+                            nzb ? 'usenet' : protocolFor(season, release),
                             sendAnyway,
                             nzb,
                           )
