@@ -1,7 +1,7 @@
 import { isRecord } from '../shared/guards.js'
 import { USER_RULES_FILE } from './paths.js'
 import { readJson, writeJsonAtomic } from './persistence.js'
-import { sourceKeyOf } from './arr-instances.js'
+import { sourceKeyOf } from '../shared/arr-instances.js'
 import type { LocalItem, ResultItem } from './types.js'
 
 export interface UserRules {

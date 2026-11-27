@@ -2,6 +2,22 @@
 
 SeaDex Companion compares a Sonarr or Radarr anime library with the releases SeaDex recommends, and acquires the better ones through a torrent or a Usenet client.
 
+## Library
+
+**Library instance**:
+One Sonarr or Radarr connection whose titles are scanned. Every result belongs to exactly one, and a download is filed under that instance's category so the same instance imports it.
+_Avoid_: arr, source (a source is what a release is acquired by)
+
+**Primary instance**:
+The first Sonarr or the first Radarr, set up under its own settings. Results, rules and hidden titles saved before additional instances existed belong to it.
+_Avoid_: main instance, default instance
+
+**Additional instance**:
+Any library instance after the primary instance of its kind, with its own name, categories and scope.
+_Avoid_: extra instance, secondary instance
+
+A library is **connected** when at least one library instance, primary or additional, has both an address and an API key.
+
 ## Usenet acquisition
 
 **Source**:

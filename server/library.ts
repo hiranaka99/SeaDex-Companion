@@ -2,7 +2,7 @@ import { errorMessage } from '../shared/errors.js'
 import { api } from './http.js'
 import { arrBaseUrl, arrApiUrl, sonarrApiUrl } from './arr-urls.js'
 import { log } from './logging.js'
-import { configuredArrInstances, instanceFields, instanceOf, type ArrInstance } from './arr-instances.js'
+import { configuredArrInstances, instanceFields, instanceOf, type ArrInstance } from '../shared/arr-instances.js'
 import { scopeIsEmpty } from '../shared/settings.js'
 import type { Config, JsonObject, ScanScope, LocalFile, LocalItem, LocalSeason } from './types.js'
 

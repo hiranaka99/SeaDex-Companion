@@ -2,7 +2,7 @@ import { api } from './http.js'
 import { log } from './logging.js'
 import { errorMessage } from '../shared/errors.js'
 import { arrApiBase } from './library.js'
-import { configuredArrInstances, parseLibraryKey, type ArrInstance } from './arr-instances.js'
+import { configuredArrInstances, parseLibraryKey, type ArrInstance } from '../shared/arr-instances.js'
 import { loadConfig } from './config.js'
 import {
   downloadRecords,
