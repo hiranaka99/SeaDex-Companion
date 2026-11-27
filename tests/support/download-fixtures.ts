@@ -5,9 +5,10 @@
 import { DEFAULT_CONFIG } from '../../server/config.js'
 import { downloadJobs } from '../../server/download-jobs.js'
 import { resetOwnedRuntime } from '../../server/download-store.js'
-import { resetUsenetLookups } from '../../server/usenet.js'
 import { resetQbRuntime } from '../../server/qbittorrent.js'
 import { Config } from '../../server/types.js'
+import type { UsenetRuntimeOptions } from '../../server/usenet-runtime.js'
+import { testUsenetRuntime, type TestUsenetRuntime } from './usenet-runtime.js'
 
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -74,6 +75,7 @@ export interface RouterState {
   sabHistory?: Record<string, unknown>[]
   sabAddResult?: () => Response | Promise<Response>
   animetosho?: () => Response
+  animetoshoNzb?: () => Response
   qbFiles?: Record<string, unknown>[]
   qbDeleteStatus?: number
   qbFreeBytes?: string
@@ -81,23 +83,39 @@ export interface RouterState {
   sabCategories?: string[]
 }
 
-export function installRouter(state: RouterState): () => void {
-  const original = globalThis.fetch
-  resetQbRuntime()
-  resetOwnedRuntime()
-  resetUsenetLookups()
-  purgeTestDataDir()
-  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+/** A fake AnimeTosho, which a fresh Usenet runtime asks through its own fetch. */
+export function fakeAnimeTosho(state: RouterState): typeof fetch {
+  return async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     state.calls.push(`${init?.method || 'GET'} ${url}`)
-    const body = typeof init?.body === 'string' || init?.body instanceof URLSearchParams ? String(init.body) : ''
     if (url.includes('animetosho.net/json'))
       return (state.animetosho ?? (() => new Response('gone', { status: 404 })))()
+    if (url.includes('animetosho.net/nzb/') && state.animetoshoNzb) return state.animetoshoNzb()
     if (url.includes('animetosho.net/nzb/'))
       return new Response(
         '<?xml version="1.0"?><nzb xmlns="http://www.newzbin.com/DTD/2003/nzb"><file poster="test@example.test" date="1700000000" subject="Show - 01.mkv"><groups><group>alt.binaries.anime</group></groups><segments><segment bytes="1000" number="1">show-part-1@example.test</segment></segments></file></nzb>',
         { headers: { 'content-type': 'application/x-nzb' } },
       )
+    throw new Error(`unexpected hash indexer request: ${url}`)
+  }
+}
+
+export type InstalledRouter = (() => void) & { usenet: TestUsenetRuntime }
+
+/**
+ * Routes `fetch` to fake download clients, and builds a fresh Usenet runtime whose hash indexer is a fake
+ * AnimeTosho unless `usenet` gives it another fetch. Calling the result puts everything back.
+ */
+export function installRouter(state: RouterState, usenet: UsenetRuntimeOptions = {}): InstalledRouter {
+  const original = globalThis.fetch
+  resetQbRuntime()
+  resetOwnedRuntime()
+  purgeTestDataDir()
+  const runtime = testUsenetRuntime(undefined, { fetch: fakeAnimeTosho(state), ...usenet })
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    state.calls.push(`${init?.method || 'GET'} ${url}`)
+    const body = typeof init?.body === 'string' || init?.body instanceof URLSearchParams ? String(init.body) : ''
     if (url.startsWith(QB)) {
       if (url.includes('/auth/login')) return new Response('Ok.', { status: 200 })
       if (url.includes('/torrents/info?hashes=')) {
@@ -174,13 +192,14 @@ export function installRouter(state: RouterState): () => void {
     }
     throw new Error(`unexpected request: ${url}`)
   }
-  return () => {
+  const restore = () => {
     globalThis.fetch = original
-    resetUsenetLookups()
+    runtime.close()
     resetQbRuntime()
     resetOwnedRuntime()
     purgeTestDataDir()
   }
+  return Object.assign(restore, { usenet: runtime })
 }
 
 export function purgeTestDataDir(): void {

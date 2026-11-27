@@ -10,22 +10,13 @@ import { DEFAULT_CONFIG } from '../server/config.js'
 import { bumpGeneration } from '../server/config-generation.js'
 import {
   PersistentUsenetCache,
-  USENET_CACHE_FILE,
   USENET_CACHE_LIMIT,
   providerFingerprint,
   usenetCacheJournalFile,
   usenetCacheKey,
   type UsenetCacheRecord,
 } from '../server/usenet-cache.js'
-import {
-  fetchUsenetNzb,
-  flushUsenetCache,
-  invalidateUsenetLookups,
-  resetUsenetLookups,
-  resolveUsenetHash,
-  resolveUsenetRelease,
-  paceUsenetLookups,
-} from '../server/usenet.js'
+import { fetchUsenetNzb, resolveUsenetHash, resolveUsenetRelease } from '../server/usenet.js'
 import { usenetAvailability } from '../server/usenet-copies.js'
 import type { Config, Release, ResultItem } from '../server/types.js'
 import type { UsenetAvailabilityResult } from '../shared/usenet-contracts.js'
@@ -33,13 +24,13 @@ import { DATA_DIR } from '../server/paths.js'
 import { resetOwnedRuntime } from '../server/download-store.js'
 import { downloadClients } from '../server/download-clients.js'
 import { buildDownloadPlan } from '../server/download-preflight.js'
+import { testUsenetRuntime, type TestUsenetRuntime } from './support/usenet-runtime.js'
 
 const HASH = 'c'.repeat(40)
 const OTHER = 'd'.repeat(40)
 const THIRD = 'e'.repeat(40)
 const HOUR = 60 * 60_000
 const DAY = 24 * HOUR
-const JOURNAL = usenetCacheJournalFile(USENET_CACHE_FILE)
 const settings = { baseUrl: 'https://cache-provider.test', apiKey: 'private-key' }
 const fingerprint = providerFingerprint('animetosho', settings)
 
@@ -83,54 +74,43 @@ async function fixture(
     calls: URL[]
     respond(handler: (url: URL) => Response | Promise<Response>): void
     snapshot(hashes?: string[], refresh?: boolean, cfg?: Config): Promise<UsenetAvailabilityResult>
+    usenet: TestUsenetRuntime
   }) => Promise<void>,
 ): Promise<void> {
-  const originalFetch = globalThis.fetch
-  const stored = fs.existsSync(USENET_CACHE_FILE) ? fs.readFileSync(USENET_CACHE_FILE) : undefined
-  const storedJournal = fs.existsSync(JOURNAL) ? fs.readFileSync(JOURNAL) : undefined
-  fs.rmSync(JOURNAL, { force: true })
   let now = 1_800_000_000_000
   t.mock.method(Date, 'now', () => now)
   const calls: URL[] = []
   let response = (url: URL): Response | Promise<Response> => match(url.searchParams.get('hash') || HASH)
-  resetUsenetLookups()
-  paceUsenetLookups({ minIntervalMs: 0 })
-  globalThis.fetch = async input => {
-    const url = new URL(String(input))
-    calls.push(url)
-    return response(url)
-  }
-  try {
-    await run({
-      advance(ms) {
-        now += ms
-      },
-      calls,
-      respond(handler) {
-        response = handler
-      },
-      async snapshot(hashes = [HASH], refresh = false, cfg = config()) {
-        const results = [{ key: 'cache-show', releases: [release(hashes)] }] as unknown as ResultItem[]
-        const [row] = await usenetAvailability(cfg, [{ key: 'cache-show', release: 0 }], results, { refresh })
-        return row
-      },
-    })
-  } finally {
-    resetUsenetLookups()
-    globalThis.fetch = originalFetch
-    if (stored) fs.writeFileSync(USENET_CACHE_FILE, stored)
-    else fs.rmSync(USENET_CACHE_FILE, { force: true })
-    if (storedJournal) fs.writeFileSync(JOURNAL, storedJournal)
-    else fs.rmSync(JOURNAL, { force: true })
-    fs.rmSync(`${USENET_CACHE_FILE}.tmp`, { force: true })
-  }
+  const usenet = testUsenetRuntime(t, {
+    now: () => now,
+    fetch: async input => {
+      const url = new URL(String(input))
+      calls.push(url)
+      return response(url)
+    },
+  })
+  await run({
+    advance(ms) {
+      now += ms
+    },
+    calls,
+    respond(handler) {
+      response = handler
+    },
+    async snapshot(hashes = [HASH], refresh = false, cfg = config()) {
+      const results = [{ key: 'cache-show', releases: [release(hashes)] }] as unknown as ResultItem[]
+      const [row] = await usenetAvailability(cfg, [{ key: 'cache-show', release: 0 }], results, { refresh })
+      return row
+    },
+    usenet,
+  })
 }
 
 test('fresh persisted provider facts survive a restart and generation changes without provider traffic', async t => {
   await fixture(t, async state => {
     const checked = await resolveUsenetHash(config(), HASH)
-    assert.equal(flushUsenetCache(), true)
-    resetUsenetLookups(true)
+    assert.equal(state.usenet.runtime.shutdown(), true)
+    state.usenet.restart()
     bumpGeneration()
     const restored = await state.snapshot()
     assert.equal(restored.aggregate, 'available')
@@ -167,9 +147,10 @@ test('restored manifest paths remain exact so cached scope checks cannot hide ex
         }),
       )
       await resolveUsenetHash(config(), HASH)
-      resetUsenetLookups(true)
-      state.respond(url => {
-        assert.equal(url.hostname, 'cache-sab.test', 'Fresh restored provider facts do not need another lookup')
+      state.usenet.restart()
+      state.respond(() => assert.fail('Fresh restored provider facts do not need another lookup'))
+      t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL) => {
+        assert.equal(new URL(String(input)).hostname, 'cache-sab.test')
         return Response.json({ queue: { slots: [], diskspace1: '1', diskspace2: '1' } })
       })
       const selected = { ...release(), selected_files: [selectedName] }
@@ -207,6 +188,7 @@ test('restored manifest paths remain exact so cached scope checks cannot hide ex
 test('a provider observation visible before abrupt process exit restores without a shutdown flush', async t => {
   await fixture(t, async state => {
     const usenetModule = new URL('../server/usenet.js', import.meta.url).href
+    const runtimeModule = new URL('../server/usenet-runtime.js', import.meta.url).href
     const child = spawnSync(
       process.execPath,
       [
@@ -214,8 +196,12 @@ test('a provider observation visible before abrupt process exit restores without
         '--eval',
         `
       import { resolveUsenetHash } from ${JSON.stringify(usenetModule)};
-      Date.now = () => 1800000000000;
-      globalThis.fetch = async () => new Response(JSON.stringify({ id: 123, info_hash: ${JSON.stringify(HASH)}, nzb_url: '/nzb/123', num_files: 1, files: [{ name: 'Show.mkv', size: 100 }] }));
+      import { createUsenetRuntime } from ${JSON.stringify(runtimeModule)};
+      createUsenetRuntime({
+        now: () => 1800000000000,
+        paths: { cache: ${JSON.stringify(state.usenet.paths.cache)} },
+        fetch: async () => new Response(JSON.stringify({ id: 123, info_hash: ${JSON.stringify(HASH)}, nzb_url: '/nzb/123', num_files: 1, files: [{ name: 'Show.mkv', size: 100 }] })),
+      });
       const observation = await resolveUsenetHash(${JSON.stringify(config())}, ${JSON.stringify(HASH)});
       if (observation.state !== 'available') process.exit(2);
       process.exit(0);
@@ -224,7 +210,7 @@ test('a provider observation visible before abrupt process exit restores without
       { encoding: 'utf8' },
     )
     assert.equal(child.status, 0, child.stderr)
-    resetUsenetLookups(true)
+    state.usenet.restart()
     const restored = await state.snapshot()
     assert.equal(restored.aggregate, 'available')
     assert.equal(restored.refreshing, false)
@@ -378,8 +364,8 @@ test('fallback snapshots preserve provider observation ages and deduplicate the 
     assert.equal(known.hashes[0].provider, 'amenzb')
     assert.equal(known.checked_at, new Date(1_800_000_000_000).toISOString())
     assert.equal(known.refreshing, false)
-    assert.equal(flushUsenetCache(), true)
-    assert.equal(fs.readFileSync(USENET_CACHE_FILE, 'utf8').includes('second-secret'), false)
+    assert.equal(state.usenet.runtime.shutdown(), true)
+    assert.equal(fs.readFileSync(state.usenet.paths.cache, 'utf8').includes('second-secret'), false)
   })
 })
 
@@ -400,11 +386,11 @@ test('provider URL and key changes remove only incompatible records while unrela
     await resolveUsenetHash(cfg, OTHER)
     assert.equal(state.calls.length, 3)
     bumpGeneration()
-    invalidateUsenetLookups({ ...cfg, hidden: ['unrelated'] })
+    state.usenet.runtime.configChanged(cfg, { ...cfg, hidden: ['unrelated'] })
     assert.equal((await state.snapshot([HASH, OTHER], false, cfg)).aggregate, 'available')
     assert.equal(state.calls.length, 3)
     const newKey = { ...cfg, amenzb_key: 'new-key' }
-    invalidateUsenetLookups(newKey)
+    state.usenet.runtime.configChanged(cfg, newKey)
     assert.equal((await state.snapshot([HASH], false, newKey)).aggregate, 'available')
     assert.equal((await state.snapshot([OTHER], false, newKey)).aggregate, 'not_checked')
     await nextTurn()
@@ -412,7 +398,7 @@ test('provider URL and key changes remove only incompatible records while unrela
     assert.equal(state.calls[3].searchParams.get('apikey'), 'new-key')
     assert.equal((await state.snapshot([OTHER], false, newKey)).aggregate, 'available')
     const changed = { ...newKey, animetosho_url: 'https://changed-provider.test' }
-    invalidateUsenetLookups(changed)
+    state.usenet.runtime.configChanged(newKey, changed)
     assert.equal((await state.snapshot([HASH], false, changed)).aggregate, 'not_checked')
     await nextTurn()
     assert.equal(state.calls.length, 5)
@@ -461,13 +447,13 @@ test('an explicit retry cancels an old background refresh without letting its la
 
 test('corrupted persistence is ignored and later validated observations replace it', async t => {
   await fixture(t, async state => {
-    fs.writeFileSync(USENET_CACHE_FILE, '{broken')
-    resetUsenetLookups(true)
+    fs.writeFileSync(state.usenet.paths.cache, '{broken')
+    state.usenet.restart()
     assert.equal((await state.snapshot()).aggregate, 'not_checked')
     await nextTurn()
     assert.equal((await state.snapshot()).aggregate, 'available')
-    assert.equal(flushUsenetCache(), true)
-    assert.equal(JSON.parse(fs.readFileSync(USENET_CACHE_FILE, 'utf8')).version, 1)
+    assert.equal(state.usenet.runtime.shutdown(), true)
+    assert.equal(JSON.parse(fs.readFileSync(state.usenet.paths.cache, 'utf8')).version, 1)
   })
 })
 
@@ -650,13 +636,13 @@ test('repeated absences lengthen the refresh interval and a match resets it', as
 })
 
 test('AnimeTosho entries without an NZB are processing only while recent', async t => {
-  await fixture(t, async () => {
+  await fixture(t, async state => {
     const now = Date.now()
     const entry = (extra: Record<string, unknown>) =>
       Response.json({ id: 123, info_hash: HASH, nzb_url: null, ...extra })
     const lookup = async (response: Response) => {
-      resetUsenetLookups()
-      globalThis.fetch = async () => response
+      state.usenet.fresh()
+      state.respond(() => response)
       return (await resolveUsenetHash(config(), HASH)).state
     }
     assert.equal(
