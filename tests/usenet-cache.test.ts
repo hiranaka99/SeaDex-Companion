@@ -109,7 +109,7 @@ async function fixture(
 test('fresh persisted provider facts survive a restart and generation changes without provider traffic', async t => {
   await fixture(t, async state => {
     const checked = await resolveUsenetHash(config(), HASH)
-    assert.equal(state.usenet.runtime.shutdown(), true)
+    assert.equal(state.usenet.runtime.flush(), true)
     state.usenet.restart()
     bumpGeneration()
     const restored = await state.snapshot()
@@ -364,7 +364,7 @@ test('fallback snapshots preserve provider observation ages and deduplicate the 
     assert.equal(known.hashes[0].provider, 'amenzb')
     assert.equal(known.checked_at, new Date(1_800_000_000_000).toISOString())
     assert.equal(known.refreshing, false)
-    assert.equal(state.usenet.runtime.shutdown(), true)
+    assert.equal(state.usenet.runtime.flush(), true)
     assert.equal(fs.readFileSync(state.usenet.paths.cache, 'utf8').includes('second-secret'), false)
   })
 })
@@ -452,7 +452,7 @@ test('corrupted persistence is ignored and later validated observations replace 
     assert.equal((await state.snapshot()).aggregate, 'not_checked')
     await nextTurn()
     assert.equal((await state.snapshot()).aggregate, 'available')
-    assert.equal(state.usenet.runtime.shutdown(), true)
+    assert.equal(state.usenet.runtime.flush(), true)
     assert.equal(JSON.parse(fs.readFileSync(state.usenet.paths.cache, 'utf8')).version, 1)
   })
 })

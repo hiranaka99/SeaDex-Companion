@@ -3,13 +3,13 @@ import { test, type TestContext } from 'node:test'
 import { setImmediate as nextTurn } from 'node:timers/promises'
 import { DEFAULT_CONFIG } from '../server/config.js'
 import { bumpGeneration } from '../server/config-generation.js'
-import { prefetchPlan, prefetchUsenetAvailability, usenetPrefetchProgress } from '../server/usenet-prefetch.js'
+import { prefetchPlan, usenetPrefetchProgress } from '../server/usenet-prefetch.js'
 import { resolveUsenetHash, usenetProviderPauses } from '../server/usenet.js'
 import { usenetAvailability } from '../server/usenet-copies.js'
 import { retryAfterMs } from '../server/provider-http.js'
 import type { Release, ResultItem } from '../server/types.js'
 import type { LookupPacing } from '../server/usenet-scheduler.js'
-import { testUsenetRuntime, type TestUsenetRuntime } from './support/usenet-runtime.js'
+import { sweepResults, testUsenetRuntime, type TestUsenetRuntime } from './support/usenet-runtime.js'
 
 const hexHash = (index: number) => index.toString(16).padStart(40, '0')
 
@@ -135,7 +135,7 @@ test('ineligible configurations never trigger a prefetch sweep', async t => {
   const restore = stubFetch(probe)
   try {
     // prefetch is not enabled yet in this process, and this config is torrent_only
-    prefetchUsenetAvailability({ ...config(), download_mode: 'torrent_only' }, [result('a', 1)], 'test')
+    sweepResults({ ...config(), download_mode: 'torrent_only' }, [result('a', 1)], 'test')
     await assert.rejects(
       until(() => probe.fetches > 0, 200),
       /timed out/,
@@ -310,7 +310,7 @@ test('a running sweep reports the provider it waits on by its label', async t =>
   let rateLimited = true
   send = async () => (rateLimited ? new Response('slow down', { status: 429 }) : new Response('nope', { status: 404 }))
   try {
-    prefetchUsenetAvailability(config(), [result('paused-sweep', 1)], 'test')
+    sweepResults(config(), [result('paused-sweep', 1)], 'test')
     await until(() => Boolean(usenetPrefetchProgress().paused))
     assert.deepEqual(usenetPrefetchProgress().paused, [
       { provider: { id: 'animetosho', label: 'AnimeTosho' }, resume_in_seconds: 1, rate_limited: true },
@@ -399,7 +399,7 @@ test('a sweep prunes cached observations for hashes no longer in the results', a
         },
       ],
     } as unknown as ResultItem
-    prefetchUsenetAvailability({ ...config(), download_mode: 'torrent_only' }, [kept], 'prune test')
+    sweepResults({ ...config(), download_mode: 'torrent_only' }, [kept], 'prune test')
     await resolveUsenetHash(config(), hexHash(900))
     assert.equal(probe.fetches, 2, 'the referenced hash stays cached')
     await resolveUsenetHash(config(), hexHash(901))
@@ -431,7 +431,7 @@ test('the prefetch sweep checks every release of the saved results in the backgr
   const probe: Probe = { starts: [], fetches: 0 }
   const restore = stubFetch(probe)
   try {
-    prefetchUsenetAvailability(config(), [result('a', 2), result('b', 2)], 'test')
+    sweepResults(config(), [result('a', 2), result('b', 2)], 'test')
     await until(() => probe.fetches === 4)
     assert.equal(probe.fetches, 4)
   } finally {
@@ -444,7 +444,7 @@ test('cleared results cancel a running sweep mid-flight', async t => {
   const probe: Probe = { starts: [], fetches: 0 }
   const restore = stubFetch(probe)
   try {
-    prefetchUsenetAvailability(
+    sweepResults(
       config(),
       Array.from({ length: 10 }, (_, index) => result(`show-${index}`, 1)),
       'test',
@@ -470,10 +470,10 @@ test('an older sweep completion cannot finish or overwrite a newer sweep', async
   const oldHash = oldResults[0].releases[0].info_hashes[0]
   const newHash = newerResults[0].releases[0].info_hashes[0]
   try {
-    prefetchUsenetAvailability(config(), oldResults, 'old')
+    sweepResults(config(), oldResults, 'old')
     await nextTurn()
     assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 0, total: 2 })
-    prefetchUsenetAvailability(config(), newerResults, 'new')
+    sweepResults(config(), newerResults, 'new')
     await nextTurn()
     assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 0, total: 3 })
     complete(oldHash)
@@ -499,7 +499,7 @@ test('cleared results clear current progress immediately and stale work cannot r
   const { probe, complete, restore } = controlledFetch()
   const results = [result('first', 1), result('later', 1)]
   try {
-    prefetchUsenetAvailability(config(), results, 'test')
+    sweepResults(config(), results, 'test')
     await nextTurn()
     assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 0, total: 2 })
     usenet.runtime.resultsChanged(config(), [], [], 'results cleared')
@@ -522,13 +522,9 @@ test('empty and ineligible sweeps supersede old work without retaining progress'
   try {
     for (const ineligible of [false, true]) {
       const results = [result(`first-${ineligible}`, 1), result(`later-${ineligible}`, 1)]
-      prefetchUsenetAvailability(config(), results, 'active')
+      sweepResults(config(), results, 'active')
       await nextTurn()
-      prefetchUsenetAvailability(
-        ineligible ? { ...config(), download_mode: 'torrent_only' } : config(),
-        [],
-        'replacement',
-      )
+      sweepResults(ineligible ? { ...config(), download_mode: 'torrent_only' } : config(), [], 'replacement')
       assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
       complete(results[0].releases[0].info_hashes[0])
       await nextTurn()
@@ -548,7 +544,7 @@ test('an unrelated configuration generation change does not interrupt the sweep'
   const { probe, complete, restore } = controlledFetch()
   const results = [result('first', 1), result('later', 1)]
   try {
-    prefetchUsenetAvailability(config(), results, 'test')
+    sweepResults(config(), results, 'test')
     await nextTurn()
     bumpGeneration()
     assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 0, total: 2 })
@@ -569,7 +565,7 @@ test('public snapshots cannot count scheduled prefetch work as completed or dupl
   const { probe, complete, restore } = controlledFetch()
   const results = [result('snapshot-prefetch', 2)]
   try {
-    prefetchUsenetAvailability(config(), results, 'snapshot test')
+    sweepResults(config(), results, 'snapshot test')
     await nextTurn()
     assert.deepEqual(usenetPrefetchProgress(), { running: true, checked: 0, total: 2 })
     const rows = await usenetAvailability(

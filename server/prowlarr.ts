@@ -19,6 +19,7 @@ import {
 } from './provider-http.js'
 import { newznabErrorFailure, readNzb, searchNewznab } from './usenet-provider-types.js'
 import type { NewznabFailureScope } from './usenet-provider-types.js'
+import { usenetParts } from './usenet-runtime.js'
 
 export interface ProwlarrSettings {
   baseUrl: string
@@ -268,39 +269,37 @@ function parseIndexer(value: unknown): ProwlarrIndexer | null {
 
 /**
  * The Prowlarr indexer lists read recently, one per connection, with the clock that dates them and the fetch
- * they are read with. A Usenet runtime (`usenet-runtime.ts`) builds it and puts it in place.
+ * they are read with. A Usenet runtime (`usenet-runtime.ts`) builds it and owns it.
  */
-export interface ProwlarrIndexerList {
-  lists: Map<string, { at: number; indexers: ProwlarrIndexer[] }>
+export class ProwlarrIndexerList {
+  readonly lists = new Map<string, { at: number; indexers: ProwlarrIndexer[] }>()
   /** Connections whose list is being read in the background for `knownProwlarrIndexers`. */
-  refreshes: Set<string>
-  now: () => number
-  fetch: typeof fetch
-}
+  readonly refreshes = new Set<string>()
+  readonly now: () => number
+  readonly fetch: typeof fetch
 
-export function prowlarrIndexerList(options: { now?: () => number; fetch?: typeof fetch } = {}): ProwlarrIndexerList {
-  return {
-    lists: new Map(),
-    refreshes: new Set(),
-    now: options.now ?? (() => Date.now()),
-    fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
+  constructor(options: { now?: () => number; fetch?: typeof fetch } = {}) {
+    this.now = options.now ?? (() => Date.now())
+    this.fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
+  }
+
+  /** Forgets every indexer list read, for a changed Prowlarr connection. */
+  forget(): void {
+    this.lists.clear()
+    this.refreshes.clear()
   }
 }
 
-let indexerList = prowlarrIndexerList()
-
-/** Usenet runtime only: indexer lists are read into and from `next` from now on. */
-export function useProwlarrIndexerList(next: ProwlarrIndexerList): void {
-  indexerList = next
-}
+/** The indexer lists of the Usenet runtime in use. */
+const indexerList = (): ProwlarrIndexerList => usenetParts().indexers
 
 /** Enabled indexers, cached briefly so one review does not list them once per release. */
 export async function prowlarrIndexers(
   settings: ProwlarrSettings,
-  fetchImpl: typeof fetch = indexerList.fetch,
+  fetchImpl: typeof fetch = indexerList().fetch,
   fresh = false,
 ): Promise<ProwlarrIndexer[]> {
-  const list = indexerList
+  const list = indexerList()
   const key = prowlarrFingerprint(settings)
   const cached = list.lists.get(key)
   if (!fresh && cached && list.now() - cached.at < INDEXER_TTL_MS) return cached.indexers
@@ -316,7 +315,7 @@ export async function prowlarrIndexers(
  * background and `undefined` is returned until it arrives.
  */
 export function knownProwlarrIndexers(settings: ProwlarrSettings): ProwlarrIndexer[] | undefined {
-  const list = indexerList
+  const list = indexerList()
   const key = prowlarrFingerprint(settings)
   const cached = list.lists.get(key)
   // One refresh at a time: a status read or a sweep asks once per release.
@@ -327,12 +326,6 @@ export function knownProwlarrIndexers(settings: ProwlarrSettings): ProwlarrIndex
       .finally(() => list.refreshes.delete(key))
   }
   return cached?.indexers
-}
-
-/** Forgets every indexer list read, for a changed Prowlarr connection. */
-export function resetProwlarrRuntime(): void {
-  indexerList.lists.clear()
-  indexerList.refreshes.clear()
 }
 
 /** SeaDex's tracker names and the names Prowlarr gives the same trackers. */

@@ -101,6 +101,8 @@ function main(): void {
     shuttingDown = true
     log('INFO', restart ? 'Restarting to apply an update' : `${signal} received; shutting down`)
     clearInterval(scheduler)
+    // No sweep starts more lookups while the server finishes the requests under way.
+    usenet.shutdown()
     const deadline = setTimeout(() => {
       log('ERROR', 'Graceful shutdown timed out')
       process.exit(restart ? RESTART_EXIT_CODE : 1)
@@ -115,7 +117,7 @@ function main(): void {
       } catch (error) {
         log('ERROR', `AniList cache could not be saved: ${errorMessage(error)}`)
       }
-      const usenetSaved = usenet.shutdown()
+      const usenetSaved = usenet.flush()
       process.exit(restart ? RESTART_EXIT_CODE : error || !usenetSaved ? 1 : 0)
     })
   }

@@ -17,7 +17,7 @@ import {
   setTitleMapping,
   validSeasonMappingIds,
 } from './user-rules.js'
-import { stopUsenetPrefetch } from './usenet-prefetch.js'
+import { readLedger, usenetRuntime } from './usenet-runtime.js'
 import { cardKey } from '../shared/ids.js'
 import { isRecord } from '../shared/guards.js'
 import type { ReleaseChange } from '../shared/contracts.js'
@@ -151,7 +151,7 @@ export const libraryRoutes: Route[] = [
     if (getState().running)
       throw new HttpError(409, 'Wait for the current scan to finish before clearing scanned data', { ok: false })
     const cleared = clearScannedData()
-    stopUsenetPrefetch()
+    usenetRuntime().resultsChanged(loadConfig(), [], readLedger(), 'scanned data cleared')
     log(
       'INFO',
       `Scanned data cleared (saved results: ${cleared.results}; AniList cache entries: ${cleared.cacheEntries})`,

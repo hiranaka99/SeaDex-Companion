@@ -10,17 +10,25 @@ import { test, type TestContext } from 'node:test'
 import { DEFAULT_CONFIG, loadConfig, saveConfig } from '../server/config.js'
 import { saveSettings } from '../server/config-service.js'
 import { downloadRoutes } from '../server/download-routes.js'
+import { libraryRoutes } from '../server/library-routes.js'
 import { addDownloadRecord, resetOwnedRuntime, setDownloadPhase } from '../server/download-store.js'
-import { CONFIG_FILE, DATA_DIR, ENCRYPTED_SECRETS_FILE, RESULTS_FILE, SECRETS_KEY_FILE } from '../server/paths.js'
+import {
+  CACHE_FILE,
+  CONFIG_FILE,
+  DATA_DIR,
+  ENCRYPTED_SECRETS_FILE,
+  RESULTS_FILE,
+  SECRETS_KEY_FILE,
+} from '../server/paths.js'
 import { prowlarrFingerprint } from '../server/prowlarr.js'
 import { matchRoute } from '../server/router.js'
 import { autocheckState, setState } from '../server/scan-state.js'
 import { filesSourceId } from '../server/source-files.js'
 import type { Config, PrivateSource, ResultItem } from '../server/types.js'
-import { prefetchUsenetAvailability, usenetPrefetchProgress, usenetSearchStatus } from '../server/usenet-prefetch.js'
+import { usenetPrefetchProgress, usenetSearchStatus } from '../server/usenet-prefetch.js'
 import { searchSource } from '../server/usenet-search.js'
 import type { ProwlarrSearchStatus } from '../shared/contracts.js'
-import { testUsenetRuntime, type TestUsenetRuntime } from './support/usenet-runtime.js'
+import { sweepResults, testUsenetRuntime, type TestUsenetRuntime } from './support/usenet-runtime.js'
 
 const PROWLARR = 'http://prowlarr-sweep.test:9696'
 const KEY = 'prowlarr-key-sweep-7a3b'
@@ -221,11 +229,7 @@ test('the sweep searches eligible sources in priority order after the hash looku
   // The same private release listed twice is searched once.
   const duplicate = { ...privateRow('Upgrade', 'upgrade'), key: 'upgrade-again' }
   const tags = ['Owned', 'Upgrade', 'Missing', 'Fallback']
-  prefetchUsenetAvailability(
-    config({ animetosho_enabled: true }),
-    [owned, upgrade, missing, fallback.row, duplicate],
-    'test',
-  )
+  sweepResults(config({ animetosho_enabled: true }), [owned, upgrade, missing, fallback.row, duplicate], 'test')
   await until(() => usenet.runtime.searchStore.summary() !== undefined)
 
   assert.deepEqual(searchedTags(fake, tags), ['Missing', 'Fallback', 'Upgrade', 'Owned'])
@@ -257,7 +261,7 @@ test('the sweep searches eligible sources in priority order after the hash looku
 
   // A second sweep finds every source fresh: nothing is searched, and the summary stays.
   fake.calls.length = 0
-  prefetchUsenetAvailability(config({ animetosho_enabled: true }), [owned, upgrade, missing, fallback.row], 'again')
+  sweepResults(config({ animetosho_enabled: true }), [owned, upgrade, missing, fallback.row], 'again')
   await idle()
   assert.deepEqual(searches(fake), [])
   assert.deepEqual(usenet.runtime.searchStore.summary(), summary)
@@ -272,13 +276,13 @@ test('the sweep does not search with the setting off, with Torrent only, without
     config({ sabnzbd_url: '' }),
     config({ prowlarr_enabled: false }),
   ]) {
-    prefetchUsenetAvailability(settings, results, 'test')
+    sweepResults(settings, results, 'test')
     await idle()
     assert.deepEqual(fake.calls, [], 'not even the indexer list is read')
   }
 
   fake.indexers = [NZB_SITE]
-  prefetchUsenetAvailability(config(), results, 'test')
+  sweepResults(config(), results, 'test')
   await until(() => fake.calls.length > 0)
   await idle()
   assert.deepEqual(
@@ -293,7 +297,7 @@ test('the sweep does not search with the setting off, with Torrent only, without
   usenet.restart()
   fake.calls.length = 0
   fake.indexers = 'broken' as unknown as unknown[]
-  prefetchUsenetAvailability(config(), results, 'test')
+  sweepResults(config(), results, 'test')
   await until(() => fake.calls.length > 0)
   await idle()
   assert.deepEqual(searches(fake), [])
@@ -303,7 +307,7 @@ test('the sweep does not search with the setting off, with Torrent only, without
 test('the sweep runs for private-only releases when both hash indexers are off, and reports the search stage', async t => {
   const hold = gate()
   const fake = setup(t, { hold: hold.opened })
-  prefetchUsenetAvailability(config(), [privateRow('Alpha'), privateRow('Beta')], 'test')
+  sweepResults(config(), [privateRow('Alpha'), privateRow('Beta')], 'test')
   await until(() => searches(fake).length > 0)
   assert.deepEqual(usenetPrefetchProgress(), {
     running: true,
@@ -323,7 +327,7 @@ test('the search stage follows the hash stage in the progress and keeps it compl
   const hold = gate()
   const fake = setup(t, { hold: hold.opened })
   const fallback = publicRow('Fallback')
-  prefetchUsenetAvailability(config({ animetosho_enabled: true }), [privateRow('Alpha'), fallback.row], 'test')
+  sweepResults(config({ animetosho_enabled: true }), [privateRow('Alpha'), fallback.row], 'test')
   await until(() => searches(fake).length > 0)
   assert.deepEqual(usenetPrefetchProgress(), {
     running: true,
@@ -347,7 +351,7 @@ test('a failed or still-processing hash lookup never starts a search', async t =
           ? new Response('bad request', { status: 400 })
           : new Response('nope', { status: 404 }),
   })
-  prefetchUsenetAvailability(config({ animetosho_enabled: true }), [processing.row, failing.row, absent.row], 'test')
+  sweepResults(config({ animetosho_enabled: true }), [processing.row, failing.row, absent.row], 'test')
   await until(() => usenet.runtime.searchStore.summary() !== undefined)
   assert.equal(hashLookups(fake).length, 3)
   assert.deepEqual(searchedTags(fake, ['Processing', 'Failing', 'Absent']), ['Absent'])
@@ -361,7 +365,7 @@ test('the sweep stops at the search limit, counts the rest as deferred, and goes
   const fake = setup(t, { found: new Set(tags) })
   const results = tags.map(tag => privateRow(tag))
   const limited = config({ prowlarr_search_limit: 2 })
-  prefetchUsenetAvailability(limited, results, 'test')
+  sweepResults(limited, results, 'test')
   await until(() => usenet.runtime.searchStore.summary() !== undefined)
   assert.deepEqual(searchedTags(fake, tags), ['Alpha', 'Beta'])
   assert.equal(searches(fake).length, 2, 'a strong candidate ends each search after one query')
@@ -381,7 +385,7 @@ test('the sweep stops at the search limit, counts the rest as deferred, and goes
 
   // Still within the 24 hours: the remaining source stays deferred and nothing is asked.
   now += HOUR
-  prefetchUsenetAvailability(limited, results, 'test')
+  sweepResults(limited, results, 'test')
   await until(() => usenet.runtime.searchStore.summary()?.finished_at !== first.finished_at)
   assert.equal(searches(fake).length, 2)
   assert.deepEqual(
@@ -398,7 +402,7 @@ test('the sweep stops at the search limit, counts the rest as deferred, and goes
   )
 
   now += 25 * HOUR
-  prefetchUsenetAvailability(limited, results, 'test')
+  sweepResults(limited, results, 'test')
   await until(() => usenet.runtime.searchStore.summary()?.searched === 1)
   assert.deepEqual(searchedTags(fake, tags), tags)
   assert.equal(usenet.runtime.searchStore.summary()?.deferred, 0)
@@ -406,15 +410,12 @@ test('the sweep stops at the search limit, counts the rest as deferred, and goes
 
 test('a superseded sweep stops reporting progress, searches nothing more and writes no summary', async t => {
   const fake = setup(t, { found: new Set(['Alpha']) })
-  for (const supersede of [
-    () => usenet.runtime.shutdown(),
-    () => prefetchUsenetAvailability(config(), [], 'replaced'),
-  ]) {
+  for (const supersede of [() => usenet.runtime.shutdown(), () => sweepResults(config(), [], 'replaced')]) {
     const hold = gate()
     fake.hold = hold.opened
     fake.calls.length = 0
     usenet.fresh()
-    prefetchUsenetAvailability(config(), [privateRow('Alpha'), privateRow('Beta')], 'test')
+    sweepResults(config(), [privateRow('Alpha'), privateRow('Beta')], 'test')
     await until(() => searches(fake).length > 0)
     assert.ok(usenetPrefetchProgress().search)
     supersede()
@@ -425,6 +426,47 @@ test('a superseded sweep stops reporting progress, searches nothing more and wri
     assert.deepEqual(searchedTags(fake, ['Alpha', 'Beta']), ['Alpha'])
     assert.equal(usenet.runtime.searchStore.summary(), undefined)
   }
+})
+
+test('a runtime that is shutting down starts no more sweeps, and still writes what is pending', async t => {
+  const fake = setup(t, { found: new Set(['Alpha']) })
+  usenet.runtime.shutdown()
+  sweepResults(config(), [privateRow('Alpha'), privateRow('Beta')], 'scan finished')
+  await idle()
+  assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
+  assert.deepEqual(fake.calls, [], 'nothing is asked of Prowlarr')
+  assert.equal(usenet.runtime.flush(), true)
+})
+
+test('clearing the scanned data stops the running sweep', async t => {
+  const fake = setup(t, { found: new Set(['Alpha']) })
+  storeConfig(t, config())
+  const anilist = fs.existsSync(CACHE_FILE) ? fs.readFileSync(CACHE_FILE) : null
+  t.after(() => (anilist ? fs.writeFileSync(CACHE_FILE, anilist) : fs.rmSync(CACHE_FILE, { force: true })))
+  const hold = gate()
+  fake.hold = hold.opened
+  sweepResults(config(), [privateRow('Alpha'), privateRow('Beta')], 'test')
+  await until(() => searches(fake).length > 0)
+  const answer = { status: 0 }
+  const response = {
+    writeHead: (status: number) => {
+      answer.status = status
+    },
+    end: () => {},
+  } as unknown as ServerResponse
+  const url = new URL('http://companion.test/api/scanned-data')
+  await matchRoute(libraryRoutes, 'DELETE', url.pathname)!.route.handle({
+    request: {} as never,
+    response,
+    url,
+    params: [],
+  })
+  assert.equal(answer.status, 200)
+  assert.deepEqual(usenetPrefetchProgress(), { running: false, checked: 0, total: 0 })
+  hold.open()
+  await idle()
+  assert.deepEqual(searchedTags(fake, ['Alpha', 'Beta']), ['Alpha'], 'nothing more is searched')
+  assert.equal(usenet.runtime.searchStore.summary(), undefined)
 })
 
 /** Calls the search-status route as the browser does, and returns what it answered. */
@@ -451,12 +493,12 @@ test('the search status reports eligible and pending sources and the latest summ
   const fallback = publicRow('Fallback')
   const unknownHash = publicRow('Unknown')
   storeConfig(t, config({ animetosho_enabled: true }))
-  prefetchUsenetAvailability(loadConfig(), searched, 'test')
+  sweepResults(loadConfig(), searched, 'test')
   await until(() => usenet.runtime.searchStore.summary() !== undefined)
   const summary = usenet.runtime.searchStore.summary()!
 
   // Gamma was never searched; the fallback's hash lookup answered "no NZB"; the other hash was never looked up.
-  prefetchUsenetAvailability(
+  sweepResults(
     config({ animetosho_enabled: true, prowlarr_background_search: false }),
     [...searched, fallback.row],
     'hashes',
@@ -525,9 +567,9 @@ test('pruning drops search records no result references and keeps those an activ
 
   const results = [privateRow('Kept'), publicRow('Fallback', 'missing', hash).row]
   // Pruning runs even when the sweep itself is not eligible, and never with empty results.
-  prefetchUsenetAvailability(config({ download_mode: 'torrent_only' }), [], 'empty')
+  sweepResults(config({ download_mode: 'torrent_only' }), [], 'empty')
   assert.ok(record(gone), 'empty results prune nothing')
-  prefetchUsenetAvailability(config({ download_mode: 'torrent_only' }), results, 'prune')
+  sweepResults(config({ download_mode: 'torrent_only' }), results, 'prune')
   assert.ok(record(kept), 'a source the results reference is kept')
   assert.ok(record(publicSource), 'a hash the results reference is kept')
   assert.ok(record(downloading), 'a source an active download names is kept')

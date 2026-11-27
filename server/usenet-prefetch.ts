@@ -7,12 +7,11 @@ import {
   prowlarrSettings,
   type ProwlarrIndexer,
 } from './prowlarr.js'
-import { loadLastResults } from './results.js'
 import { exclusionRuleKey, loadUserRules } from './user-rules.js'
 import { cachedHashState, sabnzbdConfigured, usenetProviderPauses, usenetProvidersEnabled } from './usenet.js'
 import { fileListSources, resolveUsenetCopies, searchInBackground } from './usenet-copies.js'
-import { readLedger, usenetRuntime } from './usenet-runtime.js'
-import { backgroundSearchesSpent, searchSnapshot, searchStore, type UsenetSourceOutcome } from './usenet-search.js'
+import { usenetParts } from './usenet-runtime.js'
+import { backgroundSearchesSpent, searchSnapshot, type UsenetSourceOutcome } from './usenet-search.js'
 import type { ProwlarrSearchStatus, UsenetPrefetchProgress, UsenetSearchSummary } from '../shared/contracts.js'
 import type { UsenetUnitState } from '../shared/usenet-contracts.js'
 import type { Config, PrivateSource, Release, ResultItem } from './types.js'
@@ -29,21 +28,45 @@ import type { Config, PrivateSource, Release, ResultItem } from './types.js'
  * the hash indexers cannot provide. The search stage never fetches an NZB.
  */
 
-/** Whether sweeps run and the clock they are timed on. A Usenet runtime (`usenet-runtime.ts`) puts it in place. */
-export interface SweepParts {
-  enabled: boolean
-  now: () => number
-}
-
-let sweep: SweepParts = { enabled: false, now: () => Date.now() }
-let sweepEpoch = 0
 const idle = (): UsenetPrefetchProgress => ({ running: false, checked: 0, total: 0 })
-let progress = idle()
+
+/**
+ * The background sweep of one Usenet runtime: whether it runs, the clock it is timed on, and its progress. A
+ * Usenet runtime (`usenet-runtime.ts`) builds it, owns it, and starts and stops sweeps.
+ */
+export class SweepParts {
+  readonly enabled: boolean
+  readonly now: () => number
+  /** Advanced by every start and stop; a sweep owns its progress until it moves on. */
+  epoch = 0
+  progress = idle()
+
+  constructor(options: { enabled?: boolean; now?: () => number } = {}) {
+    this.enabled = options.enabled ?? false
+    this.now = options.now ?? (() => Date.now())
+  }
+
+  /** Starts a sweep over `results`; any running sweep is superseded. Pruning the stores is the runtime's. */
+  start(config: Config, results: ResultItem[], reason: string): void {
+    const epoch = this.stop()
+    if (!this.enabled) return
+    const stages = { hashes: usenetPrefetchEligible(config), search: usenetSearchSweepEligible(config) }
+    if (!stages.hashes && !stages.search) return
+    void runSweep(this, epoch, config, results, reason, stages)
+  }
+
+  /** Cancels any running sweep. Returns the epoch a sweep started now would own. */
+  stop(): number {
+    this.progress = idle()
+    return ++this.epoch
+  }
+}
 
 /** Live progress of the background availability sweep, for the sidebar. */
 export function usenetPrefetchProgress(): UsenetPrefetchProgress {
+  const { progress, now: clock } = usenetParts().sweep
   if (!progress.running) return idle()
-  const now = sweep.now()
+  const now = clock()
   const paused = usenetProviderPauses().map(pause => ({
     provider: { id: pause.channel, label: pause.label },
     resume_in_seconds: Math.max(1, Math.ceil((pause.until - now) / 1000)),
@@ -54,22 +77,6 @@ export function usenetPrefetchProgress(): UsenetPrefetchProgress {
     ...(progress.search ? { search: { ...progress.search } } : {}),
     ...(paused.length ? { paused } : {}),
   }
-}
-
-/** Usenet runtime only: sweeps from now on follow `next`. A running sweep is superseded. */
-export function useSweepParts(next: SweepParts): void {
-  stopUsenetPrefetch()
-  sweep = next
-}
-
-/** Whether the runtime in use runs background sweeps. */
-export function usenetSweepEnabled(): boolean {
-  return sweep.enabled
-}
-
-/** Prefetch only runs in the real server; tests opt in explicitly. */
-export function enableUsenetPrefetch(): void {
-  sweep.enabled = true
 }
 
 /** The hash lookups run with SABnzbd, a download mode that may use Usenet, and a hash indexer. */
@@ -166,30 +173,6 @@ function searchItems(
   return items
 }
 
-/**
- * Starts a background sweep over `results`; any running sweep is superseded. Pruning the stores is the
- * runtime's (`resultsChanged`), which calls this.
- */
-export function startUsenetSweep(config: Config, results: ResultItem[], reason: string): void {
-  const epoch = ++sweepEpoch
-  progress = idle()
-  if (!sweep.enabled) return
-  const stages = { hashes: usenetPrefetchEligible(config), search: usenetSearchSweepEligible(config) }
-  if (!stages.hashes && !stages.search) return
-  void runSweep(epoch, config, results, reason, stages)
-}
-
-/** Starts a background sweep over the saved results through the runtime in use, which prunes the stores first. */
-export function prefetchUsenetAvailability(config: Config, results: ResultItem[], reason: string): void {
-  usenetRuntime().resultsChanged(config, results, readLedger(), reason)
-}
-
-/** Cancels any running sweep (scanned data cleared). */
-export function stopUsenetPrefetch(): void {
-  sweepEpoch++
-  progress = idle()
-}
-
 /** The Usenet indexers in Prowlarr, or why the search stage cannot run. Never rejects. */
 async function sweepIndexers(config: Config): Promise<ProwlarrIndexer[] | { error: string }> {
   const settings = prowlarrSettings(config)
@@ -203,24 +186,25 @@ async function sweepIndexers(config: Config): Promise<ProwlarrIndexer[] | { erro
 }
 
 async function runSweep(
+  sweep: SweepParts,
   epoch: number,
   config: Config,
   results: ResultItem[],
   reason: string,
   stages: { hashes: boolean; search: boolean },
 ): Promise<void> {
-  const ownsProgress = () => epoch === sweepEpoch
-  // Read once, while the hash lookups run.
-  const indexers = stages.search ? sweepIndexers(config) : undefined
+  const ownsProgress = () => epoch === sweep.epoch
   const plan = readablePlan(results)
   const releases = plan.reduce((total, entry) => total + entry.releases.length, 0)
   if (!releases || !ownsProgress()) return
+  // Read once, while the hash lookups run.
+  const indexers = stages.search ? sweepIndexers(config) : undefined
   const states = new Map<string, UsenetUnitState>()
   let hashProgress = { checked: 0, total: 0 }
   try {
     if (stages.hashes) {
       const started = sweep.now()
-      progress = { running: true, checked: 0, total: releases }
+      sweep.progress = { running: true, checked: 0, total: releases }
       log('INFO', `Usenet availability prefetch started (${releases} releases; ${reason})`)
       let checked = 0
       const byKey = new Map(results.map(result => [result.key, result]))
@@ -234,7 +218,7 @@ async function runSweep(
         if (!ownsProgress()) return
         for (const answer of answers) for (const hash of answer.hashes) if (hash.hash) states.set(hash.hash, hash.state)
         checked += entry.releases.length
-        progress = { running: true, checked, total: releases }
+        sweep.progress = { running: true, checked, total: releases }
       }
       if (!ownsProgress()) return
       log(
@@ -258,11 +242,11 @@ async function runSweep(
       const snapshot = searchSnapshot(config, item.source.id)
       return snapshot.stale && !snapshot.running
     })
-    if (due.length) await searchStage(ownsProgress, config, due, listed, hashProgress)
+    if (due.length) await searchStage(sweep, ownsProgress, config, due, listed, hashProgress)
   } catch {
     if (ownsProgress()) log('WARNING', 'Usenet availability prefetch failed')
   } finally {
-    if (ownsProgress()) progress = idle()
+    if (ownsProgress()) sweep.progress = idle()
   }
 }
 
@@ -286,6 +270,7 @@ function countOutcome(tally: Tally, outcome: UsenetSourceOutcome): void {
  * the rest is left for a later sweep. A finished stage stores and logs its summary; a superseded one neither.
  */
 async function searchStage(
+  sweep: SweepParts,
   ownsProgress: () => boolean,
   config: Config,
   due: SearchItem[],
@@ -293,7 +278,7 @@ async function searchStage(
   hashProgress: { checked: number; total: number },
 ): Promise<void> {
   const report = (checked: number) => {
-    progress = { running: true, ...hashProgress, search: { checked, total: due.length } }
+    sweep.progress = { running: true, ...hashProgress, search: { checked, total: due.length } }
   }
   report(0)
   const started = sweep.now()
@@ -319,7 +304,7 @@ async function searchStage(
     ...tally,
     queries: [...queries].map(([indexer, count]) => ({ indexer, count })),
   }
-  searchStore.setSummary(summary, prowlarrFingerprint(settings))
+  usenetParts().search.store.setSummary(summary, prowlarrFingerprint(settings))
   const sent = summary.queries.map(entry => `${entry.indexer} ${entry.count}`).join(', ') || 'none'
   log(
     'INFO',
@@ -339,22 +324,11 @@ export function usenetSearchStatus(config: Config, results: ResultItem[]): Prowl
   const sources = results.length
     ? searchItems(config, readablePlan(results), results, hash => cachedHashState(config, hash))
     : []
-  const summary = searchStore.summary()
+  const summary = usenetParts().search.store.summary()
   return {
     eligible_sources: sources.length,
     pending_sources: sources.filter(item => searchSnapshot(config, item.source.id).stale).length,
     usenet_indexers: indexers.length,
     ...(summary ? { summary } : {}),
   }
-}
-
-/** Scan-completion hook wired into the default scan service. */
-export function prefetchAfterScan(config: Config, results: ResultItem[]): void {
-  prefetchUsenetAvailability(config, results, 'scan finished')
-}
-
-/** Re-sweep the persisted results after a Usenet-relevant configuration change. */
-export function prefetchSavedResults(config: Config): void {
-  const saved = loadLastResults()?.results || []
-  prefetchUsenetAvailability(config, saved, 'configuration saved')
 }
