@@ -12,7 +12,8 @@ import {
   UsenetSelectionError,
 } from '../server/usenet.js'
 import { usenetAvailability } from '../server/usenet-copies.js'
-import { LookupGuardTimeout, LookupScheduler, ProviderPausedError } from '../server/usenet-scheduler.js'
+import { LookupGuardTimeout } from '../server/lookup-flights.js'
+import { LookupScheduler, ProviderPausedError } from '../server/usenet-scheduler.js'
 import { releaseIdentity } from '../shared/releases.js'
 import type { Release, ResultItem } from '../server/types.js'
 import { holdJob, runJob } from './support/lookup-jobs.js'
