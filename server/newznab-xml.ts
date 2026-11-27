@@ -3,9 +3,9 @@
 
 import { isRecord } from '../shared/guards.js'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
-import { LOOKUP_MAX_BYTES, decodeText } from './provider-http.js'
+import { LOOKUP_MAX_BYTES, decodeText } from './indexer-http.js'
 
-/** Provider XML rejects declarations; NZBs allow only the public standard DTD. */
+/** Newznab XML rejects declarations; NZBs allow only the public standard DTD. */
 const DECLARATION_PATTERN = /<!DOCTYPE|<!ENTITY/i
 const STANDARD_NZB_DOCTYPE =
   /<!DOCTYPE\s+nzb\s+PUBLIC\s+(["'])-\/\/newzBin\/\/DTD NZB 1\.1\/\/EN\1\s+(["'])https?:\/\/www\.newzbin\.com\/DTD\/nzb\/nzb-1\.1\.dtd\2\s*>/
@@ -13,8 +13,8 @@ const STANDARD_NZB_DOCTYPE =
 const XML_PARSER_OPTIONS = { ignoreAttributes: false, attributeNamePrefix: '@_', parseTagValue: false }
 const xmlParser = new XMLParser(XML_PARSER_OPTIONS)
 
-/** Body was not XML the provider could have meant (malformed, empty, DTD). */
-export class ProviderProtocolError extends Error {}
+/** Body was not XML an indexer could have meant (malformed, empty, DTD). */
+export class NewznabXmlError extends Error {}
 
 export interface NewznabError {
   code: number
@@ -25,12 +25,12 @@ export function listOf(value: unknown): unknown[] {
   return value === undefined || value === null ? [] : [value]
 }
 
-/** Trimmed non-empty provider string, or undefined when the field is absent/blank. */
+/** Trimmed non-empty string, or undefined when the field is absent/blank. */
 export function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-/** Provider-reported byte count only when it is a safe non-negative integer. */
+/** Reported byte count only when it is a safe non-negative integer. */
 export function safeByteSize(value: unknown): number | undefined {
   const size = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN
   return Number.isSafeInteger(size) && size >= 0 ? size : undefined
@@ -71,17 +71,17 @@ export function newznabAttributes(item: Record<string, unknown>): Map<string, st
  * checked with the same dependency's validator before it is trusted.
  */
 function assertWellFormedXml(value: string): void {
-  if (XMLValidator.validate(value) !== true) throw new ProviderProtocolError('provider response was not valid XML')
+  if (XMLValidator.validate(value) !== true) throw new NewznabXmlError('provider response was not valid XML')
 }
 
-export function parseProviderXml(text: string): unknown {
-  if (!text.trim()) throw new ProviderProtocolError('provider response was empty')
-  if (DECLARATION_PATTERN.test(text)) throw new ProviderProtocolError('provider response declared a DTD or entity')
+export function parseNewznabXml(text: string): unknown {
+  if (!text.trim()) throw new NewznabXmlError('provider response was empty')
+  if (DECLARATION_PATTERN.test(text)) throw new NewznabXmlError('provider response declared a DTD or entity')
   assertWellFormedXml(text)
   try {
     return xmlParser.parse(text)
   } catch {
-    throw new ProviderProtocolError('provider response was not valid XML')
+    throw new NewznabXmlError('provider response was not valid XML')
   }
 }
 
@@ -122,7 +122,7 @@ export function detectXmlError(bytes: Uint8Array): NewznabError | null {
   if (bytes.length === 0 || bytes.length > LOOKUP_MAX_BYTES || bytes[0] !== 0x3c) return null
   let document: unknown
   try {
-    document = parseProviderXml(decodeText(bytes))
+    document = parseNewznabXml(decodeText(bytes))
   } catch {
     return null
   }

@@ -5,21 +5,19 @@
 import { INFO_HASH_PATTERN } from '../shared/ids.js'
 import { isRecord } from '../shared/guards.js'
 import type { UsenetProvider } from '../shared/usenet-contracts.js'
-import { ProviderProtocolError, parseProviderXml, safeByteSize, text } from './newznab-xml.js'
+import { NewznabXmlError, parseNewznabXml, safeByteSize, text } from './newznab-xml.js'
 import {
   LOOKUP_MAX_BYTES,
   LOOKUP_TIMEOUT_MS,
-  ResponseTooLargeError,
-  classifyFailure,
   decodeText,
-  failedFrom,
-  failedLookup,
   httpStatusFailure,
-  providerRequest,
+  originRequest,
   readResponseCapped,
   safeText,
-} from './provider-http.js'
-import { fetchProviderNzb } from './usenet-provider-types.js'
+  transportFailure,
+} from './indexer-http.js'
+import type { OriginRequest, RequestFailure } from './indexer-http.js'
+import { failedLookup, fetchProviderNzb } from './usenet-provider-types.js'
 import type { ProviderLookup, ProviderSettings, UsenetMatch, UsenetSourceFile } from './usenet-provider-types.js'
 
 /**
@@ -57,6 +55,22 @@ function sourceFile(value: unknown): UsenetSourceFile {
   return { name, size: size ?? Number.NaN }
 }
 
+/** A lookup-bounded GET on AnimeTosho's configured origin. */
+function lookupRequest(settings: ProviderSettings, path: string, accept: string): OriginRequest {
+  return { baseUrl: settings.baseUrl, path, accept, timeoutMs: LOOKUP_TIMEOUT_MS, signal: settings.signal }
+}
+
+/** A lookup or probe that never got a usable answer. */
+function lookupFailure(error: unknown, settings: ProviderSettings): RequestFailure {
+  return transportFailure(
+    error,
+    { timedOut: 'lookup timed out', cancelled: 'lookup cancelled', unreachable: 'provider lookup failed' },
+    settings.signal,
+  )
+}
+
+const failedFrom = (failure: RequestFailure): ProviderLookup => failedLookup(failure.code, failure.message)
+
 function usableFile(file: UsenetSourceFile): boolean {
   return file.name !== '' && Number.isSafeInteger(file.size) && file.size >= 0
 }
@@ -76,15 +90,12 @@ export async function lookupAnimeTosho(
 
   let response: Response
   try {
-    response = await providerRequest(
-      settings,
-      `/json?show=torrent&hash=${requested}`,
-      'application/json',
-      LOOKUP_TIMEOUT_MS,
+    response = await originRequest(
+      lookupRequest(settings, `/json?show=torrent&hash=${requested}`, 'application/json'),
       fetchImpl,
     )
   } catch (error) {
-    return failedFrom(error, settings, 'lookup')
+    return failedFrom(lookupFailure(error, settings))
   }
 
   if (response.status === 404) return { kind: 'no_match' }
@@ -95,8 +106,7 @@ export async function lookupAnimeTosho(
   try {
     bytes = await readResponseCapped(response, ANIMETOSHO_LOOKUP_MAX_BYTES)
   } catch (error) {
-    if (error instanceof ResponseTooLargeError) return failedLookup('invalid_response', safeText(error.message))
-    return failedFrom(error, settings, 'lookup')
+    return failedFrom(lookupFailure(error, settings))
   }
 
   let entry: Record<string, unknown>
@@ -167,9 +177,9 @@ export async function testAnimeTosho(
 ): Promise<void> {
   let response: Response
   try {
-    response = await providerRequest(settings, '/api?t=caps', 'application/xml', LOOKUP_TIMEOUT_MS, fetchImpl)
+    response = await originRequest(lookupRequest(settings, '/api?t=caps', 'application/xml'), fetchImpl)
   } catch (error) {
-    throw new Error(classifyFailure(error, settings, 'lookup').message)
+    throw new Error(lookupFailure(error, settings).message)
   }
   const status = httpStatusFailure(response, 'AnimeTosho')
   if (status) throw new Error(status.message)
@@ -178,17 +188,14 @@ export async function testAnimeTosho(
   try {
     bytes = await readResponseCapped(response, LOOKUP_MAX_BYTES)
   } catch (error) {
-    if (error instanceof ResponseTooLargeError) throw new Error(safeText(error.message))
-    throw new Error(classifyFailure(error, settings, 'lookup').message)
+    throw new Error(lookupFailure(error, settings).message)
   }
   let document: unknown
   try {
-    document = parseProviderXml(decodeText(bytes))
+    document = parseNewznabXml(decodeText(bytes))
   } catch (error) {
     throw new Error(
-      error instanceof ProviderProtocolError
-        ? safeText(error.message)
-        : 'AnimeTosho capabilities response could not be read',
+      error instanceof NewznabXmlError ? safeText(error.message) : 'AnimeTosho capabilities response could not be read',
     )
   }
   if (!isRecord(document) || !isRecord(document.caps)) {

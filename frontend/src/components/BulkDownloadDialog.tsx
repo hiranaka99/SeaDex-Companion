@@ -10,6 +10,7 @@ import { bulkDialog } from './bulk-dialog-styles'
 import { releaseIdentity } from '../../../shared/releases'
 import { jobResult, type SubmissionRow, type DownloadJobStatus, type DownloadProtocol } from '../api'
 import BulkPlanSummary from './BulkPlanSummary'
+import { jobProgress } from '../bulk-operation'
 import { OutcomeLabel, ReleaseSummary, UsenetStatus } from './BulkReviewParts'
 import {
   buildReview,
@@ -224,13 +225,7 @@ export default function BulkDownloadDialog({
         ?.protocols || []
     )
   }
-  const inflightProgress =
-    job && !job.finished
-      ? {
-          settled: job.added.length + job.existing.length + job.failures.length,
-          total: job.added.length + job.existing.length + job.failures.length + job.pending.length,
-        }
-      : null
+  const inflightProgress = job && !job.finished ? jobProgress(job) : null
   const needsWhole = currentPreflight?.requires_whole_ack === true
   const needsSpace = currentPreflight?.requires_space_ack === true
   const newUnits = (currentPreflight?.new_torrents || 0) + (currentPreflight?.new_nzbs || 0)

@@ -8,13 +8,12 @@ import type { ResultItem, GroupedCard } from './types'
 import { toDownloadEntry, clientName, importUnsettled, type DownloadEntry } from './download-entry'
 import type { UsenetAvailabilityResult } from './api'
 import { availabilityKey, observeUsenetAvailability, type AvailabilitySnapshot } from './usenet-observation'
+import type { Notify } from './release-actions'
 
 export interface DetailsDownloadState {
   transfers: DownloadEntry[]
 }
 export const IDLE_DOWNLOAD: DetailsDownloadState = { transfers: [] }
-
-type Notify = (message: string, tone: 'success' | 'error' | 'info') => void
 
 /** The card's owned downloads by season and release, and the pause, resume and remove controls for them. */
 export function useCardDownloads(group: GroupedCard, notify: Notify) {

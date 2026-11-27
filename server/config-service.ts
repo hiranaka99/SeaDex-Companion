@@ -47,8 +47,8 @@ export function saveSettings(data: JsonObject): Config {
   saveConfig(config)
   invalidateQbSnapshots()
   bumpGeneration()
-  invalidatePlans()
   usenetRuntime().configChanged(previous, config)
+  invalidatePlans()
   refreshAutocheckSchedule(config)
   log('INFO', `Configuration saved (${describeSave(config, data)})`)
   return config
