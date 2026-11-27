@@ -2,11 +2,14 @@ import type {
   AllDownloadProgress,
   CancelableDownload,
   DownloadCancelResult,
+  DownloadClient,
   DownloadJobStatus,
   DownloadPreflight,
+  DownloadProtocol,
   DownloadReceipt,
   DownloadSelection,
   DownloadSubmission,
+  DownloadUnitFailure,
 } from '../../shared/download-contracts.js'
 
 export { jobResult } from '../../shared/download-contracts.js'
@@ -79,7 +82,7 @@ async function api<T = unknown>(path: string, opts: RequestInit = {}, timeoutMs:
 }
 
 /** HTTP failure whose JSON body may carry structured fields (e.g. acceptance_unknown). */
-export class SubmissionError extends Error {
+class SubmissionError extends Error {
   readonly status: number
   readonly detail: Record<string, unknown> | null
   constructor(message: string, detail: Record<string, unknown> | null, status = 500) {
@@ -400,17 +403,52 @@ function rememberAvailabilityConfig(config: Config, credentialsChanged = false) 
   if (changed || credentialsChanged) invalidateUsenetAvailability()
 }
 
-/** One-shot submission of a reviewed plan. Awaits the full client mutation. */
-export const submitDownload = (plan_id: string, acknowledge?: DownloadAcknowledge) =>
-  api<DownloadReceipt>(
-    '/api/download',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ plan_id, acknowledge }),
-    },
-    120_000,
-  )
+/**
+ * How a single send ended: the client took the release, refused it with a reason, or was asked but never confirmed
+ * (`acceptance_unknown`), in which case that client must be checked before the release is sent again.
+ */
+export type SendOutcome =
+  | { kind: 'sent'; client: DownloadClient }
+  | { kind: 'rejected'; reason: string }
+  | { kind: 'acceptance_unknown'; client: DownloadClient; reason?: string }
+
+/** Whether a receipt, or the body of a refused send, says the client was asked but did not confirm. */
+const acceptanceUnknown = (body: Partial<DownloadReceipt> | Record<string, unknown>) =>
+  body.acceptance_unknown === true ||
+  (Array.isArray(body.failures) &&
+    body.failures.some(failure => (failure as Partial<DownloadUnitFailure> | null)?.code === 'acceptance_unknown'))
+
+/** One-shot send of a reviewed single-release plan. Awaits the full client mutation. */
+export async function sendDownload(
+  plan_id: string,
+  protocol: DownloadProtocol,
+  acknowledge?: DownloadAcknowledge,
+): Promise<SendOutcome> {
+  let receipt: DownloadReceipt
+  try {
+    receipt = await api<DownloadReceipt>(
+      '/api/download',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan_id, acknowledge }),
+      },
+      120_000,
+    )
+  } catch (error) {
+    if (!(error instanceof SubmissionError)) throw error
+    if (!error.detail || !acceptanceUnknown(error.detail)) return { kind: 'rejected', reason: error.message }
+    const named = error.detail.client
+    const client = named === 'sabnzbd' || named === 'qbittorrent' ? named : protocolClient(protocol)
+    return { kind: 'acceptance_unknown', client, reason: error.message }
+  }
+  if (acceptanceUnknown(receipt)) return { kind: 'acceptance_unknown', client: receipt.client }
+  if (!receipt.ok) return { kind: 'rejected', reason: receipt.error || 'The download client rejected the submission' }
+  return { kind: 'sent', client: receipt.client }
+}
+
+const protocolClient = (protocol: DownloadProtocol): DownloadClient =>
+  protocol === 'usenet' ? 'sabnzbd' : 'qbittorrent'
 
 /** Background submission of a reviewed plan. */
 export const startDownloadJob = (plan_id: string, acknowledge?: DownloadAcknowledge) =>
