@@ -45,7 +45,7 @@ docker run -d \
 
 Open [http://localhost:8080](http://localhost:8080), create the administrator account, then configure your services under **Configuration**.
 
-Keep the `seadex-data` volume: it stores your settings, account, integration credentials, matching corrections, scan history, and cached Usenet availability. Both installation examples limit access to the host computer. See [Security](#security) before setting up access from other devices.
+Keep the `seadex-data` volume: it stores your settings, account, integration credentials, matching corrections, scan history, cached Usenet availability, and Prowlarr search results with the NZBs SeaDex Companion checked (`usenet_search.json` and the `nzb_store/` folder). Both installation examples limit access to the host computer. See [Security](#security) before setting up access from other devices.
 
 ### Docker Compose
 
@@ -132,7 +132,7 @@ If your files are changed after import, for example remuxed or stripped of track
 
 SeaDex often lists more than one best release for a season, such as a remux and a smaller encode. Under **Configuration → Release preferences** you choose which one SeaDex Companion targets:
 
-- **Trackers**: **Include private trackers** (the default) lists releases from every tracker SeaDex indexes. Releases on private trackers, such as AnimeBytes, have no public torrent, so you download them from the tracker yourself, or let SeaDex Companion find them through [Prowlarr](#private-tracker-releases-through-prowlarr). Choose **Public trackers only** to leave out every release that has no public torrent. Those releases then do not appear in results, release details, bulk downloads, or notifications, and the best release available on a public tracker becomes the target. A season SeaDex lists only on private trackers shows **No public release**.
+- **Trackers**: **Include private trackers** (the default) lists releases from every tracker SeaDex indexes. Releases on private trackers, such as AnimeBytes, have no public torrent, so you download them from the tracker yourself, or let SeaDex Companion find them through [Prowlarr](#private-tracker-releases-through-prowlarr). Choose **Public trackers only** to leave out every release that has no public torrent. Those releases then do not appear in results, release details, bulk downloads, or notifications, and the best release available on a public tracker becomes the target. A season SeaDex lists only on private trackers shows **No public release**. **Include private trackers Prowlarr can reach** also lists every release, but a target on a private tracker Prowlarr has no torrent indexer for gives way to the best release you can download: a public one, or one on a tracker Prowlarr covers. The other release stays listed with the reason it is not the target, and bulk download skips it. Where SeaDex lists nothing else you can download, it stays the target. Each scan asks Prowlarr which trackers it covers; if Prowlarr cannot be reached, the scan uses the trackers of the previous scan. Without Prowlarr set up, no private tracker counts as reachable.
 - **Download target**: the largest release (the default) or the smallest.
 - **Prefer dual audio**: whenever a dual-audio release is listed for a season, it becomes the target.
 - **Size limit per episode**: releases above this average episode size are never offered. Movies are not limited.
@@ -172,6 +172,7 @@ A finished download is only an upgrade once Sonarr or Radarr has imported it. Fo
 - **Imported by Sonarr** once a rescan of that title finds the new release in your library. The title is rescanned on its own, so the card updates without a full library scan.
 - **Sonarr has not imported this download**, with Sonarr's own reason, when its queue reports a problem such as a file that is not an upgrade under your quality profile or a name it cannot parse.
 - **Not imported** when the download left the queue and the library files did not change. Check that the instance watches the download category and can reach the download folder.
+- **Not the release SeaDex lists** when a Usenet download found through Prowlarr without an exact match brought files of the right group whose sizes differ from the listed release. See [Private-tracker releases through Prowlarr](#private-tracker-releases-through-prowlarr).
 
 SeaDex Companion only reads the queue; it never imports, retries, or removes anything in Sonarr or Radarr. Resolve the problem there, and the status updates on the next check. With several instances, the name shown is the instance the title belongs to.
 
@@ -192,22 +193,39 @@ If the connection to SABnzbd or qBittorrent drops before it confirms a download,
 
 ### Private-tracker releases through Prowlarr
 
-SeaDex does not publish a magnet for releases on private trackers such as AnimeBytes, but it does list each release's files and their exact sizes. If you use [Prowlarr](https://prowlarr.com), SeaDex Companion can search the indexers you set up there and send a private-tracker release to qBittorrent or SABnzbd. It only sends a torrent or NZB whose files match the files SeaDex lists, byte for byte.
+SeaDex does not publish a magnet for releases on private trackers such as AnimeBytes, but it does list each release's files and their exact sizes. If you use [Prowlarr](https://prowlarr.com), SeaDex Companion can search the indexers you set up there and send a private-tracker release to qBittorrent or SABnzbd. A torrent is only sent when its files match the files SeaDex lists, byte for byte. An NZB is compared with the same list, as described under **Usenet** below.
 
 To set it up:
 
-1. Under **Configuration → Release preferences**, keep **Include private trackers** (the default) selected. Prowlarr is never used with **Public trackers only**.
+1. Under **Configuration → Release preferences**, keep **Include private trackers** (the default) or choose **Include private trackers Prowlarr can reach**. Prowlarr is never used for private-tracker releases with **Public trackers only**.
 2. Under **Configuration → Downloads → Private-tracker releases**, turn on **Find private-tracker releases through Prowlarr**. Enter Prowlarr's URL, including any URL base such as `/prowlarr`, and the API key from **Prowlarr → Settings → General**. Then run **Test connection**; it reports how many Usenet and private torrent indexers Prowlarr offers.
 3. In Prowlarr, add the private tracker (for example AnimeBytes) for torrents, or your Usenet indexers for NZBs.
 4. Run a new library scan. Results saved by earlier versions do not include the file lists needed to check a private-tracker release.
 
 **Torrents:** when Prowlarr has an indexer for the release's tracker, a private-tracker release in release details offers **Download release**. Without one, the release stays **Manual download only**, with a link to the tracker. SeaDex Companion asks Prowlarr which trackers it covers when the library opens. SeaDex Companion searches the tracker through Prowlarr, opens at most three likely torrents, and sends the one that holds exactly the listed files to qBittorrent. qBittorrent receives the torrent file from your account, as if you had downloaded it from the tracker yourself. Bulk download offers them where a season has no public release. If no torrent matches, the release row explains why, for example that the tracker found no torrent of that size or that Prowlarr has no indexer for that tracker.
 
-**Usenet:** Usenet copies need at least one Usenet indexer in Prowlarr; without one, release details say so instead of offering a search. Usenet indexers are searched only when you ask, because every NZB SeaDex Companion opens to check its files counts toward the indexer's download limit. With **Usenet only** or **Let me choose per release** selected, select **Search Prowlarr** under the release in **Details**. A copy is offered directly only when the NZB names every episode file with its exact size. When Prowlarr finds NZBs that cannot be proven, for example because an episode was renamed or the post lists no file sizes, the release row lists them with a link to their page on the indexer and how many episode files match. If you have checked one and it is the right release, choose **Download this NZB** and confirm to send it to SABnzbd. Bulk download uses only releases you have already searched; others are listed as needing a search. Search results are kept while SeaDex Companion runs and are forgotten after a restart or when you change the Prowlarr settings. Use **Search again** to check a release again.
+**Usenet:** Usenet copies need at least one Usenet indexer in Prowlarr; without one, release details say so instead of offering a search. Searching an indexer costs nothing. Checking a result does: SeaDex Companion fetches its NZB to compare the files with the listed release, and the indexer counts every such check as a download. With **Usenet only** or **Let me choose per release** selected, select **Search Prowlarr** under the release in **Details**. It searches every Usenet indexer in Prowlarr and checks up to three results. When results were found but none checked yet, release details show **Possible copy on Usenet: N results, not checked yet** with **Check now**, which checks the best one. Search results and checks are kept across restarts, and are dropped when you change the Prowlarr URL or API key or the release leaves your library. **Search again** searches a release again and checks results that were not checked yet.
 
-The same search is available for releases on public trackers that AnimeTosho and AmeNZB do not carry, in either tracker mode. When release details say **Not found on AnimeTosho**, select **Search Prowlarr** to look on the Usenet indexers in Prowlarr. A copy is checked against the torrent's file list in the same way, and unproven ones are listed the same way. **Re-check** asks AnimeTosho and AmeNZB again; it never searches Prowlarr.
+Each checked result is labelled:
 
-Searches use the titles Sonarr searches with, plus AniList's: the library title, Sonarr's alternate titles for that season, and AniList's romaji and English titles. Up to four titles are used, cleaned the way Sonarr cleans them, so "Hero's" becomes "Heros". Every title is searched. Usenet searches add the release group to each title and look in the Anime and TV categories (Movies for Radarr). Private-tracker searches use the titles alone. Sonarr's alternate titles are read during scans, so run a scan to include them. If the indexers know the release under none of these names, it may not be found; you can still download it from the tracker yourself.
+- **Files match exactly**: the NZB names every episode file with its exact size. It is sent like any other Usenet source.
+- **Names and sizes match (near-exact)**: every file name is there and each size fits once the overhead of a Usenet post is allowed for, but the post does not state exact sizes. It is sent without asking, and release details and the review label it near-exact.
+- **File sizes match an obfuscated post**, **Only the total size could be compared (packed or obfuscated post)**, or **Sizes differ from the listed release**: never sent on its own. The release row lists these with a link to their page on the indexer. If you have checked one and it is the right release, choose **Download this NZB** and confirm to send it to SABnzbd.
+
+**Bulk download** searches and checks the releases you choose to download over Usenet that have no proven copy yet: one NZB per release, within the daily limit of each indexer. The review shows the checks in progress and how many checks each indexer has left today, and shows the plan once they are done. A release whose best result is not proven stays blocked and lists its results; the review does not check a second one. Use **Search again** in release details to try the next. A release beyond the daily limit is blocked with the time of the next check.
+
+If a download sent from an NZB that was not an exact match brings files of the right group with other sizes than the listed release, the download is reported as **Not the release SeaDex lists**, also through **Import problems** notifications, and that post is never offered for the release again. This needs **Check owned releases by file size** under **Release preferences**.
+
+The same search is available for releases on public trackers that AnimeTosho and AmeNZB do not carry, in either tracker mode. When release details say **Not found on AnimeTosho**, select **Search Prowlarr** to look on the Usenet indexers in Prowlarr. A copy is checked against the torrent's file list in the same way, and labelled the same way. **Re-check** asks AnimeTosho and AmeNZB again; it never searches Prowlarr.
+
+**Background search and limits:** under **Configuration → Downloads → Private-tracker releases**, **Search Usenet indexers in the background** is off by default. When you turn it on, SeaDex Companion searches Prowlarr's Usenet indexers after each scan and when it starts, for private-tracker releases and for public releases AnimeTosho and AmeNZB do not have, so results are ready when you download. It only searches and never fetches an NZB, so it never counts as a download on an indexer. It needs SABnzbd and a download method other than **Torrents only**. The setting shows about how many searches your library needs and what the latest background search found. Two limits apply to each indexer over any 24 hours:
+
+- **Daily searches per indexer** (default 100) counts background searches only; searches you start are not counted.
+- **Daily NZB checks per indexer** (default 20) counts every NZB SeaDex Companion fetches through Prowlarr, including checks you start.
+
+0 means no limit from SeaDex Companion. Prowlarr's own query and download limits still apply, and background searches never use more than half of a query limit you set on the indexer in Prowlarr. A changed limit applies to the next search or check.
+
+Searches use the titles Sonarr searches with, plus AniList's: the library title, Sonarr's alternate titles for that season, and AniList's romaji and English titles, cleaned the way Sonarr cleans them, so "Hero's" becomes "Heros". Private-tracker searches use up to four of these titles alone. Usenet searches combine the release group with these titles, starting with the title the release's own file names use, and also search that title alone within the release's size. Each indexer gets at most four searches per release, and searching stops once a result of the right size turns up. Sonarr's alternate titles are read during scans, so run a scan to include them. If the indexers know the release under none of these names, it may not be found; you can still download it from the tracker yourself.
 
 ## Automatic scans and notifications
 
@@ -267,7 +285,7 @@ Reviewed changes stay reviewed across reloads and devices. A first scan or newly
 
 ## Updating and backups
 
-Back up the complete `seadex-data` volume before upgrading or moving to another host. Keep the encryption key and the rest of the data together so your saved integration credentials remain usable. Keep a pre-upgrade backup if you may need to return to an older version.
+Back up the complete `seadex-data` volume before upgrading or moving to another host. Keep the encryption key and the rest of the data together so your saved integration credentials remain usable. The backup includes `usenet_search.json` and `nzb_store/`, which keep Prowlarr search results and checked NZBs so they are not fetched again; without them, releases are searched and checked again, and the checks count as downloads on your indexers. Keep a pre-upgrade backup if you may need to return to an older version.
 
 ### Update from the app
 
@@ -311,7 +329,7 @@ For remote access, prefer a private VPN. If you use a reverse proxy, require HTT
 - Do not grant untrusted users administrator access; configured integration URLs can reach private services on the application's network.
 - SeaDex Companion changes Sonarr and Radarr only when you enable status tags, and then only those tags. Everything else it does there is read-only.
 - In-app updates are installed only when an administrator selects **Install and restart**. They come from the project's GitHub releases over HTTPS and are checked against the release's checksum before anything is replaced.
-- Back up the persistent `seadex-data` volume before upgrades or host migration.
+- Back up the persistent `seadex-data` volume before upgrades or host migration, and keep the volume and its backups private. Besides credentials, `usenet_search.json` and `nzb_store/` hold download references for your Usenet indexers and the NZBs fetched from them.
 
 ## Support and license
 

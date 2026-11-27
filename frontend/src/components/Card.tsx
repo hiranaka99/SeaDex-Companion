@@ -792,7 +792,8 @@ function Card({
                           setProtocols(current => ({ ...current, [protocolKey(season.key, index)]: protocol }))
                         }
                         onRefreshAvailability={() => void loadAvailability(season, true)}
-                        onSearchProwlarr={release => void loadAvailability(season, false, release)}
+                        onSearchProwlarr={release => void loadAvailability(season, false, { search: release })}
+                        onCheckProwlarr={release => void loadAvailability(season, false, { verify: release })}
                         onOpened={() => void loadAvailability(season)}
                         onDownload={(release, sendAnyway, chosenNzb) => {
                           // "Send anyway" repeats the send that was held, including an NZB the user chose.

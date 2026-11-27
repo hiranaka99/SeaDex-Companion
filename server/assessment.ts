@@ -32,6 +32,7 @@ import {
   DEFAULT_TRACKER_MODE,
   PREFERENCE_BLOCKED_REASON,
   PRIVATE_ONLY_REASON,
+  unreachableTrackerReason,
 } from '../shared/settings.js'
 
 export interface ResolvedSeasonChain {
@@ -169,6 +170,12 @@ export interface AssessmentSettings {
   verify: boolean
   /** In public mode, releases without a public torrent are treated as unlisted. */
   trackers: TrackerMode
+  /**
+   * Reachable mode only: the private trackers Prowlarr has a torrent indexer for, as SeaDex names them.
+   * A target on any other private tracker gives way to the best release of its season or cour that can be
+   * fetched. The scan reads them once; `assessSeason` itself asks nobody.
+   */
+  coveredTrackers?: readonly string[]
 }
 
 export const DEFAULT_ASSESSMENT: AssessmentSettings = {
@@ -179,6 +186,11 @@ export const DEFAULT_ASSESSMENT: AssessmentSettings = {
 export { PREFERENCE_BLOCKED_REASON, PRIVATE_ONLY_REASON }
 
 const groupKey = (group: string) => group.trim().toLowerCase()
+// A listing can lack its tracker name; such a release is on no tracker Prowlarr covers.
+const trackerKey = (tracker: string) =>
+  String(tracker || '')
+    .trim()
+    .toLowerCase()
 
 /** Everything one season's recommendation is computed from. */
 export interface SeasonAssessment {
@@ -306,6 +318,12 @@ export function assessSeason({
   const unavailableParts: { label: string; reason: string }[] = []
   const outcomes: ('missing' | 'uncovered' | 'resolved')[] = []
   const partName = (label: string | null) => label || (season ? seasonTag(season) : 'Movie')
+  // Reachable mode: a private-tracker release can only be fetched where Prowlarr has an indexer for its tracker.
+  const coveredTrackers = new Set((settings.coveredTrackers || []).map(trackerKey))
+  const unreachable = (release: ReleaseCandidate) =>
+    settings.trackers === 'reachable' && !isDownloadable(release) && !coveredTrackers.has(trackerKey(release.tracker))
+  /** The private-tracker release each part's target replaced because Prowlarr cannot reach its tracker. */
+  const displaced = new Map<ResolvedPart, ReleaseCandidate>()
   let episodeOffset = seasonEpisodeOffset
   for (const [partIndex, part] of parts.entries()) {
     const currentEpisodeOffset = episodeOffset
@@ -358,6 +376,28 @@ export function assessSeason({
     const blocked = !selected && eligibleCandidates.length > 0
     if (blocked) [selected, alternatives] = pickBest(eligibleCandidates, part.episodeCount)
     if (publicCandidates.length) alternatives = [...alternatives, ...ownedPrivate.map(noteExclusion)]
+    // Reachable mode: a target Prowlarr cannot fetch gives way to the pick among the releases that can be fetched,
+    // public ones and those on a covered tracker: a best-flagged one, or an alternative when none is flagged.
+    // Where SeaDex lists nothing else that can be fetched, the target stays.
+    let replaced: ReleaseCandidate | undefined
+    if (selected && !blocked && unreachable(selected)) {
+      const chosen = selected
+      const [replacement] = pickBest(
+        eligibleCandidates.filter(candidate => !unreachable(candidate)),
+        part.episodeCount,
+        preferences,
+      )
+      if (replacement) {
+        // The same release on a covered tracker is listed as one release with the chosen one. Any other pick
+        // leaves the chosen release listed, where it says why it is not the target.
+        if (!sameRelease(replacement, chosen, true))
+          replaced = { ...chosen, excluded_by: unreachableTrackerReason(chosen.tracker) }
+        selected = replacement
+        alternatives = eligibleCandidates
+          .filter(candidate => candidate !== replacement)
+          .map(candidate => (candidate === chosen ? replaced || chosen : candidate))
+      }
+    }
     if (!selected) {
       outcomes.push('uncovered')
       unavailableParts.push({
@@ -382,6 +422,8 @@ export function assessSeason({
       ...(blocked ? { blocked } : {}),
       ...(part.episodeNumbers ? { episodeNumbers: part.episodeNumbers } : {}),
     })
+    const resolvedPart = resolved[resolved.length - 1]
+    if (replaced) displaced.set(resolvedPart, resolvedPart.alts[alternatives.indexOf(replaced)])
   }
   common.urls = sources
   common.anilist_ids = parts.map(part => part.id)
@@ -435,16 +477,25 @@ export function assessSeason({
   if (Object.keys(mismatchedByPart).length) common.mismatched_by_part = mismatchedByPart
 
   // SeaDex marks its picks as best; an unmarked listing treats the chosen release as its best.
+  // A release that gave way in reachable mode was that choice, so it keeps the kind it has in private mode.
   const isBestKind = (part: ResolvedPart, release: ReleaseCandidate) =>
     release.is_best ||
     (!candidatesOf(part).some(candidate => candidate.is_best) &&
-      groupKey(release.releaseGroup) === groupKey(part.best.releaseGroup))
+      [part.best, displaced.get(part)].some(
+        chosen => chosen && groupKey(release.releaseGroup) === groupKey(chosen.releaseGroup),
+      ))
+  // The pick that replaced an unreachable release is what the part is judged against, whatever its kind.
+  const replacesUnreachable = (part: ResolvedPart, release: ReleaseCandidate) =>
+    displaced.has(part) && sameRelease(release, part.best, true)
   const settlingGroups = (part: ResolvedPart): Set<string> =>
     preferences.strict && !part.blocked
       ? new Set([groupKey(part.best.releaseGroup)])
       : new Set(
           candidatesOf(part)
-            .filter(release => isBestKind(part, release) || preferences.accept_alternatives)
+            .filter(
+              release =>
+                isBestKind(part, release) || preferences.accept_alternatives || replacesUnreachable(part, release),
+            )
             .map(release => groupKey(release.releaseGroup)),
         )
   // A group can list several releases, so a release settles its part by itself, not by its group name.
@@ -452,6 +503,7 @@ export function assessSeason({
     preferences.strict && !part.blocked
       ? sameRelease(release, part.best, true)
       : preferences.accept_alternatives ||
+        replacesUnreachable(part, release) ||
         candidatesOf(part).some(listing => isBestKind(part, listing) && sameRelease(listing, release, true))
   const settled = resolved.map(
     (part, index) =>
@@ -473,8 +525,10 @@ export function assessSeason({
       const satisfies = releaseSettles(part, release)
       return releaseDict(kind, release, part.label, part.source.url, {
         // A private-tracker release is never a public-tracker mode target, even when it is all the library holds.
+        // Nor is the release Prowlarr cannot reach, whose place another release took.
         target:
           !part.blocked &&
+          release !== displaced.get(part) &&
           sameRelease(release, part.best, true) &&
           (settings.trackers !== 'public' || isDownloadable(release)),
         // Stored only where it departs from the kind, which is what older results imply.

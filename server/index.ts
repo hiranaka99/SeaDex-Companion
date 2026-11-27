@@ -24,6 +24,7 @@ import { APP_VERSION, reportUpdateState } from './updates.js'
 import { serveStatic, warmStaticCompression } from './static-files.js'
 import { flushUsenetCache, invalidateUsenetLookups } from './usenet.js'
 import { enableUsenetPrefetch, prefetchUsenetAvailability, stopUsenetPrefetch } from './usenet-prefetch.js'
+import { flushUsenetSearch, invalidateUsenetSearch } from './usenet-search.js'
 import { errorMessage } from '../shared/errors.js'
 
 const routes: Route[] = [...scanRoutes, ...authRoutes, ...configRoutes, ...libraryRoutes, ...downloadRoutes]
@@ -58,6 +59,8 @@ export function makeServer() {
   migrateConfig()
   const config = loadConfig()
   invalidateUsenetLookups(config)
+  // Search results stored for another Prowlarr connection are dropped as the store is read.
+  invalidateUsenetSearch(config)
   try {
     migrateOwnedDownloads(qbEndpointId(config))
   } catch (error) {
@@ -116,7 +119,8 @@ function main(): void {
         log('ERROR', `AniList cache could not be saved: ${errorMessage(error)}`)
       }
       const cacheSaved = flushUsenetCache()
-      process.exit(restart ? RESTART_EXIT_CODE : error || !cacheSaved ? 1 : 0)
+      const searchSaved = flushUsenetSearch()
+      process.exit(restart ? RESTART_EXIT_CODE : error || !cacheSaved || !searchSaved ? 1 : 0)
     })
   }
   if (process.env[LAUNCHER_ENV] === '1') onRestartRequest(() => shutdown('restart', true))

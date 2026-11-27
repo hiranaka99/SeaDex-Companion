@@ -5,17 +5,17 @@ import { estimateDownloads } from '../../shared/download-estimate.js'
 import { DEFAULT_TRACKER_MODE } from '../../shared/settings.js'
 import type { CardStatus, Config, GroupedCard, Release, ResultItem } from './types.js'
 
-const USENET_PROVIDER_NAMES = { animetosho: 'AnimeTosho', amenzb: 'AmeNZB' } as const
-
-/** Short explanation for a background Usenet sweep that is waiting on a paused provider. */
+/** Short explanation for a background Usenet sweep that is waiting on paused providers or Prowlarr indexers. */
 export function usenetPauseText(
-  paused:
-    { provider: keyof typeof USENET_PROVIDER_NAMES; resume_in_seconds: number; rate_limited: boolean }[] | undefined,
+  paused: { provider: { label: string }; resume_in_seconds: number; rate_limited: boolean }[] | undefined,
 ): string | null {
   if (!paused?.length) return null
   const longest = Math.max(...paused.map(pause => pause.resume_in_seconds))
   const wait = longest < 90 ? `${longest}s` : `${Math.ceil(longest / 60)} min`
-  const names = paused.map(pause => USENET_PROVIDER_NAMES[pause.provider]).join(' and ')
+  const labels = paused.map(pause => pause.provider.label)
+  // Any number of indexers can be paused at once; the sidebar has room for a few names.
+  const shown = labels.length > 3 ? [...labels.slice(0, 2), `${labels.length - 2} more`] : labels
+  const names = [shown.slice(0, -1).join(', '), shown[shown.length - 1]].filter(Boolean).join(' and ')
   const cause = paused.every(pause => pause.rate_limited) ? 'rate limiting' : 'not responding'
   return `${names} ${paused.length > 1 ? 'are' : 'is'} ${cause}. Resuming in about ${wait}.`
 }
@@ -72,11 +72,14 @@ export const PROVIDER_LABEL: Record<string, string> = {
   prowlarr: 'Prowlarr',
 }
 
-/** Prowlarr is set up and Release preferences include private trackers, so private-tracker releases can be found. */
+/**
+ * Prowlarr is set up and Release preferences include private trackers, so private-tracker releases can be found.
+ * Only public-tracker mode leaves them out; the other two modes both search for them.
+ */
 export function prowlarrReady(config: Config | null | undefined): boolean {
   return Boolean(
     config &&
-    (config.tracker_mode || DEFAULT_TRACKER_MODE) === 'private' &&
+    (config.tracker_mode || DEFAULT_TRACKER_MODE) !== 'public' &&
     config.prowlarr_enabled &&
     config.prowlarr_url &&
     config.prowlarr_key_configured,

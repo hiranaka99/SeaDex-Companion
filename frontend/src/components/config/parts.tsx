@@ -6,6 +6,7 @@ import Icon from '../Icons'
 import BrandLogo, { BrandName } from '../BrandLogo'
 import { useToast } from '../Toast'
 import { buttonBase, control, cx } from '../../styles'
+import { limitValue } from '../../usenet-review'
 
 export type StringField =
   | 'sonarr_url'
@@ -172,6 +173,52 @@ export function InputField({
           {hint}
         </span>
       ) : null}
+    </div>
+  )
+}
+
+/** A whole-number limit from 0 to `max`, where 0 means no limit. An emptied field counts as 0. */
+export function LimitField({
+  label,
+  value,
+  max,
+  onChange,
+  name,
+  hint,
+}: {
+  label: string
+  value: number
+  max: number
+  onChange: (value: number) => void
+  name?: string
+  hint?: string
+}) {
+  const fieldId = useId()
+  const hintId = fieldId + '-hint'
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={fieldId} className="text-xs font-semibold text-ink">
+        {label}
+      </label>
+      <input
+        id={fieldId}
+        aria-describedby={hint ? hintId : undefined}
+        className={cx(control, 'no-spinner w-full bg-canvas-soft tabular-nums')}
+        type="number"
+        inputMode="numeric"
+        name={name}
+        min="0"
+        max={max}
+        step="1"
+        placeholder="0"
+        value={value}
+        onChange={event => onChange(limitValue(event.target.value, max))}
+      />
+      {hint && (
+        <span id={hintId} className="text-xs text-muted-dim">
+          {hint}
+        </span>
+      )}
     </div>
   )
 }

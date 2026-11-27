@@ -11,9 +11,17 @@ import { releaseIdentity } from '../../../shared/releases'
 import { jobResult, type SubmissionRow, type DownloadJobStatus, type DownloadMode, type DownloadProtocol } from '../api'
 import BulkPlanSummary from './BulkPlanSummary'
 import { OutcomeLabel, ReleaseSummary, UsenetStatus } from './BulkReviewParts'
-import { buildReview, byTitleSeasonPart, hiddenKey, type IndexedRelease, type ReviewGroup } from '../bulk-review'
-import { availabilityKey } from '../usenet-observation'
-import { usePreflight, useReviewAvailability } from '../useBulkReviewChecks'
+import {
+  buildReview,
+  byTitleSeasonPart,
+  hiddenKey,
+  optionAvailabilityKey,
+  usenetEligibility,
+  type IndexedRelease,
+  type ReviewGroup,
+} from '../bulk-review'
+import { usePreflight, useReviewAvailability, useReviewChecks } from '../useBulkReviewChecks'
+import { awaitsCheck, checkBlockedReason, plannedProof, usageText, verifyProgressText } from '../usenet-review'
 
 type ViewId = 'ready' | 'unavailable'
 
@@ -94,24 +102,19 @@ export default function BulkDownloadDialog({
   )
   const availabilityRevision = useSyncExternalStore(api.subscribeUsenetAvailability, api.getUsenetAvailabilityRevision)
   const [retry, setRetry] = useState(0)
-  const {
-    availability: currentAvailability,
-    checking: usenetChecking,
-    forceRefresh: forceAvailability,
-  } = useReviewAvailability(usenetSelections, {
+  const observation = useReviewAvailability(usenetSelections, {
     open,
     enabled: usenetEnabled,
     paused: Boolean(job),
     revision: availabilityRevision,
     retry,
   })
+  const { availability: currentAvailability, checking: usenetChecking, forceRefresh: forceAvailability } = observation
+  const availabilityOf = (result: ResultItem, option: IndexedRelease) =>
+    currentAvailability?.rows[optionAvailabilityKey(result, option)]
+  // A release counts for Usenet with a proven copy, or while a search through Prowlarr can still look for one.
   const usenetEligible = useMemo(
-    () => (result: ResultItem, option: IndexedRelease) =>
-      usenetEnabled &&
-      currentAvailability?.sabnzbdConfigured === true &&
-      currentAvailability.rows[
-        availabilityKey({ key: result.key, release: option.index, identity: releaseIdentity(option.release) })
-      ]?.aggregate === 'available',
+    () => usenetEligibility(currentAvailability, usenetEnabled),
     [usenetEnabled, currentAvailability],
   )
   const review = useMemo(
@@ -162,6 +165,13 @@ export default function BulkDownloadDialog({
       }),
     [selectedGroups, selectedOptions, protocols, downloadMode, usenetEligible],
   )
+  // Rows chosen for Usenet without a proven copy are searched and checked now, one NZB per source.
+  const usenetRows = useMemo(() => selections.filter(selection => selection.protocol === 'usenet'), [selections])
+  const {
+    checks: usenetChecks,
+    asked: checksAsked,
+    usage: indexerUsage,
+  } = useReviewChecks(observation, usenetRows, open && usenetEnabled && !job)
   const {
     preflight: currentPreflight,
     error: checkError,
@@ -170,7 +180,7 @@ export default function BulkDownloadDialog({
     setWholeSource,
     setDiskSpace,
     forceRefresh: forcePreflight,
-  } = usePreflight(selections, { open, busy, job, revision: availabilityRevision, retry })
+  } = usePreflight(selections, { open, busy, job, revision: availabilityRevision, retry, hold: usenetChecks > 0 })
 
   useEffect(() => {
     if (!open || busy || job) return
@@ -350,7 +360,7 @@ export default function BulkDownloadDialog({
                     locked ||
                     !review.ready.some(group => group.options.some(option => usenetEligible(group.result, option)))
                   }
-                  title="Use SABnzbd wherever the release is available on Usenet"
+                  title="Use SABnzbd wherever the release is on Usenet, or can be searched and checked there"
                   onClick={() =>
                     setProtocols(
                       Object.fromEntries(
@@ -368,11 +378,19 @@ export default function BulkDownloadDialog({
               </div>
             )}
           </div>
-          {usenetChecking && (
+          {usenetChecking && usenetChecks === 0 && (
             <p className="m-0 text-xs text-muted" role="status">
               Refreshing Usenet availability. Known cached sources remain available; unchecked sources are still
               checking.
             </p>
+          )}
+          {usenetChecks > 0 && (
+            <p className="m-0 text-xs text-muted" role="status">
+              {verifyProgressText(usenetChecks)}
+            </p>
+          )}
+          {(usenetChecks > 0 || checksAsked) && usageText(indexerUsage) && (
+            <p className="m-0 text-xs text-muted wrap-anywhere">{usageText(indexerUsage)}</p>
           )}
           {currentAvailability?.error && (
             <p className="m-0 text-xs text-warn wrap-anywhere" role="status">
@@ -470,9 +488,11 @@ export default function BulkDownloadDialog({
                               aria-checked={protocolFor(group, option) === 'usenet'}
                               disabled={locked || !usenetEligible(group.result, option)}
                               title={
-                                usenetEligible(group.result, option)
-                                  ? 'Send to SABnzbd (whole Usenet source)'
-                                  : 'The selected Usenet source is unavailable. Choose Torrent or exclude this release.'
+                                !usenetEligible(group.result, option)
+                                  ? 'The selected Usenet source is unavailable. Choose Torrent or exclude this release.'
+                                  : awaitsCheck(availabilityOf(group.result, option))
+                                    ? 'Search and check Usenet for this release, and send it to SABnzbd when a copy is found'
+                                    : 'Send to SABnzbd (whole Usenet source)'
                               }
                               onClick={() => setProtocols(current => ({ ...current, [group.id]: 'usenet' }))}
                               className={cx(
@@ -500,6 +520,10 @@ export default function BulkDownloadDialog({
                       const isServerBlocked = serverBlockedIds.has(
                         rowKey({ key: group.result.key, release: option.index }),
                       )
+                      const blockReason = serverBlocked.find(
+                        row => row.key === group.result.key && row.release === option.index,
+                      )?.reason
+                      const availability = availabilityOf(group.result, option)
                       return (
                         <label
                           key={group.id}
@@ -565,25 +589,14 @@ export default function BulkDownloadDialog({
                           </span>
                           {usenetEnabled && (
                             <UsenetStatus
-                              row={
-                                currentAvailability?.rows[
-                                  availabilityKey({
-                                    key: group.result.key,
-                                    release: option.index,
-                                    identity: releaseIdentity(release),
-                                  })
-                                ]
-                              }
+                              row={availability}
                               loading={Boolean(currentAvailability?.loading)}
+                              planned={plannedProof(currentPreflight, { key: group.result.key, release: option.index })}
                             />
                           )}
-                          {isServerBlocked && !status && (
-                            <span className="basis-full text-xs font-semibold text-warn">
-                              {
-                                serverBlocked.find(row => row.key === group.result.key && row.release === option.index)
-                                  ?.reason
-                              }
-                            </span>
+                          {/* A check the daily limit held back already says so in the availability line above. */}
+                          {isServerBlocked && !status && blockReason !== checkBlockedReason(availability) && (
+                            <span className="basis-full text-xs font-semibold text-warn">{blockReason}</span>
                           )}
                           {!status && unavailableChoices.some(choice => choice.id === group.id) && (
                             <span className="basis-full text-xs font-semibold text-warn">
@@ -677,16 +690,12 @@ export default function BulkDownloadDialog({
                             )}
                             {usenetEnabled && chosenOption && (
                               <UsenetStatus
-                                row={
-                                  currentAvailability?.rows[
-                                    availabilityKey({
-                                      key: group.result.key,
-                                      release: chosenOption.index,
-                                      identity: releaseIdentity(chosenOption.release),
-                                    })
-                                  ]
-                                }
+                                row={availabilityOf(group.result, chosenOption)}
                                 loading={Boolean(currentAvailability?.loading)}
+                                planned={plannedProof(currentPreflight, {
+                                  key: group.result.key,
+                                  release: chosenOption.index,
+                                })}
                               />
                             )}
                             <OutcomeLabel status={status} protocols={rowProtocols(group)} />
@@ -729,7 +738,8 @@ export default function BulkDownloadDialog({
                         {isExpanded && (
                           <div className="border-t border-line px-3 py-3">
                             <div className="grid gap-2 sm:grid-cols-2">
-                              {group.options.map(({ index, release }) => {
+                              {group.options.map(option => {
+                                const { index, release } = option
                                 const checked = chosenIndex === index
                                 return (
                                   <label
@@ -764,15 +774,7 @@ export default function BulkDownloadDialog({
                                       </span>
                                       {usenetEnabled && (
                                         <UsenetStatus
-                                          row={
-                                            currentAvailability?.rows[
-                                              availabilityKey({
-                                                key: group.result.key,
-                                                release: index,
-                                                identity: releaseIdentity(release),
-                                              })
-                                            ]
-                                          }
+                                          row={availabilityOf(group.result, option)}
                                           loading={Boolean(currentAvailability?.loading)}
                                         />
                                       )}
@@ -877,15 +879,7 @@ export default function BulkDownloadDialog({
                         group.options.map(option => (
                           <UsenetStatus
                             key={option.index}
-                            row={
-                              currentAvailability?.rows[
-                                availabilityKey({
-                                  key: group.result.key,
-                                  release: option.index,
-                                  identity: releaseIdentity(option.release),
-                                })
-                              ]
-                            }
+                            row={availabilityOf(group.result, option)}
                             loading={Boolean(currentAvailability?.loading)}
                           />
                         ))}

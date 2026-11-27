@@ -22,6 +22,11 @@ const TRACKER_MODES: [TrackerMode, string, string][] = [
     'Releases from private trackers are listed too. You download those from the tracker yourself. This is SeaDex Companion’s default.',
   ],
   ['public', 'Public trackers only', 'Releases that need a private-tracker account are left out.'],
+  [
+    'reachable',
+    'Include private trackers Prowlarr can reach',
+    'When Prowlarr has no indexer for a release’s private tracker, the release stays listed and the best one that can be downloaded becomes the target.',
+  ],
 ]
 
 const TARGETS: [ReleasePreferences['size'], string, string][] = [

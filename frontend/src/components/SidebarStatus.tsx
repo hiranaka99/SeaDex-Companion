@@ -2,6 +2,7 @@ import { Status } from '../types'
 import { buttonBase, cx } from '../styles'
 import { displayDateTime } from '../datetime'
 import { usenetPauseText } from '../utils'
+import { sweepProgress } from '../usenet-review'
 import Icon from './Icons'
 import {
   type BulkOperationState,
@@ -43,10 +44,12 @@ export default function SidebarStatus({
   const scanVisible = isScanNoticeVisible(status, scanCompleted, scanCancelledDismissed)
   const usenet = status.usenet_prefetch
   const usenetVisible = Boolean(usenet?.running)
+  /** The hash lookups, then the Prowlarr search that follows them. */
+  const sweep = usenet ? sweepProgress(usenet) : null
   if (!scanVisible && !bulk && !usenetVisible) return null
   const progress = status.total ? Math.min(100, Math.round((status.progress / status.total) * 100)) : 0
   const bulkProgress = bulk?.total ? Math.min(100, Math.round((bulk.settled / bulk.total) * 100)) : 0
-  const usenetProgress = usenet?.total ? Math.min(100, Math.round((usenet.checked / usenet.total) * 100)) : 0
+  const usenetProgress = sweep?.total ? Math.min(100, Math.round((sweep.checked / sweep.total) * 100)) : 0
   const failed = (status.error || status.cancelled) && !status.running
   const bulkTitle = bulk ? bulkOperationTitle(bulk) : ''
   const bulkSummary = bulk ? bulkOperationSummary(bulk) : ''
@@ -120,8 +123,8 @@ export default function SidebarStatus({
         {usenetVisible && (
           <span
             className="grid size-11 place-items-center rounded-xl bg-panel"
-            title={`Matching Usenet sources · ${usenet!.checked}/${usenet!.total}`}
-            aria-label={`Matching Usenet sources · ${usenet!.checked} of ${usenet!.total} releases`}
+            title={`${sweep!.label} · ${sweep!.checked}/${sweep!.total}`}
+            aria-label={`${sweep!.label} · ${sweep!.checked} of ${sweep!.total} releases`}
           >
             <span className="size-4 animate-spin rounded-full border-2 border-sky/30 border-t-sky" />
           </span>
@@ -365,9 +368,9 @@ export default function SidebarStatus({
               className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-sky/30 border-t-sky"
               aria-hidden="true"
             />
-            <span className="min-w-0 flex-1 text-xs font-semibold text-muted">Matching Usenet sources</span>
+            <span className="min-w-0 flex-1 text-xs font-semibold text-muted">{sweep!.label}</span>
             <span className="shrink-0 text-[0.6875rem] font-bold tabular-nums text-muted-dim">
-              {usenet!.checked}/{usenet!.total}
+              {sweep!.checked}/{sweep!.total}
             </span>
           </div>
           <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-panel-raised">
@@ -376,9 +379,7 @@ export default function SidebarStatus({
               style={{ width: `${Math.max(usenetProgress, 2)}%` }}
             />
           </div>
-          <div className="mt-1 text-[0.6875rem] text-muted-dim">
-            {usenetPauseText(usenet!.paused) ?? `Checking ${usenet!.total} releases against the Usenet indexers.`}
-          </div>
+          <div className="mt-1 text-[0.6875rem] text-muted-dim">{usenetPauseText(usenet!.paused) ?? sweep!.detail}</div>
         </div>
       )}
     </div>

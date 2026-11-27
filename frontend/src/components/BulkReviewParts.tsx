@@ -3,6 +3,8 @@ import type { DownloadProtocol } from '../api'
 import * as api from '../api'
 import { cx } from '../styles'
 import { displayDateTime } from '../datetime'
+import type { UsenetProof } from '../../../shared/usenet-contracts'
+import { checkBlockedReason, reviewStatusLabel } from '../usenet-review'
 import Icon from './Icons'
 
 export function ReleaseSummary({ release }: { release: Release }) {
@@ -71,31 +73,32 @@ export function OutcomeLabel({
   return <span className={cx('basis-full text-xs font-semibold', tone)}>{copy}</span>
 }
 
-export function UsenetStatus({ row, loading }: { row: api.UsenetAvailabilityResult | undefined; loading: boolean }) {
+export function UsenetStatus({
+  row,
+  loading,
+  planned,
+}: {
+  row: api.UsenetAvailabilityResult | undefined
+  loading: boolean
+  /** How the NZB the review plans for this row was proven, when it was found through Prowlarr. */
+  planned?: UsenetProof
+}) {
   if (!row)
     return (
       <span className="basis-full text-xs text-muted">
         {loading ? 'Checking Usenet sources…' : 'Usenet: not checked'}
       </span>
     )
-  const labels = {
-    available: 'Usenet source found',
-    no_match: 'No Usenet match',
-    processing: 'Usenet source processing',
-    incomplete: 'Usenet source uncertain',
-    unsupported_hash: 'Usenet unavailable',
-    not_configured: 'Usenet not set up',
-    lookup_failed: 'Usenet lookup failed',
-    not_checked: row.refreshing ? 'Checking Usenet sources…' : 'Usenet: not checked',
-  }
   const tone =
     row.aggregate === 'available' ? 'text-good' : row.aggregate === 'lookup_failed' ? 'text-warn' : 'text-ink/85'
+  /** Why the search results could not be checked: a daily limit that was reached, or a paused indexer. */
+  const blocked = row.refreshing ? null : checkBlockedReason(row)
   return (
     <span className="basis-full block min-w-0 border-t border-line/70 pt-2.5 text-xs wrap-anywhere">
       <span className="flex flex-wrap items-start gap-x-6 gap-y-2">
         <span className="flex min-w-0 flex-col gap-0.5">
           <span className="text-muted">Availability</span>
-          <span className={cx('font-semibold', tone)}>{labels[row.aggregate]}</span>
+          <span className={cx('font-semibold', tone)}>{reviewStatusLabel(row, planned)}</span>
         </span>
         {row.checked_at && (
           <>
@@ -118,6 +121,14 @@ export function UsenetStatus({ row, loading }: { row: api.UsenetAvailabilityResu
           </span>
         )}
       </span>
+      {blocked && (
+        <span className="mt-2.5 flex items-start gap-2 text-warn">
+          <span className="mt-0.5 shrink-0">
+            <Icon name="alert" size={14} />
+          </span>
+          <span className="min-w-0 max-w-prose leading-relaxed">{blocked}</span>
+        </span>
+      )}
       {row.refresh_error && (
         <span className="mt-2.5 flex items-start gap-2 text-warn">
           <span className="mt-0.5 shrink-0">

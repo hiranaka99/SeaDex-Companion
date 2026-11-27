@@ -1,13 +1,11 @@
-// Search terms for Prowlarr, built the way Sonarr builds its anime searches: one text query per scene
-// title, each cleaned with Sonarr's GetCleanSceneTitle rules. Sonarr sends the title alone; SeaDex Companion
-// looks for one release group's upload, so the group leads each Usenet query.
+// Search titles for Prowlarr, cleaned with Sonarr's GetCleanSceneTitle rules as Sonarr cleans the titles of
+// its anime searches. Which of them are searched, in which order and with which other terms is decided by
+// the searches themselves: the tracker search in `private-sources.ts` and the query ladder in
+// `usenet-search-terms.ts`.
 
 import type { ResultItem } from './types.js'
 import { loadCache } from './results.js'
 import { isRecord } from '../shared/guards.js'
-
-/** At most this many titles are searched; every query is sent to every selected indexer. */
-const TITLE_LIMIT = 4
 
 /**
  * Sonarr's GetCleanSceneTitle, with spaces where Sonarr writes `+`: a leading "The" is dropped, `&` becomes
@@ -48,8 +46,8 @@ function aniListTitles(result: Pick<ResultItem, 'anilist_id' | 'anilist_ids'>): 
 }
 
 /**
- * The titles a release is searched under, cleaned and without duplicates: the library title, Sonarr's scene
- * titles for the season, then AniList's romaji and English titles.
+ * Every title a release may be searched under, cleaned and without duplicates: the library title, Sonarr's
+ * scene titles for the season, then AniList's romaji and English titles. Callers bound how many they search.
  */
 export function searchTitles(
   result: Pick<ResultItem, 'title' | 'search_titles' | 'anilist_id' | 'anilist_ids'> | undefined,
@@ -63,12 +61,6 @@ export function searchTitles(
     if (!clean || seen.has(key)) continue
     seen.add(key)
     titles.push(clean)
-    if (titles.length >= TITLE_LIMIT) break
   }
   return titles
-}
-
-/** Newznab categories Sonarr and Radarr search for anime: Anime and TV for series, Movies for films. */
-export function searchCategories(arr: string | undefined): number[] {
-  return arr === 'Radarr' ? [2000] : [5070, 5000]
 }

@@ -6,9 +6,21 @@ import { DATA_DIR, DOWNLOAD_RECORDS_FILE, OWNED_TORRENTS_FILE } from './paths.js
 import { readJson, writeJsonAtomic } from './persistence.js'
 import { log } from './logging.js'
 import type { DownloadClient, DownloadPhase, DownloadProtocol, ImportState } from '../shared/download-contracts.js'
-import type { UsenetSource } from '../shared/usenet-contracts.js'
+import type { UsenetProof, UsenetSource } from '../shared/usenet-contracts.js'
+import type { ResultItem } from './types.js'
 
 const OWNED_DOWNLOADS_FILE = join(DATA_DIR, 'owned_downloads.json')
+
+const PROOFS: Record<UsenetProof, true> = {
+  exact: true,
+  near_exact: true,
+  probable: true,
+  size_only: true,
+  unverified: true,
+}
+/** A stored proof level; a value this version does not know is left out. */
+const decodeProof = (value: unknown): UsenetProof | undefined =>
+  typeof value === 'string' && Object.hasOwn(PROOFS, value) ? (value as UsenetProof) : undefined
 
 const safeText = (value: unknown, max = 300): string =>
   String(value ?? '')
@@ -41,6 +53,8 @@ export interface OwnedDownloadRecord {
   /** Effective torrent file scope. Undefined means the whole torrent. */
   scope?: string[]
   provider?: UsenetSource
+  /** How the NZB of a download found through Prowlarr was shown to be the listed release; absent otherwise. */
+  proof?: UsenetProof
   entry_id?: string
   nzb_name?: string
   added_at: string
@@ -61,6 +75,13 @@ export interface LibraryTarget {
   season: number | null
   part: string
   group: string
+  /** Library size of the part when the download was sent; absent on records that predate it. */
+  local_size?: number
+}
+
+/** Size of a part's files in the library, as a scan result states it. */
+export function partLocalSize(result: Pick<ResultItem, 'local_size' | 'local_size_by_part'>, part: string): number {
+  return (part ? result.local_size_by_part?.[part] : undefined) ?? result.local_size ?? 0
 }
 
 export interface ImportTracking {
@@ -155,6 +176,7 @@ function decodeRecord(value: unknown): OwnedDownloadRecord | null {
     ...(raw.provider === 'animetosho' || raw.provider === 'amenzb' || raw.provider === 'prowlarr'
       ? { provider: raw.provider }
       : {}),
+    ...(decodeProof(raw.proof) ? { proof: decodeProof(raw.proof) } : {}),
     ...(typeof raw.entry_id === 'string' && raw.entry_id ? { entry_id: raw.entry_id.slice(0, 80) } : {}),
     ...(typeof raw.nzb_name === 'string' && raw.nzb_name ? { nzb_name: safeText(raw.nzb_name, 200) } : {}),
     added_at: addedAt,
@@ -179,6 +201,7 @@ const IMPORT_STATES: Record<string, true> = {
   blocked: true,
   imported: true,
   not_imported: true,
+  mismatch: true,
 }
 
 function decodeLibrary(value: unknown): LibraryTarget[] {
@@ -194,6 +217,9 @@ function decodeLibrary(value: unknown): LibraryTarget[] {
               season: nullableInteger(target.season),
               part: safeText(target.part, 80),
               group: safeText(target.group, 120),
+              ...(typeof target.local_size === 'number' && Number.isFinite(target.local_size) && target.local_size >= 0
+                ? { local_size: target.local_size }
+                : {}),
             },
           ]
         : []
@@ -439,6 +465,7 @@ export interface NewDownloadRecord {
   category: string
   scope?: string[]
   provider?: UsenetSource
+  proof?: UsenetProof
   entry_id?: string
   nzb_name?: string
   card?: CardSnapshot
@@ -469,6 +496,7 @@ export function addDownloadRecord(input: NewDownloadRecord): OwnedDownloadRecord
     category: input.category || '',
     ...(input.scope?.length ? { scope: [...new Set(input.scope)] } : {}),
     ...(input.provider ? { provider: input.provider } : {}),
+    ...(input.proof ? { proof: input.proof } : {}),
     ...(input.entry_id ? { entry_id: input.entry_id.slice(0, 80) } : {}),
     ...(input.nzb_name ? { nzb_name: input.nzb_name } : {}),
     added_at: timestamp,

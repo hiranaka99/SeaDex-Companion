@@ -3,13 +3,16 @@ import { log } from './logging.js'
 import { errorMessage } from '../shared/errors.js'
 import { arrApiBase } from './library.js'
 import { configuredArrInstances, parseLibraryKey, type ArrInstance } from './arr-instances.js'
+import { loadConfig } from './config.js'
 import {
   downloadRecords,
+  partLocalSize,
   updateDownloadImport,
   type LibraryTarget,
   type OwnedDownloadRecord,
 } from './download-store.js'
 import { releaseOwned } from '../shared/download-plan.js'
+import { rejectSearchCandidate } from './usenet-search.js'
 import type { Config, JsonObject, ResultItem } from './types.js'
 
 /** Time Sonarr or Radarr gets to notice a finished download before its absence from the queue means anything. */
@@ -34,12 +37,14 @@ const elapsed = (now: number, since: string | undefined) => {
   return Number.isFinite(at) ? now - at : Infinity
 }
 const groupKey = (group: string) => group.trim().toLowerCase()
+const resultOf = (results: ResultItem[], target: LibraryTarget) =>
+  results.find(item => item.library_key === target.key && Number(item.season || 0) === Number(target.season || 0))
+
+export const MISMATCH_MESSAGE = 'The downloaded files are not the release SeaDex lists; their sizes differ.'
 
 /** Whether the library now holds the release a download was sent for; null when the season is not in the results. */
 function targetOwned(results: ResultItem[], target: LibraryTarget): boolean | null {
-  const result = results.find(
-    item => item.library_key === target.key && Number(item.season || 0) === Number(target.season || 0),
-  )
+  const result = resultOf(results, target)
   if (!result) return null
   // A group can list several releases for one part; holding any of them is an import of the group's files.
   const releases = result.releases.filter(
@@ -53,16 +58,74 @@ function targetOwned(results: ResultItem[], target: LibraryTarget): boolean | nu
 }
 
 /**
+ * Whether the library now holds files under the target's group whose sizes differ from the listed release,
+ * and those files arrived after the download was sent. A scan of other titles keeps this season's earlier
+ * result, and the library may have held another release of the group before: an unchanged size is neither.
+ */
+function targetMismatched(results: ResultItem[], target: LibraryTarget): boolean {
+  const result = resultOf(results, target)
+  if (!result || target.local_size === undefined || partLocalSize(result, target.part) === target.local_size)
+    return false
+  const named = result.mismatched_by_part?.[target.part]?.some(group => groupKey(group) === groupKey(target.group))
+  return Boolean(named) && targetOwned(results, target) !== true
+}
+
+/** An NZB a Prowlarr search found and could not prove byte for byte; only such a candidate is learned from. */
+const unprovenNzb = (record: OwnedDownloadRecord) =>
+  record.provider === 'prowlarr' && record.proof !== undefined && record.proof !== 'exact'
+
+export interface SettleDependencies {
+  /** Marks the NZB a download was sent with as not the listed release; false when the finder does not know it. */
+  rejectCandidate: (sourceId: string, entryId: string) => boolean
+}
+
+const settleDefaults: SettleDependencies = {
+  rejectCandidate: (sourceId, entryId) => rejectSearchCandidate(loadConfig(), sourceId, entryId),
+}
+
+/**
  * Called with every new set of scan results. A finished download counts as imported once the
  * library holds its release for every season it was sent for. This is the only way an import is
  * confirmed: the queue of Sonarr or Radarr can explain a delay, but only the files prove the outcome.
+ *
+ * An unproven NZB whose files arrive with other sizes than the listed release is a mismatch: its
+ * candidate is rejected so the finder tries another one, and the download is reported once. A
+ * mismatch is final; later scans leave it as it is.
  */
-export function settleImports(results: ResultItem[], now = Date.now()): number {
+export function settleImports(
+  results: ResultItem[],
+  now = Date.now(),
+  dependencies: SettleDependencies = settleDefaults,
+): number {
   let settled = 0
   for (const record of downloadRecords()) {
     const tracking = record.import
-    if (!tracking || !record.library?.length || tracking.state === 'waiting' || tracking.state === 'imported') continue
+    if (!tracking || !record.library?.length) continue
+    if (tracking.state === 'waiting' || tracking.state === 'imported' || tracking.state === 'mismatch') continue
     if (elapsed(now, tracking.completed_at || tracking.since) > RECHECK_WINDOW_MS) continue
+    if (unprovenNzb(record) && record.library.some(target => targetMismatched(results, target))) {
+      try {
+        // A record without an entry ID names no candidate; the download is still reported.
+        if (record.entry_id && !dependencies.rejectCandidate(record.source_hash, record.entry_id))
+          log('INFO', 'The search result of a mismatched download is no longer known; nothing to reject')
+      } catch (error) {
+        // Left as it is, so the next scan tries again rather than settling without the rejection.
+        log('WARNING', `Could not reject the search result of a mismatched download: ${errorMessage(error)}`)
+        continue
+      }
+      updateDownloadImport(record.id, {
+        state: 'mismatch',
+        message: MISMATCH_MESSAGE,
+        notified: undefined,
+        rescans: undefined,
+        rescan_at: undefined,
+      })
+      log(
+        'WARNING',
+        `Downloaded files are not the listed release: ${record.card?.title || record.labels[0] || record.source_hash.slice(0, 12)}${record.card?.release_group ? ` [${record.card.release_group}]` : ''}`,
+      )
+      continue
+    }
     const known = record.library
       .map(target => targetOwned(results, target))
       .filter((owned): owned is boolean => owned !== null)
@@ -132,7 +195,7 @@ export interface ImportProblem {
   season: number | null
   releaseGroup: string
   app: string
-  state: 'blocked' | 'not_imported'
+  state: 'blocked' | 'not_imported' | 'mismatch'
   message: string
 }
 
@@ -166,7 +229,11 @@ export function importsToFollow(now = Date.now()): boolean {
     // The slack lets an overdue wait be closed and a fresh problem be reported once.
     if (tracking.state === 'pending' || tracking.state === 'blocked')
       return elapsed(now, tracking.completed_at || tracking.since) < QUEUE_WINDOW_MS + FOLLOW_SLACK_MS
-    return tracking.state === 'not_imported' && !tracking.notified && elapsed(now, tracking.since) < FOLLOW_SLACK_MS
+    return (
+      (tracking.state === 'not_imported' || tracking.state === 'mismatch') &&
+      !tracking.notified &&
+      elapsed(now, tracking.since) < FOLLOW_SLACK_MS
+    )
   })
 }
 
@@ -270,7 +337,8 @@ export async function followImports(config: Config, dependencies: FollowDependen
   if (!config.notify_enabled || !config.notify_import_problems || !config.webhook) return
   for (const record of downloadRecords()) {
     const tracking = record.import
-    if (!tracking || tracking.notified || (tracking.state !== 'blocked' && tracking.state !== 'not_imported')) continue
+    if (!tracking || tracking.notified) continue
+    if (tracking.state !== 'blocked' && tracking.state !== 'not_imported' && tracking.state !== 'mismatch') continue
     if (elapsed(now, tracking.since) >= QUEUE_WINDOW_MS) continue
     if (tracking.state === 'blocked' && elapsed(now, tracking.since) < BLOCKED_NOTIFY_MS) continue
     const instance = instanceOfRecord(instances, record)

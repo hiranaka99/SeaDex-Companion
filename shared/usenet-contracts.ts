@@ -12,6 +12,8 @@ export type UsenetSource = UsenetProvider | 'prowlarr'
 /** Per-source-hash lookup state. Frontend "checking" is separate from a provider's "processing". */
 export type UsenetUnitState =
   | 'not_checked'
+  /** A search found possible copies and none has been fetched and checked yet. */
+  | 'unverified'
   | 'available'
   | 'no_match'
   | 'processing'
@@ -19,6 +21,12 @@ export type UsenetUnitState =
   | 'unsupported_hash'
   | 'not_configured'
   | 'lookup_failed'
+
+/**
+ * How strongly a fetched NZB was shown to be the listed release. `exact` and `near_exact` are sent
+ * automatically; the others only when the user chooses the candidate.
+ */
+export type UsenetProof = 'exact' | 'near_exact' | 'probable' | 'size_only' | 'unverified'
 
 export type UsenetFailureCode =
   'network' | 'timeout' | 'invalid_response' | 'unauthorized' | 'rate_limited' | 'server' | 'invalid_config'
@@ -45,6 +53,14 @@ export interface UsenetCandidate {
   sizes_known: boolean
   /** The NZB could not be fetched to check it, so it cannot be downloaded from here. */
   unavailable?: string
+  /** The NZB was fetched and graded. False for a search result nobody has opened yet. */
+  checked: boolean
+  proof?: UsenetProof
+  posted_at?: string
+  /** File count the indexer reports. Shown, never used to reject. */
+  files?: number
+  /** Marked wrong after an import, or by the user; never offered as a match again. */
+  rejected?: boolean
 }
 
 export interface UsenetHashAvailability {
@@ -61,7 +77,11 @@ export interface UsenetHashAvailability {
   /** Complete names for internal planning; the public availability endpoint limits this list and preserves the total file_count. */
   file_names?: string[]
   error_code?: UsenetFailureCode
-  /** NZBs a Prowlarr search checked without proving them, for the user to judge. */
+  /** How the NZB of an available Prowlarr copy was shown to be this release. */
+  proof?: UsenetProof
+  /** Search results found for this source, checked or not. */
+  candidate_count?: number
+  /** Search results of a Prowlarr search that are not a proven copy, for the user to judge. */
   candidates?: UsenetCandidate[]
   /** Bounded safe text for failed lookups; never provider markup. */
   error?: string
@@ -110,6 +130,24 @@ export interface UsenetAvailabilityRequest {
   refresh?: boolean
   /** Rows to search Prowlarr for now. Every checked NZB counts toward an indexer's download limit. */
   search?: { key: string; release: number }[]
+  /** Rows selected for download: search if needed, then fetch and check the best candidate. */
+  verify?: { key: string; release: number }[]
+  /**
+   * Rows whose queued check is no longer wanted: the review was cancelled, or the row was switched to a
+   * torrent. A check that is already fetching its NZB finishes; one still waiting is dropped.
+   */
+  cancel_verify?: { key: string; release: number }[]
+}
+
+/** What Companion may still fetch from one Usenet indexer in Prowlarr today. */
+export interface ProwlarrIndexerUsage {
+  indexer: string
+  /** NZB fetches left in the current 24 hours; null means no limit from Companion. */
+  fetches_left: number | null
+  /** Seconds until the next fetch becomes possible, when none is left. */
+  next_fetch_seconds?: number
+  /** Seconds the indexer is paused for after rate limiting or repeated failures. */
+  paused_seconds?: number
 }
 
 export interface UsenetAvailabilityResponse {
@@ -121,5 +159,7 @@ export interface UsenetAvailabilityResponse {
   prowlarr_configured: boolean
   sabnzbd_configured: boolean
   results: UsenetAvailabilityResult[]
+  /** NZB fetches left today per Usenet indexer in Prowlarr; null means no limit. */
+  prowlarr_usage?: ProwlarrIndexerUsage[]
   error?: string
 }
