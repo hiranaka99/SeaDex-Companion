@@ -2,6 +2,7 @@ import { Status } from '../types'
 import { buttonBase, cx } from '../styles'
 import { displayDateTime } from '../datetime'
 import { usenetPauseText } from '../utils'
+import { sweepProgress } from '../usenet-review'
 import Icon from './Icons'
 
 export interface BulkOperationState {
@@ -80,6 +81,8 @@ export default function OperationCenter({
   if (!scanVisible && !bulk && !usenet?.running) return null
   const progress = status.total ? Math.min(100, Math.round((status.progress / status.total) * 100)) : 0
   const bulkProgress = bulk?.total ? Math.min(100, Math.round((bulk.settled / bulk.total) * 100)) : 0
+  /** The hash lookups, then the Prowlarr search that follows them. */
+  const sweep = usenet?.running ? sweepProgress(usenet) : null
 
   return (
     <section
@@ -215,22 +218,22 @@ export default function OperationCenter({
         </div>
       )}
 
-      {usenet?.running && (
+      {usenet?.running && sweep && (
         <div className="py-3" role="status">
           <div className="flex items-center gap-2">
             <span
               className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-sky/30 border-t-sky"
               aria-hidden="true"
             />
-            <span className="min-w-0 flex-1 text-xs font-semibold text-muted">Matching Usenet sources</span>
+            <span className="min-w-0 flex-1 text-xs font-semibold text-muted">{sweep.label}</span>
             <span className="shrink-0 text-xs font-bold tabular-nums text-muted-dim">
-              {usenet.checked}/{usenet.total}
+              {sweep.checked}/{sweep.total}
             </span>
           </div>
           <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-panel-raised">
             <div
               className="h-full rounded-full bg-sky transition-[width] duration-500"
-              style={{ width: `${Math.max(usenet.total ? Math.round((usenet.checked / usenet.total) * 100) : 0, 2)}%` }}
+              style={{ width: `${Math.max(sweep.total ? Math.round((sweep.checked / sweep.total) * 100) : 0, 2)}%` }}
             />
           </div>
           {usenetPauseText(usenet.paused) && (

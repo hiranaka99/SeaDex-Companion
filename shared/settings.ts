@@ -4,7 +4,8 @@ export const DEFAULT_TRACKER_MODE: TrackerMode = 'private'
 
 export function normalizeTrackerMode(value: unknown): TrackerMode {
   if (value === undefined || value === null || value === '') return DEFAULT_TRACKER_MODE
-  if (value !== 'public' && value !== 'private') throw new Error('tracker_mode must be public or private')
+  if (value !== 'public' && value !== 'private' && value !== 'reachable')
+    throw new Error('tracker_mode must be public, private or reachable')
   return value
 }
 
@@ -23,6 +24,14 @@ export const PREFERENCE_BLOCKED_REASON = 'No listed release fits your release pr
 
 /** Shown wherever SeaDex lists releases for a season or cour only on private trackers, in public-tracker mode. */
 export const PRIVATE_ONLY_REASON = 'No release on a public tracker'
+
+/**
+ * Why a listed release is not the target in reachable-tracker mode: Prowlarr has no indexer for its private
+ * tracker, so the best release that can be fetched is targeted instead. Carried as the release's `excluded_by`,
+ * which keeps it out of bulk downloads and shows the reason wherever a preference exclusion is shown.
+ */
+export const unreachableTrackerReason = (tracker: string): string =>
+  `On ${String(tracker || '').trim() || 'a private tracker'}, which Prowlarr cannot reach`
 
 export const EMPTY_LIBRARY_SCOPE: LibraryScope = {
   anime_only: false,

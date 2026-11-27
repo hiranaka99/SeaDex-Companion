@@ -1,5 +1,4 @@
 import type { DownloadMode } from './download-contracts.js'
-import type { UsenetProvider } from './usenet-contracts.js'
 
 /**
  * A torrent SeaDex lists on a private tracker, without a public info hash. Its file list identifies it, so a
@@ -80,9 +79,10 @@ export interface ReleasePreferences {
 
 /**
  * Which SeaDex releases the app works with. `public` leaves out every release without a public torrent
- * (private trackers); `private` also lists those for manual download.
+ * (private trackers); `private` also lists those for manual download. `reachable` lists them too, but a target
+ * on a private tracker Prowlarr has no indexer for gives way to the best release that can be fetched.
  */
-export type TrackerMode = 'public' | 'private'
+export type TrackerMode = 'public' | 'private' | 'reachable'
 
 export interface Release {
   kind: 'best' | 'alt'
@@ -110,7 +110,10 @@ export interface Release {
   satisfies?: boolean
   /** The library's files are this release's files, byte for byte. Absent when they are not, or nothing was compared. */
   files_match?: boolean
-  /** Why the saved preferences never offer this release for download. */
+  /**
+   * Why the saved preferences never offer this release for download: a preference that excludes it, or, in
+   * reachable-tracker mode, a private tracker Prowlarr cannot reach while another release can be fetched.
+   */
   excluded_by?: string
 }
 
@@ -263,6 +266,12 @@ export interface Config {
   prowlarr_enabled: boolean
   prowlarr_url: string
   prowlarr_key: string
+  /** Search Prowlarr's Usenet indexers in the background after each scan. Never fetches an NZB. */
+  prowlarr_background_search: boolean
+  /** Background searches per indexer per 24 hours; 0 is no limit from Companion. */
+  prowlarr_search_limit: number
+  /** NZB fetches per indexer per 24 hours; 0 is no limit from Companion. */
+  prowlarr_fetch_limit: number
   webhook: string
   notify_enabled: boolean
   /** Also notify when a finished download is not imported by Sonarr or Radarr. */
@@ -319,6 +328,34 @@ export interface UsenetPrefetchProgress {
   running: boolean
   checked: number
   total: number
-  /** Providers the sweep is waiting on after rate limiting or repeated failures. */
-  paused?: { provider: UsenetProvider; resume_in_seconds: number; rate_limited: boolean }[]
+  /** Providers and Prowlarr indexers the sweep is waiting on after rate limiting or repeated failures. */
+  paused?: { provider: { id: string; label: string }; resume_in_seconds: number; rate_limited: boolean }[]
+  /** Progress of the Prowlarr search sweep that follows the hash lookups, counted in sources. */
+  search?: { checked: number; total: number }
+}
+
+/** What the latest background search sweep found. It is the measurement of what the indexers carry. */
+export interface UsenetSearchSummary {
+  finished_at: string
+  /** Sources the sweep searched. */
+  searched: number
+  with_candidates: number
+  without_candidates: number
+  failed: number
+  /** Sources left for a later sweep because an indexer reached its daily search limit. */
+  deferred: number
+  /** Queries each indexer received during the sweep. */
+  queries: { indexer: string; count: number }[]
+}
+
+/** Answer of `GET /api/prowlarr/search-status`, for the Prowlarr settings card. */
+export interface ProwlarrSearchStatus {
+  /** Releases of the current library a file-list search can look for: private-tracker ones, and public ones the hash indexers lack. */
+  eligible_sources: number
+  /** Of those, the sources without a fresh search record; about one search per indexer each. */
+  pending_sources: number
+  /** Usenet indexers in Prowlarr; 0 when Prowlarr is off or its indexer list is not known. */
+  usenet_indexers: number
+  /** The latest finished sweep, when one ran. */
+  summary?: UsenetSearchSummary
 }

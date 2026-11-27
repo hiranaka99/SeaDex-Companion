@@ -1,5 +1,6 @@
 import * as api from './api.js'
 import type { SelectionInput, UsenetAvailabilityResult } from './api.js'
+import type { ProwlarrIndexerUsage } from '../../shared/usenet-contracts.js'
 
 export const availabilityKey = (row: Pick<SelectionInput, 'key' | 'release' | 'identity'>) =>
   `${row.key}\u0000${row.release}\u0000${row.identity || ''}`
@@ -10,6 +11,8 @@ export interface AvailabilitySnapshot {
   sabnzbdConfigured: boolean
   loading: boolean
   error: string | null
+  /** NZB checks left per Usenet indexer in Prowlarr, as the latest answer reported them. */
+  usage?: ProwlarrIndexerUsage[]
 }
 
 export function availabilityErrors(rows: UsenetAvailabilityResult[]): string | null {
@@ -41,6 +44,9 @@ function waitForPoll(signal: AbortSignal): Promise<void> {
   })
 }
 
+/** One row of an observation, named by what the availability endpoint is asked about. */
+export type AvailabilityRow = Pick<SelectionInput, 'key' | 'release' | 'identity'>
+
 /** Observe cheap snapshots only while these exact release identities are refreshing. */
 export async function observeUsenetAvailability(
   selections: SelectionInput[],
@@ -48,7 +54,13 @@ export async function observeUsenetAvailability(
     signal: AbortSignal
     refresh?: boolean
     /** Rows to search Prowlarr for, sent with the first request only. */
-    search?: { key: string; release: number }[]
+    search?: AvailabilityRow[]
+    /** Rows selected for download, whose best candidate is checked. Sent with the first request only. */
+    verify?: AvailabilityRow[]
+    /** Rows whose queued check is no longer wanted. Sent with the first request only. */
+    cancelVerify?: AvailabilityRow[]
+    /** The server received these `verify` and `cancelVerify` rows; called before their snapshot is published. */
+    onRequested?: (sent: { verify: AvailabilityRow[]; cancel: AvailabilityRow[] }) => void
     initial?: AvailabilitySnapshot | null
     onSnapshot: (snapshot: AvailabilitySnapshot) => void
   },
@@ -61,6 +73,7 @@ export async function observeUsenetAvailability(
     sabnzbdConfigured: options.initial?.sabnzbdConfigured ?? false,
     loading: selections.length > 0,
     error: options.initial?.error ?? null,
+    ...(options.initial?.usage ? { usage: options.initial.usage } : {}),
   }
   let pending = selections
   let first = true
@@ -73,14 +86,23 @@ export async function observeUsenetAvailability(
       let restart = false
       for (let offset = 0; offset < pending.length; offset += 200) {
         const batch = pending.slice(offset, offset + 200)
-        const searchNow = first
-          ? options.search?.filter(row =>
-              batch.some(selection => selection.key === row.key && selection.release === row.release),
-            )
-          : undefined
-        const response = await api.usenetAvailability(batch, first && options.refresh === true, signal, searchNow)
+        // Work is asked for once, with the batch that holds its row; polling only reads.
+        const inBatch = (rows: AvailabilityRow[] | undefined) =>
+          first && rows?.length
+            ? rows.filter(row =>
+                batch.some(selection => selection.key === row.key && selection.release === row.release),
+              )
+            : []
+        const verify = inBatch(options.verify)
+        const cancel = inBatch(options.cancelVerify)
+        const response = await api.usenetAvailability(batch, first && options.refresh === true, signal, {
+          search: inBatch(options.search),
+          verify,
+          cancel_verify: cancel,
+        })
         if (signal.aborted) return
         if (!response.ok) throw new Error(response.error || 'Could not check Usenet sources')
+        if (verify.length || cancel.length) options.onRequested?.({ verify, cancel })
         const changed = snapshot.configGeneration !== null && snapshot.configGeneration !== response.config_generation
         const rows: Record<string, UsenetAvailabilityResult> = changed ? {} : { ...snapshot.rows }
         if (changed && (pending.length !== selections.length || offset > 0)) restart = true
@@ -97,6 +119,11 @@ export async function observeUsenetAvailability(
           sabnzbdConfigured: response.sabnzbd_configured,
           loading: offset + batch.length < pending.length,
           error: availabilityErrors(Object.values(rows)),
+          ...(response.prowlarr_usage
+            ? { usage: response.prowlarr_usage }
+            : snapshot.usage && !changed
+              ? { usage: snapshot.usage }
+              : {}),
         }
         if (received.size !== requested.size) throw new Error('Usenet snapshot did not include the requested release')
         publish()

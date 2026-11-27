@@ -543,7 +543,12 @@ const server = createServer(async (req, res) => {
       if (stale) {
         res.statusCode = 409
         response = { ok: false, error: 'A selected release changed. Re-open the review.' }
-      } else
+      } else {
+        // A check the review asks for settles at once: the fixture release names the state it ends in.
+        for (const row of body.verify || []) {
+          const release = itemFor(row).releases[row.release]
+          if (release.usenet_verified) release.usenet_state = release.usenet_verified
+        }
         response = {
           ok: true,
           config_generation: availabilityGeneration,
@@ -562,25 +567,33 @@ const server = createServer(async (req, res) => {
                   ? release.usenet_state || 'no_match'
                   : availabilityMode
             const match =
-              state === 'available'
+              state === 'available' && release.usenet_verified
                 ? {
-                    state: 'available',
-                    provider: 'animetosho',
-                    entry_id: String(100 + index),
-                    title: `${item.title} complete season`,
+                    state,
+                    provider: 'prowlarr',
+                    entry_id: '7-fixture',
                     total_bytes: 1_400_000_000,
-                    files_known: true,
-                    file_count: 12,
-                    file_names: Array.from({ length: 12 }, (_, index) => `${String(index + 1).padStart(2, '0')}.mkv`),
+                    proof: 'near_exact',
                   }
-                : state === 'lookup_failed'
+                : state === 'available'
                   ? {
-                      state,
-                      error_code: 'timeout',
-                      error: 'Fixture provider timed out',
-                      providers_failed: ['animetosho'],
+                      state: 'available',
+                      provider: 'animetosho',
+                      entry_id: String(100 + index),
+                      title: `${item.title} complete season`,
+                      total_bytes: 1_400_000_000,
+                      files_known: true,
+                      file_count: 12,
+                      file_names: Array.from({ length: 12 }, (_, index) => `${String(index + 1).padStart(2, '0')}.mkv`),
                     }
-                  : { state }
+                  : state === 'lookup_failed'
+                    ? {
+                        state,
+                        error_code: 'timeout',
+                        error: 'Fixture provider timed out',
+                        providers_failed: ['animetosho'],
+                      }
+                    : { state }
             const checkedAt = state === 'not_checked' ? '' : availabilityCheckedAt
             const metadata = {
               checked_at: checkedAt,
@@ -596,10 +609,12 @@ const server = createServer(async (req, res) => {
                 { hash, ...match, checked_at: checkedAt, stale: metadata.stale, refreshing: metadata.refreshing },
               ],
               aggregate: match.state,
+              ...(release.usenet_verified ? { search: 'prowlarr' } : {}),
               ...metadata,
             }
           }),
         }
+      }
       if (holdNextAvailability) {
         holdNextAvailability = false
         const deferred = Promise.withResolvers()
@@ -737,6 +752,8 @@ const server = createServer(async (req, res) => {
       }
       response = { ok: true }
     } else if (path === '/api/config/test') response = { ok: true, message: 'Fixture connection successful' }
+    else if (path === '/api/prowlarr/search-status')
+      response = { ok: true, status: { eligible_sources: 0, pending_sources: 0, usenet_indexers: 0 } }
     else if (path === '/api/arr/options') {
       optionRequests.push(body)
       response = { ok: true, tags: ['fixture-anime', 'fixture-skip'], root_folders: ['/fixture/anime'] }
@@ -2100,6 +2117,27 @@ try {
       ),
       'The provider generation replacement discards the held prior response',
     )
+    await key('Escape')
+
+    // A private-tracker release nobody searched yet is searched and checked from the review, once.
+    fixtureResults = [bulkAnime('Unsearched anime', '8', 'not_checked', false)]
+    fixtureResults[0].releases[0].usenet_verified = 'available'
+    const verifyRequests = () => availabilityRequests.filter(request => request.verify)
+    const verifiedBefore = verifyRequests().length
+    await evaluate(`location.reload()`)
+    await wait(`document.body.textContent.includes('Unsearched anime')`)
+    await click('Bulk download')
+    await wait(
+      `document.querySelector('dialog[open]')?.textContent.includes('On Usenet through Prowlarr: names and sizes match (near-exact)') && [...document.querySelectorAll('dialog[open] dt')].find(label => label.textContent === 'New NZBs')?.nextElementSibling?.textContent === '1'`,
+    )
+    assert.deepEqual(
+      verifyRequests()
+        .slice(verifiedBefore)
+        .map(request => request.verify),
+      [[{ key: fixtureResults[0].key, release: 0 }]],
+      'The review asks for the check of an unsearched Usenet row exactly once',
+    )
+    assert.equal(preflightRequests.at(-1).selections[0].protocol, 'usenet', 'The review plans the checked row')
     await key('Escape')
     ;({ config, fixtureResults, progressMode, preflightMode } = beforeBulkUsenet)
     availabilityMode = 'available'

@@ -119,6 +119,36 @@ export function safeByteSize(value: unknown): number | undefined {
   return Number.isSafeInteger(size) && size >= 0 ? size : undefined
 }
 
+/** Element body, also when attributes pushed the value under `#text`. */
+export function elementText(value: unknown): string | undefined {
+  return isRecord(value) ? text(value['#text']) : text(value)
+}
+
+/**
+ * Every value of each `newznab:attr` of a feed item, by lower-case name and in document order. An item
+ * repeats an attribute to list several values, as it does for `category`.
+ */
+export function newznabAttributeValues(item: Record<string, unknown>): Map<string, string[]> {
+  const attributes = new Map<string, string[]>()
+  for (const raw of listOf(item['newznab:attr'])) {
+    if (!isRecord(raw)) continue
+    const name = text(raw['@_name'])?.toLowerCase()
+    const value = text(raw['@_value'])
+    if (!name || value === undefined) continue
+    const values = attributes.get(name)
+    if (values) values.push(value)
+    else attributes.set(name, [value])
+  }
+  return attributes
+}
+
+/** The first value of each `newznab:attr` of a feed item, by lower-case name. */
+export function newznabAttributes(item: Record<string, unknown>): Map<string, string> {
+  const attributes = new Map<string, string>()
+  for (const [name, values] of newznabAttributeValues(item)) attributes.set(name, values[0])
+  return attributes
+}
+
 /** Collapse markup/control characters and bound the length of any failure text. */
 export function safeText(value: string, limit = SAFE_MESSAGE_LIMIT): string {
   const collapsed = value
@@ -364,26 +394,26 @@ export function detectXmlError(bytes: Uint8Array): NewznabError | null {
 }
 
 /**
- * Classify a Newznab error code. Provider-supplied descriptions are never copied
+ * Classify a Newznab error code of the named provider. Provider-supplied descriptions are never copied
  * into the message: an indexer can echo the full request URL, key included.
  */
-export function classifyNewznabError(code: number): ProviderFailure {
+export function classifyNewznabError(code: number, provider: string): ProviderFailure {
   switch (code) {
     case 100:
       return { code: 'unauthorized', message: 'Invalid API key or IP mismatch — check the key and pinned API IP' }
     case 500:
       return {
         code: 'rate_limited',
-        message: 'AmeNZB API limit reached (code 500) — retry later or check the account allowance',
+        message: `${provider} API limit reached (code 500) — retry later or check the account allowance`,
       }
     case 200:
     case 201:
     case 202:
-      return { code: 'invalid_response', message: `AmeNZB rejected the request parameters (code ${code})` }
+      return { code: 'invalid_response', message: `${provider} rejected the request parameters (code ${code})` }
     case 300:
-      return { code: 'server', message: 'AmeNZB refused the resource (code 300)' }
+      return { code: 'server', message: `${provider} refused the resource (code 300)` }
     default:
-      return { code: 'server', message: `AmeNZB reported an error (code ${code})` }
+      return { code: 'server', message: `${provider} reported an error (code ${code})` }
   }
 }
 

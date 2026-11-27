@@ -1,6 +1,7 @@
 import type { DownloadPreflight } from '../api'
 import { cx } from '../styles'
 import { formatBytes } from '../utils'
+import { nearExactNote } from '../usenet-review'
 import Icon from './Icons'
 import { DiskLine, spaceAckDetail } from './PlanReview'
 
@@ -68,6 +69,7 @@ export default function BulkPlanSummary({
           : 'idle'
   const needsWhole = currentPreflight?.requires_whole_ack === true
   const needsSpace = currentPreflight?.requires_space_ack === true
+  const nearExact = nearExactNote(currentPreflight)
   const sizeText = currentPreflight
     ? `${currentPreflight.approximate_bytes ? '≈ ' : ''}${formatBytes(currentPreflight.total_new_bytes) || '0 B'}${currentPreflight.unknown_bytes ? ' + unknown' : ''}`
     : ''
@@ -145,6 +147,7 @@ export default function BulkPlanSummary({
           {currentPreflight?.approximate_bytes && (
             <p className="m-0 text-muted">Usenet sizes are provider estimates; repair and unpacking need extra room.</p>
           )}
+          {nearExact && <p className="m-0 text-muted">{nearExact}</p>}
           {needsWhole && (
             <label className="flex min-h-11 cursor-pointer items-start gap-2 rounded-lg border border-warn/40 bg-warn/8 p-3 text-warn">
               <input

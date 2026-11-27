@@ -62,6 +62,8 @@ interface Props {
   onRefreshAvailability: () => void
   /** Searches Prowlarr for one release of this season. */
   onSearchProwlarr: (release: number) => void
+  /** Fetches and checks the best search result of one release of this season. */
+  onCheckProwlarr: (release: number) => void
   onOpened: () => void
   /** `sendAnyway` sends after a low free-space warning. */
   /** `nzb` sends an unproven NZB the user chose for a private-tracker release. */
@@ -98,6 +100,7 @@ export default function DetailsSeason({
   onProtocol,
   onRefreshAvailability,
   onSearchProwlarr,
+  onCheckProwlarr,
   onOpened,
   onDownload,
   lowSpace,
@@ -214,6 +217,7 @@ export default function DetailsSeason({
             onProtocol={protocol => onProtocol(index, protocol)}
             onRefreshAvailability={onRefreshAvailability}
             onSearchProwlarr={() => onSearchProwlarr(index)}
+            onCheckProwlarr={() => onCheckProwlarr(index)}
             onDownload={() => onDownload(index)}
             onDownloadNzb={nzb => onDownload(index, false, nzb)}
             lowSpace={lowSpace?.release === index ? lowSpace : null}

@@ -16,11 +16,13 @@ import {
   classifyNewznabError,
   decodeText,
   detectXmlError,
+  elementText,
   failedFrom,
   failedLookup,
   findNewznabError,
   httpStatusFailure,
   listOf,
+  newznabAttributes,
   parseProviderXml,
   providerRequest,
   readNzbBody,
@@ -42,22 +44,6 @@ interface AmeNZBItem {
   title?: string
   nzb_name?: string
   total_bytes?: number
-}
-
-function newznabAttributes(item: Record<string, unknown>): Map<string, string> {
-  const attributes = new Map<string, string>()
-  for (const raw of listOf(item['newznab:attr'])) {
-    if (!isRecord(raw)) continue
-    const name = text(raw['@_name'])?.toLowerCase()
-    const value = text(raw['@_value'])
-    if (name && value !== undefined && !attributes.has(name)) attributes.set(name, value)
-  }
-  return attributes
-}
-
-/** Element body, also when attributes pushed the value under `#text`. */
-function elementText(value: unknown): string | undefined {
-  return isRecord(value) ? text(value['#text']) : text(value)
 }
 
 /**
@@ -128,7 +114,7 @@ async function search(settings: ProviderSettings, requested: string, fetchImpl: 
   // An error document is never an empty result set.
   const reported = findNewznabError(document)
   if (reported) {
-    const failure = classifyNewznabError(reported.code)
+    const failure = classifyNewznabError(reported.code, 'AmeNZB')
     return failedLookup(failure.code, failure.message)
   }
 
@@ -220,7 +206,7 @@ export async function fetchAmeNZBNzb(
   const bytes = await readNzbBody(settings, response)
   // Indexers answer `t=get` failures with a Newznab error document, not a status code.
   const reported = detectXmlError(bytes)
-  if (reported) throw new Error(classifyNewznabError(reported.code).message)
+  if (reported) throw new Error(classifyNewznabError(reported.code, 'AmeNZB').message)
   validateNzbBytes(bytes)
   return bytes
 }

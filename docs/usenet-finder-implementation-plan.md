@@ -2,11 +2,50 @@
 
 ## Purpose and status
 
-Not implemented. This document is an implementation handoff. It turns the Prowlarr file-list search from a click-per-release, memory-only feature for private-tracker releases into a general, persisted Usenet finder for every release the hash indexers do not carry, and it closes the defects found while reviewing that path.
+Implemented in phases 1 to 9; phase 0 was not run (see the table below and section 20). This document was the implementation handoff. It turns the Prowlarr file-list search from a click-per-release, memory-only feature for private-tracker releases into a general, persisted Usenet finder for every release the hash indexers do not carry, and it closes the defects found while reviewing that path.
 
 It amends section 16 of the [Usenet implementation plan](usenet-implementation-plan.md). Where the two disagree, this plan wins once the phase that changes the behavior has shipped. Everything else in that plan still applies, including its boundaries, its security rules (section 11) and the UI workflow (section 10).
 
-Source references are to commit `d423a3b`. Reinspect the current source before editing, because line numbers move.
+Source references are to commit `d423a3b`. Reinspect the current source before editing, because line numbers move. How the build works is described in [maintainability.md](maintainability.md#usenet-finder-through-prowlarr); where it differs from this plan is listed below.
+
+### Status by phase
+
+| Phase | Status |
+| --- | --- |
+| 0: live checks | Not run. It needs a live Prowlarr and the user's consent. Every Prowlarr fact in section 1 is still read from source only |
+| 1: fixes in the current path | Implemented |
+| 2: persistence | Implemented |
+| 3: per-indexer search, channels and limits | Implemented on the Newznab endpoint. The fallback in section 6 was not built, because phase 0 did not run. The done condition (Prowlarr's history) was not observed |
+| 4: background sweep and `unverified` | Implemented. The gate after this phase was not held: no sweep ran against real indexers |
+| 5: proof levels | Implemented. The calibration condition in section 9 is open |
+| 6: bulk verification | Implemented, with deviation (c) |
+| 7: outcome feedback | Implemented, with deviation (a) |
+| 8: reachable tracker mode | Implemented, with deviation (b) |
+| 9: documentation | Done: README, [maintainability.md](maintainability.md), section 16 of the [Usenet plan](usenet-implementation-plan.md), and this document |
+
+Decisions 3 to 6 in section 2 were built as recommended and are still awaiting the user's confirmation.
+
+### Where the build differs from this plan
+
+- **(a) Size guard on outcome feedback (section 12).** A mismatch counts only when, besides the group appearing in `mismatched_by_part` and the release not being owned, the part's library size differs from the size recorded when the download was sent (`LibraryTarget.local_size`). An earlier release of the same group in the library, or a result that a scan of other titles left unchanged, therefore never rejects a candidate. Records sent before this change carry no `local_size` (and no `proof`) and are never judged. Detection depends on `mismatched_by_part`, so it does nothing while **Check owned releases by file size** is off. A mismatch is final; when the rejection throws, the record is left for the next scan.
+- **(b) Reachable mode picks among every obtainable candidate (section 13).** The replacement target is `pickBest` over every eligible candidate that can be fetched: public releases and releases on covered private trackers alike, not public ones only. When a part lists no public release but another release on a covered tracker, the target moves to that release; only when nothing else can be fetched does the private target stay. When the replacement is the same release on a covered tracker, the two are one listing and no note is added. The note ("On AB, which Prowlarr cannot reach") is carried in `excluded_by`, which also keeps the release out of bulk downloads. The replacement settles its part when owned, even if SeaDex lists it as an alternative. Without Prowlarr enabled, no tracker is covered.
+- **(c) Bulk review checks once per review, with two exceptions (section 10).** The dialog keeps a ledger of the rows it asked to verify and asks for each once. A row whose running check was cancelled, because it was switched to Torrent, is removed from the ledger, so choosing Usenet again verifies it again. **Refresh review** clears the ledger. A `verify` request that failed counts as asked until the review is refreshed. Closing the dialog cancels the checks still open (`cancel_verify`); an NZB already being fetched finishes and is stored.
+- **(d) `invalid_response` on an NZB fetch is the candidate's fault (section 9, step 3).** Whoever reported it, Prowlarr or the indexer, a body that is no usable NZB marks only that candidate, which is not fetched again for 7 days, and the walk continues with the next candidate from the same indexer. Other indexer-scope failures stop fetching from that indexer as planned; other Prowlarr-scope failures end the walk.
+- **(e) Other differences found in the code:**
+  - The freshness table (section 8) has an extra row: a candidate whose fetch failed and may not be retried yet makes the source `lookup_failed`, fresh for 7 days like other candidate states; at its retry time the candidate counts as unchecked again.
+  - The early stop ignores a strong candidate that is already graded or rejected.
+  - Without a release group the ladder is up to three sized title queries; without a title it is the sized group alone.
+  - A verify after a search that was not explicit runs only while the source is `unverified`. A source with graded, unproven candidates is checked further only by **Search again**, which also verifies a `no_match` or `lookup_failed` source.
+  - **Check now** in release details sends a `verify` row, so it fetches one NZB, not three.
+  - A Newznab error code 501 (download limit reached) is read as `rate_limited`.
+  - Prowlarr's grab limit is read (`grabLimitPerDay`) but does not cap fetches; only `prowlarr_fetch_limit` and Prowlarr's own 429 do. The `tvSearchParams` and `movieSearchParams` capabilities are parsed and not used, as ID search is deferred. `limitsUnit` is mapped as Day = 0 and Hour = 1.
+  - With `prowlarr_search_limit` at 0, half of the indexer's own query limit in Prowlarr still applies to background searches.
+  - `prowlarr_usage` entries also carry `next_fetch_seconds` when no fetch is left.
+  - Changing `prowlarr_background_search`, `prowlarr_search_limit` or `tracker_mode` restarts the sweep. A limit change still invalidates nothing.
+  - `invalidateUsenetSearch` also runs at startup, and it keeps the data of the configured URL and key whether or not Prowlarr is enabled, so turning Prowlarr off keeps its results.
+  - The NZB store removes an NZB no record names only after a 10-minute grace, checks each file's SHA-256 on read, and never drops a checked or rejected candidate to keep a record at 20.
+  - An active ledger record, whose sources pruning keeps, is one not removed and, when its import is followed, not imported; an unfollowed record stays active until its download is `complete` or `seeding`.
+  - `GET /api/prowlarr/search-status` serves the expected searches and the latest sweep summary for the settings card.
 
 ## 1. Evidence
 
@@ -32,7 +71,7 @@ Measured on 2026-11-26 from the saved scan results and Usenet cache of a real in
 
 ### Prowlarr behavior, read from its source
 
-Read from the `develop` branch of Prowlarr. Phase 0 confirms each point against a running instance.
+Read from the `develop` branch of Prowlarr. Phase 0 confirms each point against a running instance. Phase 0 has not run, so none of these points is confirmed (section 20).
 
 | Fact | Source | Consequence |
 | --- | --- | --- |
@@ -411,7 +450,7 @@ In `server/usenet-prefetch.ts`:
 
 ## 12. Outcome feedback (G18)
 
-- When a scan after a finished download shows the target season's release group in `mismatched_by_part`, and the ledger record has `provider: 'prowlarr'` and a proof other than `exact`, mark the candidate `rejected` in the search store.
+- When a scan after a finished download shows the target season's release group in `mismatched_by_part`, and the ledger record has `provider: 'prowlarr'` and a proof other than `exact`, mark the candidate `rejected` in the search store. *(Built with a size guard: the part's library size must also differ from the size recorded when the download was sent. See deviation (a).)*
 - A rejected candidate is never ranked, verified or reported as available again. The source returns to `no_match` with its candidates, so the next search can try another one.
 - Set the record's import message to "The downloaded files are not the release SeaDex lists; their sizes differ." Report it through the existing import-problem notification, with a new `ImportProblem.state` of `'mismatch'`.
 - A confirmed import changes nothing in the store.
@@ -421,7 +460,7 @@ In `server/usenet-prefetch.ts`:
 `TrackerMode` gains `'reachable'`, labelled **Include private trackers Prowlarr can reach**.
 
 - A private-tracker release counts as obtainable when Prowlarr has a private torrent indexer for its tracker (`trackerIndexers`).
-- In `assessSeason`, when the part's chosen target is not obtainable and a public release is listed, the target becomes the public pick: `pickBest` over the downloadable candidates, taking a best-flagged one when there is one and otherwise an alternative. Status is judged against that target.
+- In `assessSeason`, when the part's chosen target is not obtainable and a public release is listed, the target becomes the public pick: `pickBest` over the downloadable candidates, taking a best-flagged one when there is one and otherwise an alternative. Status is judged against that target. *(Built over every obtainable candidate, covered private trackers included. See deviation (b).)*
 - The unreachable release stays listed with its own `kind`, is never the target, and carries a note such as "Best release is on AB, which Prowlarr cannot reach". A Usenet copy of it can still be searched and downloaded from release details.
 - When the part lists no public release at all, nothing changes: the private release stays the target.
 - The scan reads the covered trackers once at its start. `assessmentSignature` in `server/scan.ts` includes the mode and the sorted covered trackers, so a change of coverage makes the next scan a baseline. When Prowlarr cannot be read, the scan reuses the covered trackers of the saved signature.
@@ -724,21 +763,44 @@ Live acceptance, with the user's consent and an isolated data directory:
 3. One bulk review of three unsearched releases, watching Prowlarr's history for exactly one grab each.
 4. One background sweep, comparing its query count with Prowlarr's history.
 
-Record here what was confirmed live and what was not.
+### What was verified
+
+The four commands above, with `npm test` covering the phase tests. They are in the new files `tests/prowlarr-client.test.ts`, `tests/usenet-search.test.ts`, `tests/usenet-search-store.test.ts`, `tests/usenet-search-sweep.test.ts`, `tests/nzb-grading.test.ts`, `tests/usenet-review.test.ts` and `tests/frontend-usenet.test.ts`, and in the updated `tests/prowlarr.test.ts`, `tests/usenet-discovery.test.ts`, `tests/usenet-prefetch.test.ts`, `tests/usenet-cache.test.ts`, `tests/import-follow.test.ts`, `tests/release-preferences.test.ts`, `tests/library-instances.test.ts`, `tests/frontend-api.test.ts`, `tests/frontend-store.test.ts` and `tests/browser-smoke.mjs`. Prowlarr answers and NZBs are fixtures built in the test files, not sanitized live responses. Results: see below.
+
+### Verified
+
+`npm run format:check`, `npm run typecheck`, `npm test` and `npm run test:browser` were run on 2026-11-27.
+
+- `npm run format:check`: clean.
+- `npm run typecheck`: server and frontend clean.
+- `npm test`: 713 tests, 713 pass.
+- `npm run test:browser`: all 34 sections pass. One of three runs failed once on a focus check in release details (`.release-row[data-owned] .release-download-button`) and passed on the next two runs; it looks like a timing flake and was not investigated further.
+
+### Not verified live
+
+None of the live acceptance steps above was run: not the phase 0 checks, not a live search, verify and submission to SABnzbd, not a bulk review against a real Prowlarr, and not a background sweep compared with Prowlarr's history. Every Prowlarr behavior in section 1 that was read from its source therefore remains unconfirmed, in particular:
+
+- the per-indexer Newznab endpoint (`/{id}/api`) with authentication by the `X-Api-Key` header;
+- `files`, `grabs` and `pubDate` on its results;
+- a 429 with `Retry-After` from an indexer at its query or grab limit, and a Usenet download that redirects to the indexer;
+- the numeric values of `baseSettings.limitsUnit` (built as Day = 0, Hour = 1).
+
+The calibration condition of phase 5 is open: no exact match from the installation's own indexers has been graded, so the accepted ratio range is still the one derived from AnimeTosho's posts. The gate after phase 4 was not held.
 
 ## 21. Documentation and definition of done
 
 - **[README.md](../README.md):** rewrite **Private-tracker releases through Prowlarr** and the Usenet paragraph for users. Cover that search results are kept across restarts, what the proof labels mean, that bulk download checks one NZB per release within the daily limit, the background search setting and the two limits, and the third tracker choice under **Release preferences**. Keep implementation detail out, as [AGENTS.md](../AGENTS.md) requires.
 - **[maintainability.md](maintainability.md):** the two scheduler instances and adaptive spacing; `usenet_search.json` and `nzb_store/` with their freshness, flush and pruning rules; the proof levels; the `reachable` signature.
 - **[usenet-implementation-plan.md](usenet-implementation-plan.md):** mark the replaced decisions in section 16 as amended, with a link here.
-- **This document:** set the status to implemented per phase, and fill in section 20.
+- **This document:** set the status to implemented per phase, and fill in section 20. *(Done; see the status table and deviations under "Purpose and status".)*
 
 Done means: every phase's tests pass, the commands in section 20 pass, the documents above are current, and the live claims that could not be verified are listed.
 
 ## 22. Evidence limits and open points
 
-- Prowlarr's behavior was read from its `develop` branch, not observed on the installed 3.0.2. Phase 0 settles it.
-- The size ratio was measured on AnimeTosho's own posts only. Section 9's calibration settles the range for other posters.
-- How often the installation's indexers return a candidate is unknown. The gate after phase 4 settles it.
-- Decisions 3 to 6 in section 2 are recommendations awaiting the user's confirmation.
-- The coverage figures describe one library on one day. Rerun the measurement after phase 4 to compare.
+- Prowlarr's behavior was read from its `develop` branch, not observed on the installed 3.0.2. Phase 0 settles it and has not run. If the Newznab endpoint turns out unusable, the fallback in section 6 still has to be built.
+- The size ratio was measured on AnimeTosho's own posts only. Section 9's calibration settles the range for other posters. The INFO log line it needs is in place; no exact match from the installation's indexers has been logged yet.
+- How often the installation's indexers return a candidate is unknown. The gate after phase 4 settles it. Once the user turns on the background search, the sweep summary in the Prowlarr settings card and the server log provide the figures.
+- Decisions 3 to 6 in section 2 were built as recommended and still await the user's confirmation.
+- The coverage figures describe one library on one day. The measurement has not been rerun after phase 4.
+- Prowlarr's grab limit is read but does not cap Companion's fetches (deviation (e)). Whether it should depends on how Prowlarr counts redirected grabs, which phase 0 would show.

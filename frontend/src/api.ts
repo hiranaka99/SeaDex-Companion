@@ -32,7 +32,13 @@ export type {
   PreflightBlocked,
   SubmissionRow,
 } from '../../shared/download-contracts.js'
-import type { ArrScopeOptions, ConfigUpdate, ProwlarrCoverage, ReleaseChange } from '../../shared/contracts.js'
+import type {
+  ArrScopeOptions,
+  ConfigUpdate,
+  ProwlarrCoverage,
+  ProwlarrSearchStatus,
+  ReleaseChange,
+} from '../../shared/contracts.js'
 import type { AuthState, Config, ResultItem, ScanHistoryEntry, ScannedDataInfo, Status } from './types.js'
 import type { UpdateInfo, UpdateStatus } from '../../shared/update-contracts.js'
 
@@ -114,6 +120,10 @@ export const getProwlarrCoverage = (trackers: string[]) =>
   api<{ ok: boolean; coverage: ProwlarrCoverage }>(
     `/api/prowlarr/coverage?trackers=${encodeURIComponent(trackers.join(','))}`,
   ).then(response => response.coverage)
+
+/** What a background search of the current library would cost, and what the latest one found. */
+export const getProwlarrSearchStatus = () =>
+  api<{ ok: boolean; status: ProwlarrSearchStatus }>('/api/prowlarr/search-status').then(response => response.status)
 
 export const getConfig = () =>
   api<Config>('/api/config').then(config => {
@@ -264,7 +274,7 @@ export type {
   UsenetHashAvailability,
   UsenetUnitState,
 } from '../../shared/usenet-contracts.js'
-import type { UsenetAvailabilityResponse } from '../../shared/usenet-contracts.js'
+import type { UsenetAvailabilityRequest, UsenetAvailabilityResponse } from '../../shared/usenet-contracts.js'
 
 let allDownloadProgressRequest: Promise<AllDownloadProgress> | null = null
 
@@ -307,23 +317,54 @@ export const preflightDownload = (selections: SelectionInput[], refresh = false,
     null,
   )
 
+/** Work an availability request starts or stops for some of its rows. An empty list is left out of the request. */
+export type UsenetAvailabilityWork = Pick<UsenetAvailabilityRequest, 'search' | 'verify' | 'cancel_verify'>
+
+const rowRefs = (rows: { key: string; release: number }[] | undefined) =>
+  rows?.length ? rows.map(({ key, release }) => ({ key, release })) : undefined
+
 export const usenetAvailability = (
   selections: SelectionInput[],
   refresh = false,
   signal?: AbortSignal,
-  /** Rows to search Prowlarr for now; each checked NZB counts toward an indexer's download limit. */
-  search?: { key: string; release: number }[],
+  /**
+   * `search`: rows to search Prowlarr for now, checking up to three NZBs each. `verify`: rows selected for
+   * download, whose best candidate is checked. Every checked NZB counts toward an indexer's download limit.
+   * `cancel_verify`: rows whose queued check is no longer wanted.
+   */
+  work: UsenetAvailabilityWork = {},
+  init: Pick<RequestInit, 'keepalive'> = {},
 ) =>
   api<UsenetAvailabilityResponse>(
     '/api/usenet/availability',
     {
+      ...init,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ selections, refresh: refresh || undefined, search: search?.length ? search : undefined }),
+      body: JSON.stringify({
+        selections,
+        refresh: refresh || undefined,
+        search: rowRefs(work.search),
+        verify: rowRefs(work.verify),
+        cancel_verify: rowRefs(work.cancel_verify),
+      }),
       signal,
     },
     null,
   )
+
+/**
+ * Tells the server that nobody waits for these checks any more. Nothing depends on the answer: a check that
+ * already fetches its NZB finishes, and one still queued is dropped.
+ */
+export const cancelUsenetChecks = (rows: SelectionInput[]): void => {
+  if (!rows.length) return
+  const selections = rows.map(({ key, release, identity }) => ({ key, release, identity }))
+  // `keepalive` lets the request outlive a page that is being closed.
+  void usenetAvailability(selections, false, undefined, { cancel_verify: selections }, { keepalive: true }).catch(
+    () => {},
+  )
+}
 
 let usenetAvailabilityRevision = 0
 const usenetAvailabilitySubscribers = new Set<() => void>()

@@ -58,7 +58,10 @@ export function toDownloadEntry(p: DownloadProgress): DownloadEntry {
 
 /** A finished download that still needs the person's attention or is waiting on Sonarr or Radarr. */
 export const importUnsettled = (entry: Pick<DownloadEntry, 'import'>) =>
-  entry.import?.state === 'pending' || entry.import?.state === 'blocked' || entry.import?.state === 'not_imported'
+  entry.import?.state === 'pending' ||
+  entry.import?.state === 'blocked' ||
+  entry.import?.state === 'not_imported' ||
+  entry.import?.state === 'mismatch'
 
 /** What happened to a finished download in Sonarr or Radarr, in words and a tone; null while it is still downloading. */
 export function importStatus(
@@ -75,6 +78,8 @@ export function importStatus(
       tone: 'text-warn',
       alert: true,
     }
+  if (state.state === 'mismatch')
+    return { text: 'Not the release SeaDex lists', detail: state.message, tone: 'text-bad', alert: true }
   return { text: `Not imported by ${state.app}`, detail: state.message, tone: 'text-bad', alert: true }
 }
 

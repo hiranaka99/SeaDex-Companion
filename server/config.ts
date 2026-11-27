@@ -61,6 +61,9 @@ export const DEFAULT_CONFIG: Config = {
   prowlarr_enabled: false,
   prowlarr_url: '',
   prowlarr_key: '',
+  prowlarr_background_search: false,
+  prowlarr_search_limit: 100,
+  prowlarr_fetch_limit: 20,
   webhook: '',
   notify_enabled: true,
   notify_import_problems: true,
@@ -314,6 +317,7 @@ export function applyConfigUpdate(config: Config, input: unknown): Config {
     'animetosho_enabled',
     'amenzb_enabled',
     'prowlarr_enabled',
+    'prowlarr_background_search',
     'verify_release_files',
     'arr_tags_enabled',
   ] as const) {
@@ -321,6 +325,16 @@ export function applyConfigUpdate(config: Config, input: unknown): Config {
       if (typeof data[key] !== 'boolean') throw new Error(`${key} must be a boolean`)
       next[key] = data[key]
     }
+  }
+  for (const [key, max] of [
+    ['prowlarr_search_limit', 10_000],
+    ['prowlarr_fetch_limit', 1_000],
+  ] as const) {
+    if (!(key in data)) continue
+    const limit = typeof data[key] === 'string' && data[key].trim() ? Number(data[key]) : data[key]
+    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0 || limit > max)
+      throw new Error(`${key} must be a whole number from 0 to ${max}`)
+    next[key] = limit
   }
   if ('datetime_format' in data) {
     const raw = String(data.datetime_format ?? '').trim()

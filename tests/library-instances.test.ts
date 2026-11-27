@@ -511,6 +511,22 @@ test('saved results are stale once scope, instances, or release preferences chan
   )
   assert.equal(resultSettingsChanged({ ...config, verify_release_files: false }, { count: 3 }), true)
   assert.equal(resultSettingsChanged(publicOnly, saved), true, 'Switching tracker mode makes results stale')
+  // Reachable-tracker results also record the trackers Prowlarr covered. Only a scan reads Prowlarr, so results
+  // are never stale for what it covers now.
+  const reachable = { ...config, tracker_mode: 'reachable' as const }
+  const savedReachable = {
+    count: 3,
+    settings: { ...saved.settings, assessment: assessmentSignature(reachable, ['ab']) },
+  }
+  assert.equal(resultSettingsChanged(reachable, saved), true)
+  assert.equal(resultSettingsChanged(reachable, { count: 3 }), true)
+  assert.equal(resultSettingsChanged(reachable, savedReachable), false)
+  assert.equal(resultSettingsChanged(config, savedReachable), true)
+  assert.equal(
+    resultSettingsChanged({ ...reachable, verify_release_files: false }, savedReachable),
+    true,
+    'Other settings still make reachable-tracker results stale',
+  )
   assert.equal(
     resultSettingsChanged({ ...config, release_preferences: { ...config.release_preferences, strict: true } }, saved),
     true,

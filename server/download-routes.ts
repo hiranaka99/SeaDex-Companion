@@ -12,8 +12,11 @@ import { readJson, sendJson } from './http-response.js'
 import { log } from './logging.js'
 import { route, type Route } from './router.js'
 import { sabnzbdConfigured, usenetAvailability } from './usenet.js'
+import { prowlarrIndexerUsage } from './usenet-search.js'
+import { usenetSearchStatus } from './usenet-prefetch.js'
 import { privateSearchSettings, prowlarrCoverage, prowlarrSettings } from './prowlarr.js'
 import { applyUserRulesToResults } from './user-rules.js'
+import type { DownloadSelection } from '../shared/download-contracts.js'
 import { errorMessage } from '../shared/errors.js'
 import { asRecord } from '../shared/guards.js'
 import type { JsonObject, ResultItem } from './types.js'
@@ -33,6 +36,11 @@ function readPlan(body: JsonObject): StoredPlan {
       ok: false,
     })
   return plan
+}
+
+/** Rows an availability request names for a Prowlarr search, a check or its cancellation; none when left out. */
+function rowList(value: unknown): DownloadSelection[] {
+  return Array.isArray(value) && value.length ? parseSelections(value) : []
 }
 
 function acknowledgeFlags(body: JsonObject): AcknowledgeFlags {
@@ -89,16 +97,20 @@ export const downloadRoutes: Route[] = [
     const body = await readJson(request)
     const selections = parseSelections(body.selections)
     const config = loadConfig()
+    const results = await usenetAvailability(config, selections, currentResults(), {
+      refresh: body.refresh === true,
+      search: rowList(body.search),
+      verify: rowList(body.verify),
+      cancelVerify: rowList(body.cancel_verify),
+    })
     sendJson(response, 200, {
       ok: true,
       config_generation: currentGeneration(),
       providers_enabled: { animetosho: config.animetosho_enabled, amenzb: config.amenzb_enabled },
       prowlarr_configured: privateSearchSettings(config) !== null,
       sabnzbd_configured: sabnzbdConfigured(config),
-      results: await usenetAvailability(config, selections, currentResults(), {
-        refresh: body.refresh === true,
-        search: Array.isArray(body.search) && body.search.length ? parseSelections(body.search) : [],
-      }),
+      results,
+      ...(prowlarrSettings(config) ? { prowlarr_usage: prowlarrIndexerUsage(config) } : {}),
     })
   }),
   // One reviewed release, answered once every source it needs has settled.
@@ -165,6 +177,10 @@ export const downloadRoutes: Route[] = [
       throw new HttpError(502, errorMessage(error), { ok: false })
     }
   }),
+  // What a background search of the current results would cost, and what the latest sweep found. Never waits for Prowlarr.
+  route('GET', '/api/prowlarr/search-status', async ({ response }) =>
+    sendJson(response, 200, { ok: true, status: usenetSearchStatus(loadConfig(), currentResults()) }),
+  ),
   route('GET', '/api/download_bulk/status', sendJob(undefined)),
   route('GET', '/api/download-jobs', sendJob(undefined)),
   route('GET', '/api/download-jobs/latest', sendJob(undefined)),
