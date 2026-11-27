@@ -7,7 +7,7 @@ import { VIDEO_FILE } from '../shared/releases.js'
 import { normalizeTorrentPath } from '../shared/download-plan.js'
 import { isRecord } from '../shared/guards.js'
 import type { UsenetProof } from '../shared/usenet-contracts.js'
-import { listOf, safeByteSize, validateNzbBytes } from './usenet-provider-types.js'
+import { listOf, safeByteSize, validateNzbBytes } from './newznab-xml.js'
 
 export interface SourceFile {
   name: string

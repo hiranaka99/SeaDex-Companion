@@ -14,15 +14,16 @@ import type {
 } from '../shared/usenet-contracts.js'
 import type { SourceFile } from './source-files.js'
 import { searchNzbBytes, usenetSearchPauses } from './usenet-search.js'
-import { LOOKUP_TIMEOUT_MS, type ProviderLookup, type ProviderSettings } from './usenet-provider-types.js'
+import { LOOKUP_TIMEOUT_MS } from './provider-http.js'
+import type { ProviderLookup, ProviderSettings } from './usenet-provider-types.js'
 import { PersistentUsenetCache, providerFingerprint, usenetCacheKey } from './usenet-cache.js'
 import { providerSettings, USENET_PROVIDER_IDS, USENET_PROVIDERS } from './usenet-providers.js'
+import { FlightTable, LookupEpoch, WarningThrottle, type Flight } from './lookup-flights.js'
 import {
   LookupScheduler,
   ProviderPausedError,
   TRANSIENT_CODES,
   type ChannelPause,
-  type LookupHandle,
   type LookupOutcome,
   type LookupPacing,
 } from './usenet-scheduler.js'
@@ -80,12 +81,9 @@ export function sabnzbdConfigured(config: Config): boolean {
 }
 
 /** Provider failure warnings repeat at most once per minute per provider; sweeps must not spam the log. */
-const lastFailureLogged = new Map<UsenetProvider, { at: number; message: string }>()
+const warnings = new WarningThrottle()
 function logProviderFailure(provider: UsenetProvider, message: string): void {
-  const previous = lastFailureLogged.get(provider)
-  if (previous && previous.message === message && Date.now() - previous.at < MINUTE) return
-  lastFailureLogged.set(provider, { at: Date.now(), message })
-  log('WARNING', `Usenet provider lookup failed (${provider}): ${message}`)
+  warnings.warn(provider, `Usenet provider lookup failed (${provider}): ${message}`)
 }
 
 /** An error no provider client classified: logged in bounded form and reported as a network failure. */
@@ -98,41 +96,16 @@ function unexpectedFailure(provider: UsenetProvider, error: unknown): ProviderLo
 type LookupResult = { kind: 'settled'; lookup: ProviderLookup; checkedAt: number } | typeof CANCELLED
 const CANCELLED = { kind: 'cancelled' } as const
 
-/** One provider lookup of one hash, across the attempts it takes. */
-interface Lookup {
-  controller: AbortController
-  /** Background work until someone waits on it. */
-  background: boolean
-  /** The attempt waiting for or holding a slot. */
-  attempt?: LookupHandle<ProviderLookup>
-}
-interface Flight extends Lookup {
-  promise: Promise<LookupResult>
-}
-
-/** Someone now waits on a lookup that started in the background. */
-function promote(lookup: Lookup): void {
-  lookup.background = false
-  lookup.attempt?.promote()
-}
-interface RefreshChain {
-  promise: Promise<UsenetHashAvailability>
-  cancelled: boolean
-}
-
 const cache = new PersistentUsenetCache()
-let inFlight = new Map<string, Flight>()
-let refreshChains = new Map<string, RefreshChain>()
-/** Bumped when provider configuration changes; results of older work are discarded. */
-let lookupEpoch = 0
+/** Invalidated when provider configuration changes; results of older work are discarded. */
+const lookupEpoch = new LookupEpoch()
+/** One provider lookup of one hash, across the attempts it takes, by cache key. */
+const lookups = new FlightTable<LookupResult>(lookupEpoch)
+/** The background refresh of one hash across its providers, by `refreshKey`. */
+const refreshes = new FlightTable<UsenetHashAvailability>(lookupEpoch)
 
 function cancelUsenetWork(): void {
-  lookupEpoch++
-  const cancelled = inFlight
-  inFlight = new Map()
-  for (const chain of refreshChains.values()) chain.cancelled = true
-  refreshChains = new Map()
-  for (const flight of cancelled.values()) flight.controller.abort()
+  lookupEpoch.invalidate()
 }
 
 export function invalidateUsenetLookups(config: Config): void {
@@ -151,7 +124,7 @@ export function resetUsenetLookups(restoreFromDisk = false): void {
   cancelUsenetWork()
   cache.reset(restoreFromDisk)
   usenetScheduler.reset()
-  lastFailureLogged.clear()
+  warnings.clear()
 }
 
 export function flushUsenetCache(): boolean {
@@ -178,34 +151,33 @@ const UNEXPECTED: LookupOutcome = { kind: 'failed', code: 'network' }
 
 /** Schedules attempts until the provider answers. Background work waits out a pause rather than recording a transient failure. */
 async function runLookup(
-  lookup: Lookup,
+  flight: Flight<LookupResult>,
   provider: UsenetProvider,
   settings: ProviderSettings,
   hash: string,
 ): Promise<ProviderLookup | { kind: 'cancelled' }> {
-  const { signal } = lookup.controller
+  const { signal } = flight
   for (let attempt = 1; ; attempt++) {
     let answer: ProviderLookup
     try {
-      lookup.attempt = usenetScheduler.schedule({
-        channel: provider,
-        background: lookup.background,
-        signal,
-        guardMs: LOOKUP_GUARD_MS,
-        work: () => USENET_PROVIDERS[provider].lookup(settings, hash),
-        outcome: settled => (settled.ok ? settled.value : UNEXPECTED),
-      })
-      answer = await lookup.attempt.result
+      answer = await flight.wait(
+        usenetScheduler.schedule({
+          channel: provider,
+          background: flight.background,
+          signal,
+          guardMs: LOOKUP_GUARD_MS,
+          work: () => USENET_PROVIDERS[provider].lookup(settings, hash),
+          outcome: settled => (settled.ok ? settled.value : UNEXPECTED),
+        }),
+      )
     } catch (error) {
       if (error instanceof ProviderPausedError) return usenetScheduler.pausedFailure(provider, error.until)
       if (signal.aborted) return CANCELLED
       answer = unexpectedFailure(provider, error)
-    } finally {
-      lookup.attempt = undefined
     }
     const retry =
       answer.kind === 'failed' &&
-      lookup.background &&
+      flight.background &&
       attempt < BACKGROUND_ATTEMPTS &&
       TRANSIENT_CODES.has(answer.code) &&
       usenetScheduler.isPaused(provider)
@@ -230,80 +202,61 @@ async function providerLookup(
     }
   const fingerprint = providerFingerprint(provider, connection)
   const key = usenetCacheKey(provider, fingerprint, hash)
-  if (refresh) inFlight.get(key)?.controller.abort()
-  else {
-    const running = inFlight.get(key)
-    if (running) {
-      if (!background) promote(running)
-      return running.promise
-    }
+  // A refresh starts a lookup of its own, which cancels the one running.
+  if (!refresh) {
+    const running = lookups.join(key, background)
+    if (running) return running.promise
     const hit = cache.get(key)
     if (hit?.failure && Date.now() < hit.retryAt) return { kind: 'settled', lookup: hit.failure, checkedAt: 0 }
     if (hit?.lookup && !hit.failure && Date.now() - hit.checkedAt < ttlFor(hit.lookup, hit.negativeStreak))
       return { kind: 'settled', lookup: hit.lookup, checkedAt: hit.checkedAt }
   }
-  const controller = new AbortController()
-  const settings: ProviderSettings = { ...connection, signal: controller.signal }
-  const epoch = lookupEpoch
-  const state: Lookup = { controller, background }
-  const flight: Flight = Object.assign(state, {
-    promise: runLookup(state, provider, settings, hash)
-      .then((lookup): LookupResult => {
-        if (
-          lookup.kind === 'cancelled' ||
-          inFlight.get(key) !== flight ||
-          lookupEpoch !== epoch ||
-          controller.signal.aborted
-        )
-          return CANCELLED
-        const at = Date.now()
-        const previous = cache.get(key)
-        if (lookup.kind === 'failed') {
-          // A failed refresh keeps the previous observation next to the retry state.
-          logProviderFailure(provider, lookup.message)
-          const retryAt =
-            at + Math.max(FAILURE_TTL_MS, lookup.retry_after_ms || 0, usenetScheduler.pausedUntil(provider) - at)
-          cache.set(
-            {
-              provider,
-              fingerprint,
-              hash,
-              checkedAt: previous?.checkedAt || 0,
-              lastAttemptAt: at,
-              retryAt,
-              ...(previous?.lookup ? { lookup: previous.lookup } : {}),
-              failure: lookup,
-              ...(previous?.negativeStreak ? { negativeStreak: previous.negativeStreak } : {}),
-            },
-            connection,
-          )
-          controller.abort()
-          return { kind: 'settled', lookup, checkedAt: 0 }
-        }
-        const negativeStreak = isAbsence(lookup)
-          ? (isAbsence(previous?.lookup) ? previous?.negativeStreak || 1 : 0) + 1
-          : 0
+  return lookups.start(key, { background }, flight =>
+    runLookup(flight, provider, { ...connection, signal: flight.signal }, hash).then((lookup): LookupResult => {
+      if (lookup.kind === 'cancelled' || !flight.current) return CANCELLED
+      const at = Date.now()
+      const previous = cache.get(key)
+      if (lookup.kind === 'failed') {
+        // A failed refresh keeps the previous observation next to the retry state.
+        logProviderFailure(provider, lookup.message)
+        const retryAt =
+          at + Math.max(FAILURE_TTL_MS, lookup.retry_after_ms || 0, usenetScheduler.pausedUntil(provider) - at)
         cache.set(
           {
             provider,
             fingerprint,
             hash,
-            checkedAt: at,
+            checkedAt: previous?.checkedAt || 0,
             lastAttemptAt: at,
-            retryAt: 0,
-            lookup,
-            ...(negativeStreak ? { negativeStreak } : {}),
+            retryAt,
+            ...(previous?.lookup ? { lookup: previous.lookup } : {}),
+            failure: lookup,
+            ...(previous?.negativeStreak ? { negativeStreak: previous.negativeStreak } : {}),
           },
           connection,
         )
-        return { kind: 'settled', lookup, checkedAt: at }
-      })
-      .finally(() => {
-        if (inFlight.get(key) === flight) inFlight.delete(key)
-      }),
-  })
-  inFlight.set(key, flight)
-  return flight.promise
+        flight.abort()
+        return { kind: 'settled', lookup, checkedAt: 0 }
+      }
+      const negativeStreak = isAbsence(lookup)
+        ? (isAbsence(previous?.lookup) ? previous?.negativeStreak || 1 : 0) + 1
+        : 0
+      cache.set(
+        {
+          provider,
+          fingerprint,
+          hash,
+          checkedAt: at,
+          lastAttemptAt: at,
+          retryAt: 0,
+          lookup,
+          ...(negativeStreak ? { negativeStreak } : {}),
+        },
+        connection,
+      )
+      return { kind: 'settled', lookup, checkedAt: at }
+    }),
+  ).promise
 }
 
 /** One provider's lookup as the availability state of a source hash. The caller fills in the hash. */
@@ -410,13 +363,13 @@ export async function resolveUsenetHash(
     error_code: 'network',
     error: 'lookup cancelled',
   }
-  const epoch = lookupEpoch
+  const current = lookupEpoch.stamp()
   const queried: UsenetHashAvailability[] = []
   for (const provider of USENET_PROVIDER_IDS) {
     if (!USENET_PROVIDERS[provider].usable(config)) continue
     if (!ownsWork()) return cancelled
     const result = await providerLookup(config, provider, hash, refresh, background)
-    if (result.kind === 'cancelled' || epoch !== lookupEpoch || !ownsWork()) return cancelled
+    if (result.kind === 'cancelled' || !current() || !ownsWork()) return cancelled
     const state = {
       ...hashState(provider, result.lookup),
       hash,
@@ -447,29 +400,16 @@ function scheduleHashRefresh(config: Config, hash: string, refresh: boolean, bac
   const keys = configuredProviderKeys(config, hash)
   if (!INFO_HASH_PATTERN.test(hash) || !keys.length) return
   const key = refreshKey(config, hash)
-  const previous = refreshChains.get(key)
-  if (previous && !refresh) {
+  if (refreshes.has(key) && !refresh) {
     // Someone is now waiting on work that started in the background.
-    if (!background)
-      for (const entry of keys) {
-        const running = inFlight.get(entry.key)
-        if (running) promote(running)
-      }
+    if (!background) for (const entry of keys) lookups.join(entry.key, false)
     return
   }
-  if (refresh) {
-    if (previous) previous.cancelled = true
-    for (const entry of keys) inFlight.get(entry.key)?.controller.abort()
-  }
-  const chain: RefreshChain = {
-    cancelled: false,
-    promise: Promise.resolve()
-      .then(() => resolveUsenetHash(config, hash, refresh, background, () => !chain.cancelled))
-      .finally(() => {
-        if (refreshChains.get(key) === chain) refreshChains.delete(key)
-      }),
-  }
-  refreshChains.set(key, chain)
+  // A refresh cancels the refresh it replaces, and the lookups that one waits on.
+  if (refresh) for (const entry of keys) lookups.get(entry.key)?.abort()
+  const chain = refreshes.start(key, { background }, flight =>
+    resolveUsenetHash(config, hash, refresh, background, () => flight.current),
+  )
   void chain.promise.catch(error =>
     log('WARNING', `Usenet availability refresh failed: ${error instanceof Error ? error.message : 'unknown error'}`),
   )
@@ -496,7 +436,7 @@ function hashSnapshot(config: Config, hash: string): { result: UsenetHashAvailab
       hash,
       checked_at: isoTime(record?.checkedAt),
       stale,
-      refreshing: inFlight.has(key),
+      refreshing: lookups.has(key),
       ...(record?.failure ? { refresh_error: record.failure.message.slice(0, 200) } : {}),
     }
     queried.push(state)
@@ -522,7 +462,7 @@ export function observeUsenetHash(
   }
   return {
     ...snapshot.result,
-    refreshing: snapshot.result.refreshing === true || refreshChains.has(refreshKey(config, hash)),
+    refreshing: snapshot.result.refreshing === true || refreshes.has(refreshKey(config, hash)),
   }
 }
 
