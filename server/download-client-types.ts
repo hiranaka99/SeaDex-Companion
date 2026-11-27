@@ -1,13 +1,18 @@
 import { HttpError } from './http-error.js'
 import type { OwnedDownloadRecord } from './download-store.js'
 import type { SourceFile } from './source-files.js'
+import type { Release, ResultItem } from './types.js'
+import type { PrivateSearchContext } from './private-sources.js'
+import type { CopyIntent } from './usenet-copies.js'
 import type {
   DiskSpaceCheck,
   DownloadCapabilities,
   DownloadClient,
   DownloadPhase,
   DownloadProtocol,
+  DownloadSelectionRef,
   PlannedUnit,
+  PreflightBlocked,
 } from '../shared/download-contracts.js'
 
 export const CLIENT_FOR_PROTOCOL: Record<DownloadProtocol, DownloadClient> = {
@@ -31,12 +36,29 @@ export class OwnershipError extends HttpError {
   }
 }
 
-/** One client submission as planned by a review, with what only the server needs to carry it out. */
-export interface SubmissionUnit extends PlannedUnit {
-  /** Files the selections asked for; empty means the whole source. */
-  requestedPaths: string[]
+/**
+ * One client submission as planned by a review, with what only the server needs to carry it out. `send` holds what
+ * only the unit's own client reads; review and submission never look inside it.
+ */
+export interface SubmissionUnit<Send = unknown> extends PlannedUnit {
   /** Sending this unit needs the user's whole-source acknowledgement. */
   requiresAck: boolean
+  /**
+   * Identity of the release behind the unit, when it differs from `source_hash`: a private-tracker torrent and
+   * its Usenet copy are the same source, so one review must not send both.
+   */
+  sourceAlias?: string
+  send: Send
+}
+
+export interface TorrentSend {
+  /** Files the selections asked for; empty means the whole source. */
+  requestedPaths: string[]
+  /** The checked .torrent file of a private-tracker release; qBittorrent receives it instead of a magnet. */
+  torrentFile?: Uint8Array
+}
+
+export interface UsenetSend {
   /** Provider entry the NZB is fetched from. */
   entryId?: string
   /**
@@ -44,14 +66,78 @@ export interface SubmissionUnit extends PlannedUnit {
    * it has to be fetched again for the submission: its stored bytes are gone.
    */
   sourceFiles?: SourceFile[]
-  /** The checked .torrent file of a private-tracker release; qBittorrent receives it instead of a magnet. */
-  torrentFile?: Uint8Array
-  /**
-   * Identity of the release behind the unit, when it differs from `source_hash`: a private-tracker torrent and
-   * its Usenet copy are the same source, so one review must not send both.
-   */
-  sourceAlias?: string
 }
+
+export type TorrentUnit = SubmissionUnit<TorrentSend> & { protocol: 'torrent' }
+export type UsenetUnit = SubmissionUnit<UsenetSend> & { protocol: 'usenet' }
+
+/** Who plans: what a Usenet copy may cost is the resolver's budget for that intent (see `CopyIntent`). */
+export type PlanIntent = Extract<CopyIntent, 'single_review' | 'bulk_review' | 'acceptance'>
+
+/** A selected release a review validated for one client, ready to be turned into that client's units. */
+export interface UnitRow extends DownloadSelectionRef {
+  source: Release
+  /** The library result the release belongs to. */
+  result: ResultItem
+  category: string
+  label: string
+  /** Prowlarr search terms for this release: titles, release group, tracker and categories. */
+  search: PrivateSearchContext
+  /** An unproven NZB the user chose for this private-tracker release. */
+  nzb?: string
+}
+
+/** Rows a review rules out. A row keeps the first reason found for it. */
+export interface RowBlocks {
+  /** `detail` is appended to the code's standard copy; `{ reason }` replaces that copy outright. */
+  add(row: DownloadSelectionRef, code: PreflightBlocked['code'], detail?: string | { reason: string }): void
+  has(row: DownloadSelectionRef): boolean
+}
+
+/** Who already owns a source, as far as the ledger and a fresh client read can tell. */
+export interface SourceOwnership {
+  record?: OwnedDownloadRecord
+  /** An earlier send was never confirmed, or the client could not be asked. */
+  unresolved?: true
+  unreachable?: true
+}
+
+/** What a review knows once the ledger and the clients were read, handed to each client to plan its units. */
+export interface UnitPlanning {
+  presence: ClientPresence
+  ownership: (sourceId: string) => SourceOwnership
+}
+
+/** One client's planning of a review's rows, started before the ledger and the clients are read. */
+export interface UnitPlan<U extends SubmissionUnit = SubmissionUnit> {
+  /** The source IDs a row is acquired by. */
+  sources(row: UnitRow): string[]
+  /** Units for the rows still sendable, in the order they are shown; blocks the rows that cannot be sent. */
+  units(planning: UnitPlanning): Promise<U[]>
+}
+
+/** What a review asks of a client's planning, beyond the rows themselves. */
+export interface UnitReview {
+  blocks: RowBlocks
+  intent: PlanIntent
+  refresh?: boolean
+}
+
+/** Fields that tie a unit to the acquisition already covering it. */
+export function existingFields(
+  owned: OwnedDownloadRecord | undefined,
+  client: Pick<DownloadClientAdapter, 'protocol' | 'endpointId'>,
+): Pick<PlannedUnit, 'existing_record_id' | 'existing_native_id' | 'existing_unbound'> {
+  if (!owned) return {}
+  return {
+    existing_record_id: owned.id,
+    existing_native_id: owned.native_id,
+    existing_unbound: owned.protocol !== client.protocol || owned.endpoint !== client.endpointId,
+  }
+}
+
+export const unresolvedCode = (unreachable: boolean | undefined): PreflightBlocked['code'] =>
+  unreachable ? 'client_unreachable' : 'acceptance_unknown'
 
 /** What a fresh client read says about one owned download. */
 export interface LiveJob {
@@ -94,8 +180,9 @@ export interface SubmissionOwnership {
 /**
  * One download client behind the protocol-neutral review, submission, progress and control
  * flows. Everything qBittorrent- or SABnzbd-specific lives in an implementation of this.
+ * Review hands each client only its own rows, and submission only its own units.
  */
-export interface DownloadClientAdapter {
+export interface DownloadClientAdapter<U extends SubmissionUnit = SubmissionUnit> {
   readonly protocol: DownloadProtocol
   readonly client: DownloadClient
   /** Product name used in messages. */
@@ -112,13 +199,17 @@ export interface DownloadClientAdapter {
   read(records: OwnedDownloadRecord[]): Promise<ClientSnapshot>
   /** What the client holds, for duplicate protection while reviewing. Never throws. */
   presence(records: OwnedDownloadRecord[]): Promise<ClientPresence>
+  /** Turns the selected releases this client sends into its units: deduplicated, sized and scoped. */
+  planUnits(rows: UnitRow[], review: UnitReview): Promise<UnitPlan<U>>
+  /** What the ledger keeps about a unit beyond what every unit carries. */
+  recordFields(unit: U): { scope?: string[]; entry_id?: string }
   /** Sends one unit and resolves with its primary native ID. */
-  submit(unit: SubmissionUnit, ownership: SubmissionOwnership): Promise<string>
+  submit(unit: U, ownership: SubmissionOwnership): Promise<string>
   /** User-facing text when a failed submission may still have been accepted; null when it certainly was not. */
   ambiguity(error: unknown): string | null
   control(nativeId: string, action: 'pause' | 'resume'): Promise<void>
   remove(nativeId: string, removeFiles: boolean, job: LiveJob | undefined): Promise<void>
-  diskChecks(units: SubmissionUnit[]): Promise<DiskSpaceCheck[]>
+  diskChecks(units: U[]): Promise<DiskSpaceCheck[]>
   /** Free space for the configured destinations of this client; empty when unconfigured, failures reported as entries. */
   freeSpace(categories: string[]): Promise<DownloadSpaceLocation[]>
   /** Categories the client does not know, or null when its list could not be read. */
