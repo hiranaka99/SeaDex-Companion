@@ -8,7 +8,7 @@ import * as api from '../api'
 import Modal from './Modal'
 import { bulkDialog } from './bulk-dialog-styles'
 import { releaseIdentity } from '../../../shared/releases'
-import { jobResult, type SubmissionRow, type DownloadJobStatus, type DownloadMode, type DownloadProtocol } from '../api'
+import { jobResult, type SubmissionRow, type DownloadJobStatus, type DownloadProtocol } from '../api'
 import BulkPlanSummary from './BulkPlanSummary'
 import { OutcomeLabel, ReleaseSummary, UsenetStatus } from './BulkReviewParts'
 import {
@@ -16,12 +16,14 @@ import {
   byTitleSeasonPart,
   hiddenKey,
   optionAvailabilityKey,
+  reviewProtocol,
   usenetEligibility,
   type IndexedRelease,
   type ReviewGroup,
 } from '../bulk-review'
 import { usePreflight, useReviewAvailability, useReviewChecks } from '../useBulkReviewChecks'
-import { awaitsCheck, checkBlockedReason, plannedProof, usageText, verifyProgressText } from '../usenet-review'
+import { checkBlockedReason, plannedProof, usageText, verifyProgressText } from '../usenet-review'
+import { awaitsCheck, type DownloadRoutes } from '../download-routes'
 
 type ViewId = 'ready' | 'unavailable'
 
@@ -33,19 +35,13 @@ interface Props {
   busy: boolean
   /** Live/last bulk submission state while the dialog stays open. */
   job: DownloadJobStatus | null
-  downloadMode: DownloadMode
+  /** What each release can be sent through under the current configuration and Prowlarr coverage. */
+  routes: DownloadRoutes
   /** Release preferences are set, so their target is chosen where several releases are offered. */
   preferTarget?: boolean
-  sabEnabled: boolean
-  /** Whether Prowlarr can find this private-tracker release's torrent (it has an indexer for its tracker). */
-  privateTorrent?: (release: Release) => boolean
-  /** Prowlarr can look for Usenet copies of private-tracker releases. */
-  privateUsenet?: boolean
   onConfirm: (plan_id: string, acknowledge: { whole_source?: boolean; disk_space?: boolean }) => void
   onClose: () => void
 }
-
-const NO_PRIVATE_TORRENTS = () => false
 
 export default function BulkDownloadDialog({
   open,
@@ -54,30 +50,19 @@ export default function BulkDownloadDialog({
   hiddenKeys,
   busy,
   job,
-  downloadMode,
+  routes,
   preferTarget = false,
-  sabEnabled,
-  privateTorrent = NO_PRIVATE_TORRENTS,
-  privateUsenet = false,
   onConfirm,
   onClose,
 }: Props) {
-  /** A public magnet, or a private-tracker torrent Prowlarr can find. */
-  const sendsTorrent = (release: Release) => release.torrent_available || privateTorrent(release)
-  /** Private-tracker releases have no hash, but Prowlarr may have found a Usenet copy earlier. */
-  const usenetSearchable = (release: Release) =>
-    (release.info_hashes?.length || 0) > 0 || (privateUsenet && Boolean(release.private_sources?.length))
+  const downloadMode = routes.mode
+  /** A public magnet, or a private-tracker torrent Prowlarr can find, in a mode that sends torrents. */
+  const sendsTorrent = (release: Release) => routes.release(release, undefined).torrent.sendable
   // The review keeps its selected snapshot; the server validates identities against current results.
-  const usenetEnabled = downloadMode !== 'torrent_only' && sabEnabled
+  const usenetEnabled = routes.usenetReady
   const reviewCandidates = useMemo(
-    () =>
-      buildReview(
-        results,
-        (_result, { release }) => usenetEnabled && usenetSearchable(release),
-        downloadMode !== 'usenet_only',
-        sendsTorrent,
-      ),
-    [results, usenetEnabled, downloadMode, privateTorrent, privateUsenet],
+    () => buildReview(results, (_result, { release }) => routes.usenetSearchable(release), routes),
+    [results, routes],
   )
   const usenetSelections = useMemo(
     () =>
@@ -87,7 +72,7 @@ export default function BulkDownloadDialog({
               reviewCandidates.ready
                 .flatMap(group =>
                   group.options
-                    .filter(({ release }) => usenetSearchable(release))
+                    .filter(({ release }) => routes.usenetSearchable(release))
                     .map(option => ({
                       key: group.result.key,
                       release: option.index,
@@ -98,7 +83,7 @@ export default function BulkDownloadDialog({
             ).values(),
           ]
         : [],
-    [reviewCandidates, usenetEnabled],
+    [reviewCandidates, usenetEnabled, routes],
   )
   const availabilityRevision = useSyncExternalStore(api.subscribeUsenetAvailability, api.getUsenetAvailabilityRevision)
   const [retry, setRetry] = useState(0)
@@ -114,13 +99,10 @@ export default function BulkDownloadDialog({
     currentAvailability?.rows[optionAvailabilityKey(result, option)]
   // A release counts for Usenet with a proven copy, or while a search through Prowlarr can still look for one.
   const usenetEligible = useMemo(
-    () => usenetEligibility(currentAvailability, usenetEnabled),
-    [usenetEnabled, currentAvailability],
+    () => usenetEligibility(currentAvailability?.rows ?? null, routes),
+    [routes, currentAvailability],
   )
-  const review = useMemo(
-    () => buildReview(results, usenetEligible, downloadMode !== 'usenet_only', sendsTorrent),
-    [results, usenetEligible, downloadMode, privateTorrent],
-  )
+  const review = useMemo(() => buildReview(results, usenetEligible, routes), [results, usenetEligible, routes])
   const [selected, setSelected] = useState<Record<string, number>>({})
   const [enabled, setEnabled] = useState<Record<string, boolean>>({})
   const [protocols, setProtocols] = useState<Record<string, DownloadProtocol>>({})
@@ -139,13 +121,8 @@ export default function BulkDownloadDialog({
       ),
     [selectedGroups, selected],
   )
-  const protocolFor = (group: ReviewGroup, option: IndexedRelease): DownloadProtocol => {
-    if (downloadMode === 'usenet_only') return 'usenet'
-    const chosen = protocols[group.id]
-    if (chosen) return chosen
-    if (!sendsTorrent(option.release) && usenetEligible(group.result, option)) return 'usenet'
-    return 'torrent'
-  }
+  const protocolFor = (group: ReviewGroup, option: IndexedRelease): DownloadProtocol =>
+    reviewProtocol(routes, currentAvailability?.rows, group.result, option, protocols[group.id])
   const unavailableChoices = reviewCandidates.ready.filter(group => {
     if (enabled[group.id] === false || selected[group.id] === undefined || protocols[group.id] !== 'usenet')
       return false
@@ -163,7 +140,7 @@ export default function BulkDownloadDialog({
           protocol: protocolFor(group, option),
         }
       }),
-    [selectedGroups, selectedOptions, protocols, downloadMode, usenetEligible],
+    [selectedGroups, selectedOptions, protocols, routes, currentAvailability],
   )
   // Rows chosen for Usenet without a proven copy are searched and checked now, one NZB per source.
   const usenetRows = useMemo(() => selections.filter(selection => selection.protocol === 'usenet'), [selections])

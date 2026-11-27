@@ -9,11 +9,13 @@ import type {
   UsenetHashAvailability,
   UsenetUnitState,
 } from '../shared/usenet-contracts.js'
-import { buildReview, optionAvailabilityKey, usenetEligibility } from '../frontend/src/bulk-review.js'
+import { buildReview, optionAvailabilityKey, reviewProtocol, usenetEligibility } from '../frontend/src/bulk-review.js'
 import { serviceOfField } from '../frontend/src/config-services.js'
+import { awaitsCheck, downloadRoutes } from '../frontend/src/download-routes.js'
+import type { Config } from '../frontend/src/types.js'
+import { DEFAULT_CONFIG, publicConfig } from '../server/config.js'
 import { availabilityKey } from '../frontend/src/usenet-observation.js'
 import {
-  awaitsCheck,
   candidateChoosable,
   candidateConfirmText,
   candidateFacts,
@@ -251,6 +253,20 @@ const availabilityFor = (
   }
 }
 
+const USENET_CONFIG: Config = publicConfig({
+  ...DEFAULT_CONFIG,
+  download_mode: 'choose',
+  sabnzbd_url: 'http://sab.test',
+  sabnzbd_key: 'key',
+})
+const PROWLARR_CONFIG = publicConfig({
+  ...DEFAULT_CONFIG,
+  prowlarr_enabled: true,
+  prowlarr_url: 'http://prowlarr.test',
+  prowlarr_key: 'key',
+})
+const USENET = downloadRoutes(USENET_CONFIG)
+
 test('a release a file-list search can look for counts as eligible for Usenet', () => {
   const unsearched = season('unsearched', [privateRelease])
   const unverified = season('unverified', [privateRelease])
@@ -265,8 +281,7 @@ test('a release a file-list search can look for counts as eligible for Usenet', 
     ...availabilityFor(hashOnly, 'not_checked'),
   }
   const results = [unsearched, unverified, fallback, ruledOut, hashOnly]
-  const noTorrents = () => false
-  const review = buildReview(results, usenetEligibility({ rows, sabnzbdConfigured: true }), true, noTorrents)
+  const review = buildReview(results, usenetEligibility(rows, USENET), USENET)
   assert.deepEqual(
     review.ready.map(group => group.result.key),
     ['unsearched', 'unverified', 'fallback'],
@@ -277,16 +292,37 @@ test('a release a file-list search can look for counts as eligible for Usenet', 
     ['ruled-out', 'hash-only'],
     'A search that found nothing, and a row Prowlarr cannot look for, stay unavailable',
   )
+  const noSab = downloadRoutes({ ...USENET_CONFIG, sabnzbd_url: '' })
   assert.equal(
-    buildReview(results, usenetEligibility({ rows, sabnzbdConfigured: false }), true, noTorrents).ready.length,
+    buildReview(results, usenetEligibility(rows, noSab), noSab).ready.length,
     0,
     'Nothing is offered for Usenet without SABnzbd',
   )
-  assert.equal(buildReview(results, usenetEligibility(null), true, noTorrents).ready.length, 0)
-  assert.equal(
-    buildReview(results, usenetEligibility({ rows, sabnzbdConfigured: true }, false), true, noTorrents).ready.length,
-    0,
-  )
+  assert.equal(buildReview(results, usenetEligibility(null, USENET), USENET).ready.length, 0)
+  const torrentOnly = downloadRoutes({ ...USENET_CONFIG, download_mode: 'torrent_only' })
+  assert.equal(buildReview(results, usenetEligibility(rows, torrentOnly), torrentOnly).ready.length, 0)
+})
+
+test('bulk review offers torrents as the download mode and Prowlarr coverage allow', () => {
+  const both = { ...USENET_CONFIG, ...PROWLARR_CONFIG, prowlarr_coverage: { trackers: ['AB'], usenet: true } }
+  const results = [season('public', [release()]), season('private', [privateRelease])]
+  const ready = (config: Config) => {
+    const routes = downloadRoutes(config)
+    return buildReview(results, usenetEligibility({}, routes), routes).ready.map(group => group.result.key)
+  }
+  assert.deepEqual(ready(both), ['public', 'private'])
+  assert.deepEqual(ready({ ...both, prowlarr_coverage: { trackers: [], usenet: true } }), ['public'])
+  assert.deepEqual(ready({ ...both, download_mode: 'usenet_only' }), [])
+})
+
+test('a pending Usenet check sends a release over Usenet in bulk review as on its card', () => {
+  const item = season('pending', [privateRelease])
+  const option = { index: 0, release: privateRelease }
+  const rows = availabilityFor(item, 'not_checked', { search: 'prowlarr' })
+  const row = rows[optionAvailabilityKey(item, option)]
+  assert.equal(reviewProtocol(USENET, rows, item, option), 'usenet')
+  assert.equal(USENET.release(privateRelease, row).protocol, 'usenet')
+  assert.equal(reviewProtocol(USENET, rows, item, option, 'torrent'), 'torrent', 'a choice stands')
 })
 
 test('only rows chosen for Usenet that still need a search or a check are verified', () => {
