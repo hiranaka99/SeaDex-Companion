@@ -1,0 +1,448 @@
+{
+  "items": [
+    {
+      "alID": 131518,
+      "collectionId": "3l2x9nxip35gqb5",
+      "collectionName": "entries",
+      "comparison": "https://slow.pics/c/SBvykBXp,https://slow.pics/c/Mg5uDNBj",
+      "created": "2024-06-26 10:39:21.923Z",
+      "expand": {
+        "trs": [
+          {
+            "collectionId": "oiwizhmushn5qqh",
+            "collectionName": "torrents",
+            "created": "2025-01-07 22:52:25.006Z",
+            "dualAudio": true,
+            "files": [
+              {
+                "length": 4281983540,
+                "name": "[sam] Dr. STONE - New World - 01v2 [BD 1080p FLAC] [C878A21C].mkv"
+              },
+              {
+                "length": 3938025941,
+                "name": "[sam] Dr. STONE - New World - 02v2 [BD 1080p FLAC] [B3C98A58].mkv"
+              },
+              {
+                "length": 4294038937,
+                "name": "[sam] Dr. STONE - New World - 03v2 [BD 1080p FLAC] [66B12944].mkv"
+              },
+              {
+                "length": 4441320467,
+                "name": "[sam] Dr. STONE - New World - 04v2 [BD 1080p FLAC] [182CD3F8].mkv"
+              },
+              {
+                "length": 3589685705,
+                "name": "[sam] Dr. STONE - New World - 05v2 [BD 1080p FLAC] [A762B0C6].mkv"
+              },
+              {
+                "length": 4238064144,
+                "name": "[sam] Dr. STONE - New World - 06v2 [BD 1080p FLAC] [2B4FDCD3].mkv"
+              },
+              {
+                "length": 4421757227,
+                "name": "[sam] Dr. STONE - New World - 07v2 [BD 1080p FLAC] [0FD2DE5D].mkv"
+              },
+              {
+                "length": 4343325604,
+                "name": "[sam] Dr. STONE - New World - 08v2 [BD 1080p FLAC] [5B8C650B].mkv"
+              },
+              {
+                "length": 4066057013,
+                "name": "[sam] Dr. STONE - New World - 09v2 [BD 1080p FLAC] [898277F1].mkv"
+              },
+              {
+                "length": 4116309313,
+                "name": "[sam] Dr. STONE - New World - 10v2 [BD 1080p FLAC] [012C9860].mkv"
+              },
+              {
+                "length": 4209104897,
+                "name": "[sam] Dr. STONE - New World - 11v2 [BD 1080p FLAC] [44BCBFA6].mkv"
+              },
+              {
+                "length": 4918448482,
+                "name": "[sam] Dr. STONE - New World - 12 [BD 1080p FLAC] [34C78169].mkv"
+              },
+              {
+                "length": 4638243540,
+                "name": "[sam] Dr. STONE - New World - 13 [BD 1080p FLAC] [5AFD25D3].mkv"
+              },
+              {
+                "length": 4952531093,
+                "name": "[sam] Dr. STONE - New World - 14 [BD 1080p FLAC] [47E42A45].mkv"
+              },
+              {
+                "length": 4775847834,
+                "name": "[sam] Dr. STONE - New World - 15 [BD 1080p FLAC] [6624FBC0].mkv"
+              },
+              {
+                "length": 5367322482,
+                "name": "[sam] Dr. STONE - New World - 16 [BD 1080p FLAC] [01E44B29].mkv"
+              },
+              {
+                "length": 4756153213,
+                "name": "[sam] Dr. STONE - New World - 17 [BD 1080p FLAC] [0F48FCFD].mkv"
+              },
+              {
+                "length": 5597657003,
+                "name": "[sam] Dr. STONE - New World - 18 [BD 1080p FLAC] [24CCBCB3].mkv"
+              },
+              {
+                "length": 5685352303,
+                "name": "[sam] Dr. STONE - New World - 19 [BD 1080p FLAC] [7446B090].mkv"
+              },
+              {
+                "length": 4501592861,
+                "name": "[sam] Dr. STONE - New World - 20 [BD 1080p FLAC] [4C4F9DC8].mkv"
+              },
+              {
+                "length": 4740235271,
+                "name": "[sam] Dr. STONE - New World - 21 [BD 1080p FLAC] [3330C5A7].mkv"
+              },
+              {
+                "length": 4793253061,
+                "name": "[sam] Dr. STONE - New World - 22 [BD 1080p FLAC] [49EA72C4].mkv"
+              },
+              {
+                "length": 180527733,
+                "name": "[sam] Dr. STONE - New World - NCED 01v2 [BD 1080p FLAC] [80001219].mkv"
+              },
+              {
+                "length": 679018865,
+                "name": "[sam] Dr. STONE - New World - NCED 02 [BD 1080p FLAC] [D612651A].mkv"
+              },
+              {
+                "length": 590455357,
+                "name": "[sam] Dr. STONE - New World - NCED 03 [BD 1080p FLAC] [D8614F40].mkv"
+              },
+              {
+                "length": 563867659,
+                "name": "[sam] Dr. STONE - New World - NCOP 01v2 [BD 1080p FLAC] [2B2403D1].mkv"
+              },
+              {
+                "length": 642255919,
+                "name": "[sam] Dr. STONE - New World - NCOP 02 [BD 1080p FLAC] [6E441E51].mkv"
+              },
+              {
+                "length": 643035441,
+                "name": "[sam] Dr. STONE - New World - NCOP 03 [BD 1080p FLAC] [E5AA09C4].mkv"
+              }
+            ],
+            "groupedUrl": "",
+            "id": "sp3lvc27so30ego",
+            "infoHash": "07d98bf49cf836a10f08502ab11d1960a1cc5b6b",
+            "isBest": true,
+            "releaseGroup": "sam",
+            "tags": [],
+            "tracker": "Nyaa",
+            "updated": "2025-01-07 22:53:04.542Z",
+            "url": "https://nyaa.si/view/1918783"
+          },
+          {
+            "collectionId": "oiwizhmushn5qqh",
+            "collectionName": "torrents",
+            "created": "2025-01-07 22:52:25.157Z",
+            "dualAudio": true,
+            "files": [
+              {
+                "length": 180527733,
+                "name": "Extras/[sam] Dr. STONE - New World - NCED 01v2 [BD 1080p FLAC] [80001219].mkv"
+              },
+              {
+                "length": 563867659,
+                "name": "Extras/[sam] Dr. STONE - New World - NCOP 01v2 [BD 1080p FLAC] [2B2403D1].mkv"
+              },
+              {
+                "length": 4281983540,
+                "name": "[sam] Dr. STONE - New World - 01v2 [BD 1080p FLAC] [C878A21C].mkv"
+              },
+              {
+                "length": 3938025941,
+                "name": "[sam] Dr. STONE - New World - 02v2 [BD 1080p FLAC] [B3C98A58].mkv"
+              },
+              {
+                "length": 4294038937,
+                "name": "[sam] Dr. STONE - New World - 03v2 [BD 1080p FLAC] [66B12944].mkv"
+              },
+              {
+                "length": 4441320467,
+                "name": "[sam] Dr. STONE - New World - 04v2 [BD 1080p FLAC] [182CD3F8].mkv"
+              },
+              {
+                "length": 3589685705,
+                "name": "[sam] Dr. STONE - New World - 05v2 [BD 1080p FLAC] [A762B0C6].mkv"
+              },
+              {
+                "length": 4238064144,
+                "name": "[sam] Dr. STONE - New World - 06v2 [BD 1080p FLAC] [2B4FDCD3].mkv"
+              },
+              {
+                "length": 4421757227,
+                "name": "[sam] Dr. STONE - New World - 07v2 [BD 1080p FLAC] [0FD2DE5D].mkv"
+              },
+              {
+                "length": 4343325604,
+                "name": "[sam] Dr. STONE - New World - 08v2 [BD 1080p FLAC] [5B8C650B].mkv"
+              },
+              {
+                "length": 4066057013,
+                "name": "[sam] Dr. STONE - New World - 09v2 [BD 1080p FLAC] [898277F1].mkv"
+              },
+              {
+                "length": 4116309313,
+                "name": "[sam] Dr. STONE - New World - 10v2 [BD 1080p FLAC] [012C9860].mkv"
+              },
+              {
+                "length": 4209104897,
+                "name": "[sam] Dr. STONE - New World - 11v2 [BD 1080p FLAC] [44BCBFA6].mkv"
+              }
+            ],
+            "groupedUrl": "",
+            "id": "rxdp2mph6ilmhvm",
+            "infoHash": "<redacted>",
+            "isBest": true,
+            "releaseGroup": "sam",
+            "tags": [],
+            "tracker": "AB",
+            "updated": "2025-01-07 22:52:25.157Z",
+            "url": "/torrents.php?id=81926&torrentid=1150647"
+          }
+        ]
+      },
+      "id": "xsewan3wd5stm3g",
+      "incomplete": false,
+      "notes": "sam is JPN BD Encode+CR with the full fansub treatment",
+      "theoreticalBest": "",
+      "trs": [
+        "sp3lvc27so30ego",
+        "rxdp2mph6ilmhvm"
+      ],
+      "updated": "2025-01-07 22:52:25.240Z"
+    },
+    {
+      "alID": 162670,
+      "collectionId": "3l2x9nxip35gqb5",
+      "collectionName": "entries",
+      "comparison": "",
+      "created": "2025-01-07 22:53:04.771Z",
+      "expand": {
+        "trs": [
+          {
+            "collectionId": "oiwizhmushn5qqh",
+            "collectionName": "torrents",
+            "created": "2025-01-07 22:52:25.006Z",
+            "dualAudio": true,
+            "files": [
+              {
+                "length": 4281983540,
+                "name": "[sam] Dr. STONE - New World - 01v2 [BD 1080p FLAC] [C878A21C].mkv"
+              },
+              {
+                "length": 3938025941,
+                "name": "[sam] Dr. STONE - New World - 02v2 [BD 1080p FLAC] [B3C98A58].mkv"
+              },
+              {
+                "length": 4294038937,
+                "name": "[sam] Dr. STONE - New World - 03v2 [BD 1080p FLAC] [66B12944].mkv"
+              },
+              {
+                "length": 4441320467,
+                "name": "[sam] Dr. STONE - New World - 04v2 [BD 1080p FLAC] [182CD3F8].mkv"
+              },
+              {
+                "length": 3589685705,
+                "name": "[sam] Dr. STONE - New World - 05v2 [BD 1080p FLAC] [A762B0C6].mkv"
+              },
+              {
+                "length": 4238064144,
+                "name": "[sam] Dr. STONE - New World - 06v2 [BD 1080p FLAC] [2B4FDCD3].mkv"
+              },
+              {
+                "length": 4421757227,
+                "name": "[sam] Dr. STONE - New World - 07v2 [BD 1080p FLAC] [0FD2DE5D].mkv"
+              },
+              {
+                "length": 4343325604,
+                "name": "[sam] Dr. STONE - New World - 08v2 [BD 1080p FLAC] [5B8C650B].mkv"
+              },
+              {
+                "length": 4066057013,
+                "name": "[sam] Dr. STONE - New World - 09v2 [BD 1080p FLAC] [898277F1].mkv"
+              },
+              {
+                "length": 4116309313,
+                "name": "[sam] Dr. STONE - New World - 10v2 [BD 1080p FLAC] [012C9860].mkv"
+              },
+              {
+                "length": 4209104897,
+                "name": "[sam] Dr. STONE - New World - 11v2 [BD 1080p FLAC] [44BCBFA6].mkv"
+              },
+              {
+                "length": 4918448482,
+                "name": "[sam] Dr. STONE - New World - 12 [BD 1080p FLAC] [34C78169].mkv"
+              },
+              {
+                "length": 4638243540,
+                "name": "[sam] Dr. STONE - New World - 13 [BD 1080p FLAC] [5AFD25D3].mkv"
+              },
+              {
+                "length": 4952531093,
+                "name": "[sam] Dr. STONE - New World - 14 [BD 1080p FLAC] [47E42A45].mkv"
+              },
+              {
+                "length": 4775847834,
+                "name": "[sam] Dr. STONE - New World - 15 [BD 1080p FLAC] [6624FBC0].mkv"
+              },
+              {
+                "length": 5367322482,
+                "name": "[sam] Dr. STONE - New World - 16 [BD 1080p FLAC] [01E44B29].mkv"
+              },
+              {
+                "length": 4756153213,
+                "name": "[sam] Dr. STONE - New World - 17 [BD 1080p FLAC] [0F48FCFD].mkv"
+              },
+              {
+                "length": 5597657003,
+                "name": "[sam] Dr. STONE - New World - 18 [BD 1080p FLAC] [24CCBCB3].mkv"
+              },
+              {
+                "length": 5685352303,
+                "name": "[sam] Dr. STONE - New World - 19 [BD 1080p FLAC] [7446B090].mkv"
+              },
+              {
+                "length": 4501592861,
+                "name": "[sam] Dr. STONE - New World - 20 [BD 1080p FLAC] [4C4F9DC8].mkv"
+              },
+              {
+                "length": 4740235271,
+                "name": "[sam] Dr. STONE - New World - 21 [BD 1080p FLAC] [3330C5A7].mkv"
+              },
+              {
+                "length": 4793253061,
+                "name": "[sam] Dr. STONE - New World - 22 [BD 1080p FLAC] [49EA72C4].mkv"
+              },
+              {
+                "length": 180527733,
+                "name": "[sam] Dr. STONE - New World - NCED 01v2 [BD 1080p FLAC] [80001219].mkv"
+              },
+              {
+                "length": 679018865,
+                "name": "[sam] Dr. STONE - New World - NCED 02 [BD 1080p FLAC] [D612651A].mkv"
+              },
+              {
+                "length": 590455357,
+                "name": "[sam] Dr. STONE - New World - NCED 03 [BD 1080p FLAC] [D8614F40].mkv"
+              },
+              {
+                "length": 563867659,
+                "name": "[sam] Dr. STONE - New World - NCOP 01v2 [BD 1080p FLAC] [2B2403D1].mkv"
+              },
+              {
+                "length": 642255919,
+                "name": "[sam] Dr. STONE - New World - NCOP 02 [BD 1080p FLAC] [6E441E51].mkv"
+              },
+              {
+                "length": 643035441,
+                "name": "[sam] Dr. STONE - New World - NCOP 03 [BD 1080p FLAC] [E5AA09C4].mkv"
+              }
+            ],
+            "groupedUrl": "",
+            "id": "sp3lvc27so30ego",
+            "infoHash": "07d98bf49cf836a10f08502ab11d1960a1cc5b6b",
+            "isBest": true,
+            "releaseGroup": "sam",
+            "tags": [],
+            "tracker": "Nyaa",
+            "updated": "2025-01-07 22:53:04.542Z",
+            "url": "https://nyaa.si/view/1918783"
+          },
+          {
+            "collectionId": "oiwizhmushn5qqh",
+            "collectionName": "torrents",
+            "created": "2025-01-07 22:53:04.701Z",
+            "dualAudio": true,
+            "files": [
+              {
+                "length": 679018865,
+                "name": "Extras/[sam] Dr. STONE - New World - NCED 02 [BD 1080p FLAC] [D612651A].mkv"
+              },
+              {
+                "length": 590455357,
+                "name": "Extras/[sam] Dr. STONE - New World - NCED 03 [BD 1080p FLAC] [D8614F40].mkv"
+              },
+              {
+                "length": 642255919,
+                "name": "Extras/[sam] Dr. STONE - New World - NCOP 02 [BD 1080p FLAC] [6E441E51].mkv"
+              },
+              {
+                "length": 643035441,
+                "name": "Extras/[sam] Dr. STONE - New World - NCOP 03 [BD 1080p FLAC] [E5AA09C4].mkv"
+              },
+              {
+                "length": 4918448482,
+                "name": "[sam] Dr. STONE - New World - 12 [BD 1080p FLAC] [34C78169].mkv"
+              },
+              {
+                "length": 4638243540,
+                "name": "[sam] Dr. STONE - New World - 13 [BD 1080p FLAC] [5AFD25D3].mkv"
+              },
+              {
+                "length": 4952531093,
+                "name": "[sam] Dr. STONE - New World - 14 [BD 1080p FLAC] [47E42A45].mkv"
+              },
+              {
+                "length": 4775847834,
+                "name": "[sam] Dr. STONE - New World - 15 [BD 1080p FLAC] [6624FBC0].mkv"
+              },
+              {
+                "length": 5367322482,
+                "name": "[sam] Dr. STONE - New World - 16 [BD 1080p FLAC] [01E44B29].mkv"
+              },
+              {
+                "length": 4756153213,
+                "name": "[sam] Dr. STONE - New World - 17 [BD 1080p FLAC] [0F48FCFD].mkv"
+              },
+              {
+                "length": 5597657003,
+                "name": "[sam] Dr. STONE - New World - 18 [BD 1080p FLAC] [24CCBCB3].mkv"
+              },
+              {
+                "length": 5685352303,
+                "name": "[sam] Dr. STONE - New World - 19 [BD 1080p FLAC] [7446B090].mkv"
+              },
+              {
+                "length": 4501592861,
+                "name": "[sam] Dr. STONE - New World - 20 [BD 1080p FLAC] [4C4F9DC8].mkv"
+              },
+              {
+                "length": 4740235271,
+                "name": "[sam] Dr. STONE - New World - 21 [BD 1080p FLAC] [3330C5A7].mkv"
+              },
+              {
+                "length": 4793253061,
+                "name": "[sam] Dr. STONE - New World - 22 [BD 1080p FLAC] [49EA72C4].mkv"
+              }
+            ],
+            "groupedUrl": "",
+            "id": "cvn11ebe5u5plj6",
+            "infoHash": "<redacted>",
+            "isBest": true,
+            "releaseGroup": "sam",
+            "tags": [],
+            "tracker": "AB",
+            "updated": "2025-01-07 22:53:04.701Z",
+            "url": "/torrents.php?id=86739&torrentid=1150648"
+          }
+        ]
+      },
+      "id": "apaeswtvrjswrhz",
+      "incomplete": false,
+      "notes": "sam is JPN BD Encode+CR with the full fansub treatment",
+      "theoreticalBest": "",
+      "trs": [
+        "sp3lvc27so30ego",
+        "cvn11ebe5u5plj6"
+      ],
+      "updated": "2025-01-07 22:53:04.771Z"
+    }
+  ]
+}

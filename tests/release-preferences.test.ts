@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { assessSeason } from '../server/assessment.js'
+import { assessSeason } from './support/assessment.js'
 import { exclusionReason, pickBest } from '../server/matching.js'
 import { downloadClients } from '../server/download-clients.js'
 import { buildDownloadPlan } from '../server/download-preflight.js'

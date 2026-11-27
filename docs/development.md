@@ -60,6 +60,18 @@ Rules that conflict with deliberate patterns in this codebase are switched off i
 
 Tests that look up hashes, search Prowlarr or sweep build their own Usenet runtime with `testUsenetRuntime` from `tests/support/usenet-runtime.ts`, and hand it their fake hash indexers and Prowlarr as its `fetch`. The global `fetch` fakes only the download clients and other services. `restart()` simulates a new process on the same data paths, and `fresh()` one on empty data paths.
 
+Tests that assess a season import `assessSeason` from `tests/support/assessment.ts`. It fails any result that breaks a listing rule from `tests/support/listing-invariants.ts`: a torrent file selected for two parts, or one release listed twice in a part.
+
+### Replaying SeaDex entries
+
+When a title's releases look wrong (listed twice, scoped to the wrong episodes, the wrong target), replay its real SeaDex entries before reading code:
+
+```sh
+npm run replay:seadex -- --alid 131518,162670 --episodes 11,11 --season 3 --own sam
+```
+
+It fetches the entries from seadex.moe (one AniList ID per part, in order) and assesses them for a one-title library that holds every episode of the season. It then prints each part's releases with the episodes they select, and lists any broken listing rule with exit code 1. Run it with `--help` for every option. `--save <file>` keeps the fetched entries, and `--from <file>` replays them offline. To turn a case into a regression test, save the entries under `tests/fixtures/seadex/` and call `replayCatalog` from `tests/support/seadex-replay.ts`, as `tests/seadex-replay.test.ts` does.
+
 See [maintainability notes](maintainability.md) for runtime ownership, persistence, and compatibility details.
 
 ## Dependency updates
