@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { fetchAnimeToshoNzb, lookupAnimeTosho, testAnimeTosho } from '../server/animetosho.js'
-import { fetchAmeNZBNzb, lookupAmeNZB, testAmeNZB } from '../server/amenzb.js'
 import {
   ANIMETOSHO_LOOKUP_MAX_BYTES,
-  LOOKUP_MAX_BYTES,
-  NZB_MAX_BYTES,
-  readNzb,
-  validateNzbBytes,
-} from '../server/usenet-provider-types.js'
+  fetchAnimeToshoNzb,
+  lookupAnimeTosho,
+  testAnimeTosho,
+} from '../server/animetosho.js'
+import { fetchAmeNZBNzb, lookupAmeNZB, testAmeNZB } from '../server/amenzb.js'
+import { validateNzbBytes } from '../server/newznab-xml.js'
+import { LOOKUP_MAX_BYTES } from '../server/provider-http.js'
+import { NZB_MAX_BYTES, readNzb } from '../server/usenet-provider-types.js'
 import type { ProviderSettings, UsenetMatch } from '../server/usenet-provider-types.js'
 
 const HASH = 'd4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d'
@@ -439,7 +440,7 @@ test('AmeNZB matches a single hash-search result', async () => {
 
   assert.equal(calls.length, 1)
   assert.equal(calls[0].url, `https://amenzb.example/api?t=search&apikey=${API_KEY}&info_hash=${HASH}`)
-  assert.equal(calls[0].headers.accept, 'application/xml')
+  assert.match(calls[0].headers.accept, /application\/xml/)
   assert.ok(lookup.kind === 'match')
   assert.deepEqual(lookup.match, {
     provider: 'amenzb',
@@ -458,46 +459,35 @@ test('An empty AmeNZB result set is a genuine no match', async () => {
   assert.deepEqual(lookup, { kind: 'no_match' })
 })
 
-test('An AmeNZB error document with HTTP 200 is never treated as no match', async () => {
+test("AmeNZB reports the search step's failures as failed lookups, never as no match", async () => {
+  // The step classifies every answer (tests/newznab-search.test.ts); the client only passes it on.
   const leaking = newznab(
     '',
     `<error code="100" description="Invalid API key or IP mismatch for https://amenzb.example/api?t=search&amp;apikey=${API_KEY}&amp;info_hash=${HASH}"/>`,
   )
   const unauthorized = await lookupAmeNZB(AMENZB, HASH, recorder(() => xmlResponse(leaking)).fetchImpl)
   assert.ok(unauthorized.kind === 'failed' && unauthorized.code === 'unauthorized')
-  if (unauthorized.kind === 'failed') {
-    assert.match(unauthorized.message, /Invalid API key or IP mismatch/)
-    assert.ok(!unauthorized.message.includes(API_KEY), 'the provider must not get the key into a message')
-    assert.ok(!unauthorized.message.includes('<'))
-  }
+  assert.match(unauthorized.message, /Invalid API key or IP mismatch/)
+  assert.ok(!unauthorized.message.includes(API_KEY), 'the provider must not get the key into a message')
 
-  const rateLimited = await lookupAmeNZB(
+  const limited = await lookupAmeNZB(
     AMENZB,
     HASH,
-    recorder(() => xmlResponse(newznab('', '<error code="500" description="IP rate limited"/>'))).fetchImpl,
+    recorder(() => new Response('', { status: 429, headers: { 'retry-after': '90' } })).fetchImpl,
   )
-  assert.ok(rateLimited.kind === 'failed' && rateLimited.code === 'rate_limited')
+  assert.deepEqual(limited, {
+    kind: 'failed',
+    code: 'rate_limited',
+    message: 'AmeNZB rate limited the request',
+    retry_after_ms: 90_000,
+  })
 
-  const params = await lookupAmeNZB(
+  const html = await lookupAmeNZB(
     AMENZB,
     HASH,
-    recorder(() => xmlResponse(newznab('', '<error code="202" description="Unsupported parameter"/>'))).fetchImpl,
+    recorder(() => new Response('<html><body>Blocked</body></html>')).fetchImpl,
   )
-  assert.ok(params.kind === 'failed' && params.code === 'invalid_response')
-
-  const refused = await lookupAmeNZB(
-    AMENZB,
-    HASH,
-    recorder(() => xmlResponse(newznab('', '<error code="300" description="nope"/>'))).fetchImpl,
-  )
-  assert.ok(refused.kind === 'failed' && refused.code === 'server')
-
-  const unknown = await lookupAmeNZB(
-    AMENZB,
-    HASH,
-    recorder(() => xmlResponse(newznab('', '<error code="999" description="odd"/>'))).fetchImpl,
-  )
-  assert.ok(unknown.kind === 'failed' && unknown.code === 'server')
+  assert.ok(html.kind === 'failed' && html.code === 'invalid_response')
 })
 
 test('AmeNZB resolves multiple results only through a unique hash agreement', async () => {
@@ -531,33 +521,6 @@ test('AmeNZB derives an entry id from the getnzb URL when no guid attribute exis
   )
   const rejected = await lookupAmeNZB(AMENZB, HASH, recorder(() => xmlResponse(unusable)).fetchImpl)
   assert.ok(rejected.kind === 'failed' && rejected.code === 'invalid_response')
-})
-
-test('AmeNZB non-RSS, HTML and oversized responses fail instead of reporting absence', async () => {
-  const notRss = await lookupAmeNZB(AMENZB, HASH, recorder(() => xmlResponse('not xml at all')).fetchImpl)
-  assert.ok(notRss.kind === 'failed' && notRss.code === 'invalid_response')
-
-  const html = await lookupAmeNZB(
-    AMENZB,
-    HASH,
-    recorder(() => new Response('<html><body>Blocked</body></html>')).fetchImpl,
-  )
-  assert.ok(html.kind === 'failed' && html.code === 'invalid_response')
-
-  const oversized = await lookupAmeNZB(
-    AMENZB,
-    HASH,
-    recorder(() => new Response(streamBytes(LOOKUP_MAX_BYTES + 1))).fetchImpl,
-  )
-  assert.ok(oversized.kind === 'failed' && oversized.code === 'invalid_response')
-  if (oversized.kind === 'failed') assert.match(oversized.message, /byte limit/)
-
-  const unauthorizedStatus = await lookupAmeNZB(
-    AMENZB,
-    HASH,
-    recorder(() => new Response('', { status: 403 })).fetchImpl,
-  )
-  assert.ok(unauthorizedStatus.kind === 'failed' && unauthorizedStatus.code === 'unauthorized')
 })
 
 test('AmeNZB requires a configured key and reports it as invalid configuration', async () => {

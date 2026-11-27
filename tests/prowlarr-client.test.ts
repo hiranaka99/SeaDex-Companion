@@ -284,144 +284,30 @@ test('An indexer without a usable ID is never asked', async () => {
   assert.equal(calls.length, 0)
 })
 
-test('An indexer at its limit fails the search as rate limited, with the time Prowlarr names', async () => {
-  const error = await failureOf(
+test("A failed search throws the search step's failure as a ProwlarrError, scope and retry time kept", async () => {
+  // The step classifies every answer (tests/newznab-search.test.ts); the client only passes it on.
+  const limited = await failureOf(
     searchIndexer(
       SETTINGS,
       GEEK,
       { q: 'x' },
       recorder(() =>
-        xmlResponse(errorXml(429, 'User configurable Indexer Query Limit of 100 reached.'), {
-          status: 429,
-          headers: { 'retry-after': '1800' },
-        }),
+        xmlResponse(errorXml(429, 'Query limit reached'), { status: 429, headers: { 'retry-after': '1800' } }),
       ).fetchImpl,
     ),
   )
-  assert.equal(error.code, 'rate_limited')
-  assert.equal(error.retryAfterMs, 1_800_000)
-  assert.equal(error.scope, 'indexer')
-  assert.match(error.message, /Geek/)
-})
+  assert.deepEqual([limited.code, limited.scope, limited.retryAfterMs], ['rate_limited', 'indexer', 1_800_000])
+  assert.match(limited.message, /Geek/)
 
-test('An indexer turned off in Prowlarr fails the search as a configuration problem of that indexer', async () => {
-  const error = await failureOf(
-    searchIndexer(
-      SETTINGS,
-      GEEK,
-      { q: 'x' },
-      recorder(() => xmlResponse(errorXml(410, 'Indexer is disabled'), { status: 410 })).fetchImpl,
-    ),
+  const refused = await failureOf(
+    searchIndexer(SETTINGS, GEEK, { q: 'x' }, recorder(() => Response.json({}, { status: 401 })).fetchImpl),
   )
-  assert.equal(error.code, 'invalid_config')
-  assert.equal(error.scope, 'indexer')
-  assert.match(error.message, /Geek is turned off in Prowlarr/)
-})
-
-test('A refused Prowlarr key fails the search for Prowlarr as a whole', async () => {
-  for (const status of [401, 403]) {
-    const error = await failureOf(
-      searchIndexer(
-        SETTINGS,
-        GEEK,
-        { q: 'x' },
-        recorder(() => Response.json({ error: 'Unauthorized' }, { status })).fetchImpl,
-      ),
-    )
-    assert.equal(error.code, 'unauthorized')
-    assert.equal(error.scope, 'prowlarr')
-    assert.match(error.message, /Prowlarr API key/)
-  }
-})
-
-test('Server errors, timeouts and network failures of a search are failures of that indexer', async () => {
-  const server = await failureOf(
-    searchIndexer(
-      SETTINGS,
-      GEEK,
-      { q: 'x' },
-      recorder(() => Response.json({ message: 'boom' }, { status: 503, headers: { 'retry-after': '30' } })).fetchImpl,
-    ),
-  )
-  assert.deepEqual([server.code, server.scope, server.retryAfterMs], ['server', 'indexer', 30_000])
+  assert.deepEqual([refused.code, refused.scope], ['unauthorized', 'prowlarr'])
 
   const timeout = await failureOf(
     searchIndexer(SETTINGS, GEEK, { q: 'x' }, recorder(() => Promise.reject(timeoutError())).fetchImpl),
   )
   assert.deepEqual([timeout.code, timeout.scope], ['timeout', 'indexer'])
-
-  const network = await failureOf(
-    searchIndexer(SETTINGS, GEEK, { q: 'x' }, recorder(() => Promise.reject(new TypeError('fetch failed'))).fetchImpl),
-  )
-  assert.deepEqual([network.code, network.scope], ['network', 'indexer'])
-})
-
-test('A Newznab error document is a failed search, whatever status it arrives with', async () => {
-  const cases: [status: number, code: number, expected: string][] = [
-    [200, 500, 'rate_limited'],
-    [200, 100, 'unauthorized'],
-    [400, 201, 'invalid_response'],
-    [200, 300, 'server'],
-    [500, 900, 'server'],
-  ]
-  for (const [status, code, expected] of cases) {
-    const error = await failureOf(
-      searchIndexer(
-        SETTINGS,
-        GEEK,
-        { q: 'x' },
-        recorder(() => xmlResponse(errorXml(code, 'Request limit reached'), { status })).fetchImpl,
-      ),
-    )
-    assert.equal(error.code, expected, `HTTP ${status} with code ${code}`)
-    assert.equal(error.scope, 'indexer')
-    assert.match(error.message, /Geek/)
-  }
-  // An error document inside a feed is no empty answer either.
-  const inFeed = await failureOf(
-    searchIndexer(
-      SETTINGS,
-      GEEK,
-      { q: 'x' },
-      recorder(() => xmlResponse(rss('<error code="500" description="Request limit reached" />'))).fetchImpl,
-    ),
-  )
-  assert.deepEqual([inFeed.code, inFeed.scope], ['rate_limited', 'indexer'])
-})
-
-test("An indexer's error description never reaches the failure message", async () => {
-  const description = `Invalid API key for https://geek.test/api?t=search&apikey=${INDEXER_KEY}&q=x from ${PROWLARR}/2/api?apikey=${KEY}`
-  for (const response of [
-    () => xmlResponse(errorXml(100, description)),
-    () => xmlResponse(errorXml(500, description)),
-    () => xmlResponse(errorXml(900, description), { status: 500 }),
-    () => xmlResponse(errorXml(429, description), { status: 429 }),
-    () => xmlResponse(errorXml(410, description), { status: 410 }),
-  ]) {
-    const error = await failureOf(searchIndexer(SETTINGS, GEEK, { q: 'x' }, recorder(response).fetchImpl))
-    assert.ok(!error.message.includes(INDEXER_KEY), error.message)
-    assert.ok(!error.message.includes(KEY), error.message)
-    assert.ok(!error.message.includes('geek.test'), error.message)
-    assert.ok(!error.message.includes('Invalid API key for'), error.message)
-  }
-})
-
-test('An answer that is not Newznab RSS is an invalid response, and an empty channel is an empty answer', async () => {
-  const oversized = () => new Response('<rss/>', { headers: { 'content-length': String(8 * MIB + 1) } })
-  for (const response of [
-    () => new Response('<html><body>Sign in</body></html>'),
-    () => Response.json([]),
-    () => new Response(''),
-    () => xmlResponse('<rss version="2.0"><title>No channel</title></rss>'),
-    () => Response.json({ message: 'NotFound' }, { status: 404 }),
-    oversized,
-  ]) {
-    const error = await failureOf(searchIndexer(SETTINGS, GEEK, { q: 'x' }, recorder(response).fetchImpl))
-    assert.deepEqual([error.code, error.scope], ['invalid_response', 'indexer'])
-  }
-  for (const body of [rss(), '<rss version="2.0"><channel></channel></rss>']) {
-    assert.deepEqual(await searchIndexer(SETTINGS, GEEK, { q: 'x' }, recorder(() => xmlResponse(body)).fetchImpl), [])
-  }
 })
 
 // --- Downloads ----------------------------------------------------------------------
