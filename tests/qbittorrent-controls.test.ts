@@ -10,7 +10,7 @@ import { resetWebhookScanState } from '../server/scheduler.js'
 import { qbPhase } from '../server/qbittorrent-adapter.js'
 
 import { testIntegration } from '../server/integration-tests.js'
-import { upgradeParts, type RecommendationSeason } from '../shared/download-plan.js'
+import { wantedParts, type RecommendationSeason } from '../shared/download-plan.js'
 
 beforeEach(() => {
   resetRuntimeForTests()
@@ -36,7 +36,7 @@ describe('qBittorrent torrent controls', () => {
         { kind: 'best', torrent_available: false, releaseGroup: 'Group', info_hashes: ['c'.repeat(40)] },
       ],
     }
-    const parts = upgradeParts(upgradeSeason)
+    const parts = wantedParts(upgradeSeason)
     assert.deepEqual(
       parts.map(part => [part.part, part.torrent_available]),
       [['', true]],
@@ -47,14 +47,14 @@ describe('qBittorrent torrent controls', () => {
       'Only the downloadable best release is offered for submission',
     )
     assert.deepEqual(
-      upgradeParts({
+      wantedParts({
         key: 'owned-season',
         status: 'best',
         releases: [{ kind: 'best', torrent_available: true, releaseGroup: 'Group', info_hashes: ['d'.repeat(40)] }],
       }),
       [],
     )
-    assert.deepEqual(upgradeParts({ key: 'missing-season', status: 'missing', releases: [] }), [])
+    assert.deepEqual(wantedParts({ key: 'missing-season', status: 'missing', releases: [] }), [])
   })
 
   test('normalizes qBittorrent states into download phases', () => {

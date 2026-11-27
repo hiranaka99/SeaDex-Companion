@@ -29,7 +29,7 @@ import {
   resetWebhookScanState,
   webhookScanState,
 } from '../server/scheduler.js'
-import { upgradeParts, type RecommendationSeason } from '../shared/download-plan.js'
+import { wantedParts, type RecommendationSeason } from '../shared/download-plan.js'
 import { JsonObject, ReleaseCandidate, ScanTrigger } from '../server/types.js'
 
 beforeEach(() => {
@@ -168,13 +168,13 @@ describe('manual rules and scan history', () => {
     const decorated = applyUserRulesToResults(results, courRules)
     assert.deepEqual(decorated[0].excluded_parts, ['Cour 1'])
     assert.deepEqual(
-      upgradeParts(decorated[0] as unknown as RecommendationSeason).map(part => part.part),
+      wantedParts(decorated[0] as unknown as RecommendationSeason).map(part => part.part),
       ['Cour 2'],
     )
 
     const seasonRules = { mappings: {}, exclusions: ['Sonarr:item10:1:*'] }
     assert.deepEqual(
-      upgradeParts(applyUserRulesToResults(results, seasonRules)[0] as unknown as RecommendationSeason),
+      wantedParts(applyUserRulesToResults(results, seasonRules)[0] as unknown as RecommendationSeason),
       [],
     )
   })
@@ -282,8 +282,16 @@ describe('notifications and scheduling', () => {
   test('marks only successfully delivered notifications', async () => {
     setState({
       results: [
-        { key: 'sent', status: 'upgrade' },
-        { key: 'failed', status: 'upgrade' },
+        {
+          key: 'sent',
+          status: 'upgrade',
+          releases: [{ kind: 'best', releaseGroup: 'Best', torrent_available: true, info_hashes: [] }],
+        },
+        {
+          key: 'failed',
+          status: 'upgrade',
+          releases: [{ kind: 'best', releaseGroup: 'Best', torrent_available: true, info_hashes: [] }],
+        },
       ],
     })
     let saved = new Set<string>()
@@ -423,11 +431,27 @@ describe('notifications and scheduling', () => {
       },
     }
     const config = { ...DEFAULT_CONFIG, notify_enabled: true, webhook: 'https://discord.example/webhook' }
-    setState({ results: [{ key: 'same', status: 'upgrade', releases: [] }] })
+    setState({
+      results: [
+        {
+          key: 'same',
+          status: 'upgrade',
+          releases: [{ kind: 'best', releaseGroup: 'Best', torrent_available: true, info_hashes: [] }],
+        },
+      ],
+    })
     await autoNotifyNew(config, dependencies)
     setState({ results: [{ key: 'same', status: 'best', releases: [] }] })
     await autoNotifyNew(config, dependencies)
-    setState({ results: [{ key: 'same', status: 'upgrade', releases: [] }] })
+    setState({
+      results: [
+        {
+          key: 'same',
+          status: 'upgrade',
+          releases: [{ kind: 'best', releaseGroup: 'Best', torrent_available: true, info_hashes: [] }],
+        },
+      ],
+    })
     await autoNotifyNew(config, dependencies)
     assert.equal(deliveries, 2)
   })

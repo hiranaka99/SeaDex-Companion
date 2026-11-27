@@ -1,4 +1,4 @@
-import { upgradeParts } from '../../shared/download-plan.js'
+import { wantedParts } from '../../shared/download-plan.js'
 import { resultGroupKey } from '../../shared/ids.js'
 import { releaseIdentity } from '../../shared/releases.js'
 import type { UsenetAvailabilityResult } from '../../shared/usenet-contracts.js'
@@ -65,7 +65,7 @@ export function buildReview(
   const blocked: ReviewGroup[] = []
 
   for (const result of results)
-    for (const part of upgradeParts(result)) {
+    for (const part of wantedParts(result)) {
       const group = { id: `${result.key}::${part.part || 'all'}`, result, part: part.part, options: part.options }
       const torrent = group.options.some(option => routes.release(option.release, undefined).torrent.sendable)
       if (torrent || group.options.some(option => usenetEligible(result, option))) ready.push(group)

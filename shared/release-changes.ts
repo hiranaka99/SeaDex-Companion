@@ -1,6 +1,6 @@
 import { isInfoHash } from './ids.js'
 import type { Release, ReleaseChange, ReleaseChangeDetail, ResultItem } from './contracts.js'
-import { isSeasonUpgradable } from './download-plan.js'
+import { upgradeAvailable } from './download-plan.js'
 
 export const RELEASE_CHANGE_LABELS: Record<ReleaseChange['kind'], string> = {
   best: 'New best release',
@@ -182,7 +182,7 @@ export function describeReleaseChanges(previous: ResultItem, current: ResultItem
  * they stopped matching the listed release. A changed recommendation is never a regression.
  */
 export function describeRegression(previous: ResultItem, current: ResultItem): ReleaseChangeDetail | null {
-  if (previous.status !== 'best' || !isSeasonUpgradable(current)) return null
+  if (previous.status !== 'best' || !upgradeAvailable(current)) return null
   if (describeReleaseChanges(previous, current).some(change => !change.note_change)) return null
   const groups = (result: ResultItem) =>
     [...new Set((result.have || []).map(clean).filter(Boolean))].sort((left, right) => left.localeCompare(right))

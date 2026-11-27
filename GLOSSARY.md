@@ -18,6 +18,28 @@ _Avoid_: extra instance, secondary instance
 
 A library is **connected** when at least one library instance, primary or additional, has both an address and an API key.
 
+## Upgrades
+
+**Part**:
+One piece of a season that SeaDex lists releases for separately, labelled as SeaDex labels it ("Cour 2", "Part 1"); a season SeaDex does not split has a single unnamed part.
+_Avoid_: cour (except as a part's label)
+
+**Excluded release**:
+A listed release that the release preferences, or a private tracker Prowlarr cannot reach, rule out as a download target. It stays listed and can still be downloaded on its own.
+_Avoid_: ignored release
+
+**Ignored**:
+A season or part the user has set aside: no bulk download, notification or upgrade tag is made for it, although the library still shows that a better release exists.
+_Avoid_: excluded (that is a release ruled out by preferences)
+
+**Upgrade available**:
+SeaDex lists a better release for a season than the library holds. It is a fact about the catalog and the library, whatever the user has ignored.
+_Avoid_: upgradable (when wanted parts are meant)
+
+**Wanted part**:
+A part of a season with an upgrade available that is not ignored, not already settled by the library, and has a release that is not excluded. Wanted parts are what Bulk download fetches and what notifications and upgrade tags announce.
+_Avoid_: upgrade part, upgradable part
+
 ## Usenet acquisition
 
 **Source**:

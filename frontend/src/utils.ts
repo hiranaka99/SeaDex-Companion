@@ -1,7 +1,7 @@
 import { sourceNameOf } from '../../shared/arr-instances.js'
 import { baseGroupKey, resultGroupKey, seasonTag } from '../../shared/ids.js'
 
-import { isSeasonUpgradable, upgradeParts } from '../../shared/download-plan.js'
+import { upgradeAvailable, wantedParts } from '../../shared/download-plan.js'
 import { estimateDownloads } from '../../shared/download-estimate.js'
 import type { CardStatus, GroupedCard, ResultItem } from './types.js'
 
@@ -29,8 +29,6 @@ export const STATUS_LABEL: Record<CardStatus, string> = {
   review: 'Match needs review',
 }
 
-export { isSeasonUpgradable } from '../../shared/download-plan.js'
-
 /** The AniList match behind this season is uncertain, so nothing said about its SeaDex coverage is confirmed. */
 export function isUnconfirmedMatch(season: Pick<ResultItem, 'match_status' | 'anilist_id' | 'status'>): boolean {
   return season.match_status === 'unmatched' || (!season.anilist_id && season.status === 'missing')
@@ -57,7 +55,7 @@ export function seasonStatus(season: ResultItem): SeasonStatus {
 export function upgradeDownloadEstimate(results: ResultItem[]): { bytes: number; unknown: number } {
   const estimate = estimateDownloads(
     results.flatMap(result =>
-      upgradeParts(result).flatMap(part =>
+      wantedParts(result).flatMap(part =>
         part.options[0] ? [{ release: part.options[0].release, category: '' }] : [],
       ),
     ),
@@ -80,13 +78,33 @@ export function providerNames(providers: (string | undefined)[]): string[] {
 }
 
 export function hasCardUpgrade(group: GroupedCard): boolean {
-  return group.seasons.some(isSeasonUpgradable)
+  return group.seasons.some(upgradeAvailable)
+}
+
+/**
+ * The library summary line: what Bulk download would do for these cards. Like bulk review it counts wanted
+ * parts only, so a title whose remaining parts are all ignored is not counted.
+ */
+export function upgradeSummary(groups: GroupedCard[]): {
+  titles: number
+  download: { bytes: number; unknown: number }
+  growth: number
+} {
+  const wanted = (season: ResultItem) => wantedParts(season).length > 0
+  // The library's size is known per season, not per part, so a season with an ignored part counts whole.
+  const growth = (season: ResultItem) => (wanted(season) ? (season.best_size || 0) - (season.local_size || 0) : 0)
+  const seasons = groups.flatMap(group => group.seasons)
+  return {
+    titles: groups.filter(group => group.seasons.some(wanted)).length,
+    download: upgradeDownloadEstimate(seasons),
+    growth: seasons.reduce((sum, season) => sum + growth(season), 0),
+  }
 }
 
 /** Potential library growth if every upgradable season used its target release. */
 export function cardSizeDelta(group: GroupedCard): number {
   return group.seasons.reduce(
-    (total, season) => total + (isSeasonUpgradable(season) ? (season.best_size || 0) - (season.local_size || 0) : 0),
+    (total, season) => total + (upgradeAvailable(season) ? (season.best_size || 0) - (season.local_size || 0) : 0),
     0,
   )
 }

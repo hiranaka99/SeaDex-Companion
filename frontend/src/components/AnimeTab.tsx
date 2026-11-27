@@ -21,7 +21,7 @@ import {
   hasCardUpgrade,
   STATUS_LABEL,
   formatBytes,
-  upgradeDownloadEstimate,
+  upgradeSummary,
 } from '../utils'
 
 import { displayDateTime, displayTimeAgo } from '../datetime'
@@ -40,7 +40,7 @@ import { useHiddenCards } from '../useHiddenCards'
 import { describeSchedule, timeUntilCheck } from '../schedule-text'
 import { groupReleaseChanges, latestReleaseChange } from '../release-changes'
 import { preferencesAreDefault } from '../../../shared/settings'
-import { upgradeParts } from '../../../shared/download-plan'
+import { wantedParts } from '../../../shared/download-plan'
 import { releaseResultIdentity } from '../../../shared/release-changes'
 import { useLibraryFilters, type LibrarySort, type LibraryStatusFilter } from '../useLibraryFilters'
 import { STATUS_MEANING, STATUS_ORDER, STATUS_PRESENTATION } from '../status-presentation'
@@ -449,7 +449,12 @@ export default function AnimeTab({
       }, {}),
     [groups],
   )
-  const shownUpgrades = useMemo(() => groups.filter(hasCardUpgrade).length, [groups])
+  // The summary line says what Bulk download would do, so it counts wanted parts, as bulk review does.
+  const {
+    titles: shownUpgrades,
+    download: downloadEstimate,
+    growth: totalDelta,
+  } = useMemo(() => upgradeSummary(groups), [groups])
   const shownReviews = useMemo(() => groups.filter(group => group.status === 'review').length, [groups])
   const sectionLabels = sort === 'recommended' && !showUnseen && Object.keys(statusTotals).length > 1
   const motionRevision = useMemo(() => JSON.stringify(visibleGroups.map(cardKey)), [visibleGroups])
@@ -469,11 +474,9 @@ export default function AnimeTab({
     })
   }
 
-  const totalDelta = useMemo(() => groups.reduce((sum, group) => sum + cardSizeDelta(group), 0), [groups])
-  const downloadEstimate = useMemo(() => upgradeDownloadEstimate(groups.flatMap(group => group.seasons)), [groups])
   // The same rule bulk review applies, so the button is offered exactly when the review has something to show.
   const upgradeSeasonCount = useMemo(
-    () => new Set(results.filter(result => upgradeParts(result).length > 0).map(result => result.key)).size,
+    () => new Set(results.filter(result => wantedParts(result).length > 0).map(result => result.key)).size,
     [results],
   )
   const hasUpgrades = upgradeSeasonCount > 0
