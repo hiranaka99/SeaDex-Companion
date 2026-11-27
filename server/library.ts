@@ -103,7 +103,7 @@ async function mapLimited<Item, Result>(
   limit: number,
   work: (item: Item) => Promise<Result>,
 ): Promise<Result[]> {
-  const results = new Array<Result>(items.length)
+  const results = Array.from<Result>({ length: items.length })
   let next = 0
   let failed = false
   const worker = async () => {

@@ -78,7 +78,6 @@ export default function MappingDialog({
     window.setTimeout(() => inputRef.current?.focus(), 0)
     void search(initialQuery)
     // Search only when a fresh dialog opens.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, title, season])
 
   if (!open) return null

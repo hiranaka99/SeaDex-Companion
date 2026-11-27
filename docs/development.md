@@ -38,8 +38,15 @@ To run either server separately, use `npm run dev:server` or `npm run dev:fronte
 
 Source code is formatted with [Prettier](https://prettier.io) using the repository's `.prettierrc.json`. Run `npm run format` before committing, or `npm run format:check` to verify without writing. Documentation, JSON, and YAML files are not formatted.
 
+## Linting
+
+Source code is linted with [Oxlint](https://oxc.rs/docs/guide/usage/linter) using the repository's `.oxlintrc.json`. Run `npm run lint` to check the server, shared code, tests, scripts, and frontend, or `npm run lint:fix` to apply safe automatic fixes. Warnings and suppression comments that no longer suppress anything fail the check.
+
+The configuration enables the `correctness` category with the TypeScript, Unicorn, Oxc, import, Node.js, and promise plugins, plus the React and JSX accessibility plugins for the frontend. Rules that conflict with deliberate patterns in this codebase are switched off in the configuration with the reason next to each. Suppress a single finding with `// oxlint-disable-next-line <rule> -- <reason>` only when the code is intentional, and always give the reason.
+
 ## Validation
 
+- `npm run lint` checks the source with Oxlint.
 - `npm run typecheck` type-checks the server, the tests, and the frontend.
 - `npm test` builds the server and runs backend, HTTP, scheduling, and frontend utility regressions.
 - `npm run build` builds the server and frontend for production.
@@ -65,7 +72,7 @@ Before publishing:
 4. Commit the changes and push the commit and matching version tag, such as `v2.6.1`.
 5. Publish the GitHub release using that tag and the release notes, then verify the Docker publishing workflow completes successfully.
 
-The release tag must match both package versions. A stable release such as `v2.6.1` publishes `:2.6.1`, `:2.6`, and `:latest`; prereleases publish only their full version tag. The workflow validates the package versions, runs the server tests, and builds the production Dockerfile before pushing images.
+The release tag must match both package versions. A stable release such as `v2.6.1` publishes `:2.6.1`, `:2.6`, and `:latest`; prereleases publish only their full version tag. The workflow validates the package versions, runs the linter and the server tests, and builds the production Dockerfile before pushing images.
 
 To rerun publication, use **Actions → Publish Docker image → Run workflow** with an existing release tag and the prerelease option when appropriate. Publishing an image does not update running containers. Users either install the release in-app or pull the image and recreate their containers.
 
