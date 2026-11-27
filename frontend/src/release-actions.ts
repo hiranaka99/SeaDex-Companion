@@ -136,7 +136,7 @@ export function sendVerdict({
   const usable = protocol === 'torrent' ? route.torrent.sendable : route.usenet.sendable
   const enabled = !inClient && !complete && usable
   const owned = releaseOwned(r, rel)
-  const into = categoryPhrase(config, r, protocol)
+  const categoryNote = categoryPhrase(config, r, protocol)
   const fileCount = `${fileScope.files.length} selected file${fileScope.files.length === 1 ? '' : 's'}`
 
   const reason = complete
@@ -147,12 +147,12 @@ export function sendVerdict({
         ? route.blocked
         : protocol === 'usenet'
           ? usable
-            ? `Send this release to SABnzbd ${into}`
+            ? `Send this release to SABnzbd ${categoryNote}`
             : usenetDetail(rel, routes, availability) || 'Usenet is not available for this release'
           : rel.torrent_available
-            ? `Send this release to qBittorrent ${into}`
+            ? `Send this release to qBittorrent ${categoryNote}`
             : route.torrent.viaProwlarr
-              ? `Find this release on ${rel.tracker.trim() || 'its tracker'} through Prowlarr, check its files, and send it to qBittorrent ${into}`
+              ? `Find this release on ${rel.tracker.trim() || 'its tracker'} through Prowlarr, check its files, and send it to qBittorrent ${categoryNote}`
               : 'No magnet available (private tracker)'
   const label = complete
     ? 'Download completed'

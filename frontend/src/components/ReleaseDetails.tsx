@@ -274,7 +274,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
           ? 'border-transparent bg-accent text-on-accent enabled:hover:bg-accent-bright'
           : 'border-line-strong bg-panel text-ink enabled:hover:bg-panel-raised'
   const statusCopy = complete ? `Download completed in ${clientName(transfers[0].client)}` : ''
-  const intoUsenet = categoryPhrase(config, r, 'usenet')
+  const usenetCategoryNote = categoryPhrase(config, r, 'usenet')
   const destination = protocolClientName(chosen)
   const sendFacts = verdict.facts
   const usenetBytes = currentAvailability?.hashes[0]?.total_bytes || 0
@@ -673,7 +673,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
           )}
           {chosen === 'usenet' && (
             <p className="mt-1 mb-0 text-xs text-muted">
-              Usenet sources cannot be split and are sent to SABnzbd {intoUsenet}.
+              Usenet sources cannot be split and are sent to SABnzbd {usenetCategoryNote}.
             </p>
           )}
           {chosen === 'torrent' && !inClient && !complete && torrentUsable && !fileScope.exact && (
@@ -789,7 +789,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
           </p>
           <p className="mt-1 mb-0 text-xs text-ink wrap-anywhere">
             {candidateConfirmText(confirmingNzb, rel.releaseGroup)} Download it only if you checked it on{' '}
-            {confirmingNzb.indexer || 'the indexer'}. SABnzbd downloads the whole post {intoUsenet}.
+            {confirmingNzb.indexer || 'the indexer'}. SABnzbd downloads the whole post {usenetCategoryNote}.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <button
