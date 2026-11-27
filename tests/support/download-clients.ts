@@ -9,12 +9,23 @@ import {
   type LiveJob,
   type SubmissionOwnership,
   type SubmissionUnit,
+  type TorrentSend,
+  type UnitPlan,
+  type UnitReview,
+  type UnitRow,
+  type UsenetSend,
 } from '../../server/download-client-types.js'
 import type { OwnedDownloadRecord } from '../../server/download-store.js'
+import type { Config } from '../../server/types.js'
+import { DEFAULT_CONFIG } from '../../server/config.js'
+import { planTorrentUnits } from '../../server/torrent-units.js'
+import { planUsenetUnits } from '../../server/usenet-units.js'
 import type { DiskSpaceCheck, DownloadClient, DownloadProtocol } from '../../shared/download-contracts.js'
 
 export interface MemoryClientOptions {
   endpointId?: string
+  /** Plans the client's units in place of its protocol's real planning. */
+  planUnits?: (rows: UnitRow[], review: UnitReview) => Promise<UnitPlan> | UnitPlan
   jobs?: Map<string, LiveJob>
   presenceComplete?: boolean
   readComplete?: boolean
@@ -75,7 +86,11 @@ const CLIENT_DEFAULTS: Record<
   },
 }
 
-function createMemoryClient(protocol: DownloadProtocol, options: MemoryClientOptions = {}): MemoryClientState {
+function createMemoryClient(
+  protocol: DownloadProtocol,
+  config: Config,
+  options: MemoryClientOptions = {},
+): MemoryClientState {
   const meta = CLIENT_DEFAULTS[protocol]
   let nextId = 0
   const state: MemoryClientState = {
@@ -106,6 +121,21 @@ function createMemoryClient(protocol: DownloadProtocol, options: MemoryClientOpt
     },
     async presence(): Promise<ClientPresence> {
       return { ids: new Set(state.jobs.keys()), complete: state.presenceComplete }
+    },
+    async planUnits(rows, review) {
+      if (options.planUnits) return await options.planUnits(rows, review)
+      // The protocol's real planning, as the real client of this protocol does it.
+      return protocol === 'torrent'
+        ? await planTorrentUnits(config, state.adapter, rows, review.blocks)
+        : planUsenetUnits(config, state.adapter, rows, review)
+    },
+    recordFields(unit) {
+      if (protocol === 'torrent') {
+        const send = unit.send as Partial<TorrentSend> | undefined
+        return unit.whole_source || !send?.requestedPaths ? {} : { scope: send.requestedPaths }
+      }
+      const send = unit.send as Partial<UsenetSend> | undefined
+      return send?.entryId ? { entry_id: send.entryId } : {}
     },
     async submit(unit, ownership) {
       state.submitted.push(unit)
@@ -189,14 +219,20 @@ function createMemoryClient(protocol: DownloadProtocol, options: MemoryClientOpt
   return state
 }
 
-/** Builds in-memory download client adapters and spy state so tests can exercise flows without HTTP. */
-export function memoryDownloadClients(options: { torrent?: MemoryClientOptions; usenet?: MemoryClientOptions } = {}): {
+/**
+ * Builds in-memory download client adapters and spy state so tests can exercise flows without HTTP. Unless a client
+ * is given its own `planUnits`, it plans with its protocol's real planning under `config`.
+ */
+export function memoryDownloadClients(
+  options: { config?: Config; torrent?: MemoryClientOptions; usenet?: MemoryClientOptions } = {},
+): {
   clients: DownloadClients
   torrent: MemoryClientState
   usenet: MemoryClientState
 } {
-  const torrent = createMemoryClient('torrent', options.torrent)
-  const usenet = createMemoryClient('usenet', options.usenet)
+  const config = options.config ?? DEFAULT_CONFIG
+  const torrent = createMemoryClient('torrent', config, options.torrent)
+  const usenet = createMemoryClient('usenet', config, options.usenet)
   return {
     clients: { torrent: torrent.adapter, usenet: usenet.adapter },
     torrent,
