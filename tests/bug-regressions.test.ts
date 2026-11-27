@@ -40,7 +40,7 @@ import {
   startScheduler,
 } from '../server/scheduler.js'
 import { join } from 'node:path'
-import { assessSeason } from '../server/assessment.js'
+import { assessSeason } from './support/assessment.js'
 import { qbPhase } from '../server/qbittorrent-adapter.js'
 
 async function preserveFiles(files: string[], action: () => void | Promise<void>) {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { assessSeason, type AssessmentSettings } from '../server/assessment.js'
+import type { AssessmentSettings } from '../server/assessment.js'
+import { assessSeason } from './support/assessment.js'
 import { verifyPart } from '../server/verification.js'
 import { normalizeResults } from '../server/result-model.js'
 import { releaseOwned, wantedParts } from '../shared/download-plan.js'
