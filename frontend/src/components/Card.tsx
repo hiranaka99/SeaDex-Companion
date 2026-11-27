@@ -1,9 +1,8 @@
 import { errorMessage } from '../../../shared/errors.js'
-import { useCardDownloads, useSeasonAvailability } from '../useCardDownloads'
+import { useReleaseActions } from '../useReleaseActions'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { GroupedCard, ResultItem, Config } from '../types'
 import { seasonLabel, STATUS_LABEL, cardSizeDelta, formatBytes, isSeasonUpgradable } from '../utils'
-import { downloadRoutes } from '../download-routes'
 import { displayDateTimeMinutes } from '../datetime'
 import * as api from '../api'
 import { buttonBase, cx } from '../styles'
@@ -12,7 +11,6 @@ import BrandLogo from './BrandLogo'
 import { useToast } from './Toast'
 import DownloadsPanel from './DownloadsPanel'
 import { clientName, type DownloadEntry } from '../download-entry'
-import type { DownloadProtocol } from '../api'
 import ConfirmDialog from './ConfirmDialog'
 import ErrorBoundary from './ErrorBoundary'
 import Modal from './Modal'
@@ -26,7 +24,6 @@ import type { IconName as QualityIconName } from './Icons'
 import { releaseOverview, releaseQuality } from '../release-status'
 import { groupReleaseChanges, presentReleaseChange } from '../release-changes'
 import ReleaseChangeLine from './ReleaseChangeLine'
-import { releaseIdentity } from '../../../shared/releases'
 import { STATUS_PRESENTATION } from '../status-presentation'
 
 function HideActionIcon({ hidden }: { hidden: boolean }) {
@@ -141,33 +138,19 @@ function Card({
   const detailsShown = useRef(false)
   detailsShown.current = detailsOpen && !closing.current
   const {
-    dlBySeason,
     activeDownloads,
     busyDownload,
-    sendingRelease,
-    lowSpace,
-    sendErrors,
-    handleDownload,
-    cancelLowSpace,
-    dismissSendError,
     handleDownloadAction,
-  } = useCardDownloads(group, toast.show, () => detailsShown.current)
-  const routes = useMemo(() => downloadRoutes(config), [config])
-  const configScope = routes.availabilityFingerprint
-  const {
-    availability,
-    load: loadAvailability,
-    revision: availabilityRevision,
-  } = useSeasonAvailability(routes.usenetAllowed, group.seasons, detailsOpen && !closing.current, configScope)
-  const [protocols, setProtocols] = useState<Record<string, DownloadProtocol>>({})
-  const protocolKey = (seasonKey: string, index: number) =>
-    `${availabilityRevision}\u0000${configScope}\u0000${seasonKey}\u0000${releaseIdentity(group.seasons.find(season => season.key === seasonKey)?.releases[index] || {})}`
-  const protocolFor = (season: ResultItem, index: number): DownloadProtocol => {
-    const release = season.releases[index]
-    const chosen = protocols[protocolKey(season.key, index)]
-    if (!release) return chosen || 'torrent'
-    return routes.release(release, availability[season.key]?.byRelease[index], chosen).protocol
-  }
+    season: seasonActions,
+  } = useReleaseActions(group, config, {
+    notify: toast.show,
+    detailsOpen: detailsOpen && !closing.current,
+    detailsShown: () => detailsShown.current,
+    onRemove: entry => {
+      setDeleteFiles(false)
+      setRemoveTarget(entry)
+    },
+  })
 
   const seasonCount = group.seasons.length
   const unseenChanges = useMemo(() => groupReleaseChanges(group), [group.seasons])
@@ -758,50 +741,7 @@ function Card({
                         onJump={jumpToDetails}
                         r={season}
                         config={config}
-                        dl={dlBySeason[season.key] || {}}
-                        busyDownload={busyDownload}
-                        sendingIndex={
-                          sendingRelease === null
-                            ? null
-                            : sendingRelease.key === season.key
-                              ? sendingRelease.release
-                              : -1
-                        }
-                        routes={routes}
-                        availability={availability[season.key]}
-                        protocolFor={index => protocolFor(season, index)}
-                        onProtocol={(index, protocol) =>
-                          setProtocols(current => ({ ...current, [protocolKey(season.key, index)]: protocol }))
-                        }
-                        onRefreshAvailability={() => void loadAvailability(season, true)}
-                        onSearchProwlarr={release => void loadAvailability(season, false, { search: release })}
-                        onCheckProwlarr={release => void loadAvailability(season, false, { verify: release })}
-                        onOpened={() => void loadAvailability(season)}
-                        onDownload={(release, sendAnyway, chosenNzb) => {
-                          // "Send anyway" repeats the send that was held, including an NZB the user chose.
-                          const held =
-                            sendAnyway && lowSpace?.key === season.key && lowSpace.release === release
-                              ? lowSpace.nzb
-                              : undefined
-                          const nzb = chosenNzb ?? held
-                          void handleDownload(
-                            season.key,
-                            release,
-                            nzb ? 'usenet' : protocolFor(season, release),
-                            sendAnyway,
-                            nzb,
-                          )
-                        }}
-                        lowSpace={lowSpace?.key === season.key ? lowSpace : null}
-                        sendErrors={sendErrors}
-                        onCancelLowSpace={cancelLowSpace}
-                        onDismissSendError={release => dismissSendError(season.key, release)}
-                        onPause={entry => void handleDownloadAction(entry, 'pause')}
-                        onResume={entry => void handleDownloadAction(entry, 'resume')}
-                        onRemove={entry => {
-                          setDeleteFiles(false)
-                          setRemoveTarget(entry)
-                        }}
+                        actions={seasonActions(season)}
                         ruleBusy={ruleBusy}
                         onToggleExclusion={(part, excluded) => void toggleExclusion(season, part, excluded)}
                         onCorrectMatch={() => {

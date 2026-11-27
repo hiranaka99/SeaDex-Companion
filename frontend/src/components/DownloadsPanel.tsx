@@ -2,7 +2,7 @@ import { formatBytes, formatEta } from '../utils'
 import Icon from './Icons'
 import { cx, downloadTextTone } from '../styles'
 import type { DownloadPhase } from '../api'
-import { clientName, type DownloadEntry } from '../download-entry'
+import { clientName, phaseLabel, type DownloadEntry } from '../download-entry'
 
 /** What happened to a finished download in Sonarr or Radarr, in words and a tone; null while it is still downloading. */
 export function importStatus(
@@ -46,30 +46,12 @@ export function ImportStatusLine({ entry }: { entry: Pick<DownloadEntry, 'import
   )
 }
 
-const PHASE_LABEL: Record<DownloadPhase, string> = {
-  queued: 'Queued',
-  downloading: 'Downloading',
-  paused: 'Paused',
-  verifying: 'Verifying',
-  repairing: 'Repairing',
-  unpacking: 'Unpacking',
-  post_processing: 'Post-processing',
-  seeding: 'Seeding',
-  complete: 'Complete',
-  missing: 'Not in client',
-  unavailable: 'Unavailable',
-  acceptance_unknown: 'Awaiting confirmation',
-  error: 'Error',
-}
-
 /** Copy that names the recovery, never a URL or credential. */
 const PHASE_HINT: Partial<Record<DownloadPhase, string>> = {
   missing: 'This download is no longer in the client. Remove the entry and send it again if you still want it.',
   unavailable: 'The download client is currently unreachable. Progress resumes when it answers.',
   error: 'The client reported an error. Open the client for details, then remove and retry.',
 }
-
-export const phaseLabel = (phase: DownloadPhase) => PHASE_LABEL[phase] || 'Downloading'
 
 /** Progress is meaningful only while bytes move or the client verifies them. */
 const showsProgress = (phase: DownloadPhase) =>
