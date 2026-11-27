@@ -21,3 +21,7 @@ Uses the five default triage labels: `needs-triage`, `needs-info`, `ready-for-ag
 ### Domain docs
 
 Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Replaying SeaDex entries
+
+When a title's releases, scoping, or targets look wrong, replay its real SeaDex entries first with `npm run replay:seadex`. See `docs/development.md`.

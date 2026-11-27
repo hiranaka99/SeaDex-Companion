@@ -32,9 +32,11 @@ const AUDIO_CHANNELS =
 export function episodeFromFilename(name: string): ParsedEpisode | null {
   const filename = name.split(/[\\/]/).pop() || ''
   if (!VIDEO_FILE.test(filename) || /NCOP|NCED/i.test(filename)) return null
-  const standard = filename.match(/S(\d{1,3})E(\d{1,3}(?:\.\d+)?)/i)
+  // Fractional episodes are a single decimal digit (e.g. "S01E11.5") followed by a delimiter or version tag,
+  // so dot-separated scene tags like "S01E01.1080p" or "S01E13.100-yen" stay whole episode numbers.
+  const standard = filename.match(/S(\d{1,3})E(\d{1,3}(?:\.\d(?=(?:v\d{1,2})?(?:[ ._[\]()-]|E\d|$)))?)/i)
   if (standard) return { season: Number(standard[1]), episode: Number(standard[2]), explicit: true }
-  const named = filename.match(/\b(?:Episode|Ep\.?)\s*[._-]*\s*(\d{1,3}(?:\.\d+)?)(?:v\d{1,2})?(?=[ ._[\]()-]|$)/i)
+  const named = filename.match(/\b(?:Episode|Ep\.?)\s*[._-]*\s*(\d{1,3}(?:\.\d)?)(?:v\d{1,2})?(?=[ ._[\]()-]|$)/i)
   if (named) return { season: null, episode: Number(named[1]), explicit: true }
   // Unlabelled absolute episode numbers are common in whole-season encodes.
   // Only use these when no explicitly numbered episodes exist in the torrent.
