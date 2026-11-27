@@ -1,14 +1,8 @@
 import type { Config } from './types.js'
 import type { UsenetProvider } from '../shared/usenet-contracts.js'
-import { fetchAnimeToshoNzb, lookupAnimeTosho, testAnimeTosho } from './animetosho.js'
-import { fetchAmeNZBNzb, lookupAmeNZB, testAmeNZB } from './amenzb.js'
-import {
-  AMENZB_ENTRY_PATTERN,
-  ANIMETOSHO_ENTRY_PATTERN,
-  type ProviderLookup,
-  type ProviderSettings,
-  type UsenetMatch,
-} from './usenet-provider-types.js'
+import { ANIMETOSHO_ENTRY_PATTERN, fetchAnimeToshoNzb, lookupAnimeTosho, testAnimeTosho } from './animetosho.js'
+import { AMENZB_ENTRY_PATTERN, fetchAmeNZBNzb, lookupAmeNZB, testAmeNZB } from './amenzb.js'
+import type { ProviderLookup, ProviderSettings, UsenetMatch } from './usenet-provider-types.js'
 
 /** Everything the resolver, cache and settings need to know about one Usenet indexer. */
 export interface UsenetProviderDefinition {
