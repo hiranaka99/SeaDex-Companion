@@ -10,6 +10,7 @@ import type { SendOutcome } from '../frontend/src/api.js'
 import {
   createReleaseSends,
   currentAvailability,
+  exclusionNote,
   sendVerdict,
   wholeReleaseVerdict,
   type SendApi,
@@ -410,6 +411,9 @@ test('a split season offers the whole release beside its own files', () => {
   // An ordinary season, or a release of this season alone, has no whole-release action.
   assert.equal(wholeFor(config('torrent_only'), season([splitRelease()])), null)
   assert.equal(wholeFor(config('torrent_only'), splitSeason({ ...splitRelease(), whole_release: undefined })), null)
+  // Nor does a release whose numbering does not fit the episode order: it is never downloaded.
+  const misfit: Release = { ...splitRelease(), excluded_by: 'Does not fit', excluded_kind: 'episode_order' }
+  assert.equal(wholeFor(config('torrent_only'), splitSeason(misfit)), null)
 })
 
 test('the whole release reads as a re-download only when every season it covers holds it', () => {
@@ -500,4 +504,64 @@ test('a whole-release send asks for the whole release, also when it is sent anyw
     [[asked], [asked]],
   )
   assert.equal(calls.send.length, 1)
+})
+
+const misfitRelease: Release = {
+  ...publicRelease,
+  releaseGroup: 'NAN0',
+  excluded_by:
+    "Doesn't fit your episode order: NAN0 numbers Season 2 as 30 episodes, but your series uses DVD order, which has 13. Sonarr would import its files onto the wrong episodes.",
+  excluded_kind: 'episode_order',
+  episode_misfit: { release_episodes: 30, series_episodes: 13, episode_order: 'dvd' },
+}
+
+test('a release excluded for its episode order offers no torrent or Usenet download and is never recommended', () => {
+  const settings = config('choose')
+  const routes = downloadRoutes(settings)
+  const result = season([misfitRelease], { season: 2 })
+  assert.equal(routes.usenetSearchable(misfitRelease), false)
+  for (const chosen of ['torrent', 'usenet'] as const) {
+    const route = routes.release(misfitRelease, row('available'), chosen)
+    assert.equal(route.torrent.sendable, false)
+    assert.equal(route.usenet.sendable, false)
+    assert.equal(route.usenet.pending, false)
+    const verdict = sendVerdict({ result, release: misfitRelease, config: settings, routes, route, transfers: [] })
+    assert.equal(verdict.enabled, false)
+    assert.equal(verdict.recommended, false)
+    assert.equal(verdict.reason, misfitRelease.excluded_by)
+  }
+})
+
+test('the episode-order warning names the series’ episode order when Sonarr reported one, and only counts otherwise', () => {
+  const withOrder = exclusionNote(season([misfitRelease], { season: 2 }), misfitRelease)
+  assert.deepEqual(withOrder, {
+    title: "Doesn't fit your episode order",
+    detail:
+      'NAN0 numbers Season 2 as 30 episodes, but your series uses DVD order, which has 13. Sonarr would import its files onto the wrong episodes.',
+    downloadable: false,
+  })
+  const v3: Release = {
+    ...misfitRelease,
+    releaseGroup: 'GetItTwisted',
+    episode_misfit: { release_episodes: 13, series_episodes: 30 },
+  }
+  assert.equal(
+    exclusionNote(season([v3], { season: 2 }), v3)?.detail,
+    'GetItTwisted numbers Season 2 as 13 episodes, but your series has 30. Sonarr would import its files onto the wrong episodes.',
+  )
+})
+
+test('a release the preferences exclude still offers its single download, but is not recommended', () => {
+  const excluded: Release = { ...publicRelease, excluded_by: 'Ignored release group', excluded_kind: 'preferences' }
+  const verdict = verdictFor(config('torrent_only'), season([excluded]))
+  assert.equal(verdict.enabled, true)
+  assert.equal(verdict.recommended, false)
+  assert.deepEqual(exclusionNote(season([excluded]), excluded), {
+    title: 'Excluded by your release preferences: Ignored release group.',
+    detail: 'Bulk download skips it.',
+    downloadable: true,
+  })
+  // Saved before exclusions had a kind: still a preference reason.
+  const older: Release = { ...publicRelease, excluded_by: 'Ignored tracker' }
+  assert.equal(exclusionNote(season([older]), older)?.title, 'Excluded by your release preferences: Ignored tracker.')
 })

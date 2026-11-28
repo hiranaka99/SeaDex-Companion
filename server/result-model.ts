@@ -1,5 +1,5 @@
 import { isRecord, asRecord } from '../shared/guards.js'
-import type { Release, ResultItem } from '../shared/contracts.js'
+import type { ExclusionKind, Release, ResultItem } from '../shared/contracts.js'
 import { torrentHashes, planTorrents } from '../shared/download-plan.js'
 import { sameRelease } from '../shared/releases.js'
 import { FILES_SOURCE_PATTERN } from '../shared/ids.js'
@@ -44,6 +44,32 @@ function wholeRelease(value: unknown): Release['whole_release'] {
     ? { seasons, held: seasonList(value.held).filter(season => seasons.includes(season)) }
     : undefined
 }
+const EXCLUSION_KINDS: readonly ExclusionKind[] = ['preferences', 'unreachable_tracker', 'episode_order']
+const positiveCount = (value: unknown): number | null =>
+  Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : null
+
+/**
+ * An exclusion's kind, and an episode-order exclusion's counts, only beside a reason. Results saved before kinds
+ * existed, or with a kind this version does not know, keep the reason alone, as preference reasons are.
+ */
+function exclusionDetails(source: Record<string, unknown>): Pick<Release, 'excluded_kind' | 'episode_misfit'> {
+  const kind = EXCLUSION_KINDS.find(known => known === source.excluded_kind)
+  if (!text(source.excluded_by) || !kind) return {}
+  if (kind !== 'episode_order') return { excluded_kind: kind }
+  const misfit = asRecord(source.episode_misfit)
+  const releaseEpisodes = positiveCount(misfit.release_episodes)
+  const seriesEpisodes = positiveCount(misfit.series_episodes)
+  // Without its counts, nothing could say why the release does not fit: it stays excluded, by an unnamed reason.
+  if (releaseEpisodes === null || seriesEpisodes === null) return { excluded_kind: kind }
+  return {
+    excluded_kind: kind,
+    episode_misfit: {
+      release_episodes: releaseEpisodes,
+      series_episodes: seriesEpisodes,
+      ...(text(misfit.episode_order) ? { episode_order: String(misfit.episode_order).slice(0, 40) } : {}),
+    },
+  }
+}
 const dictionary = <T>(value: unknown, parse: (value: unknown) => T): Record<string, T> =>
   Object.fromEntries(Object.entries(asRecord(value)).map(([key, entry]) => [key, parse(entry)]))
 
@@ -77,6 +103,7 @@ export function normalizeResults(value: unknown): ResultItem[] {
           ...(source.files_match === true ? { files_match: true } : {}),
           ...(text(source.excluded_by) ? { excluded_by: String(source.excluded_by) } : {}),
           ...(wholeRelease(source.whole_release) ? { whole_release: wholeRelease(source.whole_release) } : {}),
+          ...exclusionDetails(source),
           ...(Array.isArray(source.torrent_files)
             ? {
                 torrent_files: source.torrent_files.map(raw => {

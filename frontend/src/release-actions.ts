@@ -3,9 +3,15 @@
 // the rows out.
 
 import { downloadCategory } from '../../shared/arr-instances.js'
-import { normalizeTorrentPath as normalizeFile, releaseOwned, wholeRelease } from '../../shared/download-plan.js'
+import {
+  normalizeTorrentPath as normalizeFile,
+  releaseForbidden,
+  releaseOwned,
+  wholeRelease,
+} from '../../shared/download-plan.js'
 import { estimateDownloads } from '../../shared/download-estimate.js'
 import { episodeRangeLabel, releaseIdentity } from '../../shared/releases.js'
+import { EPISODE_MISFIT_TITLE, episodeMisfitDetail } from '../../shared/episode-order.js'
 import type { UsenetAvailabilityResult } from '../../shared/usenet-contracts.js'
 import { errorMessage } from '../../shared/errors.js'
 import type { DiskSpaceCheck, DownloadProtocol, preflightDownload, sendDownload } from './api.js'
@@ -196,9 +202,14 @@ export function sendVerdict({
   return { protocol, label, enabled, reason, recommended, facts }
 }
 
-/** The row is a split season's listing of a release that covers more than this season. */
+/**
+ * The row is a split season's listing of a release that covers more than this season. A release whose numbering does
+ * not fit the episode order is never downloaded, whole or not.
+ */
 export const hasWholeRelease = (result: ResultItem, release: Release): boolean =>
-  Boolean(result.split_seasons?.length && (release.whole_release?.seasons.length || 0) > 1)
+  Boolean(
+    result.split_seasons?.length && (release.whole_release?.seasons.length || 0) > 1 && !releaseForbidden(release),
+  )
 
 /** "Season 2", "Seasons 1–16", or "Seasons 1, 3 and 5" for seasons that do not follow on. */
 export function seasonsLabel(seasons: number[]): string {
@@ -286,6 +297,40 @@ export function wholeReleaseVerdict({
         .join(' · ')
     : ''
   return { protocol, label, enabled, reason, recommended: false, facts }
+}
+
+/** What a release card says about an excluded release, and whether the release can still be downloaded on its own. */
+export interface ExclusionNote {
+  title: string
+  detail: string
+  downloadable: boolean
+}
+
+/**
+ * Why a release is excluded, in the words its kind calls for. Results saved before exclusions had a kind carry a
+ * preference reason or an unreachable tracker, which both read as today's preference copy.
+ */
+export function exclusionNote(result: ResultItem, rel: Release): ExclusionNote | null {
+  if (!rel.excluded_by) return null
+  if (releaseForbidden(rel))
+    return {
+      title: EPISODE_MISFIT_TITLE,
+      detail: rel.episode_misfit
+        ? episodeMisfitDetail(rel.releaseGroup, result.season, rel.episode_misfit)
+        : 'Sonarr would import its files onto the wrong episodes.',
+      downloadable: false,
+    }
+  if (rel.excluded_kind === 'unreachable_tracker')
+    return {
+      title: `${rel.excluded_by}, so another release is your target.`,
+      detail: 'Bulk download skips it.',
+      downloadable: true,
+    }
+  return {
+    title: `Excluded by your release preferences: ${rel.excluded_by}.`,
+    detail: 'Bulk download skips it.',
+    downloadable: true,
+  }
 }
 
 const usenetDetail = (rel: Release, routes: DownloadRoutes, availability: UsenetAvailabilityResult | undefined) =>

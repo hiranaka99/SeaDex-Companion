@@ -9,11 +9,15 @@ const usage = `Usage: npm run replay:seadex -- --alid <id,id…> --episodes <n,n
        npm run replay:seadex -- --alid <id> --split <n,n…> [options]
 
   --alid       AniList IDs of the season's SeaDex entries, one per part, in order
-  --episodes   Episode count of each part, in the same order
+  --episodes   AniList episode count of each part, in the same order
   --season     Sonarr season number (default 1)
   --split      Episode count of each Sonarr season one entry is split into (split seasons), from season 1 on;
                prints every split season with its whole-release scope instead of --episodes and --season
+  --season-episodes
+               Episodes the Sonarr season has under the series' episode order (default: the parts' total)
+  --order      The series' episode order as Sonarr v5 names it: official, dvd… (default: none, as with Sonarr v3)
   --own        Release groups the library holds for the whole season, comma separated
+  --own-files  Release groups whose listed files the library holds byte for byte, comma separated
   --trackers   public, private or reachable (default: the app's default)
   --from       Read the SeaDex entries from a saved JSON file instead of seadex.moe
   --save       Write the fetched SeaDex entries to a JSON file, such as a test fixture`
@@ -24,7 +28,10 @@ const { values } = parseArgs({
     episodes: { type: 'string' },
     split: { type: 'string' },
     season: { type: 'string', default: '1' },
+    'season-episodes': { type: 'string' },
+    order: { type: 'string' },
     own: { type: 'string' },
+    'own-files': { type: 'string' },
     trackers: { type: 'string' },
     from: { type: 'string' },
     save: { type: 'string' },
@@ -36,11 +43,15 @@ const alids = numbers(values.alid)
 const episodes = numbers(values.episodes)
 const season = Number(values.season)
 const split = numbers(values.split)
+const seasonEpisodes = values['season-episodes'] === undefined ? undefined : Number(values['season-episodes'])
 const TRACKER_MODES = ['public', 'private', 'reachable']
 const valid =
   alids.length > 0 &&
-  (split.length ? alids.length === 1 && split.length > 1 : alids.length === episodes.length) &&
+  (split.length
+    ? alids.length === 1 && split.length > 1 && seasonEpisodes === undefined && !values.order && !values['own-files']
+    : alids.length === episodes.length) &&
   [...alids, ...episodes, ...split, season].every(Number.isSafeInteger) &&
+  (seasonEpisodes === undefined || (Number.isSafeInteger(seasonEpisodes) && seasonEpisodes > 0)) &&
   (!values.trackers || TRACKER_MODES.includes(values.trackers))
 if (values.help || !valid) {
   console.log(usage)
@@ -49,6 +60,7 @@ if (values.help || !valid) {
 
 const { replayCatalog, replaySplitCatalog } = await import('../dist/tests/support/seadex-replay.js')
 const { episodeRangeLabel } = await import('../dist/shared/releases.js')
+const { releaseForbidden } = await import('../dist/shared/download-plan.js')
 
 async function fetchEntries() {
   const { SEADEX, fetchWithTimeout } = await import('../dist/server/http.js')
@@ -77,7 +89,10 @@ const { results, violations } = split.length
   : await replayCatalog(items, {
       season,
       parts: alids.map((alid, index) => ({ alid, episodes: episodes[index] })),
+      ...(seasonEpisodes !== undefined ? { seasonEpisodes } : {}),
+      ...(values.order ? { episodeOrder: values.order } : {}),
       own,
+      ownFiles: (values['own-files'] || '').split(',').filter(Boolean),
       ...trackers,
     }).then(({ result, violations }) => ({ results: [result], violations }))
 
@@ -91,14 +106,16 @@ function printSeason(result) {
     const part = release.part || 'Season'
     if (part !== heading) console.log((heading = part))
     const selected = release.selected_files || []
-    const scope = selected.length
-      ? `${episodeRangeLabel(selected) || 'unlabelled episodes'} · ${selected.length} files`
-      : 'whole torrent'
+    const scope = releaseForbidden(release)
+      ? 'never downloaded'
+      : selected.length
+        ? `${episodeRangeLabel(selected) || 'unlabelled episodes'} · ${selected.length} files`
+        : 'whole torrent'
     const flags = [
       release.target && 'target',
       release.files_match && 'files match',
       !release.torrent_available && 'private',
-      release.excluded_by && `excluded: ${release.excluded_by}`,
+      release.excluded_by && `excluded (${release.excluded_kind || 'preferences'}): ${release.excluded_by}`,
     ].filter(Boolean)
     console.log(`  ${release.kind.padEnd(4)} ${release.releaseGroup} (${release.tracker}) · ${scope}`)
     if (flags.length) console.log(`       ${flags.join(' · ')}`)

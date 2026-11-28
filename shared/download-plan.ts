@@ -1,5 +1,6 @@
 import { INFO_HASH_PATTERN } from './ids.js'
 import type { EstimatableRelease } from './download-estimate.js'
+import type { ExclusionKind } from './contracts.js'
 
 export const normalizeTorrentPath = (path: string): string =>
   path
@@ -43,9 +44,18 @@ export interface RecommendationRelease extends EstimatableRelease {
   satisfies?: boolean
   /** The library's files are this release's files, byte for byte. */
   files_match?: boolean
-  /** Set when the saved preferences never offer this release for download. */
+  /** Set when this release is never offered for download. */
   excluded_by?: string
+  /** What kind of reason `excluded_by` gives; absent on results saved before kinds existed. */
+  excluded_kind?: ExclusionKind
 }
+
+/**
+ * A release excluded for its episode numbering cannot be downloaded at all, not even on its own: Sonarr would
+ * import its files onto the wrong episodes. No Usenet lookup or search is started for it either.
+ */
+export const releaseForbidden = (release: Pick<RecommendationRelease, 'excluded_kind'>): boolean =>
+  release.excluded_kind === 'episode_order'
 
 export interface RecommendationSeason<R extends RecommendationRelease = RecommendationRelease> {
   key: string

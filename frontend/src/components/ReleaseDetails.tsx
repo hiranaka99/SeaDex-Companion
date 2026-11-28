@@ -1,4 +1,9 @@
-import { normalizeTorrentPath as normalizeFile, releaseFilesMatch, releaseOwned } from '../../../shared/download-plan'
+import {
+  normalizeTorrentPath as normalizeFile,
+  releaseFilesMatch,
+  releaseForbidden,
+  releaseOwned,
+} from '../../../shared/download-plan'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Config, Release, ResultItem } from '../types'
 import { formatBytes, formatEta, seasonLabel, sizeDelta } from '../utils'
@@ -10,7 +15,8 @@ import { clientName, phaseLabel, protocolClientName, type DownloadEntry } from '
 import type { DownloadPhase, DownloadProtocol } from '../api'
 import type { UsenetCandidate } from '../../../shared/usenet-contracts'
 import { DiskLine } from './PlanReview'
-import { categoryPhrase, releaseFileScope } from '../release-actions'
+import { categoryPhrase, exclusionNote, releaseFileScope } from '../release-actions'
+import { wrongEpisodesNote } from '../../../shared/episode-order'
 import type { ReleaseActions } from '../useReleaseActions'
 import { DEFAULT_TRACKER_MODE } from '../../../shared/settings'
 import { displayDateTimeMinutes } from '../datetime'
@@ -307,6 +313,10 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
   const libraryChange = !owned && !verified && rel.size > 0 && localSize > 0 ? delta || 'No change' : ''
   /** A release SeaDex lists without a public magnet: it can only be fetched by hand from its tracker. */
   const manualOnly = chosen === 'torrent' && !torrentUsable && !inClient && !complete && !usenetUsable
+  /** Excluded for its episode numbering: never sent anywhere, only linked to its tracker page. */
+  const forbidden = releaseForbidden(rel) && !inClient && !complete
+  const exclusion = exclusionNote(r, rel)
+  const wrongEpisodes = wrongEpisodesNote(r, rel)
   const tracker = rel.tracker.trim()
   /** No public magnet means the release sits on a private tracker. */
   const privateTracker = !rel.torrent_available
@@ -422,19 +432,35 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
           </span>
         </p>
       )}
-      {rel.excluded_by && (
-        <p className="m-0 mb-3 flex items-start gap-1.5 text-xs text-muted" role="note">
-          <Icon name="ban" size={14} className="mt-0.5 shrink-0" />
-          <span className="min-w-0">
-            <span className="font-semibold text-ink">Excluded by your release preferences: {rel.excluded_by}.</span>
-            {/* A private-tracker release nothing can send says so below, where its download would be. */}
-            <span className="mt-0.5 block">
-              Bulk download skips it.{manualOnly ? '' : ' You can still download it here.'}
+      {exclusion &&
+        (exclusion.downloadable ? (
+          <p className="m-0 mb-3 flex items-start gap-1.5 text-xs text-muted" role="note">
+            <Icon name="ban" size={14} className="mt-0.5 shrink-0" />
+            <span className="min-w-0">
+              <span className="font-semibold text-ink">{exclusion.title}</span>
+              {/* A private-tracker release nothing can send says so below, where its download would be. */}
+              <span className="mt-0.5 block">
+                {exclusion.detail}
+                {manualOnly ? '' : ' You can still download it here.'}
+              </span>
             </span>
-          </span>
+          </p>
+        ) : (
+          <p className="release-misfit m-0 mb-3 flex items-start gap-1.5 text-xs text-warn" role="note">
+            <Icon name="alert" size={14} className="mt-0.5 shrink-0" />
+            <span className="min-w-0">
+              <span className="font-semibold">{exclusion.title}</span>
+              <span className="mt-0.5 block text-ink">{exclusion.detail}</span>
+            </span>
+          </p>
+        ))}
+      {wrongEpisodes && (
+        <p className="m-0 mb-3 flex items-start gap-1.5 text-xs text-muted" role="note">
+          <Icon name="info" size={14} className="mt-0.5 shrink-0" />
+          <span className="min-w-0">{wrongEpisodes}</span>
         </p>
       )}
-      {usenetEnabled && (
+      {usenetEnabled && !forbidden && (
         <div className="mb-3 flex flex-wrap items-center gap-2 border-t border-line pt-2.5 text-xs">
           <span
             className={cx(
@@ -670,7 +696,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
       )}
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
         <div className="min-w-0 flex-1 basis-44">
-          {routes.mode === 'choose' && !inClient && !complete && (
+          {routes.mode === 'choose' && !inClient && !complete && !forbidden && (
             <div
               className="mb-2.5 flex flex-wrap items-center gap-1.5"
               role="radiogroup"
@@ -722,6 +748,14 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
             <p className="m-0 text-sm font-semibold text-ink wrap-anywhere">
               {complete ? statusCopy : `${phaseLabel(active[0].phase)} in ${clientName(active[0].client)}`}
             </p>
+          ) : forbidden ? (
+            <div className="release-manual">
+              <p className="m-0 text-sm font-semibold text-ink">Not offered for download</p>
+              <p className="mt-1 mb-0 max-w-[60ch] text-xs text-muted wrap-anywhere">
+                Sonarr cannot import this release for your series. Get it from its tracker yourself if you want it
+                outside Sonarr{rel.size > 0 ? ` (${formatBytes(rel.size)})` : ''}.
+              </p>
+            </div>
           ) : manualOnly && publicOnly ? (
             <div className="release-manual">
               <p className="m-0 text-sm font-semibold text-ink">Not offered in public-tracker mode</p>
@@ -776,12 +810,12 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
               )}
             </>
           )}
-          {chosen === 'usenet' && (
+          {chosen === 'usenet' && !forbidden && (
             <p className="mt-1 mb-0 text-xs text-muted">
               Usenet sources cannot be split and are sent to SABnzbd {usenetCategoryNote}.
             </p>
           )}
-          {chosen === 'torrent' && !inClient && !complete && torrentUsable && !fileScope.exact && (
+          {chosen === 'torrent' && !inClient && !complete && !forbidden && torrentUsable && !fileScope.exact && (
             <p className="mt-1 mb-0 text-xs text-muted">
               {fileScope.selected
                 ? `Selected-file size is unavailable.${rel.size > 0 ? ` The full release is ${formatBytes(rel.size)}.` : ''}`
@@ -791,9 +825,9 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
             </p>
           )}
         </div>
-        {manualOnly && !usenetEnabled
+        {forbidden || (manualOnly && !usenetEnabled)
           ? // Public-tracker mode never points to a private tracker.
-            !publicOnly &&
+            !(publicOnly && (privateTracker || !forbidden)) &&
             manualSource && (
               <a
                 className={cx(

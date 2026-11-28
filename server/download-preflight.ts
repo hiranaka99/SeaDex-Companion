@@ -1,5 +1,12 @@
 import { releaseIdentity, wholeReleaseIdentity } from '../shared/releases.js'
-import { partIgnored, unwantedReason, wholeRelease, type UnwantedReason } from '../shared/download-plan.js'
+import {
+  partIgnored,
+  releaseForbidden,
+  unwantedReason,
+  wholeRelease,
+  type UnwantedReason,
+} from '../shared/download-plan.js'
+import { EPISODE_MISFIT_TITLE } from '../shared/episode-order.js'
 import { rowKey, seasonTag } from '../shared/ids.js'
 import { isRecord } from '../shared/guards.js'
 import {
@@ -235,6 +242,11 @@ function resolveRows(
       throw new HttpError(400, 'Only a split season can download its whole release.')
     if (selection.identity && selection.identity !== releaseIdentity(release)) {
       throw new HttpError(409, 'A selected release changed. Reopen the review to see the latest recommendations.')
+    }
+    // Not even a single download, by either protocol: Sonarr would import its files onto the wrong episodes.
+    if (releaseForbidden(release)) {
+      blocks.add(selection, 'invalid', { reason: release.excluded_by || EPISODE_MISFIT_TITLE })
+      continue
     }
     if (batch) {
       // A batch takes only the wanted options bulk review offers; the reason picks the copy the review shows.

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { currentDownloadAssociations, getDownloadSnapshot, subscribeDownloads, controlDownload } from './download-store'
 import * as api from './api'
 import { releaseIdentity } from '../../shared/releases'
+import { releaseForbidden } from '../../shared/download-plan'
 import type { ResultItem, GroupedCard } from './types'
 
 import { toDownloadEntry, clientName, importUnsettled, type DownloadEntry } from './download-entry'
@@ -104,11 +105,10 @@ export function useSeasonAvailability(enabled: boolean, seasons: ResultItem[], o
     const controller = new AbortController()
     requests.current.set(key, { controller, signature })
     const previous = savedRef.current[key]?.signature === signature ? savedRef.current[key] : undefined
-    const selections: api.SelectionInput[] = season.releases.map((release, index) => ({
-      key,
-      release: index,
-      identity: releaseIdentity(release),
-    }))
+    // A release excluded for its episode numbering is never downloaded, so its Usenet availability is never asked.
+    const selections: api.SelectionInput[] = season.releases.flatMap((release, index) =>
+      releaseForbidden(release) ? [] : [{ key, release: index, identity: releaseIdentity(release) }],
+    )
     const initial: AvailabilitySnapshot | undefined = previous && {
       rows: Object.fromEntries(Object.values(previous.byRelease).map(row => [availabilityKey(row), row])),
       configGeneration: previous.configGeneration,

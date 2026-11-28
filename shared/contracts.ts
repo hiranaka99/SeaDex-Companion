@@ -111,8 +111,9 @@ export interface Release {
   /** The library's files are this release's files, byte for byte. Absent when they are not, or nothing was compared. */
   files_match?: boolean
   /**
-   * Why the saved preferences never offer this release for download: a preference that excludes it, or, in
-   * reachable-tracker mode, a private tracker Prowlarr cannot reach while another release can be fetched.
+   * Why this release is never offered for download: a preference that excludes it; in reachable-tracker mode, a
+   * private tracker Prowlarr cannot reach while another release can be fetched; or episode numbering that does not
+   * fit the series' episode order.
    */
   excluded_by?: string
   /**
@@ -120,12 +121,32 @@ export interface Release {
    * than this season, and those of them whose library already holds it.
    */
   whole_release?: WholeRelease
+  /** What kind of reason `excluded_by` gives. Results saved before kinds existed leave it out. */
+  excluded_kind?: ExclusionKind
+  /** For an episode-order exclusion: the episode counts that disagree. */
+  episode_misfit?: EpisodeMisfit
 }
 
 /** The split seasons a release covers as a whole, and those of them that already hold it. */
 export interface WholeRelease {
   seasons: number[]
   held: number[]
+}
+
+/**
+ * Why a listed release is an excluded release. `preferences` and `unreachable_tracker` still allow a single
+ * download; `episode_order` allows none, because Sonarr would import its files onto the wrong episodes.
+ */
+export type ExclusionKind = 'preferences' | 'unreachable_tracker' | 'episode_order'
+
+/** A release whose episode numbering cannot fit the series' episode order. */
+export interface EpisodeMisfit {
+  /** Regular episodes the release numbers the season with. */
+  release_episodes: number
+  /** Episodes the series has where the release would land. */
+  series_episodes: number
+  /** The series' episode order as Sonarr names it (`official`, `dvd`…), when Sonarr reports one. */
+  episode_order?: string
 }
 
 export interface ResultItem {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
+import { readFileSync } from 'node:fs'
 import { createServer, type RequestListener } from 'node:http'
 import { test } from 'node:test'
 import { DEFAULT_CONFIG } from '../server/config.js'
@@ -54,7 +55,7 @@ for (const version of [4, 5]) {
             id: 10,
             title: 'Example',
             titleSlug: 'example',
-            seasonType: 'official',
+            seasonType: 'dvd',
             seasons: [{ seasonNumber: 1, statistics: { sizeOnDisk: 300 } }],
           },
         ]
@@ -86,6 +87,8 @@ for (const version of [4, 5]) {
           id: 10,
           title: 'Example',
           slug: 'example',
+          // Only the v5 API reports the series' episode order; v3 leaves it unknown.
+          ...(version === 5 ? { episode_order: 'dvd' } : {}),
           seasons: {
             1: {
               groups: [],
@@ -153,6 +156,34 @@ test('unsupported Sonarr API versions produce an actionable error', async () => 
       () => testIntegration({ ...DEFAULT_CONFIG, sonarr_url: fixture.url, sonarr_key: 'key' }, 'sonarr'),
       /Unsupported Sonarr API version: v99/,
     )
+  } finally {
+    await fixture.close()
+  }
+})
+
+// A real Sonarr v5 series resource (its library details left out): Panty & Stocking with Garterbelt in DVD order,
+// where Sonarr lists the orders TVDB has with their names and episode counts.
+test('the episode order is read from a real Sonarr v5 series resource', async () => {
+  const series = JSON.parse(
+    readFileSync(new URL('../../tests/fixtures/sonarr/v5-series-dvd-order.json', import.meta.url), 'utf8'),
+  )
+  const fixture = await serve((request, response) => {
+    const url = new URL(request.url!, 'http://fixture')
+    const json = (data: unknown) => {
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify(data))
+    }
+    if (url.pathname === '/api') return json({ current: 'v5', deprecated: ['v3'] })
+    if (url.pathname === '/api/v5/series') return json([series])
+    if (url.pathname === '/api/v5/episode')
+      return json([{ seasonNumber: 1, episodeNumber: 1, episodeFileId: 0, airDate: '2010-10-02' }])
+    if (url.pathname === '/api/v5/episodefile') return json([])
+    response.writeHead(404).end()
+  })
+  try {
+    const [item] = await localItems({ ...DEFAULT_CONFIG, sonarr_url: fixture.url, sonarr_key: 'key' })
+    assert.equal(item.title, 'Panty & Stocking with Garterbelt')
+    assert.equal(item.episode_order, 'dvd')
   } finally {
     await fixture.close()
   }

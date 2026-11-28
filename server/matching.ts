@@ -1,5 +1,5 @@
 import { normalizeInfoHash } from '../shared/ids.js'
-import { normalizeTorrentPath, torrentHashes } from '../shared/download-plan.js'
+import { normalizeTorrentPath, releaseForbidden, torrentHashes } from '../shared/download-plan.js'
 import { DEFAULT_RELEASE_PREFERENCES } from '../shared/settings.js'
 import { VIDEO_FILE, sameRelease, episodeFromFilename, type ParsedEpisode } from '../shared/releases.js'
 import type {
@@ -13,6 +13,7 @@ import type {
   SeaDexSlot,
   ResolvedPart,
 } from './types.js'
+import type { EpisodeMisfit } from '../shared/contracts.js'
 
 export function isDownloadable(release: Pick<ReleaseCandidate, 'info_hashes'>): boolean {
   return torrentHashes(release).length > 0
@@ -54,22 +55,103 @@ export function exclusionReason(
   return undefined
 }
 
+/** Folders of bonus content; their files are never regular episodes, whatever numbers their names carry. */
+const EXTRAS_FOLDER = /^(?:extras?|specials?|bonus(?:es)?|nc(?:op|ed)?s?|menus?)$/i
+
+/**
+ * The regular episodes a release numbers a season with, under the rules file scoping uses: explicitly labelled
+ * episodes win over unlabelled numbers, a release numbered by season is read in the target season (else its most
+ * frequent one), and `S00` specials, unnumbered OVA files, NC files and extras folders are set aside.
+ * `inSeason` counts only the episodes labelled `SxxEyy` with the target season itself.
+ */
+export function regularEpisodes(release: ReleaseCandidate, season: number): { count: number; inSeason: number } {
+  const files = release.source_files?.length
+    ? release.source_files
+    : release.torrent_files?.flatMap(torrent => torrent.files) || []
+  const parsed = files
+    .filter(
+      file =>
+        !file.name
+          .split(/[\\/]/)
+          .slice(0, -1)
+          .some(folder => EXTRAS_FOLDER.test(folder.trim())),
+    )
+    .flatMap(file => {
+      const episode = episodeFromFilename(file.name)
+      return episode && Number.isInteger(episode.episode) ? [episode] : []
+    })
+  const numbered = parsed.some(episode => episode.explicit) ? parsed.filter(episode => episode.explicit) : parsed
+  const frequency = new Map<number, number>()
+  for (const episode of numbered)
+    if (episode.season && episode.season > 0) frequency.set(episode.season, (frequency.get(episode.season) || 0) + 1)
+  const primary = frequency.has(season)
+    ? season
+    : ([...frequency].sort((left, right) => right[1] - left[1])[0]?.[0] ?? null)
+  const distinct = (pick: (episode: ParsedEpisode) => boolean) =>
+    new Set(numbered.filter(pick).map(episode => episode.episode)).size
+  return {
+    count: distinct(episode => episode.season === primary),
+    inSeason: distinct(episode => episode.season === season),
+  }
+}
+
+/** Regular episodes a release may number beyond or short of the series and still fit: a special or a skipped recap. */
+const FIT_ALLOWANCE = 2
+
+/** What a release's numbering is measured against in one Sonarr season or part. */
+export interface EpisodeFit {
+  season: number
+  /** Episodes the release's SeaDex entry covers in Sonarr, across every season and part it spans. */
+  covered: number
+  /** Episodes of the whole Sonarr season, or seasons, those episodes sit in. */
+  seasonEpisodes: number
+  /** AniList's episode count for the release's entry, summed across the parts that list the release. */
+  anilistEpisodes: number
+  /** The series' episode order, when Sonarr reports one. */
+  episodeOrder?: string
+}
+
+/**
+ * Whether a release's episode numbering cannot fit the series' episode order, judged on structure alone.
+ * It fits within two episodes of what its entry covers or of the whole season. A longer release is flagged only
+ * when it numbers the extra episodes in the target season itself; a shorter one only when it has exactly AniList's
+ * count, which marks combined episodes rather than an incomplete batch. Returns the counts that disagree.
+ */
+export function episodeMisfit(release: ReleaseCandidate, fit: EpisodeFit): EpisodeMisfit | undefined {
+  const { count, inSeason } = regularEpisodes(release, fit.season)
+  const sizes = [fit.covered, fit.seasonEpisodes].filter(size => size > 0)
+  if (!count || !sizes.length || sizes.some(size => Math.abs(count - size) <= FIT_ALLOWANCE)) return undefined
+  const misfit = (episodes: number): EpisodeMisfit => ({
+    release_episodes: episodes,
+    series_episodes: fit.seasonEpisodes,
+    ...(fit.episodeOrder ? { episode_order: fit.episodeOrder } : {}),
+  })
+  const most = Math.max(...sizes)
+  if (count > most) return inSeason > most + FIT_ALLOWANCE ? misfit(inSeason) : undefined
+  if (count < Math.min(...sizes) && count === fit.anilistEpisodes) return misfit(count)
+  return undefined
+}
+
 /**
  * Chooses the download target among the releases SeaDex lists for one season or cour.
- * With the default preferences this is SeaDex's own pick: the largest best release.
- * Returns no target, but every candidate, when the preferences exclude them all.
+ * With the default preferences this is the largest best release whose numbering fits the series.
+ * Returns no target, but every candidate, when the preferences or the episode order exclude them all.
+ * `seadexPick` asks for SeaDex's own pick instead, which looks at no exclusion at all.
  */
 export function pickBest(
   candidates: ReleaseCandidate[],
   episodeCount?: number | null,
   preferences: ReleasePreferences = DEFAULT_RELEASE_PREFERENCES,
+  { seadexPick = false }: { seadexPick?: boolean } = {},
 ): [ReleaseCandidate | null, ReleaseCandidate[]] {
   if (!candidates.length) return [null, []]
+  // Excluded releases still decide whether SeaDex flags any release as best, so an alternative never stands in
+  // for an excluded best release unless alternatives are accepted.
   const anyFlagged = candidates.some(candidate => candidate.is_best)
   const countsAsBest = (candidate: ReleaseCandidate) => candidate.is_best || !anyFlagged
   let pool = candidates.filter(
     candidate =>
-      !exclusionReason(candidate, episodeCount, preferences) &&
+      (seadexPick || (!releaseForbidden(candidate) && !exclusionReason(candidate, episodeCount, preferences))) &&
       (countsAsBest(candidate) || preferences.accept_alternatives),
   )
   if (!pool.length) return [null, [...candidates]]
@@ -262,6 +344,8 @@ export function releaseDict(
   if (flags.satisfies !== undefined) result.satisfies = flags.satisfies
   if (flags.files_match) result.files_match = true
   if (release.excluded_by) result.excluded_by = release.excluded_by
+  if (release.excluded_by && release.excluded_kind) result.excluded_kind = release.excluded_kind
+  if (release.excluded_by && release.episode_misfit) result.episode_misfit = { ...release.episode_misfit }
   return result
 }
 

@@ -53,14 +53,14 @@ Rules that conflict with deliberate patterns in this codebase are switched off i
 - `npm run format:check` checks the source formatting with Prettier.
 - `npm run lint` checks the source with Oxlint.
 - `npm run typecheck` type-checks the server, the tests, and the frontend.
-- `npm test` builds the server and runs backend, HTTP, scheduling, and frontend utility regressions.
+- `npm test` builds the server and runs backend, HTTP, scheduling, and frontend utility regressions. `npm test -- episode-order release-actions` runs only the test files whose names contain one of the words. `TEST_REPORTER=dot npm test` prints a dot per test, the failures in full, and none of the application's log lines; the pre-commit hook runs it this way. Run tests through `npm test` rather than `node --test`: it gives them a temporary `DATA_DIR`, so they never read or clear your live data.
 - `npm run build` builds the server and frontend for production.
 - `npm run test:browser` builds the frontend and checks browser workflows with isolated local fixtures. It defaults to Microsoft Edge on Windows; set `BROWSER_PATH` to a Chromium executable on other systems.
 - `npm run test:docker` builds a fresh image and checks startup, health, assets, authentication, persistence, download recovery, and shutdown in an isolated container.
 
 Tests that look up hashes, search Prowlarr or sweep build their own Usenet runtime with `testUsenetRuntime` from `tests/support/usenet-runtime.ts`, and hand it their fake hash indexers and Prowlarr as its `fetch`. The global `fetch` fakes only the download clients and other services. `restart()` simulates a new process on the same data paths, and `fresh()` one on empty data paths.
 
-Tests that assess a season import `assessSeason` from `tests/support/assessment.ts`. It fails any result that breaks a listing rule from `tests/support/listing-invariants.ts`: a source file selected for two parts (explicitly or by taking the whole source), or one release listed twice in a part.
+Tests that assess a season import `assessSeason` from `tests/support/assessment.ts`. It fails any result that breaks a listing rule from `tests/support/listing-invariants.ts`: a source file selected for two parts (explicitly or by taking the whole source), one release listed twice in a part, or a release excluded for its episode order that is the target or selects files.
 
 ### Replaying SeaDex entries
 
@@ -70,7 +70,17 @@ When a title's releases look wrong (listed twice, scoped to the wrong episodes, 
 npm run replay:seadex -- --alid 131518,162670 --episodes 11,11 --season 3 --own sam
 ```
 
-It fetches the entries from seadex.moe (one AniList ID per part, in order) and assesses them for a one-title library that holds every episode of the season. It then prints each part's releases with the episodes they select, and lists any broken listing rule with exit code 1. Run it with `--help` for every option. `--save <file>` keeps the fetched entries, and `--from <file>` replays them offline. For an entry that TVDB splits into several Sonarr seasons (split seasons), pass `--split` with each season's episode count instead of `--episodes` and `--season`, for example `npm run replay:seadex -- --alid 269 --split 20,21,22,28,21,24,16,18,22,35,6,21,40,28,22,22` for Bleach. It prints every split season's releases and, for each release that covers more than its season, the seasons and files of its whole release. `replaySplitCatalog` does the same from a test. To turn a case into a regression test, save the entries under `tests/fixtures/seadex/` and call `replayCatalog` from `tests/support/seadex-replay.ts`, as `tests/seadex-replay.test.ts` does.
+It fetches the entries from seadex.moe (one AniList ID per part, in order) and assesses them for a one-title library that holds every episode of the season. It then prints each part's releases with the episodes they select, and lists any broken listing rule with exit code 1. Run it with `--help` for every option. `--save <file>` keeps the fetched entries, and `--from <file>` replays them offline.
+
+`--episodes` gives AniList's count per part. When the series follows another episode order than AniList, also pass the Sonarr season's own count with `--season-episodes` and the order with `--order` (`official`, `dvd`…, as Sonarr v5 names it; leave it out to replay a Sonarr v3 series). `--own-files <group>` puts that group's listed files in the library byte for byte, so ownership is proven by file size rather than by group name. For example, Panty & Stocking's Season 2 in DVD order, where NAN0's 30 segment files do not fit:
+
+```sh
+npm run replay:seadex -- --alid 151799 --episodes 13 --season 2 --season-episodes 13 --order dvd --own GetItTwisted
+```
+
+For an entry that TVDB splits into several Sonarr seasons (split seasons), pass `--split` with each season's episode count instead of `--episodes` and `--season`, for example `npm run replay:seadex -- --alid 269 --split 20,21,22,28,21,24,16,18,22,35,6,21,40,28,22,22` for Bleach. It prints every split season's releases and, for each release that covers more than its season, the seasons and files of its whole release. `replaySplitCatalog` does the same from a test.
+
+To turn a case into a regression test, save the entries under `tests/fixtures/seadex/` and call `replayCatalog` from `tests/support/seadex-replay.ts`, as `tests/seadex-replay.test.ts` does.
 
 See [maintainability notes](maintainability.md) for runtime ownership, persistence, and compatibility details.
 

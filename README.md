@@ -144,6 +144,14 @@ In release details the target is marked **Your target**, and a release your pref
 
 Preferences and library scope take effect with the next scan. Until then the library shows a notice that its results still reflect the earlier settings.
 
+### Releases that don't fit your episode order
+
+Sonarr numbers a series in one episode order, chosen when you add it: aired order by default, or another order such as DVD order. Orders can count episodes differently. Aired order sometimes counts each segment as an episode, while DVD order combines segments into one episode. SeaDex lists releases in either numbering and does not say which one a release uses.
+
+When the number of episodes in a release cannot match your series, the release card says **Doesn't fit your episode order** and gives both counts. With Sonarr v5 it also names your series' episode order. Such a release stays listed but is never your target. It has no **Download** button and bulk download skips it, because Sonarr would import its files onto the wrong episodes. You can still open its tracker page to get it yourself, for use outside Sonarr. Another listed release that fits can become your target instead. A season whose only better release doesn't fit still shows **Upgrade available**, but nothing is downloaded, notified, or tagged for it.
+
+Specials, extras, and one or two extra or missing episodes don't count as a different order. Neither does a release that holds only part of a season. If you already hold a release that doesn't fit, its card says your files follow a different episode order than your series, so Sonarr probably has them on the wrong episodes. SeaDex Companion never changes your files. Sonarr can't change the episode order of a series that already has files, so fixing it is up to you.
+
 ### Correct a season match
 
 If Sonarr groups seasons differently from AniList, open the anime's details and use the match control beside the affected season. Select its AniList entry, then **Save and rescan**. For split cours, select each entry in episode order; use **Move up** to change their order.
