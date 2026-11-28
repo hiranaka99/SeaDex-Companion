@@ -162,7 +162,7 @@ Season corrections affect only that season. Choose **Use automatic match** to re
 
 Download an individual release from **Details**, or open bulk review to select several upgrades. **Download** in release details sends that one release straight to its client without a review step: it skips releases already queued and does not ask about extra files in whole Usenet sources. It asks first only when the download client reports less free space than the release needs; choose **Send anyway** or **Cancel** in the release row. A notification confirms the send, and a failed send is explained in the release row with **Try again**. Bulk review includes titles matching your current filters across all pages. Choose **Entire library** to include titles outside those filters. Every row that can be downloaded starts checked; seasons and cours you ignore for bulk downloads are left out.
 
-In bulk review, check the release groups, selected episodes, download sizes, and available disk space before submitting. Downloads already present in qBittorrent or SABnzbd are skipped. When filenames identify the required episodes, SeaDex Companion can download only the selected files; otherwise, review the whole-torrent scope before proceeding.
+In bulk review, check the release groups, selected episodes, download sizes, and available disk space before submitting. Downloads already present in qBittorrent or SABnzbd are skipped. When SeaDex Companion itself added a torrent for some of its files, a later download of other files from it switches those files on in the same torrent instead; torrents you added yourself are never changed. When filenames identify the required episodes, SeaDex Companion can download only the selected files; otherwise, review the whole-torrent scope before proceeding.
 
 Disk-space checks may be unavailable for some download paths or older client versions. Size estimates do not reserve space or include torrent overhead and library-import copies. An estimated size counts as fitting when free space is at least twice the estimate plus 5 GB; otherwise the review asks you to confirm. Run a new scan if older results are missing file-size information.
 
@@ -171,6 +171,12 @@ The free space shown in the library summary is read from qBittorrent and SABnzbd
 Choose **Continue in background** to keep using the app while a batch runs. Closing the page does not cancel downloads. **Review batch** reopens your latest submitted review in the same session, and download progress is recovered after a reload. After a SeaDex Companion restart, check the download client before retrying downloads reported as interrupted.
 
 Use the download controls to pause, resume, cancel, or remove downloads. Controls are labeled per client. **Cancel downloads** next to **Bulk download** reviews every unfinished download SeaDex Companion started and lets you remove several at once. File deletion is optional; downloaded files are preserved by default.
+
+### Whole releases of split seasons
+
+Some anime are one continuous series on AniList that Sonarr shows as several seasons, such as Bleach. SeaDex lists one release for the whole series, and each of those seasons offers it narrowed to that season's episodes. Where that release covers more than the season you are looking at, its row also offers **Download whole release** above the season's own download. It sends every episode the release holds as one torrent, or one NZB on Usenet, filed under that title's download category, and the download shows on every season it covers. The line under the button lists the episodes, file count, size, and seasons it covers, and names any seasons that already hold the release and would be downloaded again. The button reads **Re-download whole release** when every season it covers already holds it.
+
+On these seasons, a season's own episodes download by torrent only, because an NZB cannot be split by season; use **Download whole release** for Usenet. **Bulk download** still downloads each season's own episodes, so it offers these seasons by torrent only, and skips them in **Usenet only** mode.
 
 ### Import follow-through
 

@@ -48,12 +48,16 @@ export interface SubmissionUnit<Send = unknown> extends PlannedUnit {
    * its Usenet copy are the same source, so one review must not send both.
    */
   sourceAlias?: string
+  /** Rows of other split seasons a whole-release send also downloads; its record links them for progress. */
+  links?: DownloadSelectionRef[]
   send: Send
 }
 
 export interface TorrentSend {
-  /** Files the selections asked for; empty means the whole source. */
+  /** Files the selections asked for; empty means the whole source. A widening send names the scope it grows to. */
   requestedPaths: string[]
+  /** Widens a torrent the app already added: the files to switch on, or every file when empty. */
+  widen?: { addPaths: string[] }
   /** The checked .torrent file of a private-tracker release; qBittorrent receives it instead of a magnet. */
   torrentFile?: Uint8Array
 }
@@ -85,6 +89,8 @@ export interface UnitRow extends DownloadSelectionRef {
   search: PrivateSearchContext
   /** An unproven NZB the user chose for this private-tracker release. */
   nzb?: string
+  /** A whole-release send: the same release on the title's other split seasons, which it downloads too. */
+  links?: DownloadSelectionRef[]
 }
 
 /** Rows a review rules out. A row keeps the first reason found for it. */

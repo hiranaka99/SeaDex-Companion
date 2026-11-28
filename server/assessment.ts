@@ -27,8 +27,8 @@ import {
   releaseDict,
 } from './matching.js'
 import { verifyPart, type PartVerification } from './verification.js'
-import { sameRelease } from '../shared/releases.js'
-import { releaseForbidden } from '../shared/download-plan.js'
+import { sameRelease, wholeReleaseIdentity } from '../shared/releases.js'
+import { releaseForbidden, releaseOwned } from '../shared/download-plan.js'
 import { episodeMisfitReason } from '../shared/episode-order.js'
 import { sourceKeyOf } from '../shared/arr-instances.js'
 import {
@@ -43,6 +43,8 @@ export interface ResolvedSeasonChain {
   entry: ChainEntry | undefined
   seasonEpisodeOffset: number
   multiSeasonSplit: boolean
+  /** The title's split seasons, when `multiSeasonSplit` is set. */
+  splitSeasons?: number[]
   /** For a multi-season split: the Sonarr episodes of every season the one AniList entry spans. */
   spanEpisodes?: number
 }
@@ -113,6 +115,7 @@ export function resolveSeasonChainEntry(item: LocalItem, season: number, chain: 
           },
           seasonEpisodeOffset: split.offset,
           multiSeasonSplit: true,
+          splitSeasons: splits.map(part => part.season),
           spanEpisodes: chainCount,
         }
       seasonIndex = splitIndex
@@ -237,11 +240,12 @@ export function assessSeason({
     automatic.multiSeasonSplit &&
     override.entry.ids.length === 1 &&
     override.entry.id === automatic.entry?.id
-  const { entry, seasonEpisodeOffset, multiSeasonSplit, spanEpisodes } = override
+  const { entry, seasonEpisodeOffset, multiSeasonSplit, splitSeasons, spanEpisodes } = override
     ? {
         entry: sameContinuousEntry ? automatic.entry : override.entry,
         seasonEpisodeOffset: sameContinuousEntry ? automatic.seasonEpisodeOffset : 0,
         multiSeasonSplit: Boolean(sameContinuousEntry),
+        splitSeasons: sameContinuousEntry ? automatic.splitSeasons : undefined,
         spanEpisodes: sameContinuousEntry ? automatic.spanEpisodes : undefined,
       }
     : automatic
@@ -303,6 +307,7 @@ export function assessSeason({
     title: item.title,
     ...searchTitles,
     season,
+    ...(multiSeasonSplit && splitSeasons?.length ? { split_seasons: splitSeasons } : {}),
     have: [...localGroups].sort(),
     match_status: 'matched',
     missing_episode_count: local.missing_episode_count,
@@ -650,4 +655,35 @@ export function assessSeason({
     best_size: bestSize,
     releases,
   }
+}
+
+/**
+ * Gives each release of a split season its whole release: the title's split seasons that list the same release, each
+ * narrowed to its own files, and those whose library already holds it. Only a release that covers more than its own
+ * season gets one. `results` are the seasons of one library title; nothing else of them changes.
+ */
+export function linkSplitSeasons(results: ResultItem[]): ResultItem[] {
+  return results.map(result => {
+    const splits = result.split_seasons
+    if (!splits?.length) return result
+    const siblings = results.filter(
+      other => other.library_key === result.library_key && other.season !== null && splits.includes(other.season),
+    )
+    return {
+      ...result,
+      releases: result.releases.map(release => {
+        const identity = wholeReleaseIdentity(release)
+        const listings = siblings.flatMap(sibling => {
+          const copy = sibling.releases.find(other => wholeReleaseIdentity(other) === identity)
+          return copy ? [{ season: sibling.season!, held: releaseOwned(sibling, copy) }] : []
+        })
+        const seasons = [...new Set(listings.map(listing => listing.season))].sort((a, b) => a - b)
+        if (seasons.length < 2) return release
+        const held = [...new Set(listings.filter(listing => listing.held).map(listing => listing.season))].sort(
+          (a, b) => a - b,
+        )
+        return { ...release, whole_release: { seasons, held } }
+      }),
+    }
+  })
 }

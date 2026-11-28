@@ -6,10 +6,13 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 
 const usage = `Usage: npm run replay:seadex -- --alid <id,id…> --episodes <n,n…> [options]
+       npm run replay:seadex -- --alid <id> --split <n,n…> [options]
 
   --alid       AniList IDs of the season's SeaDex entries, one per part, in order
   --episodes   AniList episode count of each part, in the same order
   --season     Sonarr season number (default 1)
+  --split      Episode count of each Sonarr season one entry is split into (split seasons), from season 1 on;
+               prints every split season with its whole-release scope instead of --episodes and --season
   --season-episodes
                Episodes the Sonarr season has under the series' episode order (default: the parts' total)
   --order      The series' episode order as Sonarr v5 names it: official, dvd… (default: none, as with Sonarr v3)
@@ -23,6 +26,7 @@ const { values } = parseArgs({
   options: {
     alid: { type: 'string' },
     episodes: { type: 'string' },
+    split: { type: 'string' },
     season: { type: 'string', default: '1' },
     'season-episodes': { type: 'string' },
     order: { type: 'string' },
@@ -38,12 +42,15 @@ const numbers = text => (text || '').split(',').filter(Boolean).map(Number)
 const alids = numbers(values.alid)
 const episodes = numbers(values.episodes)
 const season = Number(values.season)
+const split = numbers(values.split)
 const seasonEpisodes = values['season-episodes'] === undefined ? undefined : Number(values['season-episodes'])
 const TRACKER_MODES = ['public', 'private', 'reachable']
 const valid =
   alids.length > 0 &&
-  alids.length === episodes.length &&
-  [...alids, ...episodes, season].every(Number.isSafeInteger) &&
+  (split.length
+    ? alids.length === 1 && split.length > 1 && seasonEpisodes === undefined && !values.order && !values['own-files']
+    : alids.length === episodes.length) &&
+  [...alids, ...episodes, ...split, season].every(Number.isSafeInteger) &&
   (seasonEpisodes === undefined || (Number.isSafeInteger(seasonEpisodes) && seasonEpisodes > 0)) &&
   (!values.trackers || TRACKER_MODES.includes(values.trackers))
 if (values.help || !valid) {
@@ -51,7 +58,7 @@ if (values.help || !valid) {
   process.exit(values.help ? 0 : 2)
 }
 
-const { replayCatalog } = await import('../dist/tests/support/seadex-replay.js')
+const { replayCatalog, replaySplitCatalog } = await import('../dist/tests/support/seadex-replay.js')
 const { episodeRangeLabel } = await import('../dist/shared/releases.js')
 const { releaseForbidden } = await import('../dist/shared/download-plan.js')
 
@@ -75,36 +82,51 @@ if (values.save) writeFileSync(values.save, `${JSON.stringify({ items }, null, 2
 const missing = alids.filter(id => !items.some(item => Number(item.alID) === id))
 if (missing.length) console.log(`SeaDex lists no entry for AniList ${missing.join(', ')}`)
 
-const { result, violations } = await replayCatalog(items, {
-  season,
-  parts: alids.map((alid, index) => ({ alid, episodes: episodes[index] })),
-  ...(seasonEpisodes !== undefined ? { seasonEpisodes } : {}),
-  ...(values.order ? { episodeOrder: values.order } : {}),
-  own: (values.own || '').split(',').filter(Boolean),
-  ownFiles: (values['own-files'] || '').split(',').filter(Boolean),
-  ...(values.trackers ? { trackers: values.trackers } : {}),
-})
+const own = (values.own || '').split(',').filter(Boolean)
+const trackers = values.trackers ? { trackers: values.trackers } : {}
+const { results, violations } = split.length
+  ? await replaySplitCatalog(items, { alid: alids[0], seasons: split, own, ...trackers })
+  : await replayCatalog(items, {
+      season,
+      parts: alids.map((alid, index) => ({ alid, episodes: episodes[index] })),
+      ...(seasonEpisodes !== undefined ? { seasonEpisodes } : {}),
+      ...(values.order ? { episodeOrder: values.order } : {}),
+      own,
+      ownFiles: (values['own-files'] || '').split(',').filter(Boolean),
+      ...trackers,
+    }).then(({ result, violations }) => ({ results: [result], violations }))
 
-console.log(`Season ${result.season}: ${result.status}${result.best_group ? ` · best ${result.best_group}` : ''}`)
-for (const part of result.unavailable_parts || []) console.log(`  ${part.label}: ${part.reason}`)
-let heading = null
-for (const release of result.releases) {
-  const part = release.part || 'Season'
-  if (part !== heading) console.log((heading = part))
-  const selected = release.selected_files || []
-  const scope = releaseForbidden(release)
-    ? 'never downloaded'
-    : selected.length
-      ? `${episodeRangeLabel(selected) || 'unlabelled episodes'} · ${selected.length} files`
-      : 'whole torrent'
-  const flags = [
-    release.target && 'target',
-    release.files_match && 'files match',
-    !release.torrent_available && 'private',
-    release.excluded_by && `excluded (${release.excluded_kind || 'preferences'}): ${release.excluded_by}`,
-  ].filter(Boolean)
-  console.log(`  ${release.kind.padEnd(4)} ${release.releaseGroup} (${release.tracker}) · ${scope}`)
-  if (flags.length) console.log(`       ${flags.join(' · ')}`)
+for (const result of results) printSeason(result)
+
+function printSeason(result) {
+  console.log(`Season ${result.season}: ${result.status}${result.best_group ? ` · best ${result.best_group}` : ''}`)
+  for (const part of result.unavailable_parts || []) console.log(`  ${part.label}: ${part.reason}`)
+  let heading = null
+  for (const release of result.releases) {
+    const part = release.part || 'Season'
+    if (part !== heading) console.log((heading = part))
+    const selected = release.selected_files || []
+    const scope = releaseForbidden(release)
+      ? 'never downloaded'
+      : selected.length
+        ? `${episodeRangeLabel(selected) || 'unlabelled episodes'} · ${selected.length} files`
+        : 'whole torrent'
+    const flags = [
+      release.target && 'target',
+      release.files_match && 'files match',
+      !release.torrent_available && 'private',
+      release.excluded_by && `excluded (${release.excluded_kind || 'preferences'}): ${release.excluded_by}`,
+    ].filter(Boolean)
+    console.log(`  ${release.kind.padEnd(4)} ${release.releaseGroup} (${release.tracker}) · ${scope}`)
+    if (flags.length) console.log(`       ${flags.join(' · ')}`)
+    if (release.whole_release) {
+      const files = (release.torrent_files || []).flatMap(torrent => torrent.files.map(file => file.name))
+      const held = release.whole_release.held.length ? ` · held in ${release.whole_release.held.join(', ')}` : ''
+      console.log(
+        `       whole release: seasons ${release.whole_release.seasons.join(', ')} · ${episodeRangeLabel(files) || 'unlabelled episodes'} · ${files.length} files${held}`,
+      )
+    }
+  }
 }
 if (violations.length) {
   console.log('\nListing rules broken:')

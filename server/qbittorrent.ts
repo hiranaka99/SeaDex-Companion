@@ -274,6 +274,42 @@ async function qbSelectTorrentFiles(
   await qbPostWithFallback(config, ['/api/v2/torrents/start', '/api/v2/torrents/resume'], stateBody)
 }
 
+/**
+ * Switches on more files of a torrent qBittorrent already holds, keeping the files already selected: `paths` names
+ * them, or every file when it is empty. Only the newly wanted files get a priority; nothing else is changed.
+ */
+export async function qbEnableTorrentFiles(config: Config, hash: string, paths: string[]): Promise<void> {
+  const id = hash.toLowerCase()
+  return withTorrentLocks(config, [id], async () => {
+    const response = await qbRequest(config, `/api/v2/torrents/files?hash=${encodeURIComponent(id)}`)
+    const text = await response.text()
+    if (response.status !== 200)
+      throw new Error(`Could not load torrent files (HTTP ${response.status}: ${text.slice(0, 120)})`)
+    const files = JSON.parse(text) as JsonObject[]
+    if (!Array.isArray(files) || !files.length)
+      throw new Error('qBittorrent has not loaded this torrent’s file list yet; try again once it has')
+    const wanted = new Set(paths.map(normalizedTorrentPath).filter(Boolean))
+    const indexed = files.map((file, index) => ({ file, index, path: normalizedTorrentPath(file.name) }))
+    const matches = (path: string) =>
+      wanted.has(path) ||
+      [...wanted].some(wantedPath => path.endsWith(`/${wantedPath}`) || wantedPath.endsWith(`/${path}`))
+    const chosen = wanted.size ? indexed.filter(({ path }) => matches(path)) : indexed
+    if (wanted.size && !chosen.length) throw new Error('The files to add could not be matched in qBittorrent')
+    const off = chosen.filter(({ file }) => Number(file.priority ?? 0) === 0)
+    if (off.length)
+      await qbPostWithFallback(
+        config,
+        ['/api/v2/torrents/filePrio'],
+        new URLSearchParams({
+          hash: id,
+          id: off.map(({ file, index }) => String(file.index ?? index)).join('|'),
+          priority: '1',
+        }),
+      )
+    invalidateQbCache(config)
+  })
+}
+
 export interface QbOwnershipHooks {
   record: (hash: string) => void
   forget: (hash: string) => void

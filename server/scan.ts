@@ -1,6 +1,6 @@
 import { seasonTag } from '../shared/ids.js'
 import { errorMessage } from '../shared/errors.js'
-import { assessSeason, resolveSeasonChainEntry, type AssessmentSettings } from './assessment.js'
+import { assessSeason, linkSplitSeasons, resolveSeasonChainEntry, type AssessmentSettings } from './assessment.js'
 import { beginScan, endScan, getState, setNormalizedResults, setState } from './scan-state.js'
 import { scanRequests } from './http.js'
 import { log, timestamp } from './logging.js'
@@ -382,6 +382,8 @@ async function performScan(
         result.group_id = groupId
         results.push(result)
       }
+      // A split season's releases name the sibling seasons that list and hold them.
+      results.splice(firstResult, results.length - firstResult, ...linkSplitSeasons(results.slice(firstResult)))
       published = [...published, ...normalizeResults(results.slice(firstResult))]
       setNormalizedResults(published, { progress: itemIndex + 1 })
     }

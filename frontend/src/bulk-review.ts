@@ -5,6 +5,7 @@ import type { Release, ResultItem } from './types.js'
 import { availabilityKey } from './usenet-observation.js'
 import type { DownloadProtocol } from '../../shared/download-contracts.js'
 import type { DownloadRoutes } from './download-routes.js'
+import { hasWholeRelease } from './release-actions.js'
 
 export interface IndexedRelease {
   index: number
@@ -37,7 +38,8 @@ export function usenetEligibility(
   routes: DownloadRoutes,
 ): (result: ResultItem, option: IndexedRelease) => boolean {
   return (result, option) => {
-    if (!rows) return false
+    // Bulk download sends season files; on a split season an NZB would carry the whole release instead.
+    if (!rows || hasWholeRelease(result, option.release)) return false
     const { usenet } = routes.release(option.release, rows[optionAvailabilityKey(result, option)])
     return usenet.sendable || usenet.pending
   }

@@ -116,10 +116,21 @@ export interface Release {
    * fit the series' episode order.
    */
   excluded_by?: string
+  /**
+   * On a split season, the whole release: the split seasons that list this release, present only when that is more
+   * than this season, and those of them whose library already holds it.
+   */
+  whole_release?: WholeRelease
   /** What kind of reason `excluded_by` gives. Results saved before kinds existed leave it out. */
   excluded_kind?: ExclusionKind
   /** For an episode-order exclusion: the episode counts that disagree. */
   episode_misfit?: EpisodeMisfit
+}
+
+/** The split seasons a release covers as a whole, and those of them that already hold it. */
+export interface WholeRelease {
+  seasons: number[]
+  held: number[]
 }
 
 /**
@@ -149,6 +160,11 @@ export interface ResultItem {
   instance_name?: string
   title: string
   season: number | null
+  /**
+   * The title's split seasons, this one among them, when this season is one: one continuous AniList entry whose TVDB
+   * seasons add up exactly to its episode count.
+   */
+  split_seasons?: number[]
   status: 'upgrade' | 'best' | 'missing' | 'partial' | 'uncovered'
   match_status?: 'matched' | 'unmatched'
   missing_episode_count?: number

@@ -74,6 +74,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
     availabilityLoading,
     route,
     verdict,
+    whole,
   } = actions
   const isBest = rel.kind === 'best'
   const localSize = rel.part ? r.local_size_by_part?.[rel.part] || 0 : r.local_size
@@ -120,6 +121,17 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
   const scopeLabel = fileScope.selected ? `${fileCount} · ${sizeLabel}` : `Whole release · ${sizeLabel}`
   /** Re-sending an owned release waits for a second click, so a duplicate download is never one stray tap away. */
   const [confirmingRedownload, setConfirmingRedownload] = useState(false)
+  /** The same second click for a whole release every split season already holds. */
+  const [confirmingWhole, setConfirmingWhole] = useState(false)
+  /** Which send the row's "Try again" repeats: the season's files or the whole release. */
+  const [lastSend, setLastSend] = useState<'season' | 'whole'>('season')
+  /** Every split season the whole release covers already holds it, so sending it is a re-download. */
+  const wholeHeldEverywhere = Boolean(
+    rel.whole_release?.seasons.every(season => rel.whole_release!.held.includes(season)),
+  )
+  /** The whole release finished downloading: a transfer of the whole torrent or NZB, and none still running. */
+  const wholeTransfers = transfers.filter(transfer => !transfer.scope?.length)
+  const wholeComplete = wholeTransfers.length > 0 && wholeTransfers.every(transfer => transfer.phase === 'complete')
   /** An unproven NZB is only sent after the person confirms it is the release. */
   const [confirmingNzb, setConfirmingNzb] = useState<UsenetCandidate | null>(null)
   // Search results that are no proven copy: checked ones can still be chosen, the others are listed as they are.
@@ -143,6 +155,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
   const rowRef = useRef<HTMLElement>(null)
   const downloadRef = useRef<HTMLButtonElement>(null)
   const confirmRef = useRef<HTMLButtonElement>(null)
+  const confirmWholeRef = useRef<HTMLButtonElement>(null)
   const lowSpaceRef = useRef<HTMLButtonElement>(null)
   const retryRef = useRef<HTMLButtonElement>(null)
   /**
@@ -158,6 +171,12 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
   useEffect(() => {
     if (confirmingRedownload) confirmRef.current?.focus()
   }, [confirmingRedownload])
+  useEffect(() => {
+    if (confirmingWhole) confirmWholeRef.current?.focus()
+  }, [confirmingWhole])
+  useEffect(() => {
+    if (confirmingWhole && !whole?.enabled) setConfirmingWhole(false)
+  }, [confirmingWhole, whole?.enabled])
   useEffect(() => {
     if (lowSpace && focusIsHere()) lowSpaceRef.current?.focus()
   }, [lowSpace])
@@ -269,7 +288,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
   const targeted = Boolean(rel.target) && competing && !verified && !complete && !inClient
   const recommended = verdict.recommended
   // While an inline alert asks for a decision, the button it holds back steps aside so the alert leads.
-  const held = lowSpace !== null || confirmingRedownload || confirmingNzb !== null
+  const held = lowSpace !== null || confirmingRedownload || confirmingWhole || confirmingNzb !== null
   const buttonTone = complete
     ? 'border-good/40 bg-good/12 text-good'
     : disabled || held
@@ -589,6 +608,92 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
           )}
         </div>
       )}
+      {whole && !manualOnly && (
+        <div className="release-whole mb-3 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
+          <div className="min-w-0 flex-1 basis-44">
+            <p className="m-0 text-sm font-semibold text-ink">Whole release</p>
+            <p className="release-whole-facts mt-0.5 mb-0 text-xs text-muted wrap-anywhere">
+              {whole.facts || whole.reason}
+            </p>
+          </div>
+          <button
+            type="button"
+            className={cx(
+              buttonBase,
+              'release-whole-button min-h-11 min-w-0 max-w-full justify-center px-3 text-xs max-[600px]:w-full',
+              whole.enabled && !held
+                ? 'border-line-strong bg-panel text-ink enabled:hover:bg-panel-raised'
+                : 'border-line bg-panel-raised text-muted',
+            )}
+            disabled={!whole.enabled || sendLocked || held || confirmingWhole}
+            aria-busy={actions.sendingWhole}
+            title={whole.reason}
+            aria-label={`${whole.label} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`}
+            aria-description={whole.reason}
+            onClick={
+              wholeHeldEverywhere
+                ? () => setConfirmingWhole(true)
+                : holdFocus(() => {
+                    setLastSend('whole')
+                    actions.sendWhole()
+                  })
+            }
+          >
+            {actions.sendingWhole ? (
+              <span
+                className="size-4 shrink-0 animate-spin rounded-full border-2 border-current/30 border-t-current"
+                aria-hidden="true"
+              />
+            ) : (
+              <Icon name={wholeComplete ? 'check' : 'download'} size={17} />
+            )}
+            <span className="min-w-0 wrap-anywhere">
+              {actions.sendingWhole ? `Sending to ${protocolClientName(whole.protocol)}…` : whole.label}
+            </span>
+          </button>
+          {confirmingWhole && (
+            <div className="release-alert release-alert-neutral basis-full" role="alert">
+              <p className="m-0 flex items-start gap-1.5 text-sm font-semibold text-ink">
+                <Icon name="info" size={15} className="mt-0.5 shrink-0" />
+                <span>Every season already holds this release</span>
+              </p>
+              <p className="mt-1 mb-0 text-xs text-muted wrap-anywhere">
+                Sending it again downloads the whole release to {protocolClientName(whole.protocol)} alongside the files
+                you have.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  ref={confirmWholeRef}
+                  type="button"
+                  className={cx(
+                    buttonBase,
+                    'min-h-11 border-line-strong bg-panel px-3 text-xs text-ink enabled:hover:bg-panel-raised',
+                  )}
+                  disabled={sendLocked || !whole.enabled}
+                  onClick={holdFocus(() => {
+                    setConfirmingWhole(false)
+                    setLastSend('whole')
+                    actions.sendWhole()
+                  })}
+                >
+                  <Icon name="download" size={15} />
+                  Re-download anyway
+                </button>
+                <button
+                  type="button"
+                  className={cx(
+                    buttonBase,
+                    'min-h-11 border-transparent bg-transparent px-3 text-xs text-muted enabled:hover:text-ink',
+                  )}
+                  onClick={holdFocus(() => setConfirmingWhole(false))}
+                >
+                  Keep current files
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
         <div className="min-w-0 flex-1 basis-44">
           {routes.mode === 'choose' && !inClient && !complete && !forbidden && (
@@ -747,14 +852,21 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
                   'release-download-button min-h-11 min-w-0 max-w-full justify-center px-3 text-xs max-[600px]:w-full',
                   buttonTone,
                 )}
-                disabled={disabled || sendLocked || lowSpace !== null || confirmingRedownload || confirmingNzb !== null}
+                disabled={disabled || sendLocked || held}
                 aria-busy={sending}
                 title={buttonTitle}
                 // The accessible name starts with the visible label so voice control can target it.
                 aria-label={`${buttonLabel} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`}
                 aria-description={buttonTitle}
                 data-recommended={recommended || undefined}
-                onClick={owned ? () => setConfirmingRedownload(true) : holdFocus(actions.send)}
+                onClick={
+                  owned
+                    ? () => setConfirmingRedownload(true)
+                    : holdFocus(() => {
+                        setLastSend('season')
+                        actions.send()
+                      })
+                }
               >
                 {sending ? (
                   <span
@@ -878,6 +990,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
               disabled={sendLocked || disabled}
               onClick={holdFocus(() => {
                 setConfirmingRedownload(false)
+                setLastSend('season')
                 actions.send()
               })}
             >
@@ -912,8 +1025,8 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
                 'min-h-11 border-line-strong bg-panel px-3 text-xs text-ink enabled:hover:bg-panel-raised',
               )}
               ref={retryRef}
-              onClick={holdFocus(actions.send)}
-              disabled={sendLocked || disabled}
+              onClick={holdFocus(lastSend === 'whole' ? actions.sendWhole : actions.send)}
+              disabled={sendLocked || (lastSend === 'whole' ? !whole?.enabled : disabled)}
             >
               <Icon name="refresh" size={15} />
               Try again

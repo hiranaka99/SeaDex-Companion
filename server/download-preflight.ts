@@ -1,5 +1,11 @@
-import { releaseIdentity } from '../shared/releases.js'
-import { partIgnored, releaseForbidden, unwantedReason, type UnwantedReason } from '../shared/download-plan.js'
+import { releaseIdentity, wholeReleaseIdentity } from '../shared/releases.js'
+import {
+  partIgnored,
+  releaseForbidden,
+  unwantedReason,
+  wholeRelease,
+  type UnwantedReason,
+} from '../shared/download-plan.js'
 import { EPISODE_MISFIT_TITLE } from '../shared/episode-order.js'
 import { rowKey, seasonTag } from '../shared/ids.js'
 import { isRecord } from '../shared/guards.js'
@@ -66,6 +72,8 @@ const BLOCK_COPY: Record<PreflightBlocked['code'], string> = {
     'An earlier send of this release was never confirmed by the download client. Check the client; if the download is not there, stop tracking that entry to send it again.',
   client_unreachable:
     'Could not reach the download client to check what was already sent. Try again once it is reachable.',
+  split_season:
+    'Usenet cannot fetch one season alone: an NZB carries the whole release. Download the whole release on Usenet instead, or this season by torrent.',
   category_missing:
     'SABnzbd has no category with this name, so the download would never be imported. Create the category in SABnzbd or change it under Configuration → Downloads.',
 }
@@ -96,6 +104,7 @@ class BlockedRows implements RowBlocks {
 interface ResolvedRow extends UnitRow {
   identity: string
   protocol: DownloadProtocol
+  whole_release?: true
 }
 
 /** Units by ID. Rows that need the same source through the same client share one unit. */
@@ -112,6 +121,8 @@ class PlannedUnits {
       ...new Map([...existing.selections, ...unit.selections].map(row => [rowKey(row), row])).values(),
     ]
     for (const label of unit.labels) if (!existing.labels.includes(label)) existing.labels.push(label)
+    if (unit.links?.length)
+      existing.links = [...new Map([...(existing.links || []), ...unit.links].map(row => [rowKey(row), row])).values()]
     existing.requiresAck ||= unit.requiresAck
   }
 
@@ -140,8 +151,10 @@ export function parseSelections(raw: unknown): DownloadSelection[] {
   return raw.map(item => {
     const selection = isRecord(item) ? item : {}
     const key = typeof selection.key === 'string' ? selection.key.trim() : ''
-    const { release, identity, protocol, nzb } = selection
+    const { release, identity, protocol, nzb, whole_release: whole } = selection
     if (!key) throw new HttpError(400, 'No key provided')
+    if (whole !== undefined && typeof whole !== 'boolean')
+      throw new HttpError(400, 'Whole release must be true or false')
     if (typeof release !== 'number' || !Number.isInteger(release) || release < 0)
       throw new HttpError(400, 'Release must be a non-negative integer')
     if (identity !== undefined && typeof identity !== 'string')
@@ -156,7 +169,22 @@ export function parseSelections(raw: unknown): DownloadSelection[] {
       ...(identity ? { identity } : {}),
       ...(protocol ? { protocol } : {}),
       ...(nzb ? { nzb } : {}),
+      ...(whole ? { whole_release: true } : {}),
     }
+  })
+}
+
+/**
+ * The rows a whole-release send also downloads: the same release on the title's other split seasons, in the same
+ * library instance, whatever season files each is narrowed to.
+ */
+function splitSiblingRows(result: ResultItem, release: Release, results: ResultItem[]): DownloadSelectionRef[] {
+  const identity = wholeReleaseIdentity(release)
+  return results.flatMap(other => {
+    if (other === result || other.library_key !== result.library_key) return []
+    if (other.season === null || !result.split_seasons?.includes(other.season)) return []
+    const index = other.releases.findIndex(candidate => wholeReleaseIdentity(candidate) === identity)
+    return index < 0 ? [] : [{ key: other.key, release: index }]
   })
 }
 
@@ -210,6 +238,8 @@ function resolveRows(
       blocks.add(selection, 'invalid')
       continue
     }
+    if (selection.whole_release && !result.split_seasons?.length)
+      throw new HttpError(400, 'Only a split season can download its whole release.')
     if (selection.identity && selection.identity !== releaseIdentity(release)) {
       throw new HttpError(409, 'A selected release changed. Reopen the review to see the latest recommendations.')
     }
@@ -241,6 +271,11 @@ function resolveRows(
       blocks.add(selection, 'usenet_unconfigured')
       continue
     }
+    // A split season's own files go by torrent; its Usenet route is the whole release the NZB carries.
+    if (protocol === 'usenet' && !selection.whole_release && result.split_seasons?.length && release.whole_release) {
+      blocks.add(selection, 'split_season')
+      continue
+    }
     if (selection.nzb && protocol !== 'usenet') {
       blocks.add(selection, 'invalid', {
         reason: 'A chosen NZB can only be sent over Usenet.',
@@ -252,7 +287,10 @@ function resolveRows(
       release: selection.release,
       identity: releaseIdentity(release),
       protocol,
-      source: release,
+      source: selection.whole_release ? wholeRelease(release) : release,
+      ...(selection.whole_release
+        ? { whole_release: true as const, links: splitSiblingRows(result, release, results) }
+        : {}),
       result,
       category: downloadCategory(config, result, protocol),
       label: selectionLabel(result, release),
@@ -376,12 +414,15 @@ export async function planDownloads(
       identity: row.identity,
       protocol: row.protocol,
       ...(row.nzb ? { nzb: row.nzb } : {}),
+      ...(row.whole_release ? { whole_release: true } : {}),
     })),
     review: {
       ok: true,
       mode: config.download_mode,
       selection_count: selections.length,
-      units: all.map(({ requiresAck: _requiresAck, sourceAlias: _sourceAlias, send: _send, ...unit }) => unit),
+      units: all.map(
+        ({ requiresAck: _requiresAck, sourceAlias: _sourceAlias, links: _links, send: _send, ...unit }) => unit,
+      ),
       new_torrents: newUnits.filter(unit => unit.protocol === 'torrent').length,
       new_nzbs: newUnits.filter(unit => unit.protocol === 'usenet').length,
       existing_units: all.length - newUnits.length,

@@ -12,6 +12,27 @@ export const torrentHashes = (release: EstimatableRelease): string[] => [
   ...new Set(release.info_hashes.map(hash => hash.toLowerCase()).filter(hash => INFO_HASH_PATTERN.test(hash))),
 ]
 
+/**
+ * The whole release of a split season's listing: the same release without the season narrowing, so every file of its
+ * torrents. Its size is the sum of their file lists when every torrent lists its files, or of a private-tracker
+ * release's listed files; otherwise it is unknown (0), never the season's size.
+ */
+export function wholeRelease<R extends EstimatableRelease & { private_sources?: { files: { length: number }[] }[] }>(
+  release: R,
+): R {
+  const { selected_files: _selected, ...rest } = release
+  const hashes = torrentHashes(release)
+  const catalogs = hashes.map(hash =>
+    (release.torrent_files || []).find(catalog => catalog.hash.toLowerCase() === hash && catalog.files.length > 0),
+  )
+  const privateFiles = hashes.length ? [] : (release.private_sources || []).flatMap(source => source.files)
+  const files = catalogs.every(Boolean) && hashes.length ? catalogs.flatMap(catalog => catalog!.files) : privateFiles
+  const size = files.every(file => Number.isSafeInteger(file.length) && file.length >= 0)
+    ? files.reduce((sum, file) => sum + file.length, 0)
+    : 0
+  return { ...rest, size } as R
+}
+
 export interface RecommendationRelease extends EstimatableRelease {
   kind: 'best' | 'alt'
   part?: string

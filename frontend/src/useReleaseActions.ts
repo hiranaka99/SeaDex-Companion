@@ -11,6 +11,7 @@ import {
   sameRelease,
   sendKey,
   sendVerdict,
+  wholeReleaseVerdict,
   type LowSpaceHold,
   type Notify,
   type SendVerdict,
@@ -24,8 +25,10 @@ export interface ReleaseActions {
   transfers: DownloadEntry[]
   /** A pause, resume or remove is running on this card. */
   busy: boolean
-  /** This release is being sent right now. */
+  /** This release's season files are being sent right now. */
   sending: boolean
+  /** This release's whole release is being sent right now. */
+  sendingWhole: boolean
   /** Some release on this card is being sent, so no other send may start. */
   sendLocked: boolean
   /** A send of this release that stopped for the low-space decision. */
@@ -39,7 +42,11 @@ export interface ReleaseActions {
   /** The protocol a send uses, with the download mode and the person's choice applied. */
   protocol: DownloadProtocol
   verdict: SendVerdict
+  /** A split season's "Download whole release" button; null where the row has no whole release. */
+  whole: SendVerdict | null
   send: () => void
+  /** Sends the whole release: every split season it covers. */
+  sendWhole: () => void
   /** Sends the release held for low free space without asking again. */
   sendAnyway: () => void
   /** Sends an unproven NZB the person chose from a Prowlarr search; always over Usenet. */
@@ -126,10 +133,21 @@ export function useReleaseActions(group: GroupedCard, config: Config | null, opt
         const route = routes.release(release, rowAvailability, protocols[protocolKey])
         const transfers = downloads[index]?.transfers || []
         const ref = { key, release: index }
+        const verdictInput = {
+          result: item,
+          release,
+          config,
+          routes,
+          route,
+          availability: rowAvailability,
+          transfers,
+        }
+        const sendingRow = sameRelease(sendState.sending, ref)
         return {
           transfers,
           busy: busyDownload !== null,
-          sending: sameRelease(sendState.sending, ref),
+          sending: sendingRow && !sendState.sending?.whole,
+          sendingWhole: sendingRow && sendState.sending?.whole === true,
           sendLocked: sendState.sending !== null,
           lowSpace: sameRelease(sendState.lowSpace, ref) ? sendState.lowSpace : null,
           error: sendState.errors[sendKey(ref)] ?? null,
@@ -137,16 +155,10 @@ export function useReleaseActions(group: GroupedCard, config: Config | null, opt
           availabilityLoading: Boolean(seasonAvailability?.loading),
           route,
           protocol: route.protocol,
-          verdict: sendVerdict({
-            result: item,
-            release,
-            config,
-            routes,
-            route,
-            availability: rowAvailability,
-            transfers,
-          }),
+          verdict: sendVerdict(verdictInput),
+          whole: wholeReleaseVerdict(verdictInput),
           send: () => void sends.send(item, index, route.protocol),
+          sendWhole: () => void sends.sendWhole(item, index, route.protocol),
           sendAnyway: () => void sends.sendAnyway(item, index),
           sendNzb: nzb => void sends.send(item, index, 'usenet', nzb),
           pickProtocol: protocol => setProtocols(current => ({ ...current, [protocolKey]: protocol })),

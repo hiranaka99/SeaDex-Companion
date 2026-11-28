@@ -132,6 +132,8 @@ interface FakeState {
   nzbs?: Record<string, string>
   qbAdded?: { torrent: Buffer; fields: Record<string, string> }
   qbTorrents?: { hash: string; state: string }[]
+  /** Bodies of the file-priority requests qBittorrent received, in order. */
+  qbFilePriorities?: string[]
   sabAdded?: { nzb: string; name: string; category: string }
   /** AnimeTosho's answer; it is not asked unless this is set. */
   animetosho?: () => Response
@@ -258,6 +260,28 @@ function install(state: FakeState): Installed {
         const torrents = state.qbTorrents || []
         return Response.json(wanted ? torrents.filter(torrent => wanted.split('|').includes(torrent.hash)) : torrents)
       }
+      // The added .torrent's own file list, each file with the priority it was last given.
+      if (url.pathname.endsWith('/torrents/files')) {
+        const priorities = new Map<number, string>()
+        for (const body of state.qbFilePriorities || []) {
+          const change = new URLSearchParams(body)
+          for (const id of (change.get('id') || '').split('|')) priorities.set(Number(id), change.get('priority')!)
+        }
+        const files = state.qbAdded ? parseTorrentFile(state.qbAdded.torrent).files : []
+        return Response.json(
+          files.map((file, index) => ({
+            name: file.name,
+            index,
+            size: file.length,
+            priority: Number(priorities.get(index) ?? 1),
+          })),
+        )
+      }
+      if (url.pathname.endsWith('/torrents/filePrio')) {
+        ;(state.qbFilePriorities ||= []).push(String(init?.body))
+        return new Response('Ok.')
+      }
+      if (/\/torrents\/(start|stop|resume|pause)$/.test(url.pathname)) return new Response('Ok.')
       if (url.pathname.endsWith('/app/preferences'))
         return Response.json({ auto_tmm_enabled: true, save_path: '/downloads', temp_path_enabled: false })
       if (url.pathname.endsWith('/sync/maindata'))
@@ -1041,6 +1065,120 @@ test('private-tracker downloads are offered only for trackers Prowlarr has an in
     assert.equal(row.hashes[0].error, 'Prowlarr has no Usenet indexer.')
     assert.equal(row.refreshing, false)
     assert.equal(state.calls.filter(call => /\/api\/v1\/search|\/\d+\/api\?/.test(call)).length, 0)
+  } finally {
+    restore()
+  }
+})
+
+test('a whole-release Usenet send of a private-tracker release still needs the unproven copy chosen', async () => {
+  const renamed = nzb([
+    `[1/2] - "${FILES[0].name}" yEnc (1/2000) ${FILES[0].length}`,
+    `[2/2] - "Show 02.mkv" yEnc (1/1900) ${FILES[1].length}`,
+  ])
+  const state: FakeState = {
+    calls: [],
+    nzbs: { close: renamed },
+    usenetResults: () => [
+      result({
+        guid: 'https://geek.test/details/abc',
+        indexerId: 2,
+        indexer: 'Geek',
+        protocol: 'usenet',
+        title: '[Vault] Show',
+        size: Math.round(TOTAL * 1.05),
+        downloadUrl: `${PROWLARR}/2/download?apikey=${KEY}&link=close`,
+      }),
+    ],
+  }
+  const restore = install(state)
+  try {
+    const config = prowlarrConfig({ download_mode: 'usenet_only' })
+    // The release is listed on a split season, narrowed to that season's file.
+    const results = privateResults({ selected_files: [FILES[0].name] }).map(item => ({
+      ...item,
+      split_seasons: [1, 2],
+    }))
+    await resolveSource(config, source, { titles: ['Show'], releaseGroup: 'Vault' }, { limit: 3 })
+    const [row] = await usenetAvailability(config, [{ key: 'show-1', release: 0 }], results)
+    const [candidate] = row.hashes[0].candidates!
+    const whole = { key: 'show-1', release: 0, protocol: 'usenet' as const, whole_release: true }
+    const unchosen = await buildDownloadPlan(config, [whole], { results, clients: downloadClients(config) })
+    assert.equal(unchosen.review.blocked[0].code, 'no_match')
+    const built = await buildDownloadPlan(config, [{ ...whole, nzb: candidate.entry_id }], {
+      results,
+      clients: downloadClients(config),
+    })
+    assert.deepEqual(built.review.blocked, [])
+    assert.equal(built.review.requires_whole_ack, false)
+    const { completion } = await acceptDownloadPlan(
+      config,
+      consumePlan(built.plan.id)!,
+      { disk_space: true },
+      results,
+      downloadClients(config),
+    )
+    assert.equal((await completion).count, 1)
+    assert.equal(state.sabAdded?.nzb, renamed)
+  } finally {
+    restore()
+  }
+})
+
+test('a private-tracker torrent the app added for one split season is widened by a whole-release send', async () => {
+  const real = torrentFile()
+  const state: FakeState = {
+    calls: [],
+    torrents: { real: real.bytes },
+    torrentResults: () => [result({ guid: 'https://animebytes.tv/torrent/951508/group', infoUrl: source.page })],
+  }
+  const restore = install(state)
+  try {
+    const config = prowlarrConfig({ download_mode: 'torrent_only' })
+    // The private release on two split seasons, each narrowed to its own episode.
+    const splitSeason = (season: number) =>
+      privateResults({
+        selected_files: [FILES[season - 1].name],
+        whole_release: { seasons: [1, 2], held: [] },
+      }).map(item => ({ ...item, key: `show-${season}`, season, split_seasons: [1, 2], library_key: 'Sonarr:item1' }))
+    const results = [...splitSeason(1), ...splitSeason(2)]
+    const send = async (selection: Parameters<typeof buildDownloadPlan>[1][number]) => {
+      const built = await buildDownloadPlan(config, [selection], { results, clients: downloadClients(config) })
+      const { completion } = await acceptDownloadPlan(
+        config,
+        consumePlan(built.plan.id)!,
+        { disk_space: true },
+        results,
+        downloadClients(config),
+      )
+      return { review: built.review, outcome: await completion }
+    }
+
+    await send({ key: 'show-1', release: 0, protocol: 'torrent' })
+    const [added] = downloadRecords()
+    assert.deepEqual(added.scope, [FILES[0].name])
+    const adds = () => state.calls.filter(call => call.includes('/torrents/add')).length
+    assert.equal(adds(), 1)
+    // The first send switched episode 2 off; only what the widening asks for counts from here.
+    const earlier = state.qbFilePriorities?.length || 0
+
+    const { review, outcome } = await send({ key: 'show-2', release: 0, protocol: 'torrent', whole_release: true })
+    const [unit] = review.units
+    assert.equal(unit.source_hash, real.hash)
+    assert.equal(unit.widens, true)
+    assert.equal(unit.existing_record_id, added.id)
+    // Only episode 2 is still to download.
+    assert.equal(unit.size_bytes, FILES[1].length)
+    assert.equal(outcome.ok, true)
+    assert.equal(adds(), 1, 'the torrent is widened in place, never added again')
+    // qBittorrent names the files under the torrent folder; episode 2 is file 1.
+    assert.deepEqual(
+      (state.qbFilePriorities || []).slice(earlier).map(body => Object.fromEntries(new URLSearchParams(body))),
+      [{ hash: real.hash, id: '1', priority: '1' }],
+    )
+    const [widened] = downloadRecords()
+    assert.equal(widened.id, added.id)
+    assert.equal(widened.scope, undefined)
+    assert.equal(widened.source_alias, source.id)
   } finally {
     restore()
   }

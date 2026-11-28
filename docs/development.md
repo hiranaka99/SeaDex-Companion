@@ -78,6 +78,8 @@ It fetches the entries from seadex.moe (one AniList ID per part, in order) and a
 npm run replay:seadex -- --alid 151799 --episodes 13 --season 2 --season-episodes 13 --order dvd --own GetItTwisted
 ```
 
+For an entry that TVDB splits into several Sonarr seasons (split seasons), pass `--split` with each season's episode count instead of `--episodes` and `--season`, for example `npm run replay:seadex -- --alid 269 --split 20,21,22,28,21,24,16,18,22,35,6,21,40,28,22,22` for Bleach. It prints every split season's releases and, for each release that covers more than its season, the seasons and files of its whole release. `replaySplitCatalog` does the same from a test.
+
 To turn a case into a regression test, save the entries under `tests/fixtures/seadex/` and call `replayCatalog` from `tests/support/seadex-replay.ts`, as `tests/seadex-replay.test.ts` does.
 
 See [maintainability notes](maintainability.md) for runtime ownership, persistence, and compatibility details.
