@@ -1,0 +1,56 @@
+{
+  "id": 10,
+  "title": "Panty & Stocking with Garterbelt",
+  "titleSlug": "panty-and-stocking-with-garterbelt",
+  "seriesType": "anime",
+  "seasonType": "dvd",
+  "seasonTypes": [
+    {
+      "name": "Aired Order",
+      "type": "official",
+      "seasonNumbers": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "episodeCount": 56
+    },
+    {
+      "name": "DVD Order",
+      "type": "dvd",
+      "seasonNumbers": [
+        0,
+        1,
+        2
+      ],
+      "episodeCount": 26
+    }
+  ],
+  "seasons": [
+    {
+      "seasonNumber": 0,
+      "statistics": {
+        "episodeCount": 1,
+        "totalEpisodeCount": 1,
+        "sizeOnDisk": 0
+      }
+    },
+    {
+      "seasonNumber": 1,
+      "statistics": {
+        "episodeCount": 13,
+        "totalEpisodeCount": 13,
+        "sizeOnDisk": 0
+      }
+    },
+    {
+      "seasonNumber": 2,
+      "statistics": {
+        "episodeCount": 13,
+        "totalEpisodeCount": 13,
+        "sizeOnDisk": 0
+      }
+    }
+  ]
+}
