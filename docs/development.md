@@ -70,7 +70,15 @@ When a title's releases look wrong (listed twice, scoped to the wrong episodes, 
 npm run replay:seadex -- --alid 131518,162670 --episodes 11,11 --season 3 --own sam
 ```
 
-It fetches the entries from seadex.moe (one AniList ID per part, in order) and assesses them for a one-title library that holds every episode of the season. It then prints each part's releases with the episodes they select, and lists any broken listing rule with exit code 1. Run it with `--help` for every option. `--save <file>` keeps the fetched entries, and `--from <file>` replays them offline. To turn a case into a regression test, save the entries under `tests/fixtures/seadex/` and call `replayCatalog` from `tests/support/seadex-replay.ts`, as `tests/seadex-replay.test.ts` does.
+It fetches the entries from seadex.moe (one AniList ID per part, in order) and assesses them for a one-title library that holds every episode of the season. It then prints each part's releases with the episodes they select, and lists any broken listing rule with exit code 1. Run it with `--help` for every option. `--save <file>` keeps the fetched entries, and `--from <file>` replays them offline.
+
+`--episodes` gives AniList's count per part. When the series follows another episode order than AniList, also pass the Sonarr season's own count with `--season-episodes` and the order with `--order` (`official`, `dvd`…, as Sonarr v5 names it; leave it out to replay a Sonarr v3 series). `--own-files <group>` puts that group's listed files in the library byte for byte, so ownership is proven by file size rather than by group name. For example, Panty & Stocking's Season 2 in DVD order, where NAN0's 30 segment files do not fit:
+
+```sh
+npm run replay:seadex -- --alid 151799 --episodes 13 --season 2 --season-episodes 13 --order dvd --own GetItTwisted
+```
+
+To turn a case into a regression test, save the entries under `tests/fixtures/seadex/` and call `replayCatalog` from `tests/support/seadex-replay.ts`, as `tests/seadex-replay.test.ts` does.
 
 See [maintainability notes](maintainability.md) for runtime ownership, persistence, and compatibility details.
 

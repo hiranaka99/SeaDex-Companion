@@ -1,6 +1,6 @@
 import type { Config, ResultItem } from './types.js'
 import { log } from './logging.js'
-import { torrentHashes } from '../shared/download-plan.js'
+import { releaseForbidden, torrentHashes } from '../shared/download-plan.js'
 import { releaseIdentity } from '../shared/releases.js'
 import type { PrivateSource, Release } from '../shared/contracts.js'
 import type { UsenetAvailabilityResult, UsenetHashAvailability, UsenetUnitState } from '../shared/usenet-contracts.js'
@@ -367,7 +367,7 @@ export async function usenetAvailability(
     Number.isSafeInteger(row.release) && row.release >= 0
       ? resultsByKey.get(row.key)?.releases?.[row.release]
       : undefined
-  const selected = selections.map(selection => {
+  const listed = selections.map(selection => {
     const release = releaseAt(selection)
     if (!release)
       throw new UsenetSelectionError(
@@ -383,6 +383,8 @@ export async function usenetAvailability(
     }
     return { selection, release, identity }
   })
+  // A release excluded for its episode numbering is never downloaded, so nothing is looked up or searched for it.
+  const selected = listed.filter(({ release }) => !releaseForbidden(release))
   // Withdrawn before anything starts, so a row that is cancelled and selected again starts over.
   for (const row of cancelVerify) {
     const release = releaseAt(row)

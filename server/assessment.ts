@@ -13,7 +13,9 @@ import type { TrackerMode } from '../shared/contracts.js'
 import {
   effectiveSeasonParts,
   entryParts,
+  episodeMisfit,
   exclusionReason,
+  type EpisodeFit,
   isDownloadable,
   localPartOwnership,
   seadexSlot,
@@ -26,6 +28,8 @@ import {
 } from './matching.js'
 import { verifyPart, type PartVerification } from './verification.js'
 import { sameRelease } from '../shared/releases.js'
+import { releaseForbidden } from '../shared/download-plan.js'
+import { episodeMisfitReason } from '../shared/episode-order.js'
 import { sourceKeyOf } from '../shared/arr-instances.js'
 import {
   DEFAULT_RELEASE_PREFERENCES,
@@ -39,6 +43,8 @@ export interface ResolvedSeasonChain {
   entry: ChainEntry | undefined
   seasonEpisodeOffset: number
   multiSeasonSplit: boolean
+  /** For a multi-season split: the Sonarr episodes of every season the one AniList entry spans. */
+  spanEpisodes?: number
 }
 
 function localSeasonEpisodeCount(local?: LocalSeason): number {
@@ -107,6 +113,7 @@ export function resolveSeasonChainEntry(item: LocalItem, season: number, chain: 
           },
           seasonEpisodeOffset: split.offset,
           multiSeasonSplit: true,
+          spanEpisodes: chainCount,
         }
       seasonIndex = splitIndex
       aligned = true
@@ -230,11 +237,12 @@ export function assessSeason({
     automatic.multiSeasonSplit &&
     override.entry.ids.length === 1 &&
     override.entry.id === automatic.entry?.id
-  const { entry, seasonEpisodeOffset, multiSeasonSplit } = override
+  const { entry, seasonEpisodeOffset, multiSeasonSplit, spanEpisodes } = override
     ? {
         entry: sameContinuousEntry ? automatic.entry : override.entry,
         seasonEpisodeOffset: sameContinuousEntry ? automatic.seasonEpisodeOffset : 0,
         multiSeasonSplit: Boolean(sameContinuousEntry),
+        spanEpisodes: sameContinuousEntry ? automatic.spanEpisodes : undefined,
       }
     : automatic
   const groupId = override ? override.groupId : (chain[0]?.id ?? null)
@@ -285,7 +293,8 @@ export function assessSeason({
   const alid = entry.id
   // A movie is a single file, so a per-episode size limit says nothing about it.
   const preferences = season === 0 ? { ...settings.preferences, max_episode_gb: 0 } : settings.preferences
-  const parts = effectiveSeasonParts(local, entryParts(entry))
+  const anilistParts = entryParts(entry)
+  const parts = effectiveSeasonParts(local, anilistParts)
   const partOwnership = localPartOwnership(local, parts)
   const common: Omit<ResultItem, 'key' | 'status' | 'best_group' | 'best_size' | 'releases'> = {
     group_id: groupId,
@@ -324,6 +333,31 @@ export function assessSeason({
     settings.trackers === 'reachable' && !isDownloadable(release) && !coveredTrackers.has(trackerKey(release.tracker))
   /** The private-tracker release each part's target replaced because Prowlarr cannot reach its tracker. */
   const displaced = new Map<ResolvedPart, ReleaseCandidate>()
+  // Episode order: what a release's numbering is measured against. Movies have no episodes to number.
+  const checksFit = item.arr === 'Sonarr' && season > 0
+  const seasonEpisodes = multiSeasonSplit
+    ? Number(spanEpisodes || 0)
+    : localSeasonEpisodeCount(local) || parts.reduce((sum, part) => sum + Number(part.episodeCount || 0), 0)
+  const partSlots = parts.map(part => {
+    const listing = best.get(part.id)
+    return listing ? seadexSlot(listing, season) : null
+  })
+  const anilistEpisodes = (index: number) =>
+    multiSeasonSplit ? Number(spanEpisodes || 0) : Number(anilistParts[index]?.episodeCount || 0)
+  const fitOf = (candidate: ReleaseCandidate, partIndex: number): EpisodeFit => ({
+    season,
+    covered: multiSeasonSplit ? Number(spanEpisodes || 0) : Number(parts[partIndex].episodeCount || 0),
+    seasonEpisodes,
+    // A release several parts list holds the AniList episodes of each of them.
+    anilistEpisodes: parts.reduce(
+      (sum, _, index) =>
+        index === partIndex || partSlots[index]?.candidates.some(other => sameRelease(other, candidate))
+          ? sum + anilistEpisodes(index)
+          : sum,
+      0,
+    ),
+    ...(item.episode_order ? { episodeOrder: item.episode_order } : {}),
+  })
   let episodeOffset = seasonEpisodeOffset
   for (const [partIndex, part] of parts.entries()) {
     const currentEpisodeOffset = episodeOffset
@@ -365,16 +399,30 @@ export function assessSeason({
       unavailableParts.push({ label: partName(label), reason: PRIVATE_ONLY_REASON })
       continue
     }
-    // The catalog is shared between library titles, so exclusions are noted on copies.
+    // The catalog is shared between library titles, so exclusions are noted on copies. Episode numbering is judged
+    // on the release as listed, before scoping keeps only the episodes a part needs.
     const noteExclusion = (candidate: ReleaseCandidate): ReleaseCandidate => {
+      const misfit = checksFit ? episodeMisfit(candidate, fitOf(candidate, partIndex)) : undefined
+      if (misfit)
+        return {
+          ...candidate,
+          excluded_by: episodeMisfitReason(candidate.releaseGroup, season, misfit),
+          excluded_kind: 'episode_order',
+          episode_misfit: misfit,
+        }
       const reason = exclusionReason(candidate, part.episodeCount, preferences)
-      return reason ? { ...candidate, excluded_by: reason } : candidate
+      return reason ? { ...candidate, excluded_by: reason, excluded_kind: 'preferences' } : candidate
     }
     const eligibleCandidates = (publicCandidates.length ? publicCandidates : ownedPrivate).map(noteExclusion)
+    // A release whose numbering does not fit is never the target, like any excluded release; another can be.
     let [selected, alternatives] = pickBest(eligibleCandidates, part.episodeCount, preferences)
-    // When the preferences exclude every release, SeaDex's own pick still shows what the library holds.
+    // When the preferences or the episode order exclude every release, SeaDex's own pick still shows what the
+    // library holds.
     const blocked = !selected && eligibleCandidates.length > 0
-    if (blocked) [selected, alternatives] = pickBest(eligibleCandidates, part.episodeCount)
+    if (blocked)
+      [selected, alternatives] = pickBest(eligibleCandidates, part.episodeCount, DEFAULT_RELEASE_PREFERENCES, {
+        seadexPick: true,
+      })
     if (publicCandidates.length) alternatives = [...alternatives, ...ownedPrivate.map(noteExclusion)]
     // Reachable mode: a target Prowlarr cannot fetch gives way to the pick among the releases that can be fetched,
     // public ones and those on a covered tracker: a best-flagged one, or an alternative when none is flagged.
@@ -391,7 +439,11 @@ export function assessSeason({
         // The same release on a covered tracker is listed as one release with the chosen one. Any other pick
         // leaves the chosen release listed, where it says why it is not the target.
         if (!sameRelease(replacement, chosen, true))
-          replaced = { ...chosen, excluded_by: unreachableTrackerReason(chosen.tracker) }
+          replaced = {
+            ...chosen,
+            excluded_by: unreachableTrackerReason(chosen.tracker),
+            excluded_kind: 'unreachable_tracker',
+          }
         selected = replacement
         alternatives = eligibleCandidates
           .filter(candidate => candidate !== replacement)
@@ -408,17 +460,17 @@ export function assessSeason({
     }
     resolvedOutcome.push(outcomes.length)
     outcomes.push('resolved')
+    // A release that does not fit is never downloaded, so it selects no files: scoping would keep the first
+    // episodes of a longer release, which is how a 30-segment release would pass for a 13-episode season.
+    const scope = (release: ReleaseCandidate) =>
+      multiSeasonSplit || releaseForbidden(release)
+        ? release
+        : scopeReleaseToPart(release, part.episodeCount, partIndex, parts.length, currentEpisodeOffset, season)
     resolved.push({
       label,
       source,
-      best: multiSeasonSplit
-        ? selected
-        : scopeReleaseToPart(selected, part.episodeCount, partIndex, parts.length, currentEpisodeOffset, season),
-      alts: alternatives.map(release =>
-        multiSeasonSplit
-          ? release
-          : scopeReleaseToPart(release, part.episodeCount, partIndex, parts.length, currentEpisodeOffset, season),
-      ),
+      best: scope(selected),
+      alts: alternatives.map(scope),
       ...(blocked ? { blocked } : {}),
       ...(part.episodeNumbers ? { episodeNumbers: part.episodeNumbers } : {}),
     })
@@ -510,8 +562,12 @@ export function assessSeason({
       [...settlingGroups(part)].some(group => ownedByPart[index].has(group)) ||
       verification[index].matches.some(release => releaseSettles(part, release)),
   )
-  // A part whose releases are all excluded has nothing to offer unless the library already settles it.
-  const dormant = resolved.map((part, index) => Boolean(part.blocked) && !settled[index])
+  // A part whose releases the preferences all exclude has nothing to offer unless the library already settles it.
+  // When SeaDex's own pick is excluded for its episode numbering, the better release still exists: the part keeps
+  // its upgrade, and having no release to offer keeps it from being wanted.
+  const dormant = resolved.map(
+    (part, index) => Boolean(part.blocked) && !settled[index] && !releaseForbidden(part.best),
+  )
   resolved.forEach((part, index) => {
     if (!dormant[index]) return
     outcomes[resolvedOutcome[index]] = 'uncovered'

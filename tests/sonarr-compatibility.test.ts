@@ -54,7 +54,7 @@ for (const version of [4, 5]) {
             id: 10,
             title: 'Example',
             titleSlug: 'example',
-            seasonType: 'official',
+            seasonType: 'dvd',
             seasons: [{ seasonNumber: 1, statistics: { sizeOnDisk: 300 } }],
           },
         ]
@@ -86,6 +86,8 @@ for (const version of [4, 5]) {
           id: 10,
           title: 'Example',
           slug: 'example',
+          // Only the v5 API reports the series' episode order; v3 leaves it unknown.
+          ...(version === 5 ? { episode_order: 'dvd' } : {}),
           seasons: {
             1: {
               groups: [],

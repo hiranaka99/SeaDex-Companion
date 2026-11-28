@@ -10,6 +10,8 @@ import {
   PROWLARR_CONNECTION_KEYS,
   type UsenetAvailabilityResult,
 } from '../../shared/usenet-contracts.js'
+import { releaseForbidden } from '../../shared/download-plan.js'
+import { EPISODE_MISFIT_TITLE } from '../../shared/episode-order.js'
 import type { Config, Release } from './types.js'
 
 type TorrentFacts = Pick<Release, 'torrent_available' | 'private_sources' | 'tracker'>
@@ -153,8 +155,20 @@ export function downloadRoutes(config: Config | null | undefined): DownloadRoute
     availabilityFingerprint: availabilityFingerprint(config),
     usenetSearchable: release =>
       usenetReady &&
+      !releaseForbidden(release) &&
       ((release.info_hashes?.length || 0) > 0 || (privateUsenet && Boolean(release.private_sources?.length))),
     release(release, row, chosen) {
+      // A release excluded for its episode numbering has no route at all: Sonarr would misplace its files.
+      if (releaseForbidden(release)) {
+        const route = {
+          torrent: { sendable: false, viaProwlarr: false },
+          usenet: { sendable: false, pending: false },
+          blocked: release.excluded_by || EPISODE_MISFIT_TITLE,
+        }
+        const protocol: DownloadProtocol =
+          mode === 'usenet_only' || (mode === 'choose' && chosen === 'usenet') ? 'usenet' : 'torrent'
+        return { ...route, protocol }
+      }
       const routes = { torrent: torrent(release), usenet: usenet(row) }
       const usenetWorks = routes.usenet.sendable || routes.usenet.pending
       const route = { ...routes, blocked: routes.torrent.sendable || usenetWorks ? null : blockedReason(release, row) }

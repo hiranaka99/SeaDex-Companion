@@ -16,6 +16,10 @@ _Avoid_: main instance, default instance
 Any library instance after the primary instance of its kind, with its own name, categories and scope.
 _Avoid_: extra instance, secondary instance
 
+**Episode order**:
+The TVDB numbering a Sonarr series follows: aired order by default, or another order such as DVD order, chosen when the series is added. Orders can differ in episode count as well as sequence, as when aired order counts each segment as an episode and DVD order combines them.
+_Avoid_: air date order, season type
+
 A library is **connected** when at least one library instance, primary or additional, has both an address and an API key.
 
 ## Upgrades
@@ -25,12 +29,12 @@ One piece of a season that SeaDex lists releases for separately, labelled as Sea
 _Avoid_: cour (except as a part's label)
 
 **Excluded release**:
-A listed release that the release preferences, or a private tracker Prowlarr cannot reach, rule out as a download target. It stays listed and can still be downloaded on its own.
+A listed release that the release preferences, a private tracker Prowlarr cannot reach, or episode numbering that does not fit the series' episode order rule out as a download target. It stays listed and can still be downloaded on its own, unless it was excluded for its episode numbering: Sonarr would import those files onto the wrong episodes.
 _Avoid_: ignored release
 
 **Ignored**:
 A season or part the user has set aside: no bulk download, notification or upgrade tag is made for it, although the library still shows that a better release exists.
-_Avoid_: excluded (that is a release ruled out by preferences), hidden (a removed feature)
+_Avoid_: excluded (that is a release ruled out as a download target), hidden (a removed feature)
 
 **Upgrade available**:
 SeaDex lists a better release for a season than the library holds. It is a fact about the catalog and the library, whatever the user has ignored.

@@ -8,6 +8,7 @@ import {
   type ProwlarrIndexer,
 } from './prowlarr.js'
 import { exclusionRuleKey, loadUserRules } from './user-rules.js'
+import { releaseForbidden } from '../shared/download-plan.js'
 import { cachedHashState, sabnzbdConfigured, usenetProviderPauses, usenetProvidersEnabled } from './usenet.js'
 import { fileListSources, resolveUsenetCopies, searchInBackground } from './usenet-copies.js'
 import { usenetParts } from './usenet-runtime.js'
@@ -104,13 +105,16 @@ export function usenetSearchSweepEligible(config: Config): boolean {
 const STATUS_PRIORITY: Partial<Record<ResultItem['status'], number>> = { missing: 0, partial: 0, upgrade: 1, best: 3 }
 const statusPriority = (result: ResultItem) => STATUS_PRIORITY[result.status] ?? 2
 
-/** Releases the sweep should check, in priority order, without excluded seasons or parts. */
+/**
+ * Releases the sweep should check, in priority order, without excluded seasons or parts, and without releases
+ * excluded for their episode numbering, which are never downloaded.
+ */
 export function prefetchPlan(
   results: ResultItem[],
   exclusions: ReadonlySet<string> = new Set(loadUserRules().exclusions),
 ): { key: string; releases: Release[] }[] {
   const excluded = (result: ResultItem, release: Release) => {
-    if (result.excluded) return true
+    if (result.excluded || releaseForbidden(release)) return true
     if (release.part && result.excluded_parts?.includes(release.part)) return true
     if (!result.library_key) return false
     if (exclusions.has(exclusionRuleKey(result.library_key, result.season))) return true

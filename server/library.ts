@@ -258,6 +258,7 @@ async function sonarrItems(instance: ArrInstance, ids?: number[]): Promise<Insta
       slug: show.titleSlug,
       ...(Array.isArray(show.tags) ? { tags: tagIds(show) } : {}),
       ...(alternateTitles(show).length ? { alternate_titles: alternateTitles(show) } : {}),
+      ...(episodeOrder(base, show) ? { episode_order: episodeOrder(base, show) } : {}),
       seasons,
     }
   })
@@ -277,6 +278,16 @@ function alternateTitles(show: JsonObject): { title: string; season: number | nu
     const season = typeof raw === 'number' && raw >= 0 ? raw : null
     return [{ title: title.slice(0, 200), season }]
   })
+}
+
+/**
+ * The series' episode order, as the v5 API's `seasonType` names it (`official` for aired order, `dvd`…). Sonarr 4,
+ * which only has the v3 API, cannot follow another order, so a series read through v3 has no known order.
+ */
+function episodeOrder(base: string, show: JsonObject): string | undefined {
+  if (!base.endsWith('/api/v5')) return undefined
+  const order = typeof show.seasonType === 'string' ? show.seasonType.trim() : ''
+  return order ? order.slice(0, 40) : undefined
 }
 
 async function radarrItems(instance: ArrInstance, ids?: number[]): Promise<InstanceLibrary> {

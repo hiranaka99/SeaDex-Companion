@@ -3,9 +3,10 @@
 // the rows out.
 
 import { downloadCategory } from '../../shared/arr-instances.js'
-import { normalizeTorrentPath as normalizeFile, releaseOwned } from '../../shared/download-plan.js'
+import { normalizeTorrentPath as normalizeFile, releaseForbidden, releaseOwned } from '../../shared/download-plan.js'
 import { estimateDownloads } from '../../shared/download-estimate.js'
 import { episodeRangeLabel, releaseIdentity } from '../../shared/releases.js'
+import { EPISODE_MISFIT_TITLE, episodeMisfitDetail } from '../../shared/episode-order.js'
 import type { UsenetAvailabilityResult } from '../../shared/usenet-contracts.js'
 import { errorMessage } from '../../shared/errors.js'
 import type { DiskSpaceCheck, DownloadProtocol, preflightDownload, sendDownload } from './api.js'
@@ -190,6 +191,40 @@ export function sendVerdict({
     !rel.excluded_by &&
     (rel.target === true || (rel.kind === 'best' && !r.releases.some(other => other.target)))
   return { protocol, label, enabled, reason, recommended, facts }
+}
+
+/** What a release card says about an excluded release, and whether the release can still be downloaded on its own. */
+export interface ExclusionNote {
+  title: string
+  detail: string
+  downloadable: boolean
+}
+
+/**
+ * Why a release is excluded, in the words its kind calls for. Results saved before exclusions had a kind carry a
+ * preference reason or an unreachable tracker, which both read as today's preference copy.
+ */
+export function exclusionNote(result: ResultItem, rel: Release): ExclusionNote | null {
+  if (!rel.excluded_by) return null
+  if (releaseForbidden(rel))
+    return {
+      title: EPISODE_MISFIT_TITLE,
+      detail: rel.episode_misfit
+        ? episodeMisfitDetail(rel.releaseGroup, result.season, rel.episode_misfit)
+        : 'Sonarr would import its files onto the wrong episodes.',
+      downloadable: false,
+    }
+  if (rel.excluded_kind === 'unreachable_tracker')
+    return {
+      title: `${rel.excluded_by}, so another release is your target.`,
+      detail: 'Bulk download skips it.',
+      downloadable: true,
+    }
+  return {
+    title: `Excluded by your release preferences: ${rel.excluded_by}.`,
+    detail: 'Bulk download skips it.',
+    downloadable: true,
+  }
 }
 
 const usenetDetail = (rel: Release, routes: DownloadRoutes, availability: UsenetAvailabilityResult | undefined) =>

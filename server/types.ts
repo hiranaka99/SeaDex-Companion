@@ -54,8 +54,10 @@ export interface ReleaseCandidate {
   /** Torrents SeaDex lists without a public info hash, identified by their files. */
   private_sources?: import('../shared/contracts.js').PrivateSource[]
   selected_files?: string[]
-  /** Why the saved preferences never target this candidate. */
+  /** Why this candidate is never targeted. */
   excluded_by?: string
+  excluded_kind?: import('../shared/contracts.js').ExclusionKind
+  episode_misfit?: import('../shared/contracts.js').EpisodeMisfit
 }
 
 export interface ChainPart {
@@ -106,6 +108,8 @@ export interface LocalItem {
   tags?: number[]
   /** Sonarr's alternate (scene) titles; `season` is null when a title applies to every season. */
   alternate_titles?: { title: string; season: number | null }[]
+  /** Sonarr v5 only: the series' episode order (`official` for aired order, `dvd`…); absent when unknown. */
+  episode_order?: string
   seasons: Record<number, LocalSeason>
 }
 export interface SeaDexSlot {
