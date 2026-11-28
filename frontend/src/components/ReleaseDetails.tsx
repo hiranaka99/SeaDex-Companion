@@ -119,6 +119,13 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
   const [confirmingWhole, setConfirmingWhole] = useState(false)
   /** Which send the row's "Try again" repeats: the season's files or the whole release. */
   const [lastSend, setLastSend] = useState<'season' | 'whole'>('season')
+  /** Every split season the whole release covers already holds it, so sending it is a re-download. */
+  const wholeHeldEverywhere = Boolean(
+    rel.whole_release?.seasons.every(season => rel.whole_release!.held.includes(season)),
+  )
+  /** The whole release finished downloading: a transfer of the whole torrent or NZB, and none still running. */
+  const wholeTransfers = transfers.filter(transfer => !transfer.scope?.length)
+  const wholeComplete = wholeTransfers.length > 0 && wholeTransfers.every(transfer => transfer.phase === 'complete')
   /** An unproven NZB is only sent after the person confirms it is the release. */
   const [confirmingNzb, setConfirmingNzb] = useState<UsenetCandidate | null>(null)
   // Search results that are no proven copy: checked ones can still be chosen, the others are listed as they are.
@@ -598,7 +605,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
             aria-label={`${whole.label} · ${r.title} · ${seasonLabel(r)} · ${rel.releaseGroup}`}
             aria-description={whole.reason}
             onClick={
-              whole.label.startsWith('Re-download')
+              wholeHeldEverywhere
                 ? () => setConfirmingWhole(true)
                 : holdFocus(() => {
                     setLastSend('whole')
@@ -612,7 +619,7 @@ export default function ReleaseDetails({ result: r, release: rel, config, routes
                 aria-hidden="true"
               />
             ) : (
-              <Icon name={whole.label === 'Download completed' ? 'check' : 'download'} size={17} />
+              <Icon name={wholeComplete ? 'check' : 'download'} size={17} />
             )}
             <span className="min-w-0 wrap-anywhere">
               {actions.sendingWhole ? `Sending to ${protocolClientName(whole.protocol)}…` : whole.label}

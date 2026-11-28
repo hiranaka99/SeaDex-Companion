@@ -271,7 +271,8 @@ export function wholeReleaseVerdict({
           ]
         : [
             r.arr === 'Sonarr' ? episodeRangeLabel(scope.files.map(file => file.name)) : null,
-            `${scope.files.length} file${scope.files.length === 1 ? '' : 's'}`,
+            // Without the torrent's file list there is no count to claim.
+            scope.files.length ? `${scope.files.length} file${scope.files.length === 1 ? '' : 's'}` : null,
             scope.exact
               ? formatBytes(scope.bytes) || '0 B'
               : scope.approximateBytes !== null
