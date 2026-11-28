@@ -151,6 +151,7 @@ export function planUsenetUnits(
           category: row.category,
           labels: [row.label],
           selections: [{ key: row.key, release: row.release }],
+          ...(row.links?.length ? { links: row.links } : {}),
         })
         for (const hash of usenetSourceIds(config, row.source)) {
           const existing = ownership(hash).record

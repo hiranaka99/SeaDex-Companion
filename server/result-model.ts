@@ -30,6 +30,20 @@ function privateSources(value: unknown): Release['private_sources'] {
   })
   return sources.length ? sources : undefined
 }
+/** Season numbers, distinct and in order; anything else is dropped. */
+const seasonList = (value: unknown): number[] =>
+  Array.isArray(value)
+    ? [...new Set(value.filter((season): season is number => Number.isSafeInteger(season) && season > 0))].sort(
+        (left, right) => left - right,
+      )
+    : []
+function wholeRelease(value: unknown): Release['whole_release'] {
+  if (!isRecord(value)) return undefined
+  const seasons = seasonList(value.seasons)
+  return seasons.length > 1
+    ? { seasons, held: seasonList(value.held).filter(season => seasons.includes(season)) }
+    : undefined
+}
 const dictionary = <T>(value: unknown, parse: (value: unknown) => T): Record<string, T> =>
   Object.fromEntries(Object.entries(asRecord(value)).map(([key, entry]) => [key, parse(entry)]))
 
@@ -62,6 +76,7 @@ export function normalizeResults(value: unknown): ResultItem[] {
           ...(typeof source.satisfies === 'boolean' ? { satisfies: source.satisfies } : {}),
           ...(source.files_match === true ? { files_match: true } : {}),
           ...(text(source.excluded_by) ? { excluded_by: String(source.excluded_by) } : {}),
+          ...(wholeRelease(source.whole_release) ? { whole_release: wholeRelease(source.whole_release) } : {}),
           ...(Array.isArray(source.torrent_files)
             ? {
                 torrent_files: source.torrent_files.map(raw => {
@@ -104,6 +119,7 @@ export function normalizeResults(value: unknown): ResultItem[] {
           : {}),
         title: text(item.title) || '',
         season: typeof item.season === 'number' ? item.season : null,
+        ...(seasonList(item.split_seasons).length > 1 ? { split_seasons: seasonList(item.split_seasons) } : {}),
         status,
         have: strings(item.have),
         local_size: number(item.local_size),

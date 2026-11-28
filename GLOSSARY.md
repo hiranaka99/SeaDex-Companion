@@ -24,6 +24,14 @@ A library is **connected** when at least one library instance, primary or additi
 One piece of a season that SeaDex lists releases for separately, labelled as SeaDex labels it ("Cour 2", "Part 1"); a season SeaDex does not split has a single unnamed part.
 _Avoid_: cour (except as a part's label)
 
+**Split season**:
+One of the Sonarr seasons that TVDB cuts a single continuous AniList entry into, recognised when those seasons' episodes add up exactly to the entry's episode count (Bleach: one entry of 366 episodes in 16 seasons). Each split season lists the entry's releases narrowed to its own files.
+_Avoid_: sub-season, part (a part is a piece of one season), cour
+
+**Whole release**:
+A release listed on split seasons, taken without the season narrowing: every file of its torrent, covering each split season that lists it.
+_Avoid_: full release, complete series, batch
+
 **Excluded release**:
 A listed release that the release preferences, or a private tracker Prowlarr cannot reach, rule out as a download target. It stays listed and can still be downloaded on its own.
 _Avoid_: ignored release

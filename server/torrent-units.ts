@@ -1,5 +1,6 @@
 import { estimateDownloads } from '../shared/download-estimate.js'
-import { planTorrents, torrentHashes } from '../shared/download-plan.js'
+import { normalizeTorrentPath, planTorrents, torrentHashes, type PlannedTorrent } from '../shared/download-plan.js'
+import type { OwnedDownloadRecord } from './download-store.js'
 import type { Config, Release } from './types.js'
 import { privateSearchSettings } from './prowlarr.js'
 import { resolvePrivateTorrent } from './private-sources.js'
@@ -57,6 +58,51 @@ async function resolvePrivateTorrents(
   return resolved
 }
 
+/** What a send adds to a torrent the app already added with only some of its files. */
+interface Widening {
+  /** Files to switch on; empty means every file, when the file list is not known. */
+  addPaths: string[]
+  /** The scope the record grows to; undefined is the whole torrent. */
+  scope?: string[]
+  /** Bytes of the files to switch on, when the file list knows them all. */
+  bytes: number | null
+}
+
+/**
+ * How a planned torrent widens the torrent the app added for it, or null when that torrent already holds every
+ * requested file. Only a torrent this client holds, that the app added with a file scope, is ever widened.
+ */
+function widening(
+  entry: PlannedTorrent,
+  owned: OwnedDownloadRecord | undefined,
+  client: Pick<DownloadClientAdapter, 'protocol' | 'endpointId'>,
+  present: boolean,
+): Widening | null {
+  if (!owned || !present || owned.protocol !== client.protocol || owned.endpoint !== client.endpointId) return null
+  if (!owned.scope?.length) return null
+  const scope = new Set(owned.scope.map(normalizeTorrentPath))
+  const catalog = new Map<string, { name: string; length: number }>()
+  for (const release of entry.releases)
+    for (const listed of release.torrent_files || [])
+      if (listed.hash.toLowerCase() === entry.hash)
+        for (const file of listed.files) catalog.set(normalizeTorrentPath(file.name), file)
+  const wanted = entry.selectedFiles || [...catalog.values()].map(file => file.name)
+  const addPaths = [...new Map(wanted.map(name => [normalizeTorrentPath(name), name])).entries()]
+    .filter(([path]) => !scope.has(path))
+    .map(([, name]) => name)
+  // The whole torrent without a file list to compare: every file is switched on.
+  if (!addPaths.length && (entry.selectedFiles || catalog.size)) return null
+  const sizes = addPaths.map(name => catalog.get(normalizeTorrentPath(name))?.length)
+  return {
+    addPaths,
+    ...(entry.selectedFiles ? { scope: [...new Set([...owned.scope, ...entry.selectedFiles])] } : {}),
+    bytes:
+      addPaths.length && sizes.every(size => Number.isSafeInteger(size) && size! >= 0)
+        ? sizes.reduce((sum, size) => sum! + size!, 0)!
+        : null,
+  }
+}
+
 /**
  * Torrent units: one per info hash and category, with the shared per-hash deduplication and file-scope union rules.
  * A private-tracker release is first found through Prowlarr; it is then sent from its checked .torrent file.
@@ -107,6 +153,30 @@ export async function planTorrentUnits(
           }
           const estimate = estimates.get(entry.hash)
           const torrent = found.get(entry.hash)
+          const widen = widening(entry, owned, client, presence.ids.has(entry.hash))
+          if (widen) {
+            units.push({
+              unit_id: `torrent:${entry.hash}:${entry.category}`,
+              protocol: 'torrent',
+              client: client.client,
+              source_hash: entry.hash,
+              category: entry.category,
+              status: 'new',
+              widens: true,
+              ...existingFields(owned, client),
+              whole_source: !widen.scope,
+              scope_expanded: false,
+              size_bytes: widen.bytes,
+              approximate: false,
+              scope_unknown: widen.bytes === null,
+              labels: [row.label],
+              selections: [{ key: row.key, release: row.release }],
+              ...(row.links?.length ? { links: row.links } : {}),
+              requiresAck: false,
+              send: { requestedPaths: widen.scope || [], widen: { addPaths: widen.addPaths } },
+            })
+            continue
+          }
           units.push({
             unit_id: `torrent:${entry.hash}:${entry.category}`,
             protocol: 'torrent',
@@ -122,6 +192,7 @@ export async function planTorrentUnits(
             scope_unknown: estimate?.bytes === null && !estimate?.existing,
             labels: [row.label],
             selections: [{ key: row.key, release: row.release }],
+            ...(row.links?.length ? { links: row.links } : {}),
             requiresAck: false,
             ...(torrent ? { sourceAlias: torrent.sourceId } : {}),
             send: {

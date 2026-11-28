@@ -1045,3 +1045,57 @@ test('private-tracker downloads are offered only for trackers Prowlarr has an in
     restore()
   }
 })
+
+test('a whole-release Usenet send of a private-tracker release still needs the unproven copy chosen', async () => {
+  const renamed = nzb([
+    `[1/2] - "${FILES[0].name}" yEnc (1/2000) ${FILES[0].length}`,
+    `[2/2] - "Show 02.mkv" yEnc (1/1900) ${FILES[1].length}`,
+  ])
+  const state: FakeState = {
+    calls: [],
+    nzbs: { close: renamed },
+    usenetResults: () => [
+      result({
+        guid: 'https://geek.test/details/abc',
+        indexerId: 2,
+        indexer: 'Geek',
+        protocol: 'usenet',
+        title: '[Vault] Show',
+        size: Math.round(TOTAL * 1.05),
+        downloadUrl: `${PROWLARR}/2/download?apikey=${KEY}&link=close`,
+      }),
+    ],
+  }
+  const restore = install(state)
+  try {
+    const config = prowlarrConfig({ download_mode: 'usenet_only' })
+    // The release is listed on a split season, narrowed to that season's file.
+    const results = privateResults({ selected_files: [FILES[0].name] }).map(item => ({
+      ...item,
+      split_seasons: [1, 2],
+    }))
+    await resolveSource(config, source, { titles: ['Show'], releaseGroup: 'Vault' }, { limit: 3 })
+    const [row] = await usenetAvailability(config, [{ key: 'show-1', release: 0 }], results)
+    const [candidate] = row.hashes[0].candidates!
+    const whole = { key: 'show-1', release: 0, protocol: 'usenet' as const, whole_release: true }
+    const unchosen = await buildDownloadPlan(config, [whole], { results, clients: downloadClients(config) })
+    assert.equal(unchosen.review.blocked[0].code, 'no_match')
+    const built = await buildDownloadPlan(config, [{ ...whole, nzb: candidate.entry_id }], {
+      results,
+      clients: downloadClients(config),
+    })
+    assert.deepEqual(built.review.blocked, [])
+    assert.equal(built.review.requires_whole_ack, false)
+    const { completion } = await acceptDownloadPlan(
+      config,
+      consumePlan(built.plan.id)!,
+      { disk_space: true },
+      results,
+      downloadClients(config),
+    )
+    assert.equal((await completion).count, 1)
+    assert.equal(state.sabAdded?.nzb, renamed)
+  } finally {
+    restore()
+  }
+})

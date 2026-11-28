@@ -1,4 +1,4 @@
-import { assessSeason, DEFAULT_ASSESSMENT } from '../../server/assessment.js'
+import { assessSeason, DEFAULT_ASSESSMENT, linkSplitSeasons } from '../../server/assessment.js'
 import { seadexBest } from '../../server/catalog.js'
 import type { ResultItem, TrackerMode } from '../../shared/contracts.js'
 import type { JsonObject, LocalItem, LocalSeason } from '../../server/types.js'
@@ -59,4 +59,69 @@ export async function replayCatalog(
     settings: { ...DEFAULT_ASSESSMENT, ...(options.trackers ? { trackers: options.trackers } : {}) },
   })
   return { result, violations: listingViolations(result) }
+}
+
+export interface SplitReplayOptions {
+  /** The one SeaDex entry TVDB splits into several Sonarr seasons. */
+  alid: number
+  /** Episode count of each split season, from season 1 on; together they make the entry's episode count. */
+  seasons: number[]
+  /** Release groups the library holds in every split season. */
+  own?: string[]
+  trackers?: TrackerMode
+  title?: string
+}
+
+/**
+ * Runs one SeaDex entry through the scan's assessment as a title whose Sonarr seasons split it, and links the split
+ * seasons the way a scan does. Returns every split season's result and the listing rules each breaks.
+ */
+export async function replaySplitCatalog(
+  items: JsonObject[],
+  options: SplitReplayOptions,
+): Promise<{ results: ResultItem[]; violations: string[] }> {
+  const best = await seadexBest({ loadPage: async () => ({ items, totalPages: 1 }) })
+  const own = options.own || []
+  const total = options.seasons.reduce((sum, count) => sum + count, 0)
+  const seasons: LocalItem['seasons'] = Object.fromEntries(
+    options.seasons.map((count, index) => [
+      index + 1,
+      {
+        groups: own,
+        size: own.length ? 1 : 0,
+        episode_count: count,
+        episode_numbers: Array.from({ length: count }, (_, episode) => episode + 1),
+      },
+    ]),
+  )
+  const item: LocalItem = { arr: 'Sonarr', id: 1, title: options.title || 'Replay', seasons }
+  const chain = [
+    {
+      season: 1,
+      id: options.alid,
+      ids: [options.alid],
+      episodeCount: total,
+      parts: [{ id: options.alid, episodeCount: total }],
+    },
+  ]
+  const results = linkSplitSeasons(
+    options.seasons.map((_, index) =>
+      assessSeason({
+        item,
+        season: index + 1,
+        local: seasons[index + 1],
+        chain,
+        best,
+        libraryKey: 'Sonarr:item1',
+        arrUrl: null,
+        settings: { ...DEFAULT_ASSESSMENT, ...(options.trackers ? { trackers: options.trackers } : {}) },
+      }),
+    ),
+  )
+  return {
+    results,
+    violations: results.flatMap(result =>
+      listingViolations(result).map(violation => `Season ${result.season}: ${violation}`),
+    ),
+  }
 }

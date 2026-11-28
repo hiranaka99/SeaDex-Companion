@@ -14,6 +14,8 @@ export interface StoredPlanSelection {
   protocol: DownloadProtocol
   /** An unproven NZB the user chose for a private-tracker release. */
   nzb?: string
+  /** The whole release of a split season's row, not only its season files. */
+  whole_release?: boolean
 }
 
 export interface StoredPlan {

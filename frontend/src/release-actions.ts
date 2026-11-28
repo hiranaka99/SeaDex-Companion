@@ -3,7 +3,7 @@
 // the rows out.
 
 import { downloadCategory } from '../../shared/arr-instances.js'
-import { normalizeTorrentPath as normalizeFile, releaseOwned } from '../../shared/download-plan.js'
+import { normalizeTorrentPath as normalizeFile, releaseOwned, wholeRelease } from '../../shared/download-plan.js'
 import { estimateDownloads } from '../../shared/download-estimate.js'
 import { episodeRangeLabel, releaseIdentity } from '../../shared/releases.js'
 import type { UsenetAvailabilityResult } from '../../shared/usenet-contracts.js'
@@ -133,7 +133,9 @@ export function sendVerdict({
   const complete = transfers.length > 0 && active.length === 0
   const inClient = active.length > 0
   const protocol = route.protocol
-  const usable = protocol === 'torrent' ? route.torrent.sendable : route.usenet.sendable
+  // An NZB carries its whole source, so a split season's own files go by torrent; Usenet gets the whole release.
+  const seasonOnUsenet = protocol === 'usenet' && hasWholeRelease(r, rel)
+  const usable = protocol === 'torrent' ? route.torrent.sendable : route.usenet.sendable && !seasonOnUsenet
   const enabled = !inClient && !complete && usable
   const owned = releaseOwned(r, rel)
   const categoryNote = categoryPhrase(config, r, protocol)
@@ -145,15 +147,17 @@ export function sendVerdict({
       ? `${phaseLabel(active[0].phase)} in ${clientName(active[0].client)}`
       : !usable && route.blocked
         ? route.blocked
-        : protocol === 'usenet'
-          ? usable
-            ? `Send this release to SABnzbd ${categoryNote}`
-            : usenetDetail(rel, routes, availability) || 'Usenet is not available for this release'
-          : rel.torrent_available
-            ? `Send this release to qBittorrent ${categoryNote}`
-            : route.torrent.viaProwlarr
-              ? `Find this release on ${rel.tracker.trim() || 'its tracker'} through Prowlarr, check its files, and send it to qBittorrent ${categoryNote}`
-              : 'No magnet available (private tracker)'
+        : seasonOnUsenet
+          ? 'Usenet cannot fetch one season alone; download the whole release on Usenet instead'
+          : protocol === 'usenet'
+            ? usable
+              ? `Send this release to SABnzbd ${categoryNote}`
+              : usenetDetail(rel, routes, availability) || 'Usenet is not available for this release'
+            : rel.torrent_available
+              ? `Send this release to qBittorrent ${categoryNote}`
+              : route.torrent.viaProwlarr
+                ? `Find this release on ${rel.tracker.trim() || 'its tracker'} through Prowlarr, check its files, and send it to qBittorrent ${categoryNote}`
+                : 'No magnet available (private tracker)'
   const label = complete
     ? 'Download completed'
     : inClient
@@ -192,6 +196,97 @@ export function sendVerdict({
   return { protocol, label, enabled, reason, recommended, facts }
 }
 
+/** The row is a split season's listing of a release that covers more than this season. */
+export const hasWholeRelease = (result: ResultItem, release: Release): boolean =>
+  Boolean(result.split_seasons?.length && (release.whole_release?.seasons.length || 0) > 1)
+
+/** "Season 2", "Seasons 1–16", or "Seasons 1, 3 and 5" for seasons that do not follow on. */
+export function seasonsLabel(seasons: number[]): string {
+  const sorted = [...new Set(seasons)].sort((left, right) => left - right)
+  if (sorted.length === 1) return `Season ${sorted[0]}`
+  const contiguous = sorted.every((season, index) => index === 0 || season === sorted[index - 1] + 1)
+  const last = sorted[sorted.length - 1]
+  if (contiguous) return `Seasons ${sorted[0]}–${last}`
+  return `Seasons ${sorted.slice(0, -1).join(', ')} and ${last}`
+}
+
+/**
+ * What a split season row's "Download whole release" button offers: the same release without the season narrowing,
+ * every split season it covers in one torrent or one NZB. Null where the row has no whole release to offer. Only a
+ * download of the whole release counts as sent; one of this season's files alone leaves the rest to switch on.
+ */
+export function wholeReleaseVerdict({
+  result: r,
+  release: rel,
+  config,
+  route,
+  availability,
+  transfers,
+}: SendVerdictInput): SendVerdict | null {
+  if (!hasWholeRelease(r, rel)) return null
+  const { seasons, held } = rel.whole_release!
+  const whole = transfers.filter(transfer => !transfer.scope?.length)
+  const active = whole.filter(transfer => transfer.phase !== 'complete')
+  const complete = whole.length > 0 && active.length === 0
+  const inClient = active.length > 0
+  const protocol = route.protocol
+  const usable = protocol === 'torrent' ? route.torrent.sendable : route.usenet.sendable
+  const enabled = !inClient && !complete && usable
+  const everyHeld = seasons.every(season => held.includes(season))
+  const covered = seasonsLabel(seasons)
+  const reason = complete
+    ? `Download completed in ${clientName(whole[0].client)}`
+    : inClient
+      ? `${phaseLabel(active[0].phase)} in ${clientName(active[0].client)}`
+      : !usable
+        ? route.blocked ||
+          (protocol === 'usenet' ? 'Usenet is not available for this release' : 'No magnet available (private tracker)')
+        : `Send the whole release, ${covered}, to ${protocolClientName(protocol)} ${categoryPhrase(config, r, protocol)}`
+  const redownload = everyHeld ? 'Re-download' : 'Download'
+  const label = complete
+    ? 'Download completed'
+    : inClient
+      ? phaseLabel(active[0].phase)
+      : !usable
+        ? protocol === 'usenet'
+          ? 'Usenet unavailable'
+          : 'Unavailable'
+        : `${redownload} whole release${protocol === 'usenet' ? ' on Usenet' : ''}`
+  // Seasons that already hold it are downloaded again; when all of them do, the label already says so.
+  const heldNote =
+    held.length && !everyHeld
+      ? `${seasonsLabel(held)} already hold${held.length === 1 ? 's' : ''} this release and will be downloaded again`
+      : null
+  const scope = releaseFileScope(wholeRelease(rel))
+  const usenetBytes = availability?.hashes.reduce((sum, hash) => sum + (hash.total_bytes || 0), 0) || 0
+  // An NZB's files can only be counted when the indexer listed them.
+  const usenetNames = availability?.hashes.every(hash => hash.files_known && hash.file_names?.length)
+    ? availability.hashes.flatMap(hash => hash.file_names || [])
+    : []
+  const facts = enabled
+    ? (protocol === 'usenet'
+        ? [
+            r.arr === 'Sonarr' && usenetNames.length ? episodeRangeLabel(usenetNames) : null,
+            usenetBytes ? `~${formatBytes(usenetBytes)}` : 'size unknown',
+          ]
+        : [
+            r.arr === 'Sonarr' ? episodeRangeLabel(scope.files.map(file => file.name)) : null,
+            `${scope.files.length} file${scope.files.length === 1 ? '' : 's'}`,
+            scope.exact
+              ? formatBytes(scope.bytes) || '0 B'
+              : scope.approximateBytes !== null
+                ? `~${formatBytes(scope.approximateBytes) || '0 B'}`
+                : 'size unknown',
+            route.torrent.viaProwlarr ? 'found through Prowlarr' : null,
+          ]
+      )
+        .concat([covered, heldNote, `to ${protocolClientName(protocol)}`, 'free space checked on send'])
+        .filter(Boolean)
+        .join(' · ')
+    : ''
+  return { protocol, label, enabled, reason, recommended: false, facts }
+}
+
 const usenetDetail = (rel: Release, routes: DownloadRoutes, availability: UsenetAvailabilityResult | undefined) =>
   routes.usenetAllowed
     ? describeUsenet(availability, routes.usenetReady, Boolean(rel.private_sources?.length), routes.prowlarrConfigured)
@@ -219,14 +314,16 @@ export interface LowSpaceHold extends ReleaseRef {
   protocol: DownloadProtocol
   /** An unproven NZB the user chose, sent again by "Send anyway". */
   nzb?: string
+  /** The held send asks for the whole release, not the season's files. */
+  whole?: true
   reason: 'low' | 'unknown'
   checks: DiskSpaceCheck[]
 }
 
 /** One-click send state of a card. */
 export interface ReleaseSendsState {
-  /** The release whose send is running; every other send on the card waits for it. */
-  sending: ReleaseRef | null
+  /** The release whose send is running, and whether it is its whole release; every other send waits for it. */
+  sending: (ReleaseRef & { whole?: true }) | null
   lowSpace: LowSpaceHold | null
   /** The last failed send per release (`sendKey`), shown in that release's row until it is retried or dismissed. */
   errors: Record<string, string>
@@ -277,7 +374,14 @@ export function createReleaseSends({ api, reload, notify, detailsShown }: Releas
     update({ errors: rest })
   }
 
-  const run = async (season: ResultItem, index: number, protocol: DownloadProtocol, anyway: boolean, nzb?: string) => {
+  const run = async (
+    season: ResultItem,
+    index: number,
+    protocol: DownloadProtocol,
+    anyway: boolean,
+    nzb?: string,
+    whole?: boolean,
+  ) => {
     if (state.sending) return
     const release = season.releases[index]
     if (!release) return
@@ -286,7 +390,10 @@ export function createReleaseSends({ api, reload, notify, detailsShown }: Releas
     const label = `${seasonLabel(season)} · ${release.releaseGroup || season.title}`
     const controller = new AbortController()
     aborter = controller
-    update({ sending: ref, ...(sameRelease(state.lowSpace, ref) ? { lowSpace: null } : {}) })
+    update({
+      sending: { ...ref, ...(whole ? { whole: true as const } : {}) },
+      ...(sameRelease(state.lowSpace, ref) ? { lowSpace: null } : {}),
+    })
     setError(ref, null)
     // A failure belongs to the release row while Details is open; a closed modal falls back to a notification.
     const report = (message: string) => {
@@ -295,7 +402,16 @@ export function createReleaseSends({ api, reload, notify, detailsShown }: Releas
     }
     try {
       const preflight = await api.preflightDownload(
-        [{ key, release: index, identity: releaseIdentity(release), protocol, ...(nzb ? { nzb } : {}) }],
+        [
+          {
+            key,
+            release: index,
+            identity: releaseIdentity(release),
+            protocol,
+            ...(nzb ? { nzb } : {}),
+            ...(whole ? { whole_release: true } : {}),
+          },
+        ],
         true,
         controller.signal,
       )
@@ -311,6 +427,7 @@ export function createReleaseSends({ api, reload, notify, detailsShown }: Releas
             ...ref,
             protocol,
             ...(nzb ? { nzb } : {}),
+            ...(whole ? { whole: true as const } : {}),
             reason: low ? 'low' : 'unknown',
             checks: preflight.disk_space,
           },
@@ -343,11 +460,14 @@ export function createReleaseSends({ api, reload, notify, detailsShown }: Releas
     /** Sends one release with one click; `nzb` is an unproven NZB the user chose, always sent over Usenet. */
     send: (season: ResultItem, index: number, protocol: DownloadProtocol, nzb?: string) =>
       run(season, index, nzb ? 'usenet' : protocol, false, nzb),
+    /** Sends the whole release of a split season's row: every split season it covers, in one torrent or NZB. */
+    sendWhole: (season: ResultItem, index: number, protocol: DownloadProtocol, nzb?: string) =>
+      run(season, index, nzb ? 'usenet' : protocol, false, nzb, true),
     /** Repeats the send held for low free space, the chosen NZB included, without asking again. */
     sendAnyway: async (season: ResultItem, index: number) => {
       const held = state.lowSpace
       if (held && sameRelease(held, { key: season.key, release: index }))
-        await run(season, index, held.protocol, true, held.nzb)
+        await run(season, index, held.protocol, true, held.nzb, held.whole)
     },
     cancelLowSpace: () => update({ lowSpace: null }),
     dismissError: (key: string, index: number) => setError({ key, release: index }, null),

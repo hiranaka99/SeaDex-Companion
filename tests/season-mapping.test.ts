@@ -851,3 +851,121 @@ describe('update checking', () => {
     }
   })
 })
+
+describe('split seasons', () => {
+  /** Bleach-style: one AniList entry of 63 episodes that TVDB splits into seasons of 20, 21 and 22 episodes. */
+  const splitChain = [
+    { season: 1, id: 269, ids: [269], episodeCount: 63, parts: [{ id: 269, episodeCount: 63 }] },
+    { season: 2, id: 116674, ids: [116674], episodeCount: 13, parts: [{ id: 116674, episodeCount: 13 }] },
+  ]
+  const episodes = (count: number) => Array.from({ length: count }, (_, index) => index + 1)
+  const local = (count: number, groups: string[] = []) => ({
+    groups,
+    size: 100,
+    episode_count: count,
+    episode_numbers: episodes(count),
+  })
+  /** A release of episodes 1 to `count` of the continuous entry, numbered absolutely. */
+  const absolute = (group: string, count: number, hashCharacter: string, best = false): ReleaseCandidate => {
+    const files = episodes(count).map(number => ({
+      name: `[${group}] Bleach - ${String(number).padStart(3, '0')}.mkv`,
+      length: 10,
+    }))
+    const hash = hashCharacter.repeat(40)
+    return {
+      ...release(group, count, best, hashCharacter),
+      size: count * 10,
+      source_files: files,
+      torrent_files: [{ hash, files }],
+    }
+  }
+  const bleach = (seasons: LocalItem['seasons']): LocalItem => ({
+    arr: 'Sonarr',
+    id: 30,
+    title: 'Bleach',
+    slug: 'bleach',
+    seasons,
+  })
+  const splitBest = () =>
+    new Map<number, SeaDexEntry>([
+      [
+        269,
+        {
+          url: 'https://seadex.moe/269/',
+          notes: '-',
+          seasons: {
+            0: {
+              candidates: [
+                absolute('Complete', 63, 'a', true),
+                absolute('ASC', 41, 'b'),
+                absolute('FirstOnly', 20, 'c'),
+              ],
+            },
+          },
+        },
+      ],
+      [116674, seadexEntry(116674, release('LGH', 13, true, 'd'), 4)],
+    ])
+  const wholeOf = (result: JsonObject, group: string) =>
+    (result.releases as JsonObject[]).find(item => item.releaseGroup === group)?.whole_release
+
+  test('marks every season of a TVDB split as a split season, naming its sibling seasons', async () => {
+    await scanWith(splitBest(), splitChain, [bleach({ 1: local(20), 2: local(21), 3: local(22), 4: local(13) })])
+    const bySeason = new Map(getState().results.map(result => [result.season, result]))
+    for (const season of [1, 2, 3]) assert.deepEqual(bySeason.get(season)?.split_seasons, [1, 2, 3])
+    assert.equal(bySeason.get(4)?.split_seasons, undefined)
+  })
+
+  test('names the split seasons each listed release covers, and offers the whole release only beyond this season', async () => {
+    await scanWith(splitBest(), splitChain, [bleach({ 1: local(20), 2: local(21), 3: local(22) })])
+    const [s1, s2, s3] = getState().results
+    assert.deepEqual(wholeOf(s1, 'Complete'), { seasons: [1, 2, 3], held: [] })
+    assert.deepEqual(wholeOf(s3, 'Complete'), { seasons: [1, 2, 3], held: [] })
+    // ASC stops at episode 41, so it covers the first two split seasons only.
+    assert.deepEqual(wholeOf(s1, 'ASC'), { seasons: [1, 2], held: [] })
+    assert.deepEqual(wholeOf(s2, 'ASC'), { seasons: [1, 2], held: [] })
+    // A release of the first season's episodes alone is that season's download and nothing more.
+    assert.equal(wholeOf(s1, 'FirstOnly'), undefined)
+    // The season files stay as they are: the whole release is the same release without that narrowing.
+    const complete = (s2.releases as JsonObject[]).find(item => item.releaseGroup === 'Complete')!
+    assert.equal((complete.selected_files as string[]).length, 21)
+    assert.equal((complete.selected_files as string[])[0], '[Complete] Bleach - 021.mkv')
+    assert.equal((complete.torrent_files as { files: unknown[] }[])[0].files.length, 63)
+  })
+
+  test('reports which split seasons already hold each release', async () => {
+    await scanWith(splitBest(), splitChain, [
+      bleach({ 1: local(20, ['ASC']), 2: local(21, ['Complete']), 3: local(22, ['Complete']) }),
+    ])
+    const [s1, s2] = getState().results
+    assert.deepEqual(wholeOf(s1, 'Complete'), { seasons: [1, 2, 3], held: [2, 3] })
+    assert.deepEqual(wholeOf(s2, 'ASC'), { seasons: [1, 2], held: [1] })
+  })
+
+  test('cours of one season, merged sequels and ordinary seasons are not split seasons', async () => {
+    const chain = [
+      {
+        season: 1,
+        id: 140960,
+        ids: [140960, 142838],
+        parts: [
+          { id: 140960, episodeCount: 12 },
+          { id: 142838, episodeCount: 13 },
+        ],
+      },
+      { season: 2, id: 158927, ids: [158927], parts: [{ id: 158927, episodeCount: 12 }] },
+    ]
+    const best = new Map([
+      [140960, seadexEntry(140960, release('ABdex', 25, true, 'a'))],
+      [142838, seadexEntry(142838, release('ABdex', 25, true, 'a'))],
+      [158927, seadexEntry(158927, release('NAN0', 12, true, 'c'))],
+    ])
+    await scanWith(best, chain, [
+      { arr: 'Sonarr', id: 10, title: 'SPY x FAMILY', slug: 'spy-x-family', seasons: { 1: local(25), 2: local(12) } },
+    ])
+    for (const result of getState().results) {
+      assert.equal(result.split_seasons, undefined)
+      for (const item of result.releases) assert.equal(item.whole_release, undefined)
+    }
+  })
+})

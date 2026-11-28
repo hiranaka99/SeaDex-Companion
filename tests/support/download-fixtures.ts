@@ -77,6 +77,8 @@ export interface RouterState {
   animetosho?: () => Response
   animetoshoNzb?: () => Response
   qbFiles?: Record<string, unknown>[]
+  /** Bodies of the file-priority requests qBittorrent received, in order. */
+  qbFilePriorities?: string[]
   qbDeleteStatus?: number
   qbFreeBytes?: string
   sabDisk?: { diskspace1?: string; diskspace2?: string }
@@ -161,6 +163,7 @@ export function installRouter(state: RouterState, usenet: UsenetRuntimeOptions =
         }
         return new Response('Ok.', { status: state.qbDeleteStatus ?? 200 })
       }
+      if (url.includes('/torrents/filePrio')) (state.qbFilePriorities ||= []).push(body)
       if (/\/torrents\/(stop|start|pause|resume|filePrio)/.test(url)) return new Response('Ok.', { status: 200 })
     }
     if (url.startsWith(SAB)) {

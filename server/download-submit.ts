@@ -17,6 +17,7 @@ import {
   markDownloadRemoved,
   partLocalSize,
   setDownloadNative,
+  widenDownloadRecord,
   type LibraryTarget,
 } from './download-store.js'
 import {
@@ -28,6 +29,7 @@ import {
 import { HttpError } from './http-error.js'
 import { errorMessage } from '../shared/errors.js'
 import { rowKey } from '../shared/ids.js'
+import { wholeRelease } from '../shared/download-plan.js'
 
 /** A plan failed acceptance validation; the status is the HTTP status the route reports. */
 export class PlanRejected extends HttpError {
@@ -59,11 +61,13 @@ const unitLabel = (unit: { labels: string[]; source_hash: string }): string =>
   unit.labels.join(' / ') || unit.source_hash
 
 /** The library card a unit belongs to, saved with its record so progress stays readable after rescans. */
-function cardFor(selections: DownloadSelectionRef[], resultsByKey: Map<string, ResultItem>) {
-  const first = selections[0]
+function cardFor(unit: SubmissionUnit, resultsByKey: Map<string, ResultItem>) {
+  const first = unit.selections[0]
   const result = first && resultsByKey.get(first.key)
-  const release = result?.releases[first.release]
-  if (!result || !release) return undefined
+  const listed = result?.releases[first.release]
+  if (!result || !listed) return undefined
+  // A whole-release send downloads the release on every split season, not the card's season files.
+  const release = unit.links?.length ? wholeRelease(listed) : listed
   return {
     title: result.title || result.key,
     season: result.season ?? null,
@@ -195,14 +199,11 @@ export async function acceptDownloadPlan(
   const resultsByKey = new Map(results.map(result => [result.key, result]))
   const completion = serialized(async () => {
     try {
-      for (const unit of newUnits)
-        await submitUnit(
-          clients[unit.protocol],
-          job.id,
-          unit,
-          cardFor(unit.selections, resultsByKey),
-          libraryTargets(unit.selections, resultsByKey),
-        )
+      for (const unit of newUnits) {
+        const library = libraryTargets([...unit.selections, ...(unit.links || [])], resultsByKey)
+        if (unit.widens && unit.existing_record_id) await widenUnit(clients[unit.protocol], job.id, unit, library)
+        else await submitUnit(clients[unit.protocol], job.id, unit, cardFor(unit, resultsByKey), library)
+      }
       return jobResult(downloadJobs.finish(job.id))
     } catch (error) {
       try {
@@ -245,7 +246,7 @@ async function submitUnit(
     nzb_name: unit.nzb_name,
     card,
     labels: unit.labels,
-    rows: unit.selections,
+    rows: [...unit.selections, ...(unit.links || [])],
     library,
   })
   let accepted = false
@@ -283,6 +284,51 @@ async function submitUnit(
       label: unitLabel(unit),
       code: ambiguity !== null ? 'acceptance_unknown' : storageError ? 'storage' : 'client',
       error: ambiguity ?? errorMessage(error),
+      selections: unit.selections,
+    })
+    if (storageError) throw storageError
+  }
+}
+
+/**
+ * Switches on more files of a torrent the app already added. Its record grows once the client took the change; a
+ * refused change leaves the record as it was.
+ */
+async function widenUnit(
+  client: DownloadClientAdapter,
+  jobId: string,
+  unit: SubmissionUnit,
+  library: LibraryTarget[],
+): Promise<void> {
+  const recordId = unit.existing_record_id!
+  let storageError: unknown
+  try {
+    const nativeId = await client.submit(unit, {
+      accepted: () => {
+        try {
+          widenDownloadRecord(recordId, {
+            scope: client.recordFields(unit).scope,
+            rows: [...unit.selections, ...(unit.links || [])],
+            library,
+            labels: unit.labels,
+          })
+        } catch (error) {
+          storageError = error
+          throw error
+        }
+      },
+      forgotten: () => undefined,
+    })
+    downloadJobs.added(jobId, unit.unit_id, { record_id: recordId, native_id: nativeId })
+  } catch (error) {
+    downloadJobs.failure(jobId, {
+      unit_id: unit.unit_id,
+      protocol: client.protocol,
+      record_id: recordId,
+      source_hash: unit.source_hash,
+      label: unitLabel(unit),
+      code: storageError ? 'storage' : 'client',
+      error: errorMessage(error),
       selections: unit.selections,
     })
     if (storageError) throw storageError

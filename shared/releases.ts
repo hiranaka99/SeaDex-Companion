@@ -17,6 +17,23 @@ export function releaseIdentity(release: {
   ])
 }
 
+/**
+ * The release apart from the season narrowing: the same release listed on several split seasons, each narrowed to
+ * that season's files, has one whole-release identity. A private-tracker release has no hash, so its sources count.
+ */
+export function wholeReleaseIdentity(release: {
+  part?: string
+  releaseGroup?: string
+  tracker?: string
+  info_hashes?: string[]
+  private_sources?: { id: string }[]
+}): string {
+  return JSON.stringify([
+    releaseIdentity({ ...release, selected_files: [] }),
+    (release.private_sources || []).map(source => source.id).sort(),
+  ])
+}
+
 export const VIDEO_FILE = /\.(?:mkv|mp4|avi|m4v|ts|webm)$/i
 
 export interface ParsedEpisode {

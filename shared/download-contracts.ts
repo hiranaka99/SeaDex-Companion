@@ -57,6 +57,11 @@ export interface DownloadSelection extends DownloadSelectionRef {
    * the search candidates. Naming it is the user's acknowledgement; it only applies to Usenet.
    */
   nzb?: string
+  /**
+   * Asks for the whole release instead of the row's season files. Only a split season's row accepts it; Bulk
+   * download never sends it.
+   */
+  whole_release?: boolean
 }
 
 export interface DownloadCapabilities {
@@ -79,6 +84,11 @@ export interface PlannedUnit {
   existing_native_id?: string
   /** The existing acquisition is bound to a different client endpoint and is not controllable here. */
   existing_unbound?: boolean
+  /**
+   * A `new` unit that switches on more files of a torrent the app already added (`existing_record_id`) instead of
+   * adding it again. Its size counts only the files still to download.
+   */
+  widens?: boolean
   /** The NZB carries the whole source, not only the requested files. */
   whole_source: boolean
   /** Actual source scope is larger than this unit's requested scope. */

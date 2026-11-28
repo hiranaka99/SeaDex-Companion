@@ -7,7 +7,13 @@ import { releaseIdentity } from '../shared/releases.js'
 import { downloadRoutes } from '../frontend/src/download-routes.js'
 import type { DiskSpaceCheck, DownloadMode, DownloadPreflight } from '../shared/download-contracts.js'
 import type { SendOutcome } from '../frontend/src/api.js'
-import { createReleaseSends, currentAvailability, sendVerdict, type SendApi } from '../frontend/src/release-actions.js'
+import {
+  createReleaseSends,
+  currentAvailability,
+  sendVerdict,
+  wholeReleaseVerdict,
+  type SendApi,
+} from '../frontend/src/release-actions.js'
 import type { Config } from '../frontend/src/types.js'
 
 const SAB = { sabnzbd_url: 'http://sab.test', sabnzbd_key: 'sab-key' }
@@ -357,4 +363,141 @@ test('availability answers only for the release it was asked about', () => {
   // SeaDex replaced the release at this index since the answer arrived.
   assert.equal(currentAvailability({ 0: answer }, privateRelease, 0), undefined)
   assert.equal(currentAvailability(undefined, publicRelease, 0), undefined)
+})
+
+const GiB = 1024 ** 3
+/** Six episodes of one continuous entry, two per split season. */
+const splitFiles = [1, 2, 3, 4, 5, 6].map(number => ({
+  name: `Bleach - ${String(number).padStart(3, '0')}.mkv`,
+  length: GiB,
+}))
+const splitRelease = (held: number[] = []): Release => ({
+  ...publicRelease,
+  size: 2 * GiB,
+  selected_files: [splitFiles[2].name, splitFiles[3].name],
+  torrent_files: [{ hash: 'a'.repeat(40), files: splitFiles }],
+  whole_release: { seasons: [1, 2, 3], held },
+})
+const splitSeason = (release: Release) => season([release], { season: 2, split_seasons: [1, 2, 3] })
+
+/** The whole-release verdict for the first release of `result`. */
+const wholeFor = (settings: Config, result: ResultItem, changes: Partial<Parameters<typeof sendVerdict>[0]> = {}) => {
+  const routes = downloadRoutes(settings)
+  return wholeReleaseVerdict({
+    result,
+    release: result.releases[0],
+    config: settings,
+    routes,
+    route: routes.release(result.releases[0], changes.availability),
+    transfers: [],
+    ...changes,
+  })
+}
+
+test('a split season offers the whole release beside its own files', () => {
+  const result = splitSeason(splitRelease())
+  assert.deepEqual(wholeFor(config('torrent_only'), result), {
+    protocol: 'torrent',
+    label: 'Download whole release',
+    enabled: true,
+    reason: 'Send the whole release, Seasons 1–3, to qBittorrent (category: anime)',
+    // The season's own download stays the card's next step; the whole release is the bigger, deliberate choice.
+    recommended: false,
+    facts: 'Eps 1–6 · 6 files · 6.0 GB · Seasons 1–3 · to qBittorrent · free space checked on send',
+  })
+  // The season-only download keeps its own file count.
+  assert.equal(verdictFor(config('torrent_only'), result).label, 'Download 2 files')
+  // An ordinary season, or a release of this season alone, has no whole-release action.
+  assert.equal(wholeFor(config('torrent_only'), season([splitRelease()])), null)
+  assert.equal(wholeFor(config('torrent_only'), splitSeason({ ...splitRelease(), whole_release: undefined })), null)
+})
+
+test('the whole release reads as a re-download only when every season it covers holds it', () => {
+  const some = wholeFor(config('torrent_only'), splitSeason(splitRelease([1, 2])))
+  assert.equal(some?.label, 'Download whole release')
+  assert.equal(
+    some?.facts,
+    'Eps 1–6 · 6 files · 6.0 GB · Seasons 1–3 · Seasons 1–2 already hold this release and will be downloaded again · to qBittorrent · free space checked on send',
+  )
+  const all = wholeFor(config('torrent_only'), splitSeason(splitRelease([1, 2, 3])))
+  assert.equal(all?.label, 'Re-download whole release')
+  assert.equal(all?.enabled, true)
+  assert.equal(all?.recommended, false)
+})
+
+test('the whole release shows its own download state, not a season-only one', () => {
+  const transfer = {
+    record_id: 'r1',
+    protocol: 'torrent' as const,
+    client: 'qbittorrent' as const,
+    phase: 'downloading' as const,
+    capabilities: { pause: true, resume: true, remove: true, remove_files: true },
+    progress: 0.5,
+    downloaded: 500,
+    total_size: 1000,
+    speed: 10,
+    title: 'Bleach',
+    season: 'S2',
+    releaseGroup: 'Group A',
+    category: 'anime',
+    size: 1000,
+  }
+  const result = splitSeason(splitRelease())
+  const whole = wholeFor(config('torrent_only'), result, { transfers: [transfer] })
+  assert.equal(whole?.label, 'Downloading')
+  assert.equal(whole?.enabled, false)
+  // A send of this season's files alone leaves the whole release to download; it widens that torrent.
+  const seasonOnly = wholeFor(config('torrent_only'), result, {
+    transfers: [{ ...transfer, scope: [splitFiles[2].name, splitFiles[3].name] }],
+  })
+  assert.equal(seasonOnly?.label, 'Download whole release')
+  assert.equal(seasonOnly?.enabled, true)
+})
+
+test('the whole release goes to Usenet as one NZB, which a season alone cannot', () => {
+  const result = splitSeason(splitRelease())
+  const availability = row('available', {
+    hashes: [{ hash: 'a'.repeat(40), state: 'available', provider: 'animetosho', total_bytes: 7 * GiB }],
+  })
+  const whole = wholeFor(config('usenet_only'), result, { availability })
+  assert.deepEqual(whole, {
+    protocol: 'usenet',
+    label: 'Download whole release on Usenet',
+    enabled: true,
+    reason: 'Send the whole release, Seasons 1–3, to SABnzbd (category: sonarr-anime)',
+    recommended: false,
+    facts: '~7.0 GB · Seasons 1–3 · to SABnzbd · free space checked on send',
+  })
+  const seasonOnly = verdictFor(config('usenet_only'), result, { availability })
+  assert.equal(seasonOnly.enabled, false)
+  assert.equal(seasonOnly.label, 'Usenet unavailable')
+  assert.equal(seasonOnly.reason, 'Usenet cannot fetch one season alone; download the whole release on Usenet instead')
+  // An ordinary season keeps its Usenet download.
+  assert.equal(
+    verdictFor(config('usenet_only'), season([splitRelease()]), { availability }).label,
+    'Download on Usenet',
+  )
+})
+
+test('a whole-release send asks for the whole release, also when it is sent anyway', async () => {
+  const { sends, calls } = cardSends(
+    () => preflight({ disk_space: [disk({ free_bytes: 100, sufficient: false })] }),
+    () => ({ kind: 'sent', client: 'qbittorrent' }),
+  )
+  const result = splitSeason(splitRelease())
+  await sends.sendWhole(result, 0, 'torrent')
+  assert.equal(sends.getState().lowSpace?.whole, true)
+  await sends.sendAnyway(result, 0)
+  const asked = {
+    key: 'show',
+    release: 0,
+    identity: releaseIdentity(result.releases[0]),
+    protocol: 'torrent',
+    whole_release: true,
+  }
+  assert.deepEqual(
+    calls.preflight.map(call => call[0]),
+    [[asked], [asked]],
+  )
+  assert.equal(calls.send.length, 1)
 })

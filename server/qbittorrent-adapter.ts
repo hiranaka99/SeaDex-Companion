@@ -3,6 +3,7 @@ import type { DiskSpaceCheck, DownloadCapabilities, DownloadPhase } from '../sha
 import {
   qbAddTorrent,
   qbControlTorrents,
+  qbEnableTorrentFiles,
   qbGetDownloadStorage,
   qbGetTorrents,
   qbReadTorrents,
@@ -169,6 +170,12 @@ export function qbittorrentAdapter(config: Config): DownloadClientAdapter<Torren
     planUnits: (rows, review) => planTorrentUnits(config, identity, rows, review.blocks),
     recordFields: unit => (unit.whole_source ? {} : { scope: unit.send.requestedPaths }),
     async submit(unit, ownership) {
+      // A torrent the app already added for other files gets the rest switched on, never added twice.
+      if (unit.send.widen) {
+        await qbEnableTorrentFiles(config, unit.source_hash, unit.send.widen.addPaths)
+        ownership.accepted([unit.source_hash])
+        return unit.source_hash
+      }
       await qbAddTorrent(
         config,
         // A private tracker's torrent is added from the .torrent file found through Prowlarr.

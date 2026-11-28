@@ -522,6 +522,45 @@ export function addDownloadRecord(input: NewDownloadRecord): OwnedDownloadRecord
   return structuredClone(record)
 }
 
+/**
+ * Grows an accepted torrent record by a send that switched on more of its files: its scope becomes `scope` (the
+ * whole torrent when undefined), and the send's rows, library seasons and labels join the ones it had. Its import is
+ * followed again, since the new files still have to reach the library.
+ */
+export function widenDownloadRecord(
+  id: string,
+  change: { scope?: string[]; rows: AssociationRow[]; library: LibraryTarget[]; labels: string[] },
+): OwnedDownloadRecord | null {
+  if (!current().records.some(record => record.id === id)) return null
+  const file = structuredClone(current())
+  const record = file.records.find(record => record.id === id)!
+  const timestamp = now()
+  if (change.scope?.length) record.scope = [...new Set([...(record.scope || []), ...change.scope])]
+  else delete record.scope
+  record.labels = [...new Set([...record.labels, ...change.labels])].slice(0, 16)
+  const library = new Map(
+    [...(record.library || []), ...change.library].map(target => [
+      JSON.stringify([target.key, target.season, target.part, target.group]),
+      target,
+    ]),
+  )
+  if (library.size) {
+    record.library = [...library.values()]
+    record.import = { state: 'waiting', since: timestamp }
+  }
+  record.updated_at = timestamp
+  file.rows[id] = [
+    ...new Map(
+      [...(file.rows[id] || []), ...change.rows].map(({ key, release }) => [
+        rowKey({ key, release }),
+        { key, release },
+      ]),
+    ).values(),
+  ]
+  commit(file)
+  return structuredClone(record)
+}
+
 export function findDownloadRecord(id: string): OwnedDownloadRecord | null {
   const record = current().records.find(record => record.id === id)
   return record ? structuredClone(record) : null
