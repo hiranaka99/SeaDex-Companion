@@ -24,4 +24,8 @@ Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/ag
 
 ### Replaying SeaDex entries
 
-When a title's releases, scoping, or targets look wrong, replay its real SeaDex entries first with `npm run replay:seadex`. See `docs/development.md`.
+When a title's releases, scoping, or targets look wrong, or when a change touches season assessment or target picking, replay real SeaDex entries with `npm run replay:seadex` and read its listing. See `docs/development.md`.
+
+### Running tests
+
+Run test files by name with `npm test -- <name>`: it builds first and gives the tests a temporary `DATA_DIR`, away from live data. See `docs/development.md`.

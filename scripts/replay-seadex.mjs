@@ -53,6 +53,7 @@ if (values.help || !valid) {
 
 const { replayCatalog } = await import('../dist/tests/support/seadex-replay.js')
 const { episodeRangeLabel } = await import('../dist/shared/releases.js')
+const { releaseForbidden } = await import('../dist/shared/download-plan.js')
 
 async function fetchEntries() {
   const { SEADEX, fetchWithTimeout } = await import('../dist/server/http.js')
@@ -91,12 +92,11 @@ for (const release of result.releases) {
   const part = release.part || 'Season'
   if (part !== heading) console.log((heading = part))
   const selected = release.selected_files || []
-  const scope =
-    release.excluded_kind === 'episode_order'
-      ? 'never downloaded'
-      : selected.length
-        ? `${episodeRangeLabel(selected) || 'unlabelled episodes'} · ${selected.length} files`
-        : 'whole torrent'
+  const scope = releaseForbidden(release)
+    ? 'never downloaded'
+    : selected.length
+      ? `${episodeRangeLabel(selected) || 'unlabelled episodes'} · ${selected.length} files`
+      : 'whole torrent'
   const flags = [
     release.target && 'target',
     release.files_match && 'files match',

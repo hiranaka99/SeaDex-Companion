@@ -53,14 +53,14 @@ Rules that conflict with deliberate patterns in this codebase are switched off i
 - `npm run format:check` checks the source formatting with Prettier.
 - `npm run lint` checks the source with Oxlint.
 - `npm run typecheck` type-checks the server, the tests, and the frontend.
-- `npm test` builds the server and runs backend, HTTP, scheduling, and frontend utility regressions.
+- `npm test` builds the server and runs backend, HTTP, scheduling, and frontend utility regressions. `npm test -- episode-order release-actions` runs only the test files whose names contain one of the words. `TEST_REPORTER=dot npm test` prints a dot per test, the failures in full, and none of the application's log lines; the pre-commit hook runs it this way. Run tests through `npm test` rather than `node --test`: it gives them a temporary `DATA_DIR`, so they never read or clear your live data.
 - `npm run build` builds the server and frontend for production.
 - `npm run test:browser` builds the frontend and checks browser workflows with isolated local fixtures. It defaults to Microsoft Edge on Windows; set `BROWSER_PATH` to a Chromium executable on other systems.
 - `npm run test:docker` builds a fresh image and checks startup, health, assets, authentication, persistence, download recovery, and shutdown in an isolated container.
 
 Tests that look up hashes, search Prowlarr or sweep build their own Usenet runtime with `testUsenetRuntime` from `tests/support/usenet-runtime.ts`, and hand it their fake hash indexers and Prowlarr as its `fetch`. The global `fetch` fakes only the download clients and other services. `restart()` simulates a new process on the same data paths, and `fresh()` one on empty data paths.
 
-Tests that assess a season import `assessSeason` from `tests/support/assessment.ts`. It fails any result that breaks a listing rule from `tests/support/listing-invariants.ts`: a source file selected for two parts (explicitly or by taking the whole source), or one release listed twice in a part.
+Tests that assess a season import `assessSeason` from `tests/support/assessment.ts`. It fails any result that breaks a listing rule from `tests/support/listing-invariants.ts`: a source file selected for two parts (explicitly or by taking the whole source), one release listed twice in a part, or a release excluded for its episode order that is the target or selects files.
 
 ### Replaying SeaDex entries
 
