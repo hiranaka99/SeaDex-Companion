@@ -1,1 +1,3 @@
-*.sh text eol=lf
+# Check every text file out with LF, as it is stored, whatever core.autocrlf says. Prettier keeps the line
+# endings it finds, so a CRLF checkout left files that Prettier had touched in LF beside untouched ones in CRLF.
+* text=auto eol=lf

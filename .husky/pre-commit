@@ -1,4 +1,4 @@
 npx lint-staged
 npm run lint
 npm run typecheck
-npm run test
+TEST_REPORTER=dot npm run test

@@ -1,5 +1,5 @@
 import type { Release, ResultItem } from '../../shared/contracts.js'
-import { normalizeTorrentPath } from '../../shared/download-plan.js'
+import { normalizeTorrentPath, releaseForbidden } from '../../shared/download-plan.js'
 import { normalizeInfoHash } from '../../shared/ids.js'
 import { VIDEO_FILE, sameRelease } from '../../shared/releases.js'
 
@@ -43,13 +43,22 @@ function selectedFilesOf(release: Release): string[] {
  * - each part selects its own files, so no source file is selected for two parts (whether selected explicitly
  *   or by taking the whole source);
  * - a part lists each release once, so two listings proven to be one release (a shared torrent, or the same
- *   video files byte for byte) never appear in the same part.
+ *   video files byte for byte) never appear in the same part;
+ * - a release excluded for its episode order is never the target and never offers a download, so it selects no
+ *   files of its own.
  * Returns one sentence per broken rule, empty when the listing keeps them all.
  */
 export function listingViolations(result: ResultItem): string[] {
   const violations: string[] = []
   const selectedIn = new Map<string, string>()
   for (const release of result.releases) {
+    if (releaseForbidden(release)) {
+      const misfit = `although it does not fit the series' episode order`
+      if (release.target) violations.push(`${label(release)} is the target of ${partOf(release)}, ${misfit}`)
+      if (release.selected_files?.length) violations.push(`${label(release)} selects files to download, ${misfit}`)
+      // Never downloaded, so it takes no file from another part.
+      continue
+    }
     for (const file of new Set(selectedFilesOf(release))) {
       const path = normalizeTorrentPath(file)
       const earlier = new Set<string>()
