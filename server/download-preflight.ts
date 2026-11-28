@@ -65,6 +65,8 @@ const BLOCK_COPY: Record<PreflightBlocked['code'], string> = {
     'An earlier send of this release was never confirmed by the download client. Check the client; if the download is not there, stop tracking that entry to send it again.',
   client_unreachable:
     'Could not reach the download client to check what was already sent. Try again once it is reachable.',
+  split_season:
+    'Usenet cannot fetch one season alone: an NZB carries the whole release. Download the whole release on Usenet instead, or this season by torrent.',
   category_missing:
     'SABnzbd has no category with this name, so the download would never be imported. Create the category in SABnzbd or change it under Configuration → Downloads.',
 }
@@ -255,6 +257,11 @@ function resolveRows(
     }
     if (protocol === 'usenet' && (!usenetConfigured(config) || !sabnzbdConfigured(config))) {
       blocks.add(selection, 'usenet_unconfigured')
+      continue
+    }
+    // A split season's own files go by torrent; its Usenet route is the whole release the NZB carries.
+    if (protocol === 'usenet' && !selection.whole_release && result.split_seasons?.length && release.whole_release) {
+      blocks.add(selection, 'split_season')
       continue
     }
     if (selection.nzb && protocol !== 'usenet') {

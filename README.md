@@ -168,7 +168,7 @@ Use the download controls to pause, resume, cancel, or remove downloads. Control
 
 Some anime are one continuous series on AniList that Sonarr shows as several seasons, such as Bleach. SeaDex lists one release for the whole series, and each of those seasons offers it narrowed to that season's episodes. Where that release covers more than the season you are looking at, its row also offers **Download whole release** above the season's own download. It sends every episode the release holds as one torrent, or one NZB on Usenet, filed under that title's download category, and the download shows on every season it covers. The line under the button lists the episodes, file count, size, and seasons it covers, and names any seasons that already hold the release and would be downloaded again. The button reads **Re-download whole release** when every season it covers already holds it.
 
-On these seasons, the season's own download is torrent-only, because an NZB cannot be split by season; use **Download whole release** for Usenet. **Bulk download** still downloads each season's own episodes.
+On these seasons, a season's own episodes download by torrent only, because an NZB cannot be split by season; use **Download whole release** for Usenet. **Bulk download** still downloads each season's own episodes, so it offers these seasons by torrent only, and skips them in **Usenet only** mode.
 
 ### Import follow-through
 

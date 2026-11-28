@@ -561,3 +561,20 @@ test('limits are whole numbers within their range, and the limits keep the Prowl
   for (const name of ['prowlarr_background_search', 'prowlarr_search_limit', 'prowlarr_fetch_limit'])
     assert.equal(serviceOfField(name), undefined, `${name} does not change how Prowlarr is reached`)
 })
+
+test('bulk review never offers Usenet for a split season whose release covers more than that season', () => {
+  const usenetOnly = downloadRoutes({ ...USENET_CONFIG, download_mode: 'usenet_only' })
+  const whole = release({ selected_files: ['Show - 01.mkv'], whole_release: { seasons: [1, 2], held: [] } })
+  const split = { ...season('split', [whole]), split_seasons: [1, 2] }
+  const ordinary = season('ordinary', [whole])
+  const rows = { ...availabilityFor(split, 'available'), ...availabilityFor(ordinary, 'available') }
+  const review = buildReview([split, ordinary], usenetEligibility(rows, usenetOnly), usenetOnly)
+  assert.deepEqual(
+    review.ready.map(group => group.result.key),
+    ['ordinary'],
+  )
+  assert.deepEqual(
+    review.blocked.map(group => group.result.key),
+    ['split'],
+  )
+})

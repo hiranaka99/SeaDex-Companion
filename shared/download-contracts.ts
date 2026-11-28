@@ -132,6 +132,7 @@ export interface PreflightBlocked {
     | 'acceptance_unknown'
     | 'client_unreachable'
     | 'category_missing'
+    | 'split_season'
   reason: string
 }
 

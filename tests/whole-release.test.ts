@@ -248,11 +248,6 @@ test('a whole-release Usenet send needs no acknowledgement of extra or unknown f
   try {
     const config = baseConfig()
     const results = splitResults()
-    const season = await buildDownloadPlan(config, [{ key: 'bleach-2', release: 0, protocol: 'usenet' }], {
-      results,
-      clients: downloadClients(config),
-    })
-    assert.equal(season.review.requires_whole_ack, true)
     const { review } = await buildDownloadPlan(
       config,
       [{ key: 'bleach-2', release: 0, protocol: 'usenet', whole_release: true }],
@@ -267,6 +262,42 @@ test('a whole-release Usenet send needs no acknowledgement of extra or unknown f
     // The indexer's total, marked approximate.
     assert.equal(unit.size_bytes, 500_000_000)
     assert.equal(unit.approximate, true)
+  } finally {
+    cleanup()
+  }
+})
+
+test('a season-only Usenet send of a split season is refused and points to the whole release', async () => {
+  const cleanup = installRouter({ calls: [], animetosho: () => animetoshoMatch() })
+  try {
+    const config = baseConfig()
+    const results = splitResults()
+    const { review } = await buildDownloadPlan(
+      config,
+      [
+        { key: 'bleach-1', release: 0, protocol: 'usenet' },
+        { key: 'bleach-2', release: 0, protocol: 'usenet' },
+      ],
+      { results, clients: downloadClients(config) },
+    )
+    assert.deepEqual(
+      review.blocked.map(row => [row.key, row.code]),
+      [
+        ['bleach-1', 'split_season'],
+        ['bleach-2', 'split_season'],
+      ],
+    )
+    assert.match(review.blocked[0].reason, /whole release/)
+    assert.equal(review.units.length, 0)
+    // A release of this season alone is still sent over Usenet: its NZB is the season.
+    const alone = [
+      splitSeason(1, { releases: [{ ...splitRelease(1), whole_release: undefined }] }),
+    ] as unknown as ResultItem[]
+    const single = await buildDownloadPlan(config, [{ key: 'bleach-1', release: 0, protocol: 'usenet' }], {
+      results: alone,
+      clients: downloadClients(config),
+    })
+    assert.deepEqual(single.review.blocked, [])
   } finally {
     cleanup()
   }
